@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, func, insert, select, update
 
 from src.database.tables import (
+    archived_tasks,
     integration_parent_episodes,
     integration_parent_operation_completions,
     integration_parent_verifications,
@@ -23,10 +25,12 @@ from src.database.tables import (
     tasks,
 )
 from src.git.manager import GitManager
+from src.integration.git_truth import GitTruth
 from src.integration.models import BranchKey, PromotionInput
 from src.integration.ownership import BranchOwnership
 from src.integration.promotion import PromotionService
 from src.integration.review_evidence import ReviewEvidenceProducer
+from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
 from src.models import (
     Agent,
     AgentProfile,
@@ -817,3 +821,218 @@ async def test_approval_snapshot_is_stale_after_another_reviewer_rejects(review_
                 assigned_agent_id=None,
                 expect_claim_epoch=4,
             )
+
+
+# Reduced tree reviews deliberately use neither the checkpoint seeded by
+# review_case nor an integration_parent_verifications row.
+_TREE_REVIEW_POLICY = ReviewRequirements(True, frozenset({"github:jack"}))
+
+
+async def _observed_tree_review(case, *, expected_tree=None):
+    snapshot = await GitTruth(GitManager()).snapshot(
+        str(case["work"]), project_id="p", repository_id="repo",
+        repository_url=_git(["remote", "get-url", "origin"], case["work"]),
+        target_ref="refs/heads/aq/leaf",
+    )
+    subject, head = await TreeReviews.observe(
+        snapshot, "leaf", "refs/heads/aq/leaf", expected_tree=expected_tree,
+    )
+    return subject, head, snapshot
+
+
+async def _record_tree_review(case, subject, *, verdict="approved", decision_id="review-1",
+                              reviewer="github:jack", requirements=_TREE_REVIEW_POLICY,
+                              reviews=None):
+    reviews = reviews or TreeReviews(case["db"], clock=lambda: 10.0)
+    async with case["db"].immediate() as conn:
+        return await reviews.record_on(
+            conn, subject, requirements, reviewer=reviewer, verdict=verdict,
+            decision_id=decision_id, reviewed_head_sha=case["head"], source_base=case["base"],
+            provenance={"provider_review_id": decision_id},
+        )
+
+
+async def test_tree_verdict_survives_unchanged_tree_rebase_without_verifier_generation(review_case):
+    case = review_case
+    reviews = TreeReviews(case["db"])
+    subject, original, _snapshot = await _observed_tree_review(case)
+    approved = await _record_tree_review(case, subject)
+    _git(["switch", "main"], case["work"])
+    _git(["commit", "--allow-empty", "-m", "new parent with identical tree"], case["work"])
+    _git(["switch", "aq/leaf"], case["work"])
+    _git(["rebase", "main"], case["work"])
+    _git(["push", "--force", "origin", "aq/leaf"], case["work"])
+    async with case["db"].immediate() as conn:
+        await conn.execute(update(task_integration_checkpoints).values(generation=99))
+    rebased, head, _snapshot = await _observed_tree_review(case, expected_tree=subject.tree_sha)
+    assert head != original and rebased == subject
+    assert (await reviews.verdict(rebased, _TREE_REVIEW_POLICY)).evidence_id == approved["id"]
+    async with case["db"]._engine.connect() as conn:
+        assert (await conn.execute(select(func.count()).select_from(
+            integration_parent_verifications,
+        ))).scalar_one() == 0
+
+
+@pytest.mark.parametrize("change", ["content", "file_mode"])
+async def test_tree_review_cannot_be_inherited_by_changed_tree_with_the_same_paths(review_case,
+                                                                                 change):
+    case = review_case
+    reviews = TreeReviews(case["db"])
+    subject, _head, _snapshot = await _observed_tree_review(case)
+    await _record_tree_review(case, subject)
+    paths = _git(["ls-tree", "--name-only", "HEAD"], case["work"])
+    if change == "content":
+        (case["work"] / "leaf.txt").write_text("changed\n")
+        _git(["add", "leaf.txt"], case["work"])
+    else:
+        _git(["update-index", "--chmod=+x", "leaf.txt"], case["work"])
+    _git(["commit", "-m", "same paths, different tree"], case["work"])
+    _git(["push", "origin", "aq/leaf"], case["work"])
+    changed, _head, _snapshot = await _observed_tree_review(case)
+    assert _git(["ls-tree", "--name-only", "HEAD"], case["work"]) == paths
+    assert changed.tree_sha != subject.tree_sha
+    assert (await reviews.verdict(changed, _TREE_REVIEW_POLICY)).state == "missing"
+    with pytest.raises(ValueError, match="tree changed"):
+        await _observed_tree_review(case, expected_tree=subject.tree_sha)
+
+
+async def test_tree_review_subject_repository_and_current_reviewer_grants_bind(review_case):
+    case = review_case
+    reviews = TreeReviews(case["db"])
+    subject, _head, _snapshot = await _observed_tree_review(case)
+    await _record_tree_review(case, subject)
+    for other in (ReviewSubject("p", "repo", "parent", subject.tree_sha),
+                  ReviewSubject("p", "other-repo", "leaf", subject.tree_sha)):
+        assert (await reviews.verdict(other, _TREE_REVIEW_POLICY)).state == "missing"
+    revoked = ReviewRequirements(True, frozenset({"github:another-reviewer"}))
+    assert (await reviews.verdict(subject, revoked)).state == "missing"
+    with pytest.raises(ValueError, match="not currently authorized"):
+        await _record_tree_review(case, subject, requirements=revoked)
+    with pytest.raises(ValueError, match="repository/project changed"):
+        await _record_tree_review(case, ReviewSubject("wrong-project", "repo", "leaf",
+                                                   subject.tree_sha))
+
+
+@pytest.mark.parametrize("path", ["git_source_ci", "authorized_task", "source_ancestry"])
+async def test_service_eligibility_and_ancestry_never_supply_a_tree_review(review_case, path):
+    case = review_case
+    reviews = TreeReviews(case["db"])
+    subject, _head, _snapshot = await _observed_tree_review(case)
+    async with case["db"].immediate() as conn:
+        await conn.execute(insert(integration_review_evidence).values(
+            id="pseudo-review", source_task_id="leaf", repository_id="repo",
+            source_base=case["base"], reviewed_head_sha=case["head"],
+            reviewed_tree_sha=subject.tree_sha, reviewer_identity="service:root-reconciler",
+            review_kind="parent", generation=3, verdict="approved",
+            evidence={"decision_path": path}, created_at=1.0,
+        ))
+    policy = ReviewRequirements(True, frozenset({"github:jack", "service:root-reconciler"}))
+    assert (await reviews.verdict(subject, policy)).state == "missing"
+    with pytest.raises(ValueError, match="not currently authorized"):
+        await _record_tree_review(case, subject, reviewer="service:root-reconciler",
+                                  requirements=policy)
+
+
+async def test_tree_decisions_are_immutable_and_new_rejection_wins_clock_regression(review_case):
+    case = review_case
+    subject, _head, _snapshot = await _observed_tree_review(case)
+    approved = await _record_tree_review(case, subject)
+    assert await _record_tree_review(case, subject) == approved
+    with pytest.raises(ValueError, match="immutable review decision changed"):
+        await _record_tree_review(case, subject, verdict="rejected")
+    reviews = TreeReviews(case["db"], clock=lambda: 1.0)
+    rejected = await _record_tree_review(case, subject, verdict="rejected", decision_id="review-2",
+                                       reviews=reviews)
+    assert rejected["created_at"] > approved["created_at"]
+    assert (await reviews.verdict(subject, _TREE_REVIEW_POLICY)).state == "rejected"
+
+
+async def test_tree_verdict_commits_with_ordinary_review_transition_or_rolls_back(review_case):
+    case = review_case
+    subject, _head, _snapshot = await _observed_tree_review(case)
+    reviews = TreeReviews(case["db"])
+    with pytest.raises(RuntimeError, match="crash"):
+        async with case["db"].immediate() as conn:
+            await reviews.record_on(
+                conn, subject, _TREE_REVIEW_POLICY, reviewer="github:jack", verdict="approved",
+                decision_id="review-close", reviewed_head_sha=case["head"],
+                source_base=case["base"], provenance={"review_task_id": "review"},
+            )
+            await conn.execute(update(tasks).where(tasks.c.id == "review").values(
+                status="COMPLETED",
+            ))
+            raise RuntimeError("crash")
+    assert (await reviews.verdict(subject, _TREE_REVIEW_POLICY)).state == "missing"
+    assert (await case["db"].get_task("review")).status == TaskStatus.IN_PROGRESS
+
+
+async def test_review_observation_ref_movement_and_git_failure_are_not_approval(review_case):
+    case = review_case
+    subject, _head, snapshot = await _observed_tree_review(case)
+    (case["work"] / "new.txt").write_text("new\n")
+    _git(["add", "new.txt"], case["work"])
+    _git(["commit", "-m", "remote moved"], case["work"])
+    _git(["push", "origin", "aq/leaf"], case["work"])
+    with pytest.raises(ValueError, match="ref changed"):
+        await TreeReviews.observe(snapshot, "leaf", "refs/heads/aq/leaf",
+                                  expected_tree=subject.tree_sha)
+    with pytest.raises(ValueError, match="observation is unavailable"):
+        await TreeReviews.observe(snapshot, "leaf", "refs/heads/does-not-exist")
+
+
+async def test_required_tree_review_requests_deduplicate_concurrent_restart_and_terminal_visits(
+    review_case, command_handler_factory,
+):
+    case = review_case
+    db = case["db"]
+    handler = await command_handler_factory()
+    await handler.orchestrator.db.close()
+    handler.orchestrator.db = db
+    handler._db = db
+    handler.orchestrator.git = GitManager()
+    handler.orchestrator.promotion_service = case["promotion"]
+    subject, head, _snapshot = await _observed_tree_review(case)
+    requests = [TreeReviews(db), TreeReviews(db)]
+    args = dict(execute=handler.execute, route={},
+                branch="aq/leaf", head_sha=head)
+    results = await asyncio.gather(*(reviews.request(subject, _TREE_REVIEW_POLICY, **args)
+                                     for reviews in requests))
+    assert all(result["success"] for result in results), results
+    assert len({result["task_id"] for result in results}) == 1
+    task_id = results[0]["task_id"]
+    request = await db.get_task(task_id)
+    assert request.parent_task_id is None and request.repo_id == "repo"
+    assert subject.tree_sha in request.description and "generation" not in request.description
+    for status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+        await db.update_task(task_id, status=status)
+        retry = await TreeReviews(db).request(subject, _TREE_REVIEW_POLICY, **args)
+        assert retry["task_id"] == task_id and retry["created"] is False
+    assert await db.archive_task(task_id)
+    retry = await TreeReviews(db).request(subject, _TREE_REVIEW_POLICY, **args)
+    assert retry["task_id"] == task_id and retry["created"] is False
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(func.count()).select_from(archived_tasks).where(
+            archived_tasks.c.dedup_key == subject.request_key,
+        ))).scalar_one() == 1
+        assert (await conn.execute(select(func.count()).select_from(tasks).where(
+            tasks.c.dedup_key == subject.request_key,
+        ))).scalar_one() == 0
+    assert not any(call.args[0] == "task.created"
+                   for call in handler.orchestrator.bus.emit.await_args_list)
+
+
+async def test_optional_leaf_review_and_resolved_tree_do_not_request_work(review_case):
+    from unittest.mock import AsyncMock
+
+    case = review_case
+    subject, head, _snapshot = await _observed_tree_review(case)
+    reviews = TreeReviews(case["db"])
+    execute = AsyncMock()
+    args = dict(execute=execute, route={}, branch="aq/leaf", head_sha=head)
+    optional = ReviewRequirements()
+    assert (await reviews.verdict(subject, optional)).state == "optional"
+    assert (await reviews.request(subject, optional, **args))["outcome"] == "optional"
+    for verdict in ("approved", "rejected"):
+        await _record_tree_review(case, subject, verdict=verdict, decision_id=verdict)
+        assert (await reviews.request(subject, _TREE_REVIEW_POLICY, **args))["outcome"] == verdict
+    execute.assert_not_awaited()
