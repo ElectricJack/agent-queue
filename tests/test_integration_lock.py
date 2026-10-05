@@ -15,7 +15,7 @@ from src.database.tables import integration_branch_owners as owners
 from src.database.tables import tasks
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitError, GitManager
-from src.integration.lock import BranchLock, RemoteMoved
+from src.integration.lock import BranchLock, PublishWithdrawn, RemoteMoved
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStatus
@@ -134,6 +134,31 @@ async def test_managed_push_rejects_bad_authority_before_transport(env, wrong):
     with pytest.raises(StaleFence):
         await push(env.lock, grant, transport)
     transport.apush_repository_oid.assert_not_awaited()
+
+
+async def test_withdrawn_authorization_under_the_fence_never_pushes(env):
+    grant = await env.lock.acquire(TARGET, "train", ttl_seconds=10)
+    transport = SimpleNamespace(apush_repository_oid=AsyncMock(return_value=NEW))
+    held = []
+
+    async def authorize():
+        # The fence row is locked while the caller rechecks its own authority.
+        held.append(env.lock.clock())
+        return False
+
+    with pytest.raises(PublishWithdrawn):
+        await env.lock.fenced_push(
+            grant, git=transport, checkout_path="/retained", repository=BINDING,
+            tip_oid=NEW, expected_old_oid=OLD, authorize=authorize,
+        )
+    assert held
+    transport.apush_repository_oid.assert_not_awaited()
+    granted = AsyncMock(return_value=True)
+    assert await env.lock.fenced_push(
+        grant, git=transport, checkout_path="/retained", repository=BINDING,
+        tip_oid=NEW, expected_old_oid=OLD, authorize=granted,
+    ) == NEW
+    granted.assert_awaited_once()
 
 
 async def test_publish_and_expired_reacquisition_share_critical_section(env):

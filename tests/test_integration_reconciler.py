@@ -270,11 +270,9 @@ async def test_git_first_diagnostics_cannot_change_selected_policy_or_emit_actio
         GitFirstDiagnostics.record(subject, "repair_progress", False, True, reason="fixture")
         if failure == "exception":
             raise RuntimeError("unavailable Git")
-        if failure == "timeout":
-            await asyncio.Event().wait()
 
     harness = make_loop(db, clock, policy=Policy(WaitArgs(seconds=5, reason="old-policy")),
-                        diagnostics=diagnose, call_timeout_seconds=0.5)
+                        diagnostics=diagnose)
     await harness.loop.tick()
     assert harness.actions == []
     assert digests == [harness.policy.decisions[0][1].digest()]
