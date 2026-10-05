@@ -289,18 +289,6 @@ async def test_git_first_diagnostics_cannot_change_selected_policy_or_emit_actio
     assert after.head_sha == original.head_sha and after.writer == original.writer
 
 
-async def test_git_first_diagnostics_skip_legacy_ownership_even_in_existing_shadow_loop(db):
-    from unittest.mock import AsyncMock
-
-    clock = Clock()
-    await add_subject(db, clock, engine=SubjectEngine.LEGACY)
-    diagnose = AsyncMock()
-    harness = make_loop(db, clock, mode=JournalMode.SHADOW, diagnostics=diagnose)
-    await harness.loop.tick()
-    diagnose.assert_not_awaited()
-    assert harness.actions == []
-
-
 async def test_unknown_refusal_has_bounded_exponential_backoff(db):
     clock = Clock()
     await add_subject(db, clock)

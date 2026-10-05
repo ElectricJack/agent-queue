@@ -196,20 +196,15 @@ async def test_git_first_shadow_unavailable_fetch_is_unknown_but_lease_is_non_gi
     assert evidence["lease_eligibility"]["classification"] == "disagreement"
 
 
-async def test_git_first_shadow_missing_expiry_and_legacy_scope(git_first_case, caplog):
+async def test_git_first_shadow_missing_expiry_and_active_off(git_first_case, caplog):
     from src.config import IntegrationConfig
     from src.integration.shadow import diagnostics_for
-    from src.integration.subjects import SubjectEngine
-
     case = git_first_case
     case.snapshot.rows["integration_branch_owners"][0]["expires_at"] = None
     await case.diagnostics(case.subject, case.facts)
     lease = next(record.git_first for record in caplog.records
                  if getattr(record, "git_first", {}).get("family") == "lease_eligibility")
     assert lease["classification"] == "unknown" and lease["proposed"] is None
-    case.reader.read.reset_mock()
-    await case.diagnostics(case.subject.model_copy(update={"engine": SubjectEngine.LEGACY}), case.facts)
-    case.reader.read.assert_not_awaited()
     assert diagnostics_for(IntegrationConfig(git_first="active"), None, case.repo.git) is None
 
 

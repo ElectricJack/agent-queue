@@ -252,7 +252,7 @@ class BatchService:
         dependencies: Mapping[str, Iterable[str]] | None = None,
     ) -> Batch:
         """Retain current exact completion sources before freezing their inputs."""
-        repo = await self.gitops.repository(batch.repository_id)
+        repo = await self.gitops.repository(batch)
         await self.gitops.validate_repository(repo)
         members = ordered_members(members, dependencies)
         if (snapshot.observation.project_id, snapshot.observation.repository_id,
@@ -316,7 +316,7 @@ class BatchService:
             (batch.project_id, batch.repository_id, batch.target_ref) or
             await self.store.members(batch.id) != members):
             return BatchObservation("unknown", detail={"reason": "frozen_inputs_changed"})
-        repo = await self.gitops.repository(batch.repository_id)
+        repo = await self.gitops.repository(batch)
         await self.gitops.validate_repository(repo)
         observed = snapshot.observation
         if (observed.project_id, observed.repository_id, observed.target_ref) != (

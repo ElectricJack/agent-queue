@@ -2460,6 +2460,9 @@
         377
       ]
     },
+    "src/cli/jobs.py::submit": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
     "src/cli/menus.py::task_creation_wizard": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -2526,6 +2529,12 @@
         762
       ]
     },
+    "src/cli/test_runner.py::_holder_meta": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/cli/test_runner.py::_holder_verdicts": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
     "src/cli/test_runner.py::_load_config": {
       "reason": "Imports or references an explicitly owned integration primitive.",
       "baseline_span": [
@@ -2536,6 +2545,12 @@
         89,
         103
       ]
+    },
+    "src/cli/test_runner.py::_reap_orphans": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/cli/test_runner.py::test_command": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
     "src/cli/vault.py::_resolve_data_dir": {
       "reason": "Imports or references an explicitly owned integration primitive.",
@@ -2823,6 +2838,18 @@
         169
       ]
     },
+    "src/commands/job_commands.py::JobCommandsMixin._retain_candidate": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/commands/job_commands.py::JobCommandsMixin._retain_capture": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/commands/job_commands.py::import from src.jobs.matter import candidate_document": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/commands/job_commands.py::import from src.object_loop.artifacts import ArtifactError, retain_document, retain_file": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
     "src/commands/playbook_commands.py::PlaybookCommandsMixin._cmd_update_playbook_source": {
       "reason": "Imports or references an explicitly owned integration primitive.",
       "baseline_span": [
@@ -3016,6 +3043,9 @@
         357,
         482
       ]
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_session_prune": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -4667,6 +4697,9 @@
         332
       ]
     },
+    "src/database/queries/hierarchy_queries.py::_ordinary_repair_branch": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
     "src/database/queries/hierarchy_queries.py::_reserved_repair_branch": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -4721,6 +4754,9 @@
         36,
         41
       ]
+    },
+    "src/database/queries/hierarchy_queries.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, sessions, task_branch_origins, task_context, task_delivery_receipts, task_dependencies, task_integration_checkpoints, task_metadata, tasks, workspaces": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
     "src/database/queries/hierarchy_queries.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, sessions, task_branch_origins, task_delivery_receipts, task_dependencies, task_integration_checkpoints, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -4963,6 +4999,9 @@
         516,
         557
       ]
+    },
+    "src/database/queries/session_queries.py::SessionQueryMixin.touch_session_activity": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
     "src/database/queries/session_queries.py::import from src.database.tables import agent_profiles, agents, gates, integration_batches, playbook_v2_runs, projects, sessions, task_session_attempts, tasks": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -5458,6 +5497,9 @@
         23,
         23
       ]
+    },
+    "src/database/queries/task_session_queries.py::TaskSessionQueryMixin.list_authorized_source_heads": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
     "src/database/queries/task_session_queries.py::TaskSessionQueryMixin.list_source_ci_inherited_oids": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -6328,6 +6370,18 @@
         694
       ]
     },
+    "src/doctor/resource_checks.py::_check_resources_orphaned_test_runs": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/doctor/resource_checks.py::_fix_resources_orphaned_test_runs": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/doctor/resource_checks.py::import from src.resources.semaphore import default_lock_dir": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/doctor/resource_checks.py::import from src.resources.test_runs import reap_orphans": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
     "src/doctor/stall_checks.py::_branch_findings": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -6338,6 +6392,18 @@
         156,
         187
       ]
+    },
+    "src/doctor/stall_checks.py::_find_orphaned_prs": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/doctor/stall_checks.py::_find_reviewed_file_blocked_batches": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/doctor/stall_checks.py::_find_stranded_dependents": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/doctor/stall_checks.py::_find_unadmitted_parents": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
     "src/doctor/stall_checks.py::_orphaned_pr_findings": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -6451,6 +6517,9 @@
         14,
         23
       ]
+    },
+    "src/doctor/task_checks.py::import from src.database.tables import agent_waits, archived_tasks, integration_branch_owners, messages, task_metadata, tasks": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
     "src/embedded_mcp.py::run_mcp_server": {
       "reason": "Imports or references an explicitly owned integration primitive.",
@@ -6727,6 +6796,69 @@
         345
       ]
     },
+    "src/jobs/artifacts.py::atomic_json": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/artifacts.py::open_artifact": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/artifacts.py::read_json": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/editor_pin.py::_recorded": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/editor_pin.py::import from src.jobs.artifacts import atomic_json, read_json": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/editor_pin.py::pin_editor": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/editor_pin.py::prune_pins": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/editor_pin.py::validate_attempt_id": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/identity.py::identity": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/identity.py::import from src.sessions.proctable import read_start_ticks, scan_by_env_marker, kill_marked_sync": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/identity.py::processes": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/identity.py::require_readable_identity": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/identity.py::stop_tree": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/identity.py::verified": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/matter.py::cancel_native": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/matter.py::candidate_document": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/matter.py::capture_inputs": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/matter.py::import from src.jobs.artifacts import atomic_json, open_artifact, read_json": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/matter.py::native_request": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/matter.py::native_status": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/matter.py::retain_capture": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
     "src/jobs/result.py::import from src.integration.development_result_parser import PARSER_VERSION, PytestReport, classify_report": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -6738,6 +6870,9 @@
         9
       ]
     },
+    "src/jobs/runner.py::fingerprint": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
     "src/jobs/runner.py::import from src.integration.development_result_parser import PytestOutputParser, parse_junit": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -6748,6 +6883,21 @@
         19,
         19
       ]
+    },
+    "src/jobs/runner.py::import from src.jobs.artifacts import OutputStore, atomic_json, read_json, open_artifact": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/runner.py::import from src.jobs.identity import identity, processes, stop_tree": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/service.py::JobService.cancel": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/service.py::JobService.launch": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/service.py::JobService.reconcile": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
     "src/jobs/service.py::JobService.submit": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -6770,6 +6920,15 @@
         551,
         611
       ]
+    },
+    "src/jobs/service.py::import from src.jobs.artifacts import OutputStore, atomic_json, job_directory, read_json": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/service.py::import from src.jobs.editor_pin import pin_editor, prune_pins, validate_attempt_id": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/jobs/service.py::import from src.jobs.identity import processes, verified": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
     "src/main.py::_validate_config_only": {
       "reason": "Imports or references an explicitly owned integration primitive.",
@@ -6858,6 +7017,15 @@
         467,
         613
       ]
+    },
+    "src/metrics/host.py::import from src.resources.semaphore import SlotSemaphore, default_lock_dir": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/metrics/host.py::import from src.resources.test_runs import ORPHANED, held_slots": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/metrics/host.py::read_test_slots": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
     "src/models.py::INTEGRATION_MODES": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -7012,6 +7180,30 @@
         20,
         48
       ]
+    },
+    "src/object_loop/artifacts.py::_digest_file": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/object_loop/artifacts.py::_reported": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/object_loop/artifacts.py::_stream": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/object_loop/artifacts.py::_write_object": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/object_loop/artifacts.py::import from src.jobs.artifacts import atomic_json, open_artifact, read_json": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/object_loop/artifacts.py::metadata": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/object_loop/artifacts.py::retain_document": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/object_loop/artifacts.py::retain_file": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
     "src/orchestrator/context.py::ContextMixin._build_task_context_with_prompt_builder": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -7852,6 +8044,9 @@
         706
       ]
     },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_is_live": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
     "src/playbooks/artifact_diff.py::_rule_rows": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -8314,6 +8509,9 @@
         179
       ]
     },
+    "src/plugins/internal/git.py::GitPlugin._push": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
     "src/plugins/internal/git.py::GitPlugin._source_ci_inherited_oids": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -8490,6 +8688,54 @@
         123
       ]
     },
+    "src/resources/__init__.py::__all__['default_lock_dir']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/__init__.py::__all__['full_suite_lock_dir']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/__init__.py::import from src.resources.semaphore import SlotSemaphore, SlotTimeout, default_lock_dir, full_suite_lock_dir": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/semaphore.py::default_lock_dir": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/semaphore.py::full_suite_lock_dir": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/slot_report.py::REPORT_ENV": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/slot_report.py::append_event": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/test_runs.py::ORPHANED": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/test_runs.py::_belongs_to_run": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/test_runs.py::_classify": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/test_runs.py::_reap_one": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/test_runs.py::_session_top": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/test_runs.py::held_slots": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/test_runs.py::holder_identity": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/test_runs.py::import from src.sessions.proctable import ProcEntry, file_holders_sync, is_alive_sync, kill_marked_sync, marked_root_sync, read_entry_sync, read_environ_sync": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/resources/test_runs.py::reap_orphans": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
     "src/sessions/env.py::_DAEMON_ONLY_INTEGRATION_PREFIX": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -8511,6 +8757,51 @@
         195,
         293
       ]
+    },
+    "src/sessions/flock_audit.py::_instance_processes": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/flock_audit.py::import from src.sessions.proctable import read_environ_sync, scan_by_env_marker": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose._refuse_unsafe": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose.cleanup": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/obsolete.py::ReleaseOwner": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/obsolete.py::import from src.database.tables import integration_branch_owners, integration_subjects, projects, sessions, task_metadata, tasks": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/obsolete.py::import from src.integration.finished_owners import stop_confirmer_for": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/proctable.py::file_holders_sync": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/proctable.py::is_alive_sync": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/proctable.py::kill_marked_sync": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/proctable.py::marked_root_sync": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/proctable.py::read_entry_sync": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/proctable.py::read_environ_sync": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/proctable.py::read_start_ticks": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/sessions/proctable.py::scan_by_env_marker": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
     "src/sessions/reconciler.py::SessionReconciler._apply_provider_failover": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -8600,6 +8891,9 @@
         38
       ]
     },
+    "src/sessions/subprocess.py::SubprocessProvider.confirm_stopped": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
     "src/task_graph/__init__.py::__all__['create_graph']": {
       "reason": "Imports or references an explicitly owned integration primitive.",
       "baseline_span": [
@@ -8666,6 +8960,9 @@
         36
       ]
     },
+    "src/task_graph/integration_dependencies.py::import from src.database.tables import epic_dependencies, tasks": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
     "src/task_names.py::_task_identity_exists": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -8676,6 +8973,9 @@
         99,
         136
       ]
+    },
+    "src/test_selection/report.py::render_report": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
     "src/tools/definitions.py::_ALL_TOOL_DEFINITIONS[create_task]": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",

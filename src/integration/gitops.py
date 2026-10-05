@@ -190,7 +190,8 @@ class GitOperations:
     is called as ``exclusion(repository_id, subject)``: a repository the
     reconciler engine owns admits no unnamed root mutation, so the fence has to
     carry the exact subject the primitive acts for.
-    ``repository`` is subject-scoped for the same reason: the retained clone a
+    ``repository`` is subject-scoped (a frozen ``Batch`` also qualifies: it carries
+    the same ``repository_id``) for the same reason: the retained clone a
     primitive acts in is the one carrying *that* subject's own pinned settings,
     so it is resolved through the subject rather than through a bare repository
     id a caller could answer from anything else.

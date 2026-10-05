@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import insert, update
