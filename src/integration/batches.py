@@ -331,8 +331,6 @@ class BatchService:
         try:
             # Historical inclusion settles even a held/aborted intent. It does
             # not authorize another write, and stale progress never blocks it.
-            if candidate and await self.gitops.is_ancestor(repo, candidate, target):
-                return BatchObservation("delivered", candidate, target)
             proofs = [await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha)
                       for m in members]
             if members and all(proof is True for proof in proofs):

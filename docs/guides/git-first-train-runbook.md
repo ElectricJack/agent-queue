@@ -39,7 +39,12 @@ recorded stall's Git, check, tree-review and task-transition evidence.
   result ends the repair with no attempt counted. A red or conflicting candidate then
   gets one ordinary repair task for the batch and target
   (`OrdinaryRepairService.allocate`); its counter rises when a task is filed, never
-  per visit.
+  per visit. A merge conflict files its repair with a plain-English brief naming the
+  conflicting member, its source OID, the conflicting files, the members already
+  merged into the starting head and the members still to merge in order; generated
+  files are regenerated, never hand-merged. A repaired head is published to the target
+  only once it proves every frozen member's source, so a member is never dropped by a
+  partial repair.
 - **No replay.** The scheduler, outbox dispatch and green continuations stop.
   Progress comes from Git, cached check evidence, review evidence and batch intent
   at visit time, so a restart or missed notification is repaired by the next visit.

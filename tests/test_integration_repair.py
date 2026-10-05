@@ -7478,6 +7478,31 @@ async def test_ordinary_repair_green_preserves_binding_constraints(ordinary_env,
     assert (result["outcome"], result["attempt_count"]) == (outcome, 0)
 
 
+async def test_ordinary_repair_brief_leads_the_description_and_freezes_at_filing(ordinary_env):
+    """A conflict brief reaches the worker verbatim; the input stays machine-readable."""
+    from src.integration.repair import OrdinaryRepairService
+
+    env = ordinary_env
+    brief = (f"The batch merge conflicted while building the starting head {STARTING_SHA}.\n"
+             "Conflicting member: source (source deadbeef); reason: alembic_head_collision.\n"
+             "Still to merge onto the starting head, in this order:\n"
+             "  1. source (source deadbeef)")
+    filed = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+                                       brief=brief)
+    assert filed["outcome"] == "filed"
+    description = (await env.db.get_task(filed["task_id"])).description
+    assert description.startswith(brief + "\n\nRepair the observed head on " + env.ref)
+    assert (await OrdinaryRepairService(env.db, locks=env.locks, clock=lambda: env.now).input(
+        filed["task_id"])) == {"batch_id": "ordinary", "attempt": 1, "repository_id": "repo",
+                               "target_ref": env.ref, "starting_sha": STARTING_SHA}
+    assert json.loads(description[description.index("{"):])["starting_sha"] == STARTING_SHA
+    # A later visit never rewrites the filed instructions.
+    replay = await env.service.allocate("ordinary", target_ref=env.ref, head_sha="c" * 40,
+                                        brief="a different brief")
+    assert replay["outcome"] == "exists"
+    assert (await env.db.get_task(filed["task_id"])).description == description
+
+
 async def test_ordinary_repair_green_beats_counter_and_expired_attached_writer(ordinary_env):
     from src.integration.ownership import StaleFence
 
