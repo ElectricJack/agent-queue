@@ -498,7 +498,7 @@ class TestClaimStatementBudgets:
             await any_db.release_claim(
                 sid, task_status=TaskStatus.READY, context="perf", now=time.time()
             )
-        budget = 9
+        budget = 10  # +1: release the task's fenced ref leases (git-first BranchLock)
         print(f"\nrelease_claim: {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, _over(c["n"], budget, c["statements"])
 
@@ -573,7 +573,7 @@ class TestClaimStatementBudgets:
 #: worth of wire without moving a single statement budget.
 CLAIM_STATEMENTS = 20
 CLAIM_TRANSACTIONS = 4
-RELEASE_STATEMENTS = 9
+RELEASE_STATEMENTS = 10  # includes the fenced-lease release
 RELEASE_TRANSACTIONS = 2
 ROUND_TRIP_STATEMENTS = CLAIM_STATEMENTS + RELEASE_STATEMENTS
 ROUND_TRIP_TRANSACTIONS = CLAIM_TRANSACTIONS + RELEASE_TRANSACTIONS

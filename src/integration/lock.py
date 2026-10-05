@@ -355,13 +355,19 @@ async def renew_session_leases_on(db, conn, session_id: str, observed_at: float)
 
 
 async def release_session_leases_on(db, conn, session_id: str, task_id: str) -> None:
-    lock = BranchLock(db)
-    for row in await session_leases_on(conn, session_id, task_id=task_id):
-        await lock.release(
-            Fence(
-                target=BranchKey(repository_id=row["repository_id"], branch=row["ref"]),
-                owner_id=row["holder"],
-                token=row["fence"],
-            ),
-            conn=conn,
+    """Release every lease this session holds for *task_id* in one statement.
+
+    Equivalent to ``BranchLock.release`` per row (holder and fence are the
+    row's own), without a read: the claim release path stays one statement.
+    The fence is retained, as in ``release``.
+    """
+    now = BranchLock(db).clock()
+    await conn.execute(
+        update(owners)
+        .where(
+            owners.c.fence.is_not(None),
+            owners.c.session_id == session_id,
+            owners.c.holder == task_id,
         )
+        .values(holder=None, expires_at=now, handoff_state="released", updated_at=now)
+    )

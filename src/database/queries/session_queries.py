@@ -565,10 +565,13 @@ class SessionQueryMixin:
                 or_(sessions.c.last_activity.is_(None), sessions.c.last_activity < ts),
             )
             .values(last_activity=ts)
+            .returning(sessions.c.task_id)
         )
         if conn is not None:
-            result = await conn.execute(stmt)
-            if result.rowcount:
+            # Only a session holding a task can hold leases: an idle touch
+            # (the claim path) costs no extra statement.
+            touched = (await conn.execute(stmt)).first()
+            if touched is not None and touched.task_id:
                 from src.integration.lock import renew_session_leases_on
 
                 await renew_session_leases_on(self, conn, session_id, ts)
