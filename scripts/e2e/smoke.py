@@ -2464,7 +2464,7 @@ def s20_train_delivery(state: dict) -> str:
     CAS. This exercises a non-development completion and the real train without
     needing GitHub or an LLM. Hosted exact-candidate checks have their own tests.
     """
-    project_id, home, _source = _ensure_phased_development_project(
+    project_id, home, source = _ensure_phased_development_project(
         "e2e-train", fixture_name="train-delivery", validation="none",
     )
     status = aq("integration", "status", project_id)
@@ -2475,6 +2475,17 @@ def s20_train_delivery(state: dict) -> str:
         "reason": "S20 pinned disposable local-checks artifact",
     })
     check(configured.get("outcome") == "configured", f"S20 validation pin: {configured}")
+    # A tiny new source must remain provable when earlier changes on its paths
+    # exceed GitManager's general stdin cap. This is the active-train outage
+    # shape: whole-source proof also compares complete historical target diffs.
+    _git_text(str(source), "checkout", "main")
+    _git_text(str(source), "pull", "--ff-only", "origin", "main")
+    readme = source / "README.md"
+    history = "historical train fixture\n" * 50_000
+    readme.write_text(history)
+    _git_text(str(source), "add", "README.md")
+    _git_text(str(source), "commit", "--allow-empty", "-m", "S20 oversized historical change")
+    _git_text(str(source), "push", "origin", "main")
     worker = fresh_workers(
         1, project_id=project_id, cleanup_projects=(PROJECT, OTHER_PROJECT, project_id),
     )[0]
@@ -2489,6 +2500,8 @@ def s20_train_delivery(state: dict) -> str:
     claim_fixture(worker, task_id, what="S20 worker to claim its ordinary source")
     task = task_show(task_id)
     check(task["parent_task_id"] is None, f"S20 source must be an ordinary root: {task}")
+    check(task["branch_name"].startswith("aq/epic/"),
+          f"S20 source must use the canonical train root branch: {task['branch_name']}")
     prime = run_aq("prime", json_mode=False, token=worker.token, session_id=worker.session_id)
     check(prime.returncode == 0, f"S20 prime failed: {prime}")
     rows = collection_rows(api_checked("list_workspaces", {"project_id": project_id}), "workspaces")
@@ -2499,7 +2512,9 @@ def s20_train_delivery(state: dict) -> str:
     _git_text(str(checkout), "config", "user.email", "e2e@example.test")
     artifact = f"{task_id}.txt"
     (checkout / artifact).write_text("ordinary train delivery\n")
-    _git_text(str(checkout), "add", artifact)
+    with (checkout / "README.md").open("a") as handle:
+        handle.write(f"ordinary train source {task_id}\n")
+    _git_text(str(checkout), "add", artifact, "README.md")
     _git_text(str(checkout), "commit", "-m", f"S20 train work\n\nAQ-Task: {task_id}")
     head = _git_text(str(checkout), "rev-parse", "HEAD")
     _git_text(str(checkout), "push", "-u", "origin", "HEAD")
@@ -2526,6 +2541,11 @@ def s20_train_delivery(state: dict) -> str:
         return "train-mode close retained its source; delivery explicitly untested (git_first needs active)"
 
     def delivered():
+        current = aq("integration", "status", project_id, "--control-only")
+        check(not any(blocker.get("task_id") == task_id and blocker.get("code") in {
+            "missing_git_provenance", "missing_or_ambiguous_source",
+        } for blocker in current.get("blockers", [])),
+              f"S20 ordinary completion became UNKNOWN: {current}")
         tip = _git_text(str(remote), "rev-parse", "refs/heads/main")
         if tip == before:
             return None
@@ -2536,7 +2556,8 @@ def s20_train_delivery(state: dict) -> str:
                    diagnostic=lambda: str(aq("integration", "status", project_id)))
     check(_git_text(str(remote), "show", f"{tip}:{artifact}") == "ordinary train delivery",
           "S20 delivered target lost the source artifact")
-    return f"ordinary train-mode close {task_id}@{head} retained and delivered to main@{tip}"
+    return (f"ordinary train-mode close {task_id}@{head} retained and delivered to main@{tip} "
+            "with oversized target history")
 
 
 def s17_phased_graph(state: dict) -> str:

@@ -82,6 +82,14 @@ reports `blocked` and projects the delivery reason, including
 generations still require explicit provenance migration; branch observation is
 never substituted for immutable completion evidence.
 
+Failed Git delivery probes remain `unknown`. The blocker detail and daemon log
+name the failing proof step, exception class and a bounded safe message; raw
+Git diagnostics, paths, credentials and repository content are never projected.
+Whole-source patch comparisons stream the complete binary diff into stable
+`git patch-id`, including historical target changes above the general command
+stdin limit. Both subprocesses must succeed; an incomplete diff, timeout or
+missing object cannot become a pending or contained answer.
+
 ## Complete replacements
 
 Delivery proof is ancestry of the exact final source in the inspected target,

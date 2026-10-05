@@ -5642,24 +5642,60 @@ class GitManager:
         ]
 
     async def apatch_id(self, checkout_path: str, base: str, head: str) -> str | None:
-        """Stable id of the entire base-to-head change; an empty diff has no id."""
-        diff = await self.arun_git_result(
-            ["--no-replace-objects", "diff", "--no-ext-diff", "--no-textconv",
-             "--no-renames", "--binary", _validate_rev(base), _validate_rev(head), "--"],
-            cwd=checkout_path,
-        )
-        if diff.returncode:
-            raise GitError(diff.stderr or "cannot read whole-source diff")
-        if not diff.stdout:
+        """Stream the whole binary diff into stable patch-id; empty diffs have no id.
+
+        Historical target comparisons can exceed the bounded command-input
+        limit even for a tiny source change. A pipe keeps the complete diff
+        out of Python memory and leaves that general stdin limit intact.
+        Both processes must succeed; partial output never proves delivery.
+        """
+        args = ["git", "--no-replace-objects", "diff", "--no-ext-diff", "--no-textconv",
+                "--no-renames", "--binary", _validate_rev(base), _validate_rev(head), "--"]
+        processes = []
+        read_fd, write_fd = os.pipe()
+        try:
+            with os.fdopen(read_fd, "rb") as reader, os.fdopen(write_fd, "wb") as writer:
+                async with asyncio.timeout(self._GIT_TIMEOUT):
+                    diff = await asyncio.create_subprocess_exec(
+                        *args, cwd=checkout_path, stdin=asyncio.subprocess.DEVNULL,
+                        stdout=writer, stderr=asyncio.subprocess.PIPE, env=self._SUBPROCESS_ENV,
+                    )
+                    processes.append(diff)
+                    patch = await asyncio.create_subprocess_exec(
+                        "git", "patch-id", "--stable", cwd=checkout_path, stdin=reader,
+                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                        env=self._SUBPROCESS_ENV,
+                    )
+                    processes.append(patch)
+                    # The children own the pipe now. In particular the parent
+                    # must release its writer so patch-id observes EOF.
+                    reader.close()
+                    writer.close()
+                    (_, diff_error), (output, patch_error) = await asyncio.gather(
+                        diff.communicate(), patch.communicate(),
+                    )
+            if diff.returncode:
+                raise GitError(diff_error.decode(errors="replace") or "cannot read whole-source diff")
+            if patch.returncode:
+                raise GitError(patch_error.decode(errors="replace") or "cannot compute patch id")
+        except TimeoutError:
+            raise GitError("whole-source patch id timed out") from None
+        except FileNotFoundError as exc:
+            raise GitError("Git store or executable is unavailable") from exc
+        finally:
+            for process in processes:
+                if process.returncode is None:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+            for process in processes:
+                # Drain pipes as well as reaping: wait() alone can stall if
+                # cancellation left a subprocess transport paused on output.
+                await process.communicate()
+        if not output.strip():
             return None
-        patch = await self.arun_git_result(
-            ["patch-id", "--stable"], cwd=checkout_path, stdin=diff.stdout,
-        )
-        if patch.returncode:
-            raise GitError(patch.stderr or "cannot compute patch id")
-        if not patch.stdout.strip():
-            return None
-        rows = patch.stdout.splitlines()
+        rows = output.decode(errors="replace").splitlines()
         fields = rows[0].split() if len(rows) == 1 else []
         if not fields or not is_valid_git_oid(fields[0]):
             raise GitError("invalid whole-source patch id")

@@ -776,7 +776,10 @@ configured mode is proven only by the live canary.
 repository, verifies its immutable completion provenance, and under `active`
 waits for the train to publish the exact source and file onto `main`. It pins
 local validation before selecting train mode, so it needs neither hosted CI nor
-an LLM. The fake daemon substitutes GitHub credentials for remotes inside its
+an LLM. Its canonical `aq/epic/` source changes a path whose earlier target diff
+exceeds the 1 MiB command stdin limit, exercising whole-source patch streaming
+and rejecting unknown-delivery blockers before publication. The fake daemon
+substitutes GitHub credentials for remotes inside its
 marked disposable home; candidate construction, fenced pushes and Git delivery
 remain real. With `shadow`, it checks completion provenance and explicitly reports
 delivery as untested. The CI `cli` shard selects `active` to run the full proof.
