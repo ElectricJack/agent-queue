@@ -541,6 +541,7 @@
         "tests/test_integration_cancelled_collection.py",
         "tests/test_integration_child_delivery.py",
         "tests/test_integration_delivered_parent_adoption.py",
+        "tests/test_integration_epics.py",
         "tests/test_integration_main_promotion.py",
         "tests/test_integration_parent_completion.py",
         "tests/test_integration_parent_source.py",
@@ -1404,7 +1405,7 @@
       ]
     }
   },
-  "digest": "sha256:2b7b66487c565f2637978097bb85f72327a5fd1a6f56b22ee6e7392fed5d82f6",
+  "digest": "sha256:08846acf2481a4faa2eb586ff56eea9c29835735c51ad2eb47559a14f431c760",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7490,6 +7491,22 @@
       "markers": [],
       "summary": "Manual ejection preserves review approval and restores future eligibility."
     },
+    "tests/test_integration_epics.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.integration.epics",
+        "src.integration.reviews",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Reduced parent readiness over real Git and ordinary PostgreSQL task inputs."
+    },
     "tests/test_integration_finished_owners.py": {
       "areas": [
         "integration-ownership"
@@ -8105,17 +8122,21 @@
         "src.commands.principal",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.git_truth",
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.promotion",
         "src.integration.review_evidence",
+        "src.integration.reviews",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
         "src.profiles.capabilities"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Trusted real-review verdict production for integration sources."
     },
     "tests/test_integration_root_adapters.py": {
