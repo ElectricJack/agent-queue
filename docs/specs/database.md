@@ -3452,6 +3452,11 @@ The scope ledger.  Every durable-records row that is scoped carries a
 check constrains each scope to either the single `global` row or a
 `project:`-prefixed row bound to one `project_id`.
 
+Concurrent scope creation is idempotent across both the `scope_key` primary key
+and `uq_record_scopes_project`. Backfills and lazy record creation share the
+canonical scope without aborting either caller's transaction; the identity
+check continues to reject any noncanonical scope.
+
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
 | `scope_key` | TEXT | PRIMARY KEY | Scope identity |

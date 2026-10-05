@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import insert, select
 
 from src.database.queries.record_queries import RecordDomainUnavailable
-from src.database.tables import archived_tasks, records, tasks
+from src.database.tables import archived_tasks, record_scopes, records, tasks
 from src.records.identity import (
     RecordIntegrityError,
     knowledge_identity,
@@ -56,6 +56,29 @@ async def test_mapping_replay_and_two_connection_race(db):
     assert rows[0] == rows[1]
     async with db.immediate() as conn:
         assert len((await conn.execute(select(records))).all()) == 1
+
+
+@pytest.mark.parametrize("project_id", [None, "p"])
+async def test_concurrent_scope_creation_preserves_canonical_identity(db, project_id):
+    if project_id is not None:
+        await seed_project(db, project_id)
+    barrier = asyncio.Barrier(8)
+
+    async def ensure():
+        async with db.immediate() as conn:
+            await barrier.wait()
+            scope_key = await db.ensure_record_scope_on(project_id=project_id, conn=conn)
+            # A uniqueness race must leave the caller's transaction usable.
+            assert await db.ensure_record_scope_on(project_id=project_id, conn=conn) == scope_key
+            return scope_key
+
+    expected = "global" if project_id is None else f"project:{project_id}"
+    assert await asyncio.gather(*(ensure() for _ in range(8))) == [expected] * 8
+    async with db.immediate() as conn:
+        row = (await conn.execute(select(record_scopes))).mappings().one()
+        assert row["scope_key"] == expected
+        assert row["scope_kind"] == ("global" if project_id is None else "project")
+        assert row["project_id"] == project_id
 
 
 async def test_task_archive_and_delete_preserve_mapping_and_exact_projection(db):
