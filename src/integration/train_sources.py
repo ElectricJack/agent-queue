@@ -37,6 +37,7 @@ from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
 from src.integration.subjects import Subject
 from src.integration.train import (
+    BatchSelection,
     CandidateChecks,
     IntegrationTrain,
     TrainLane,
@@ -149,22 +150,23 @@ class DatabaseBatches:
 
     async def open_batch(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, service: BatchService
-    ) -> tuple[Batch, tuple[BatchMember, ...]] | None:
+    ) -> BatchSelection:
         current = await self.current(target)
+        blockers: list[dict[str, Any]] = []
+        pending = None
+        if not snapshot.error and snapshot.target_oid:
+            pending = await self.pending(target, snapshot, blockers=blockers)
         if current is not None:
-            return current, await service.store.members(current.id)
-        if snapshot.error or not snapshot.target_oid:
-            return None
-        pending = await self.pending(target, snapshot)
+            return BatchSelection(current, await service.store.members(current.id), tuple(blockers))
         if pending is None:
-            return None
+            return BatchSelection(blockers=tuple(blockers))
         members, requests, dependencies = pending
         batch = Batch(id=batch_id(target, members), project_id=target.project_id,
                       repository_id=target.repository_id, target_ref=target.target_ref,
                       created_at=self.clock())
         frozen = await service.freeze(batch, members, requests=requests, snapshot=snapshot,
                                       dependencies=dependencies)
-        return frozen, await service.store.members(frozen.id)
+        return BatchSelection(frozen, await service.store.members(frozen.id), tuple(blockers))
 
     async def current(self, target: TrainTarget) -> Batch | None:
         async with self.db._engine.connect() as conn:
@@ -176,8 +178,11 @@ class DatabaseBatches:
             )).mappings().first()
         return Batch.from_row(row) if row else None
 
-    async def pending(self, target: TrainTarget, snapshot: GitTruthSnapshot):
-        """Members, delivery requests and in-batch dependencies; None when nothing is due."""
+    async def pending(
+        self, target: TrainTarget, snapshot: GitTruthSnapshot, *,
+        blockers: list[dict[str, Any]] | None = None,
+    ):
+        """Exact pending inputs; report unknown delivery that prevents batching."""
         async with self.db._engine.connect() as conn:
             ids = await _pending_tasks(conn, target.project_id, target.repository_id,
                                        limit=self.limit)
@@ -226,6 +231,12 @@ class DatabaseBatches:
             if request is None or not is_valid_git_oid(base or ""):
                 continue
             evidence = await snapshot.is_delivered(request, source_base=base)
+            if evidence.state is DeliveryState.UNKNOWN and blockers is not None:
+                blockers.append({
+                    "code": evidence.reason, "ref": task_id, "task_id": task_id,
+                    "detail": f"task {task_id} delivery is unknown ({evidence.reason})",
+                    "repository_id": target.repository_id, "target_ref": target.target_ref,
+                })
             if evidence.satisfied:
                 delivered.add(task_id)
                 continue

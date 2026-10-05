@@ -111,7 +111,7 @@ Then verify, in this order, before believing anything else:
 
 ```bash
 curl -fsS localhost:PORT/api/health
-curl -fsS localhost:PORT/api/ready
+curl -fsS localhost:PORT/ready
 aq integration status "$PROJECT_ID"          # projection_kind: train
 ```
 

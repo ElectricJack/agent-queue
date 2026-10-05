@@ -550,10 +550,15 @@ async def test_a_child_close_reaches_the_stranded_child_leg(tmp_path, monkeypatc
         orch.git.aremote_branch_head = AsyncMock(return_value=HEAD)
         orch.git.acommits_ahead_of_base = AsyncMock(return_value=1)
         orch.git.acreate_pr = AsyncMock(return_value=PR)
+        # This test isolates the stranded-child PR leg. Real immutable source
+        # publication is covered by the train-mode session-close regression.
+        record_completion = AsyncMock(return_value=HEAD)
+        monkeypatch.setattr("src.integration.provenance.record_worker_completion", record_completion)
 
         result = await orch.complete_session_task(child, outcome="pass", notes="done")
 
         assert result["status"] == TaskStatus.COMPLETED.value
+        record_completion.assert_awaited_once()
         if git_first == "active":
             orch.git.acreate_pr.assert_not_awaited()
             assert await _pr_url(orch.db, "container.1") is None

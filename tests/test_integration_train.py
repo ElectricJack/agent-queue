@@ -10,6 +10,7 @@ import pytest
 from src.integration.batches import Batch, BatchMember, BatchObservation, candidate_ref
 from src.integration.checks import ChecksState
 from src.integration.train import (
+    BatchSelection,
     CandidateChecks,
     IntegrationTrain,
     TrainLane,
@@ -70,7 +71,8 @@ class Batches:
         self.settled = []
 
     async def open_batch(self, target, snapshot, service):
-        return self.opened.get(target.key)
+        opened = self.opened.get(target.key)
+        return BatchSelection(*opened) if opened else BatchSelection()
 
     async def settle(self, batch, observation):
         self.settled.append((batch.id, observation.state))
