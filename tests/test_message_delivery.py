@@ -72,6 +72,9 @@ class FakeSessionManager:
       called, the manager flips the activity for that target to ``"idle"``
       (unless overridden by ``ensure_started_returns``).
     - ``tail_map`` keyed the same way as ``activity_map`` returns the tail.
+    - ``tail_windows`` records each ``tail_assistant_turn()`` call's
+      ``(since, until)`` pair so a test can assert the engine bounds the
+      window it offers the transcript reader.
     """
 
     activity_map: dict[tuple, str] = field(default_factory=dict)
@@ -81,6 +84,7 @@ class FakeSessionManager:
     nudges: list[tuple] = field(default_factory=list)
     ensure_started_calls: list[tuple] = field(default_factory=list)
     tail_map: dict[tuple, str | None] = field(default_factory=dict)
+    tail_windows: list[tuple[float, float | None]] = field(default_factory=list)
 
     async def activity(self, *, kind, target_id, project_id):
         return self.activity_map.get((kind, target_id, project_id), "absent")
@@ -97,7 +101,8 @@ class FakeSessionManager:
             return self.nudge_results.pop(0)
         return self.nudge_returns
 
-    async def tail_assistant_turn(self, *, kind, target_id, project_id, since):
+    async def tail_assistant_turn(self, *, kind, target_id, project_id, since, until=None):
+        self.tail_windows.append((since, until))
         return self.tail_map.get((kind, target_id, project_id))
 
 
@@ -121,6 +126,21 @@ async def _send(db, **overrides):
     )
     params.update(overrides)
     return await db.create_message(**params)
+
+
+async def _age_delivery(db, message_ids, *, seconds=None, reply_timeout=120.0):
+    """Backdate ``delivered_at`` past ``reply_timeout`` but inside the reply
+    window (``reply_timeout x reply_window_multiplier``) — the shape of a
+    message whose turn has not come round yet.  Defaults to one timeout plus
+    a second, the earliest age at which the sweep can fire at all."""
+    if seconds is None:
+        seconds = reply_timeout + 1.0
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            sa_update(messages)
+            .where(messages.c.id.in_(list(message_ids)))
+            .values(delivered_at=time.time() - seconds)
+        )
 
 
 async def _seed_irrelevant_history(db, count: int = 201) -> None:
@@ -681,12 +701,7 @@ class TestReplyTimeouts:
             thread_id="t-a2a",
         )
         await db.mark_delivered(original.id, via="prime")
-        async with db._engine.begin() as conn:
-            await conn.execute(
-                sa_update(messages)
-                .where(messages.c.id == original.id)
-                .values(delivered_at=time.time() - 999)
-            )
+        await _age_delivery(db, [original.id])
 
         assert await engine.check_reply_timeouts() == 1
 
@@ -718,12 +733,7 @@ class TestReplyTimeouts:
         sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
         await engine.run_delivery_pass()
         # Now age its delivered_at past reply_timeout.
-        async with db._engine.begin() as conn:
-            await conn.execute(
-                sa_update(messages)
-                .where(messages.c.id == msg.id)
-                .values(delivered_at=time.time() - 999)
-            )
+        await _age_delivery(db, [msg.id])
         sessions.tail_map[("session", "supervisor-p1", "p1")] = "an assistant reply"
 
         resolved = await engine.check_reply_timeouts()
@@ -742,12 +752,7 @@ class TestReplyTimeouts:
         msg = await _send(db, to_kind="session", to_id="supervisor-p1")
         sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
         await engine.run_delivery_pass()
-        async with db._engine.begin() as conn:
-            await conn.execute(
-                sa_update(messages)
-                .where(messages.c.id == msg.id)
-                .values(delivered_at=time.time() - 999)
-            )
+        await _age_delivery(db, [msg.id])
         # tail_map returns None → no reply created.
         assert await engine.check_reply_timeouts() == 0
 
@@ -759,32 +764,137 @@ class TestReplyTimeouts:
         sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
         await engine.run_delivery_pass()
         sessions.tail_map[("session", "supervisor-p1", "p1")] = "some text"
-        async with db._engine.begin() as conn:
-            await conn.execute(
-                sa_update(messages)
-                .where(messages.c.id == msg.id)
-                .values(delivered_at=time.time() - 999)
-            )
+        await _age_delivery(db, [msg.id])
         assert await engine.check_reply_timeouts() == 0
+
+
+class TestTranscriptTailFabricationGuards:
+    """2026-10-05: a supervisor resuming after a restart answered its whole
+    delivered-but-unreplied backlog — about 18 rows, some from two days
+    earlier — with whatever its next turns happened to be, tool calls
+    included, and the user-addressed ones were rendered on Discord.  Three
+    independent guards, one per cause."""
+
+    @pytest.mark.parametrize(
+        "tail",
+        ["[tool_use: Bash]", "[tool_use: CronCreate]", "[tool_use: ToolSearch]",
+         "[tool_result]", ""],
+    )
+    async def test_tool_only_tail_creates_no_reply(self, db, tail):
+        sessions = FakeSessionManager(
+            tail_map={("session", "supervisor-p1", "p1"): tail or None}
+        )
+        bus = RecordingBus()
+        engine = make_engine(db, sessions, bus=bus)
+        msg = await _send(db, to_kind="session", to_id="supervisor-p1")
+        sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
+        await engine.run_delivery_pass()
+        await _age_delivery(db, [msg.id])
+        bus.events.clear()
+
+        assert await engine.check_reply_timeouts() == 0
+        assert bus.events == []
+        assert await db.list_messages(to_kind="user") == []
+
+    @pytest.mark.parametrize(
+        ("from_kind", "from_id"),
+        [
+            ("system", "system:review:rev-keen-stone"),
+            ("system", "supervisor-delivery-watchdog"),
+            ("system", "delivery-engine"),
+            ("user", "system:review:rev-keen-stone"),
+            ("user", "system:supervisor-delivery-watchdog"),
+        ],
+    )
+    async def test_system_sender_notice_gets_no_reply(self, db, from_kind, from_id):
+        """A review approval or watchdog ping is engine chatter, not a
+        question asked of the session."""
+        sessions = FakeSessionManager(
+            tail_map={("session", "supervisor-p1", "p1"): "acknowledged"}
+        )
+        bus = RecordingBus()
+        engine = make_engine(db, sessions, bus=bus)
+        msg = await _send(
+            db, from_kind=from_kind, from_id=from_id,
+            to_kind="session", to_id="supervisor-p1",
+        )
+        sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
+        await engine.run_delivery_pass()
+        await _age_delivery(db, [msg.id])
+        bus.events.clear()
+
+        assert await engine.check_reply_timeouts() == 0
+        assert bus.events == []
+        # The transcript is not even read for a notice nobody asked.
+        assert sessions.tail_windows == []
+
+    async def test_delivered_days_earlier_is_never_answered_after_resume(self, db):
+        sessions = FakeSessionManager(
+            tail_map={("session", "supervisor-p1", "p1"): "Picking up after restart."}
+        )
+        bus = RecordingBus()
+        engine = make_engine(db, sessions, bus=bus)
+        backlog = [
+            await _send(db, to_kind="session", to_id="supervisor-p1", thread_id=thread)
+            for thread in ("discord:t1", "discord:t2", "discord:t3")
+        ]
+        sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
+        await engine.run_delivery_pass()
+        await _age_delivery(db, [m.id for m in backlog], seconds=2 * 86_400.0)
+        bus.events.clear()
+
+        # The sweep keeps firing on the cycle; it just never replies now.
+        assert await engine.check_reply_timeouts() == 0
+        assert await engine.check_reply_timeouts() == 0
+        assert bus.events == []
+        assert sessions.tail_windows == []  # no transcript read for a dead window
+        assert await db.list_messages(to_kind="user") == []
+
+    async def test_window_bounds_the_turn_the_transcript_is_searched_for(self, db):
+        """The turn must land within the window; the reader is told where it
+        ends rather than being handed an open-ended ``since``."""
+        cfg = MessagesConfig(reply_timeout=100.0, reply_window_multiplier=2.0)
+        sessions = FakeSessionManager(
+            tail_map={("session", "supervisor-p1", "p1"): "in-window answer"}
+        )
+        engine = make_engine(db, sessions, config=cfg)
+        msg = await _send(db, to_kind="session", to_id="supervisor-p1")
+        sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
+        await engine.run_delivery_pass()
+        await _age_delivery(db, [msg.id], seconds=150.0, reply_timeout=cfg.reply_timeout)
+
+        assert await engine.check_reply_timeouts() == 1
+        (since, until), = sessions.tail_windows
+        assert until == pytest.approx(since + 200.0)
+        # One more timeout past the window closes it for good.
+        await _age_delivery(db, [msg.id], seconds=301.0, reply_timeout=cfg.reply_timeout)
+        assert await make_engine(db, sessions, config=cfg).check_reply_timeouts() == 0
+
+    async def test_reply_window_multiplier_must_be_at_least_one(self):
+        errors = MessagesConfig(reply_window_multiplier=0.5).validate()
+        assert [e.field for e in errors] == ["reply_window_multiplier"]
 
 
 class TestTranscriptTailDeduplication:
     @pytest.mark.slow
     @pytest.mark.parametrize("project_id", ["p1", None])
-    @pytest.mark.parametrize("delivery_times", [(100, 101, 102), (102, 100, 101)])
+    @pytest.mark.parametrize("delivery_offsets", [(0, 1, 2), (2, 0, 1)])
     async def test_backlog_reuses_one_reply_across_sweeps_and_restart(
-        self, db, project_id, delivery_times,
+        self, db, project_id, delivery_offsets,
     ):
         sessions = FakeSessionManager(tail_map={("task", "review", project_id): "Review updated."})
         bus = RecordingBus()
         backlog = [await _send(db, project_id=project_id, to_kind="task", to_id="review")
                    for _ in range(3)]
-        newest = backlog[delivery_times.index(102)]
-        oldest = backlog[delivery_times.index(100)]
+        newest = backlog[delivery_offsets.index(2)]
+        oldest = backlog[delivery_offsets.index(0)]
+        # Past ``reply_timeout`` (the sweep's own floor) but inside the reply
+        # window, so the sweep can still fire on all three.
+        base = time.time() - 131.0
         async with db._engine.begin() as conn:
             for i, msg in enumerate(backlog):
                 await conn.execute(sa_update(messages).where(messages.c.id == msg.id)
-                                   .values(delivered_at=delivery_times[i]))
+                                   .values(delivered_at=base + delivery_offsets[i]))
 
         assert await make_engine(db, sessions, bus=bus).check_reply_timeouts() == 1
         first = (await db.list_messages(to_kind="user"))[0]
@@ -806,14 +916,10 @@ class TestTranscriptTailDeduplication:
     async def test_new_request_can_receive_the_same_text(self, db):
         sessions = FakeSessionManager(tail_map={("task", "review", "p1"): "Still waiting."})
         first = await _send(db, to_kind="task", to_id="review")
-        async with db._engine.begin() as conn:
-            await conn.execute(sa_update(messages).where(messages.c.id == first.id)
-                               .values(delivered_at=100))
+        await _age_delivery(db, [first.id], seconds=122.0)
         assert await make_engine(db, sessions).check_reply_timeouts() == 1
         later = await _send(db, to_kind="task", to_id="review")
-        async with db._engine.begin() as conn:
-            await conn.execute(sa_update(messages).where(messages.c.id == later.id)
-                               .values(delivered_at=200))
+        await _age_delivery(db, [later.id], seconds=121.0)
         assert await make_engine(db, sessions).check_reply_timeouts() == 1
         replies = await db.list_messages(to_kind="user")
         assert {r.reply_to_id for r in replies} == {first.id, later.id}
@@ -828,9 +934,7 @@ class TestTranscriptTailDeduplication:
         first = await _send(db, to_kind="task", to_id="review", thread_id="discord:channel")
         other = await _send(db, **({"to_kind": "task", "to_id": "review",
                                    "thread_id": "discord:channel"} | different))
-        async with db._engine.begin() as conn:
-            await conn.execute(sa_update(messages).where(messages.c.id.in_([first.id, other.id]))
-                               .values(delivered_at=100))
+        await _age_delivery(db, [first.id, other.id], seconds=121.0)
         for msg in [first, other]:
             sessions.tail_map[(msg.to_kind, msg.to_id, msg.project_id)] = "Same reply text."
         assert await make_engine(db, sessions).check_reply_timeouts() == 2
@@ -854,12 +958,7 @@ class TestTranscriptTailFanout:
         )
         sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
         await engine.run_delivery_pass()
-        async with db._engine.begin() as conn:
-            await conn.execute(
-                sa_update(messages)
-                .where(messages.c.id == msg.id)
-                .values(delivered_at=time.time() - 999)
-            )
+        await _age_delivery(db, [msg.id])
         sessions.tail_map[("session", "supervisor-p1", "p1")] = "tail body"
         bus.events.clear()
 
@@ -897,12 +996,7 @@ class TestTranscriptTailFanout:
         )
         sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
         await engine.run_delivery_pass()
-        async with db._engine.begin() as conn:
-            await conn.execute(
-                sa_update(messages)
-                .where(messages.c.id == msg.id)
-                .values(delivered_at=time.time() - 999)
-            )
+        await _age_delivery(db, [msg.id])
         sessions.tail_map[("session", "supervisor-p1", "p1")] = "tail body"
         bus.events.clear()
 
@@ -945,12 +1039,7 @@ class TestTranscriptTailFanout:
         sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
         sessions.activity_map[("session", "supervisor-p2", "p2")] = "idle"
         await engine.run_delivery_pass()
-        async with db._engine.begin() as conn:
-            await conn.execute(
-                sa_update(messages)
-                .where(messages.c.id.in_([m1.id, m2.id]))
-                .values(delivered_at=time.time() - 999)
-            )
+        await _age_delivery(db, [m1.id, m2.id])
         sessions.tail_map[("session", "supervisor-p1", "p1")] = "p1 tail"
         sessions.tail_map[("session", "supervisor-p2", "p2")] = "p2 tail"
 
@@ -1232,9 +1321,6 @@ async def test_wait_result_routes_to_granted_pointer(db, kind, target, activity,
 async def test_wait_result_never_fabricates_transcript_reply(db, body_kind):
     msg = await _send(db, body_kind=body_kind)
     await db.mark_delivered(msg.id, via="nudge")
-    async with db._engine.begin() as conn:
-        await conn.execute(
-            sa_update(messages).where(messages.c.id == msg.id).values(delivered_at=time.time() - 999)
-        )
+    await _age_delivery(db, [msg.id])
     manager = FakeSessionManager(tail_map={("session", "supervisor-p1", "p1"): "next turn"})
     assert await make_engine(db, manager).check_reply_timeouts() == 0

@@ -23,7 +23,12 @@ import json
 from pathlib import Path
 from typing import ClassVar
 
-__all__ = ["TranscriptEntry", "TranscriptReader", "parse_iso_ts"]
+__all__ = [
+    "TranscriptEntry",
+    "TranscriptReader",
+    "is_model_prose",
+    "parse_iso_ts",
+]
 
 
 def transcript_usage_key(provider: str, conversation: str, call_id: str) -> str:
@@ -57,6 +62,24 @@ def parse_iso_ts(raw) -> float:
 #: 60 s is short enough that a truly stopped agent is not flagged busy for
 #: long, and long enough to bridge the gap between two model turns.
 _IN_TURN_WINDOW_SECONDS = 60.0
+
+#: The readers flatten non-text content blocks into these stand-ins so an SSE
+#: consumer sees *something* for tool traffic (claude.py ``_extract_text``,
+#: codex.py ``_entry_from_line``).  They are harness bookkeeping, not model
+#: prose, so a consumer that would surface a turn to a human — the
+#: transcript-tail reply fallback — must never treat one as an answer.
+TOOL_PLACEHOLDER_PREFIXES = ("[tool_use:", "[tool_result]")
+
+
+def is_model_prose(text: str | None) -> bool:
+    """True when *text* is assistant prose rather than a tool placeholder.
+
+    ``""`` (a usage-only line) and ``"[tool_use: Bash]"`` are both "no reply
+    here".  Text that merely *contains* a placeholder still counts: a turn
+    that says something and then calls a tool is an answer.
+    """
+    stripped = (text or "").strip()
+    return bool(stripped) and not stripped.startswith(TOOL_PLACEHOLDER_PREFIXES)
 
 
 @dataclass(frozen=True)

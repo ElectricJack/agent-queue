@@ -19,6 +19,7 @@ from pathlib import Path
 from src.sessions.transcripts.base import (
     TranscriptEntry,
     TranscriptReader,
+    is_model_prose,
 )
 from src.sessions.transcripts.claude import ClaudeTranscriptReader
 from src.sessions.transcripts.codex import CodexTranscriptReader
@@ -26,6 +27,7 @@ from src.sessions.transcripts.codex import CodexTranscriptReader
 __all__ = [
     "TranscriptEntry",
     "TranscriptReader",
+    "is_model_prose",
     "ClaudeTranscriptReader",
     "CodexTranscriptReader",
     "resolve_reader",

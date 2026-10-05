@@ -296,6 +296,14 @@ shows a completed assistant turn since delivery, the relay tails that turn and p
 the reply, marked `via=transcript_tail`. The fallback keeps chat usable with harnesses or
 prompts that forget the protocol; the profile Rules make the CLI path the norm.
 
+The tail is only a recovery, never an invention, so the turn it posts must pass three
+tests: it carries assistant *prose* (a `[tool_use: …]` transcript placeholder is a tool
+call, not an answer), it is the first such turn after delivery and inside
+`delivered_at + reply_window_multiplier × reply_timeout`, and the request came from someone
+awaiting an answer (`system:*` senders are excluded). The window is what stops a resumed
+session from replying to its whole backlog at once; without it, every
+delivered-but-unreplied row ever written would qualify forever.
+
 ### 6.3 Events
 
 `message.sent` (row created), `message.delivered` (nudge confirmed submitted, or injected),

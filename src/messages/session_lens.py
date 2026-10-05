@@ -156,8 +156,14 @@ class SessionManagerProto(Protocol):
         target_id: str,
         project_id: str | None,
         since: float,
+        until: float | None = None,
     ) -> str | None:
-        """Last assistant turn newer than *since*, or ``None``."""
+        """First assistant prose turn in ``(since, until]``, or ``None``.
+
+        *until* closes the window so a caller can insist the turn answered
+        one specific delivery rather than being whatever the session said
+        much later (the first turn after a resume, say).
+        """
         ...
 
 
@@ -762,8 +768,15 @@ class SessionLens:
         target_id: str,
         project_id: str | None,
         since: float,
+        until: float | None = None,
     ) -> str | None:
-        """Last assistant turn on the target's transcript newer than *since*.
+        """First assistant prose turn in ``(since, until]``, or ``None``.
+
+        The window is the point of the method: the caller delivers a
+        message, waits ``reply_timeout``, and may only claim the turn that
+        answered *that* delivery.  Unbounded, a resumed long-lived session
+        "answered" every delivered-but-unreplied message in its backlog with
+        whatever it happened to say next (2026-10-05).
 
         The watcher (:class:`~src.sessions.transcripts.watcher.TranscriptWatcher`)
         is streaming-only — it holds byte offsets, not entries — so this
@@ -771,7 +784,7 @@ class SessionLens:
         this cadence: the delivery engine only reaches for the fallback
         after ``reply_timeout`` (default 120 s), one recipient at a time.
         """
-        from src.sessions.transcripts import resolve_reader
+        from src.sessions.transcripts import is_model_prose, resolve_reader
 
         row, _handle = await self._resolve(kind=kind, target_id=target_id, project_id=project_id)
         if row is None:
@@ -787,9 +800,17 @@ class SessionLens:
         except Exception:
             logger.debug("tail read failed for %s", row.name, exc_info=True)
             return None
-        for entry in reversed(entries):
-            if entry.type == "assistant" and entry.ts and entry.ts > since:
-                return entry.text or None
+        for entry in entries:
+            if entry.type != "assistant" or not entry.ts or entry.ts <= since:
+                continue
+            if until is not None and entry.ts > until:
+                # Transcripts are chronological; nothing later can qualify.
+                return None
+            # A tool call is not an answer. Skipping it here (rather than
+            # rejecting the tail in the caller) keeps a later prose turn in
+            # the window reachable.
+            if is_model_prose(entry.text):
+                return entry.text.strip()
         return None
 
     # -- internals ----------------------------------------------------------
