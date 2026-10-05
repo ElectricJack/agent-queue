@@ -168,6 +168,7 @@ HANDCRAFTED_COVERAGE = {
 
 # Commands to exclude entirely from the CLI (dangerous or irrelevant).
 EXCLUDED = {
+    "integration_train_tick",  # daemon-only git-first train dispatch
     "job_reconcile",
     "job_submit_integration",
 

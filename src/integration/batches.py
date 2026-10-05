@@ -11,8 +11,8 @@ from __future__ import annotations
 import hashlib
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from dataclasses import dataclass, replace
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from sqlalchemy import func, insert, select, update
@@ -377,7 +377,9 @@ class BatchService:
             if not await self.gitops.is_ancestor(repo, target, candidate):
                 return BatchObservation("moved", candidate, target, tree)
             state = await self._transfer(batch, repo, batch.target_ref, candidate, target, authorize)
-            return BatchObservation("delivered" if state == "published" else state,
-                                    candidate, target, tree)
+            if state == "published":
+                # The fast-forward left the target at the candidate.
+                return BatchObservation("delivered", candidate, candidate, tree)
+            return BatchObservation(state, candidate, target, tree)
         except (GitError, OSError, ValueError) as exc:
             return BatchObservation("unknown", candidate, target, detail={"reason": str(exc)})
