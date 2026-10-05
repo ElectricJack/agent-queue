@@ -1026,19 +1026,46 @@ async def test_ordinary_pr_and_ci_reads_are_repository_bound(credential_identity
 
 
 @pytest.mark.asyncio
-async def test_rerunning_checks_is_a_repository_bound_write(credential_identity):
-    """A re-run request re-checks one exact commit and can reach nothing else."""
-    runner = FakeRunner(credential_identity, [_response(201, {"id": 5})])
+async def test_rerequesting_a_check_suite_is_a_repository_bound_write():
+    """A re-run re-checks one named check suite and can reach nothing else.
+
+    GitHub's documented endpoint, which is the only way to retry CI for a head
+    that has not moved:
+    https://docs.github.com/en/rest/checks/suites#rerequest-a-check-suite —
+    ``POST /repos/{owner}/{repo}/check-suites/{check_suite_id}/rerequest``,
+    201 Created.  There is no write at ``commits/{ref}/check-suites``: that path
+    only lists suites.
+    """
+    runner = FakeRunner(GitHubCredentialIdentity.app(101, 202), [_response(201, b"")])
     client = GitHubClient(REPOSITORY, runner=runner)
-    assert (await client.request_check_suites("a" * 40))["id"] == 5
+    await client.rerequest_check_suite(4242)
     call = runner.calls[-1]
     assert call["args"][:4] == ["api", "--include", "--method", "POST"]
-    assert "repos/acme/widgets/commits/" + "a" * 40 + "/check-suites" in call["args"]
-    # The commit path is built from a validated OID, so no caller-supplied
-    # endpoint can name another repository or a short ref.
-    for sha in ("main", "../../other/repo", "repos/other/widgets/commits/x/check-suites"):
-        with pytest.raises(ValueError, match="invalid commit OID"):
-            await client.request_check_suites(sha)
+    assert call["args"][-1] == "repos/acme/widgets/check-suites/4242/rerequest"
+    # Addressed by a validated suite id, so no caller-supplied endpoint can
+    # name another repository, commit or head.
+    for suite_id in (0, -1, True, "4242", "4242/rerequest/../../other"):
+        with pytest.raises(ValueError, match="invalid check suite ID"):
+            await client.rerequest_check_suite(suite_id)
+    assert len(runner.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_check_suite_rerequest_refuses_a_credential_that_cannot_write_checks():
+    """GitHub documents writes to checks as GitHub-App-only.
+
+    https://docs.github.com/en/rest/guides/using-the-rest-api-to-interact-with-checks
+    — OAuth apps and authenticated users can read check runs and suites but not
+    write them.  An existing-login credential therefore issues no request at all,
+    rather than asking for one that cannot succeed: widening a credential is a
+    human decision, and the caller falls back to its named infrastructure
+    blocker.
+    """
+    runner = FakeRunner(GitHubCredentialIdentity.existing_login(), [_response(201, b"")])
+    client = GitHubClient(REPOSITORY, runner=runner)
+    with pytest.raises(GitHubAccessError, match="GitHub-App-only"):
+        await client.rerequest_check_suite(4242)
+    assert runner.calls == []
 
 
 @pytest.mark.asyncio

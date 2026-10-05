@@ -2082,10 +2082,10 @@ history after archive and refuse hard deletion through the integration guard.
 
 Only `red` files a repair. `cancelled` — every non-success required check
 cancelled, nothing pending, no required check failed — is infrastructure: the
-observation waits, requests a re-run of the exact head under bounded backoff
-(`infra_*`), and files no task; after `root.repair.source_ci_infra_attempts`
-consecutive such observations it names `source_ci_infrastructure` instead of
-looping.
+observation waits, re-requests the cancelled check suites of that exact head
+under bounded backoff (`infra_*`), and files no task; after
+`root.repair.source_ci_infra_attempts` consecutive such observations it names
+`source_ci_infrastructure` instead of looping.
 
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
@@ -2101,9 +2101,9 @@ looping.
 | `repair_attempt` | INTEGER | NOT NULL, default 0, `>= 0` | Successor count |
 | `repair_history` | JSONB | NOT NULL, default `[]` | Previous repair task/attempt identities |
 | `observed_at` | REAL | NOT NULL | Unix timestamp |
-| `infra_observations` | INTEGER | NOT NULL, default 0, `>= 0` | Consecutive infrastructure-only (cancellation-only) observations of this exact head; reset by any other observation |
-| `infra_rerun_at` | REAL | nullable | Earliest time a re-run of this exact head may be requested again (bounded exponential backoff) |
-| `infra_reruns` | INTEGER | NOT NULL, default 0, `>= 0` | Re-run requests issued for this exact head |
+| `infra_observations` | INTEGER | NOT NULL, default 0, `>= 0`, `a00000000078` | Consecutive infrastructure-only (cancellation-only) observations of this exact head; reset by any other observation |
+| `infra_rerun_at` | REAL | nullable, `a00000000078` | Earliest time a re-run of this exact head may be requested again (bounded exponential backoff) |
+| `infra_reruns` | INTEGER | NOT NULL, default 0, `>= 0`, `a00000000078` | Re-run requests issued for this exact head |
 
 ### Table: `integration_root_authorizations`
 

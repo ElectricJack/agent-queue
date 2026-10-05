@@ -26,6 +26,23 @@ class SourceCIObservation:
     evidence: dict[str, Any]
 
 
+def _cancelled_check_suite_ids(cancelled) -> list[int]:
+    """The check suites GitHub can re-run, named by the cancelled checks.
+
+    A check run names the suite it belongs to, and the suite is what the
+    re-request endpoint addresses, so this is the exact target for re-running
+    this head.  Ids are deduplicated because the cancelled checks of one
+    workflow run usually share a single suite.
+    """
+    suites = set()
+    for item in cancelled:
+        suite_id = (item.get("check_suite") or {}).get("id")
+        if isinstance(suite_id, bool) or not isinstance(suite_id, int) or suite_id <= 0:
+            continue
+        suites.add(suite_id)
+    return sorted(suites)
+
+
 def classify_source_checks(entries, *, head, required, conflicting=False):
     """Judge the latest trusted run of each required check, including cancellation.
 
@@ -104,6 +121,9 @@ def classify_source_checks(entries, *, head, required, conflicting=False):
             for item in cancelled
         ),
         "infra_only": state == "cancelled",
+        # Exactly what a re-run of this head would address: the suites the
+        # cancelled checks belong to.  Empty means there is nothing to re-run.
+        "cancelled_check_suite_ids": _cancelled_check_suite_ids(cancelled),
         "checks": [
             {
                 "id": item.get("id"),
@@ -151,16 +171,42 @@ async def observe_source_ci(*, row, source, client, handler, pull=None):
             evidence=evidence,
         )
     )
-    if isinstance(recorded, dict) and recorded.get("rerun_requested"):
-        # Asked for by the recorded bounded-backoff decision, performed here
-        # because this is where the client lives.  A failed re-request is not a
-        # repair: the next observation simply asks again when its backoff is up.
+    if isinstance(recorded, dict):
+        if recorded.get("blocker"):
+            # Bounded by policy: an outage that outlasts the attempts is a
+            # named blocker for a human, not another observation loop.
+            logger.warning(
+                "source CI infrastructure blocker %s for task %s at %s after %s "
+                "consecutive observations",
+                recorded["blocker"], row["id"], source["head"][:12],
+                recorded.get("infra_observations"),
+            )
+        if recorded.get("rerun_requested"):
+            await _request_check_reruns(client, row, source, evidence)
+
+
+async def _request_check_reruns(client, row, source, evidence) -> None:
+    """Re-run the cancelled check suites of this exact head; never raise.
+
+    An outage is the expected failure here, not a defect: the suites cannot be
+    re-run yet, the next observation asks again when its backoff is up, and a
+    sustained outage ends at the named blocker instead of at a worker session.
+    Nothing to target means the observation only waits.
+    """
+    suites = evidence.get("cancelled_check_suite_ids") or []
+    if not suites:
+        logger.warning(
+            "source CI re-run due for task %s at %s with no cancelled check "
+            "suite to address", row["id"], source["head"][:12],
+        )
+        return
+    for suite_id in suites:
         try:
-            await client.request_check_suites(source["head"])
+            await client.rerequest_check_suite(suite_id)
         except Exception:  # an outage is the expected failure, not a defect
             logger.warning(
-                "source CI re-run request failed for task %s at %s",
-                row["id"], source["head"][:12], exc_info=True,
+                "source CI re-run request failed for check suite %s of task %s at %s",
+                suite_id, row["id"], source["head"][:12], exc_info=True,
             )
 
 

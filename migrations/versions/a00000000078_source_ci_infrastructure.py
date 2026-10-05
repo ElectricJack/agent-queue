@@ -18,15 +18,15 @@ Every step is guarded because the squashed baseline builds
 ``integration_source_ci`` from the live ``src.database.tables.metadata``: a
 database created after the columns were declared already carries them.
 
-Revision ID: a00000000077
-Revises: a00000000076
+Revision ID: a00000000078
+Revises: a00000000077
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000077"
-down_revision = "a00000000076"
+revision = "a00000000078"
+down_revision = "a00000000077"
 branch_labels = None
 depends_on = None
 

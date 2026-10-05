@@ -807,13 +807,19 @@ async def _source_ci_handler(case, tmp_path):
     return handler, source
 
 
-def _cancelled_checks(source, required, *, annotated: bool):
+def _cancelled_checks(source, required, *, annotated: bool, suite_id: int = 37367217284):
+    """Cancelled checks of one workflow run, as GitHub reports them.
+
+    Every check names the suite it belongs to, which is what a re-run of the
+    exact head is addressed to (the re-request endpoint takes a suite id).
+    """
     summary = f"{RUNNER_NOT_ACQUIRED} hosted even after multiple attempts." if annotated else ""
     return [{
         "id": index + 1, "name": name, "head_sha": source["head"],
         "app": {"id": int(required.producer_id)}, "status": "completed",
         "conclusion": "cancelled",
-        "html_url": f"https://github.com/o/r/actions/runs/{index + 1}",
+        "html_url": f"https://github.com/o/r/actions/runs/{suite_id}",
+        "check_suite": {"id": suite_id},
         "output": {"summary": summary},
     } for index, name in enumerate(required.names)]
 
@@ -967,7 +973,12 @@ async def test_repeated_infra_source_ci_names_a_blocker_instead_of_looping(case,
 
 
 async def test_infrastructure_observation_reruns_the_exact_head(case):
-    """The recorded decision is what asks GitHub to re-run, once, on that head."""
+    """The recorded decision is what asks GitHub to re-run, once, on that head.
+
+    The re-run is addressed to the exact cancelled check suites of this head —
+    the ids GitHub itself reported for those checks — never to a commit-wide
+    path and never to a head that moved.
+    """
     from src.integration.models import HierarchicalIntegrationPolicy
     from src.integration.source_ci import observe_source_ci
 
@@ -990,8 +1001,8 @@ async def test_infrastructure_observation_reruns_the_exact_head(case):
                 annotated=True,
             )
 
-        async def request_check_suites(self, head):
-            requested.append(head)
+        async def rerequest_check_suite(self, suite_id):
+            requested.append(suite_id)
 
     async def handler(observation):
         seen.append(observation)
@@ -999,15 +1010,46 @@ async def test_infrastructure_observation_reruns_the_exact_head(case):
 
     await observe_source_ci(
         row=row, source=source, client=_CancelledClient(), handler=handler)
-    assert requested == [source["head"]]
+    # Three cancelled checks of one workflow run share one suite: it is asked
+    # for once, by id, and the head it belongs to is the observed one.
+    assert requested == [37367217284]
     assert seen[0].state == "cancelled"
+    assert seen[0].evidence["cancelled_check_suite_ids"] == [37367217284]
+    assert seen[0].source["head"] == source["head"]
 
     async def refusing(observation):
         return {"success": True, "outcome": "observed", "rerun_requested": False}
 
     await observe_source_ci(
         row=row, source=source, client=_CancelledClient(), handler=refusing)
-    assert requested == [source["head"]]
+    assert requested == [37367217284]
+
+
+def test_cancelled_check_suites_of_one_head_are_deduplicated_and_sorted():
+    """Exactly the suites a re-run addresses: deduped, sorted, this head only.
+
+    The cancelled checks of one workflow run share a suite, so a run with six
+    cancelled jobs is one re-request, and checks from two runs are two.  Suites
+    of other heads never appear, because only the head's own checks are read.
+    """
+    from src.integration.models import RequiredCheckSet
+    from src.integration.source_ci import classify_source_checks
+
+    required = RequiredCheckSet(
+        version="v1", names=("Tests (1/3)", "Tests (2/3)", "Tests (3/3)"), producer_id="7",
+    )
+    suites = {"Tests (1/3)": 37369341980, "Tests (2/3)": 37367217284, "Tests (3/3)": 37367217284}
+    entries = [{
+        "id": index + 1, "name": name, "head_sha": "a" * 40, "app": {"id": 7},
+        "status": "completed", "conclusion": "cancelled",
+        "check_suite": {"id": suite_id},
+        "output": {"summary": f"{RUNNER_NOT_ACQUIRED} hosted."},
+    } for index, (name, suite_id) in enumerate(suites.items())]
+    # A cancelled check on a head that moved is never read at all.
+    entries.append({**entries[0], "id": 99, "head_sha": "b" * 40})
+    state, evidence = classify_source_checks(entries, head="a" * 40, required=required)
+    assert state == "cancelled"
+    assert evidence["cancelled_check_suite_ids"] == [37367217284, 37369341980]
 
 
 async def test_failed_rerun_request_does_not_raise_into_the_poll(case):
@@ -1032,7 +1074,7 @@ async def test_failed_rerun_request_does_not_raise_into_the_poll(case):
                 annotated=True,
             )
 
-        async def request_check_suites(self, _head):
+        async def rerequest_check_suite(self, _suite_id):
             raise GitHubAccessError("unavailable", "GitHub Actions is unavailable")
 
     async def handler(_observation):
@@ -1040,6 +1082,84 @@ async def test_failed_rerun_request_does_not_raise_into_the_poll(case):
 
     await observe_source_ci(
         row=row, source=source, client=_OutageClient(), handler=handler)
+
+
+async def test_a_credential_that_cannot_write_checks_only_waits(case):
+    """GitHub-App-only: a refusal is not a repair and not a poll failure.
+
+    Widening a credential is a human decision, so the observation neither
+    widens nor retries around the refusal: the bounded counter still ends at
+    the named blocker for a supervisor to rerun by hand.
+    """
+    from src.integration.models import HierarchicalIntegrationPolicy
+    from src.integration.source_ci import observe_source_ci
+
+    policy = await _continuous_policy(case)
+    async with case["db"]._engine.connect() as conn:
+        source = await case["producer"]._pull_request_source_on(conn, "e1")
+    row = {
+        "id": "e1",
+        "hierarchical_integration_policy": policy,
+        "hierarchical_integration_generation": 0,
+    }
+    refusals = []
+
+    class _RefusingClient:
+        async def commit_check_runs(self, _head):
+            return _cancelled_checks(
+                source,
+                HierarchicalIntegrationPolicy.model_validate(policy).root.required_checks,
+                annotated=True,
+            )
+
+        async def rerequest_check_suite(self, suite_id):
+            refusals.append(suite_id)
+            raise GitHubAccessError(
+                "github_operation_unsupported",
+                "Re-requesting a check suite requires a GitHub App credential",
+            )
+
+    async def handler(_observation):
+        return {"success": True, "outcome": "observed", "rerun_requested": True}
+
+    await observe_source_ci(
+        row=row, source=source, client=_RefusingClient(), handler=handler)
+    assert refusals == [37367217284]
+
+
+async def test_a_cancelled_check_without_a_suite_is_waited_not_rerun(case):
+    """No suite id means nothing to address: the observation only waits."""
+    from src.integration.models import HierarchicalIntegrationPolicy
+    from src.integration.source_ci import observe_source_ci
+
+    policy = await _continuous_policy(case)
+    async with case["db"]._engine.connect() as conn:
+        source = await case["producer"]._pull_request_source_on(conn, "e1")
+    row = {
+        "id": "e1",
+        "hierarchical_integration_policy": policy,
+        "hierarchical_integration_generation": 0,
+    }
+    requested = []
+
+    class _NoSuiteClient:
+        async def commit_check_runs(self, _head):
+            required = HierarchicalIntegrationPolicy.model_validate(policy).root.required_checks
+            return [
+                {key: value for key, value in item.items() if key != "check_suite"}
+                for item in _cancelled_checks(source, required, annotated=True)
+            ]
+
+        async def rerequest_check_suite(self, suite_id):
+            requested.append(suite_id)
+
+    async def handler(observation):
+        assert observation.evidence["cancelled_check_suite_ids"] == []
+        return {"success": True, "outcome": "observed", "rerun_requested": True}
+
+    await observe_source_ci(
+        row=row, source=source, client=_NoSuiteClient(), handler=handler)
+    assert requested == []
 
 
 async def test_source_ci_infra_policy_is_ordered_and_bounded():
