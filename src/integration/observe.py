@@ -1273,15 +1273,25 @@ class IntegrationObserver:
         )
         base = target.base_sha if target else subject.base_sha
         extra = {}
+        publish_ref = (
+            default_ref if subject.kind is SubjectKind.ROOT_BATCH else subject.target_ref
+        )
         if "publisher_fence" in self.facts_type.model_fields:
-            publish_ref = (
-                default_ref if subject.kind is SubjectKind.ROOT_BATCH else subject.target_ref
-            )
             extra["publisher_fence"] = (
                 _publisher_fence(snapshot, publish_ref, now) if publish_ref else None
             )
             if extra["publisher_fence"] is None:
                 unknown.append("publisher_fence_unavailable")
+        if "competing_lease" in self.facts_type.model_fields:
+            publisher = _publisher_fence(snapshot, publish_ref, now) if publish_ref else None
+            extra["competing_lease"] = any(
+                row["repository_id"] == subject.repository_id
+                and _ref(row["ref"]) == publish_ref
+                and row.get("fence") is not None and row.get("holder")
+                and row.get("expires_at") is not None and row["expires_at"] > now
+                and (publisher is None or row["holder"] != publisher.owner_id)
+                for row in snapshot.all("integration_branch_owners")
+            )
         return self.facts_type(
             subject_id=subject.id,
             subject_version=subject.version,

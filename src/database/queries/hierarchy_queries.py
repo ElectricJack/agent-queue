@@ -49,6 +49,7 @@ from src.database.tables import (
     projects,
     sessions,
     task_branch_origins,
+    task_context,
     task_delivery_receipts,
     task_dependencies,
     task_integration_checkpoints,
@@ -362,6 +363,7 @@ def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = 
                 task_branch_origins.c.materialized.is_(True),
             )),
             _reserved_repair_branch(mode.integration_repository_id),
+            _ordinary_repair_branch(mode.integration_repository_id),
             _reserved_verifier_branch(mode.integration_repository_id),
         )
     return or_(~exists(
@@ -387,7 +389,34 @@ def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = 
                 )
             ),
         )
-    ), _reserved_repair_branch(), _reserved_verifier_branch())
+    ), _reserved_repair_branch(), _ordinary_repair_branch(), _reserved_verifier_branch())
+
+
+def _ordinary_repair_branch(repository_id: str | None = None):
+    """Ordinary repairs use the leased batch ref, without a legacy origin/stage."""
+    owner = integration_branch_owners
+    source = task_context.join(owner, owner.c.holder == task_context.c.task_id).join(
+        integration_batches, integration_batches.c.id == tasks.c.created_by_id,
+    )
+    if repository_id is None:
+        source = source.join(projects, projects.c.id == tasks.c.project_id)
+    return exists(select(literal(1)).select_from(source).correlate(tasks).where(
+        tasks.c.created_by_kind == "system",
+        tasks.c.dedup_key == (
+            "repair:" + integration_batches.c.id + ":"
+            + func.cast(integration_batches.c.repair_attempt_count, Text)
+        ),
+        task_context.c.id == tasks.c.id,
+        task_context.c.task_id == tasks.c.id,
+        task_context.c.label == "Repair input",
+        owner.c.fence.is_not(None),
+        owner.c.repository_id == tasks.c.repo_id,
+        or_(owner.c.ref == tasks.c.branch_name,
+            owner.c.ref == ("refs/heads/" + tasks.c.branch_name)),
+        owner.c.repository_id == (
+            repository_id if repository_id is not None else projects.c.integration_repository_id
+        ),
+    ))
 
 
 def _reserved_repair_branch(repository_id: str | None = None):

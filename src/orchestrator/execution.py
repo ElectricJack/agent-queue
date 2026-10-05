@@ -1331,6 +1331,22 @@ class ExecutionMixin:
             work_outcome=work_outcome,
             accepted_close=accepted_close,
         )
+        from src.integration.repair import OrdinaryRepairService
+
+        ordinary_repair = await OrdinaryRepairService(self.db).input(task.id)
+        ordinary_fence = None
+        if ordinary_repair is not None:
+            from src.integration.lock import BranchLock
+            from src.integration.models import BranchKey, Fence
+
+            lease = await BranchLock(self.db).get(BranchKey(
+                repository_id=ordinary_repair["repository_id"],
+                branch=ordinary_repair["target_ref"],
+            ))
+            if lease and lease.holder == task.id:
+                ordinary_fence = Fence(
+                    target=lease.target, owner_id=task.id, token=lease.fence,
+                )
         repair_scope = await self.db.get_repair_filing_scope(
             task.id, session_id=session_id
         )
@@ -1479,7 +1495,14 @@ class ExecutionMixin:
                 )
                 hierarchy_managed = bool(hierarchy_enabled and checkpoint)
                 verifier_operation = await self.db.get_integration_verifier_operation(task.id)
-                if repair_delegate:
+                if ordinary_repair is not None:
+                    if (workspace_path is None
+                        or task.repo_id != ordinary_repair["repository_id"]
+                        or task.branch_name != ordinary_repair["target_ref"].removeprefix("refs/heads/")):
+                        raise ValueError("ordinary repair publication target changed")
+                    # Normal completion provenance below verifies the clean,
+                    # exact published source. Delivery belongs to the train.
+                elif repair_delegate:
                     from src.git.manager import is_valid_git_oid
                     from src.integration.hierarchy import resolve_workspace_repair_proof
                     from src.integration.repair import repair_subject_sha
@@ -1701,7 +1724,8 @@ class ExecutionMixin:
         verification_reopened = outcome == "pass" and ctx.verification_reopened
         development_completion = bool(
             outcome == "pass" and completed_ok
-            and getattr(project, "hierarchical_integration_mode", None) == "development"
+            and (getattr(project, "hierarchical_integration_mode", None) == "development"
+                 or ordinary_repair is not None)
         )
         completion_source = None
         if development_completion and commit and (not workspace_path or not task.branch_name):
@@ -1712,7 +1736,8 @@ class ExecutionMixin:
             }
         if development_completion and workspace_path and task.branch_name:
             try:
-                if not await self._vault_only_delivery(ctx) and await self._task_uses_git(ctx):
+                if (ordinary_repair is not None
+                    or not await self._vault_only_delivery(ctx) and await self._task_uses_git(ctx)):
                     from src.integration.provenance import record_worker_completion
 
                     completion_id = completion_id or str(uuid.uuid4())
@@ -2111,6 +2136,12 @@ class ExecutionMixin:
             repair_writer_closed or managed_parent_suspended or completed_writer or failed_writer
             or requeued_writer
         )
+        if ordinary_repair is not None:
+            # Publication is normal completion data. The managed lease can
+            # expire/release without a legacy delegate-close or stop proof.
+            if ordinary_fence is not None:
+                await BranchLock(self.db).release(ordinary_fence)
+            release_needed = False
         handoff_unproven = False
         slot_restored = False
         if release_needed:

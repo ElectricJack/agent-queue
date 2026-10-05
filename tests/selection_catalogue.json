@@ -1418,7 +1418,7 @@
       ]
     }
   },
-  "digest": "sha256:72c21a8971e1255c8f7cc8250477efa4f9a6777df64e15be0da11470f74b9613",
+  "digest": "sha256:3c052f5b5baf39028831468805319262269da91b77b140754581907456f65996",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6770,6 +6770,8 @@
         "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.database.tables",
+        "src.integration.parent_adapters",
+        "src.integration.subjects",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
@@ -7979,8 +7981,10 @@
         "src.integration",
         "src.integration.models",
         "src.integration.observe",
+        "src.integration.parent_adapters",
         "src.integration.root_runtime",
-        "src.integration.subjects"
+        "src.integration.subjects",
+        "src.playbooks.integration_policy"
       ],
       "markers": [
         "parametrize"
@@ -8410,10 +8414,13 @@
         "src.database.tables",
         "src.doctor.integration_checks",
         "src.doctor.models",
+        "src.git.identity",
         "src.git.manager",
+        "src.integration.batches",
         "src.integration.controls",
         "src.integration.development",
         "src.integration.hierarchy",
+        "src.integration.lock",
         "src.integration.models",
         "src.integration.outbox",
         "src.integration.owner_recovery",
@@ -8422,6 +8429,7 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator.workspace",
+        "src.plugins.internal.git",
         "src.prime.sections",
         "src.profiles.capabilities",
         "src.scheduler",
@@ -13651,12 +13659,15 @@
         "src.git.github_app",
         "src.integration.candidates",
         "src.integration.main_promotion",
+        "src.integration.models",
         "src.integration.release",
         "src.integration.scheduler",
+        "src.integration.subjects",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
+        "src.playbooks.integration_policy",
         "src.profiles.capabilities"
       ],
       "markers": [],

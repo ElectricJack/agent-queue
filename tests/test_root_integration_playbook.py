@@ -18,9 +18,8 @@ from src.database.tables import (
     integration_repair_operations,
     integration_repair_stages,
 )
-from src.integration.candidates import CandidateBuildResult
-from src.integration.candidates import CandidateService
 from src.git.github_app import GitHubRepositoryBinding
+from src.integration.candidates import CandidateBuildResult, CandidateService
 from src.integration.main_promotion import RootPromotionResult
 from src.integration.release import IntegrationReleaseResult
 from src.models import Project, RepoConfig, RepoSourceType
@@ -34,7 +33,6 @@ from tests.playbook_v2_engine_helpers import (
     StubActivations,
     artifact_ref_for,
 )
-
 
 FIXTURE = Path("tests/fixtures/playbooks/historical-v2/root-integration-train/artifact.json")
 CURRENT_FIXTURE = Path("tests/fixtures/playbooks/v2/agent-queue-root-train/artifact.json")
@@ -819,3 +817,65 @@ async def test_live_supervisor_manual_green_run_reaches_guarded_promotion(
         "failed", "completed",
     ]
     await handler.db.close()
+
+
+def _green_first_policy_case(artifact_path, kind, facts_type, **overrides):
+    from src.integration.models import BranchKey, Fence
+    from src.integration.subjects import (
+        CIEvidence,
+        CIState,
+        Subject,
+        SubjectPhase,
+        SubjectSchedule,
+        WriterBudget,
+        WriterLease,
+        WriterStatus,
+    )
+    from src.playbooks.integration_policy import CompiledIntegrationPolicy
+
+    compiled = CompiledIntegrationPolicy(load_definition_json(artifact_path.read_text()))
+    subject = Subject(
+        id="green-first", project_id="p", repository_id="r", kind=kind,
+        subject_key="green-first", task_id="epic" if kind.value == "parent_episode" else None,
+        phase=SubjectPhase.REPAIRING, policy=compiled.pin, target_ref="refs/heads/main",
+        head_sha="a" * 40, base_sha="b" * 40, created_at=1, updated_at=1,
+        schedule=SubjectSchedule.progress(now=100, max_wait_seconds=3600),
+    )
+    values = {
+        "subject_id": subject.id, "subject_version": 0, "kind": kind, "phase": subject.phase,
+        "observed_at": 100, "head": subject.head, "candidate": subject.head,
+        "default_branch_head": "b" * 40,
+        "ci": (CIEvidence(head_sha=subject.head_sha, state=CIState.GREEN),),
+        "no_progress": True, "ladder_exhausted": True,
+        "writer": WriterLease(status=WriterStatus.WORKING, task_id="dead"),
+        "budget": WriterBudget(ordinal=99, intelligence_class="deep-high", started_at=1,
+                               deadline_at=2, attempts=500, attempt_limit=1),
+    }
+    if kind.value == "root_batch":
+        values["publisher_fence"] = Fence(
+            target=BranchKey(repository_id="r", branch=subject.target_ref),
+            owner_id="publisher", token=1)
+    values.update(overrides)
+    return compiled.evaluate(subject, facts_type(**values))
+
+
+def test_root_exact_green_precedes_expired_budget_no_progress_and_stop_proof():
+    from src.integration.subjects import Primitive, SubjectKind
+    from src.playbooks.integration_policy import IntegrationPolicyFacts
+
+    decision = _green_first_policy_case(CURRENT_FIXTURE, SubjectKind.ROOT_BATCH,
+                                       IntegrationPolicyFacts, unknown=("legacy_liveness",))
+    assert (decision.rule, decision.request.primitive) == ("promote-exact-green", Primitive.GIT_PUBLISH)
+
+
+def test_root_green_still_obeys_holds_rejection_and_competing_lease():
+    from src.integration.subjects import HoldFacts, SubjectKind
+    from src.playbooks.integration_policy import IntegrationPolicyFacts
+
+    for hold in ("operator_hold", "review_rejected"):
+        decision = _green_first_policy_case(CURRENT_FIXTURE, SubjectKind.ROOT_BATCH,
+                                           IntegrationPolicyFacts, holds=(HoldFacts(kind=hold),))
+        assert decision.rule == "binding-human-hold"
+    decision = _green_first_policy_case(CURRENT_FIXTURE, SubjectKind.ROOT_BATCH,
+                                       IntegrationPolicyFacts, competing_lease=True)
+    assert decision.rule == "competing-lease"
