@@ -65,11 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: ListAgentsRequest,
 ) -> Response[ListAgentsResponse | ListAgentsResponse422]:
-    """List globally defined shared agents, including the supervisor. No project is required. Optional
-    project_id filters current assignments.
+    """List shared agents and every starting, running, draining or sleeping session. Includes
+    project/global supervisors and delegates. No project is required.
 
-     List globally defined shared agents, including the supervisor. No project is required. Optional
-    project_id filters current assignments.
+     List shared agents and every starting, running, draining or sleeping session. Includes
+    project/global supervisors and delegates. No project is required.
 
     Args:
         body (ListAgentsRequest):
@@ -98,11 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: ListAgentsRequest,
 ) -> ListAgentsResponse | ListAgentsResponse422 | None:
-    """List globally defined shared agents, including the supervisor. No project is required. Optional
-    project_id filters current assignments.
+    """List shared agents and every starting, running, draining or sleeping session. Includes
+    project/global supervisors and delegates. No project is required.
 
-     List globally defined shared agents, including the supervisor. No project is required. Optional
-    project_id filters current assignments.
+     List shared agents and every starting, running, draining or sleeping session. Includes
+    project/global supervisors and delegates. No project is required.
 
     Args:
         body (ListAgentsRequest):
@@ -126,11 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: ListAgentsRequest,
 ) -> Response[ListAgentsResponse | ListAgentsResponse422]:
-    """List globally defined shared agents, including the supervisor. No project is required. Optional
-    project_id filters current assignments.
+    """List shared agents and every starting, running, draining or sleeping session. Includes
+    project/global supervisors and delegates. No project is required.
 
-     List globally defined shared agents, including the supervisor. No project is required. Optional
-    project_id filters current assignments.
+     List shared agents and every starting, running, draining or sleeping session. Includes
+    project/global supervisors and delegates. No project is required.
 
     Args:
         body (ListAgentsRequest):
@@ -157,11 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: ListAgentsRequest,
 ) -> ListAgentsResponse | ListAgentsResponse422 | None:
-    """List globally defined shared agents, including the supervisor. No project is required. Optional
-    project_id filters current assignments.
+    """List shared agents and every starting, running, draining or sleeping session. Includes
+    project/global supervisors and delegates. No project is required.
 
-     List globally defined shared agents, including the supervisor. No project is required. Optional
-    project_id filters current assignments.
+     List shared agents and every starting, running, draining or sleeping session. Includes
+    project/global supervisors and delegates. No project is required.
 
     Args:
         body (ListAgentsRequest):

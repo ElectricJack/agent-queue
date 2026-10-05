@@ -806,7 +806,8 @@ class PoolsMixin:
                 await asyncio.gather(launch.reservation, return_exceptions=True)
             # Once a session row exists, normal session reconciliation owns
             # it and any task it may already have claimed. Preserve that owner.
-            if await self.db.get_session(launch.session_id) is not None:
+            row = await self.db.get_session(launch.session_id)
+            if row is not None and row.state != "stopped":
                 raise
             stopped = launch.handle is None
             if launch.handle is not None:
@@ -980,6 +981,12 @@ class PoolsMixin:
         minted_token = False
 
         async def _rollback(reason: str, *, quarantine: bool) -> None:
+            row = await self.db.get_session(session_id)
+            if row is not None and row.state in {"starting", "running", "draining"}:
+                logger.error("pool launch remains registered for reconciliation: %s", reason)
+                if quarantine:
+                    self._quarantine_pool(project.id, profile.id, reason)
+                return
             if availability is not None:
                 # A launch that never ran proves nothing either way: let the
                 # next one be the probation canary (provider-failover D4).
@@ -1087,8 +1094,34 @@ class PoolsMixin:
             launched_at = time.time()
             launch.handle = SessionHandle(name=spec.session_name, provider=provider.name,
                                           instance_token=instance_token)
+            from src.sessions.launch import launch_session
+
+            record = SessionRecord(
+                id=session_id,
+                project_id=project.id,
+                profile_id=profile.id,
+                harness=harness.id,
+                provider=provider.name,
+                name=spec.session_name,
+                lifecycle="pool",
+                work_dir=work_dir,
+                epoch=self.daemon_epoch,
+                instance_token=instance_token,
+                started_at=launched_at,
+                session_key=session_id if harness.session_id_flag else None,
+                task_id=None,
+                state="running",
+                agent_id=agent.id,
+                **resolve_launch_settings(profile, harness, self.session_spec_builder),
+                last_activity=launched_at,
+                hooks_provisioned=spec.hooks_provisioned,
+                git_identity_digest=spec.git_identity_digest,
+            )
             try:
-                await provider.start(spec)
+                await launch_session(
+                    self.db, provider, spec, record, release_agent_reservation=True,
+                    bus=self.bus,
+                )
             except SessionDiedDuringStartup as exc:
                 excerpt = read_stderr_excerpt(exc.start_stderr_path)
                 # A death the provider explains (a login/usage dialog, or any
@@ -1122,62 +1155,6 @@ class PoolsMixin:
                 )
                 return None
 
-            now = time.time()
-            try:
-                await self.db.create_session(
-                    SessionRecord(
-                        id=session_id,
-                        project_id=project.id,
-                        profile_id=profile.id,
-                        harness=harness.id,
-                        provider=provider.name,
-                        name=spec.session_name,
-                        lifecycle="pool",
-                        work_dir=work_dir,
-                        epoch=self.daemon_epoch,
-                        instance_token=instance_token,
-                        started_at=launched_at,
-                        session_key=session_id if harness.session_id_flag else None,
-                        task_id=None,
-                        state="running",
-                        agent_id=agent.id,
-                        **resolve_launch_settings(profile, harness, self.session_spec_builder),
-                        last_activity=now,
-                        hooks_provisioned=spec.hooks_provisioned,
-                        git_identity_digest=spec.git_identity_digest,
-                    ),
-                    release_agent_reservation=True,
-                )
-            except Exception as exc:
-                logger.error(
-                    "pool %s/%s: session row insert failed",
-                    project.id,
-                    profile.id,
-                    exc_info=True,
-                )
-                try:
-                    await provider.stop(
-                        SessionHandle(
-                            name=spec.session_name,
-                            provider=provider.name,
-                            instance_token=instance_token,
-                        ),
-                        grace=2.0,
-                    )
-                except Exception:
-                    logger.error(
-                        "pool %s/%s: could not stop the orphan session %s",
-                        project.id,
-                        profile.id,
-                        spec.session_name,
-                        exc_info=True,
-                    )
-                    await self.db.update_agent(agent.id, state=AgentState.ERROR)
-                    return None
-                await _rollback(
-                    f"session started but its row could not be written: {exc}", quarantine=True
-                )
-                return None
         except Exception as exc:
             await _rollback(f"launch failed: {exc}", quarantine=True)
             return None

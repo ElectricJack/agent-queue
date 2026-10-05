@@ -361,3 +361,103 @@ async def test_integration_test_job_uses_configured_interpreter_outside_snapshot
     assert "-n" not in job["argv"]
     assert job["contract"]["env"]["VIRTUAL_ENV"] == str(venv)
     assert "POSTGRES_TEST_DSN" not in job["contract"]["env"]
+
+
+@pytest.mark.parametrize("input_mode", ["live", "snapshot"])
+@pytest.mark.parametrize("smoke_exit", [0, 7])
+async def test_managed_e2e_runs_and_reports_submitted_checkout(
+    db, tmp_path, input_mode, smoke_exit
+):
+    from src.git.manager import GitManager
+    from src.jobs.artifacts import atomic_json, read_json
+    from src.jobs.identity import stop_tree
+    from tests.test_jobs_runner import finish, launch
+
+    daemon = tmp_path / "daemon"
+    checkout = tmp_path / "submitted checkout"
+    wrapper = daemon / "src/jobs/e2e.py"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_bytes((Path(__file__).resolve().parents[1] / "src/jobs/e2e.py").read_bytes())
+    # The old wrapper tried these non-executable daemon scripts even though
+    # the submitted checkout had executable scripts and a different commit.
+    (daemon / "scripts").mkdir()
+    for script in ("e2e-env.sh", "e2e-smoke.sh"):
+        (daemon / "scripts" / script).write_text("#!/bin/sh\nexit 99\n")
+    (checkout / "scripts").mkdir(parents=True)
+    (checkout / "checkout_identity.py").write_text("NAME = 'submitted-checkout'\n")
+    for script, args, code in (
+        ("e2e-env.sh", "--reset", 0),
+        ("e2e-smoke.sh", "", smoke_exit),
+    ):
+        path = checkout / "scripts" / script
+        path.write_text(
+            "#!/bin/sh\nset -eu\n"
+            f'printf "{script}:%s\\n" "$*"\n'
+            f'[ "$*" = "{args}" ]\n'
+            "pwd\n"
+            "python3 -c 'from checkout_identity import NAME; print(NAME)'\n"
+            f"exit {code}\n"
+        )
+        path.chmod(0o755)
+    git = GitManager()
+    heads = []
+    for root in (daemon, checkout):
+        await git._arun(["init"], cwd=str(root))
+        await git._arun(["add", "."], cwd=str(root))
+        await git._arun([
+            "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+            "commit", "-m", root.name,
+        ], cwd=str(root))
+        heads.append((await git._arun(["rev-parse", "HEAD"], cwd=str(root))).strip())
+    if input_mode == "snapshot":
+        await git._arun(["checkout", "--detach"], cwd=str(checkout))
+    async with db._engine.begin() as conn:
+        await conn.execute(update(workspaces).where(workspaces.c.id == "w").values(
+            workspace_path=str(checkout),
+            **({"kind_id": "job-snapshot", "enabled": False, "locked_by_task_id": None}
+               if input_mode == "snapshot" else {}),
+        ))
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.resources.jobs.enabled = True
+    config.resources.jobs.test_database_url = (
+        "postgresql+asyncpg://test@localhost:5534/disposable"
+    )
+    service = JobService(db, config)
+    service.root = daemon
+    job = await service.submit(
+        project_id="p", task_id="t" if input_mode == "live" else None,
+        session_id=None, claim_epoch=1 if input_mode == "live" else None,
+        workspace_id="w", generation=0, preset="e2e", args=[],
+        idempotency_key="e2e-checkout", input_mode=input_mode,
+        input_ref=heads[1] if input_mode == "snapshot" else None,
+        owner_kind="task" if input_mode == "live" else "integration",
+        owner_id="t" if input_mode == "live" else "operation",
+    )
+    assert job["argv"] == [str(Path(sys.executable).absolute()), str(wrapper)]
+    assert job["preset_version"] == 2
+    assert job["job_class"] == "exclusive"
+    assert job["contract"]["cwd"] == str(checkout)
+    env = job["contract"]["env"]
+    assert env["E2E_DB_NAME"] == "agent_queue_e2e_job_" + job["id"].replace("-", "")
+    directory = Path(config.data_dir) / "runs" / job["id"]
+    assert env["AQ_E2E_HOME"] == str(directory / "e2e")
+    directory.mkdir(parents=True)
+    atomic_json(directory / "request.json", job)
+    proc = await launch(directory, job)
+    try:
+        receipt = await finish(proc, directory)
+        result = read_json(directory / "result.json")
+        assert receipt["exit_code"] == smoke_exit
+        assert result["outcome"] == ("passed" if smoke_exit == 0 else "failed")
+        assert result["input_ref"] == heads[1] != heads[0]
+        assert result["input_stability"] == (
+            "stable" if input_mode == "snapshot" else "unverified"
+        )
+        assert "e2e-env.sh:--reset\n" in result["excerpt"]
+        assert "e2e-smoke.sh:\n" in result["excerpt"]
+        assert result["excerpt"].count(str(checkout)) == 2
+        assert result["excerpt"].count("submitted-checkout") == 2
+        assert str(daemon) not in result["excerpt"]
+    finally:
+        await stop_tree(job["runner_nonce"], grace=0.1)
+        await proc.wait()

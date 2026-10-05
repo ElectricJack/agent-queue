@@ -25,7 +25,7 @@ export default function HostShell() {
 
   if (shells.isError) {
     return <div role="alert" className="p-4 text-sm text-amber-300">
-      Host shells are available only to the local operator. {String((shells.error as Error)?.message ?? "")}
+      Could not reach host shells. {String((shells.error as Error)?.message ?? "")}
     </div>;
   }
   if (shells.data && !shells.data.enabled) {

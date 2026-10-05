@@ -793,22 +793,26 @@ async def _pending_repair_source(case):
 
 @pytest.mark.parametrize("original_ci", ["red", "green"])
 @pytest.mark.parametrize("delivery", ["git", "receipt"])
-async def test_green_repair_remains_eligible_after_original_delivers(case, original_ci, delivery):
+@pytest.mark.parametrize("repair_ci", ["pending", "red", "cancelled", "conflict", "green", None])
+async def test_repair_remains_eligible_after_original_delivers(
+    case, original_ci, delivery, repair_ci,
+):
     await _pending_repair_source(case)
     db = case["db"]
     async with db.immediate() as conn:
         await conn.execute(update(integration_source_ci).where(
             integration_source_ci.c.task_id == "e1").values(state=original_ci))
+        if repair_ci is None:
+            await conn.execute(delete(integration_source_ci).where(
+                integration_source_ci.c.task_id == "repair-source"))
+        else:
+            await conn.execute(update(integration_source_ci).where(
+                integration_source_ci.c.task_id == "repair-source").values(state=repair_ci))
         if delivery == "receipt":
             await conn.execute(insert(task_delivery_receipts).values(
                 id="original-delivery", domain_key="original-delivery", source_task_id="e1",
                 repository_id="repo", target_branch="main", reviewed_head_sha=case["first"],
                 disposition="code", created_at=1000.0))
-        assert await TrainService(db)._eligible_members(
-            conn, project_id="p", repository_id="repo", project_mode="pull_request",
-            git_delivered={"e1"} if delivery == "git" else set()) == []
-        await conn.execute(update(integration_source_ci).where(
-            integration_source_ci.c.task_id == "repair-source").values(state="green"))
         members = await TrainService(db)._eligible_members(
             conn, project_id="p", repository_id="repo", project_mode="pull_request",
             git_delivered={"e1"} if delivery == "git" else set())
@@ -864,14 +868,16 @@ async def test_retired_ready_repair_cannot_reenter_train_with_old_checkpoint(cas
 @pytest.mark.parametrize("source_blocker", [
     "hold", "repair_hold", "gate", "rejected", "generation", "policy",
 ])
-async def test_green_repair_readmits_exact_failed_source_with_cleanup_coverage(case, source_blocker):
+async def test_repair_chain_admission_preserves_cleanup_coverage_and_source_blockers(
+    case, source_blocker,
+):
     await _pending_repair_source(case)
     db = case["db"]
     async def members():
         async with db.immediate() as conn:
             return await TrainService(db)._eligible_members(
                 conn, project_id="p", repository_id="repo", project_mode="pull_request")
-    assert await members() == []
+    assert {item["task_id"] for item in await members()} == {"e1", "repair-source"}
     async with db.immediate() as conn:
         await conn.execute(update(integration_source_ci).where(
             integration_source_ci.c.task_id == "repair-source").values(state="green"))
@@ -905,8 +911,9 @@ async def test_green_repair_readmits_exact_failed_source_with_cleanup_coverage(c
     assert await case["producer"].snapshot_authorized(
         "final-repair", reviewed_sha=third, policy_generation=0)
     assert {item["task_id"] for item in await members()} == {"e1", "repair-source", "final-repair"}
-    # Explicit gates and stale source identities bind every repair, including
-    # a second green repair whose own authorization evidence already exists.
+    # Explicit gates and stale source identities bind the repair lineage.
+    # A repair's hold or stale source-CI observation does not block the
+    # original source's current review from admission.
     if source_blocker == "rejected":
         await case["producer"].snapshot_from_pull_request(
             "e1", verdict="rejected", reviewer_login="reviewer", reviewed_sha=case["first"])
@@ -923,7 +930,8 @@ async def test_green_repair_readmits_exact_failed_source_with_cleanup_coverage(c
             else:
                 await conn.execute(update(integration_source_ci).where(
                     integration_source_ci.c.task_id == "e1").values(policy_generation=1))
-    assert await members() == []
+    expected = {"e1"} if source_blocker in {"repair_hold", "policy"} else set()
+    assert {item["task_id"] for item in await members()} == expected
     # Revocation invalidates authorization and CI tied to the older policy generation.
     async with db.immediate() as conn:
         assert await db.cas_project_integration_control_on(

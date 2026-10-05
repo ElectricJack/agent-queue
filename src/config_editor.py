@@ -391,6 +391,40 @@ def write_section(path: str, section: str, new_data: Any) -> None:
         yaml_rt.dump(doc, f)
 
 
+def update_section_keys(
+    path: str,
+    section: str,
+    *,
+    set_values: dict[str, Any],
+    remove: tuple[str, ...] | list[str] = (),
+) -> None:
+    """Set and remove individual keys of the mapping ``section``, in place.
+
+    Unlike :func:`write_section`, which replaces the whole section, the keys
+    left alone keep their comments, order and quoting; a new key is appended.
+    The section is created when absent.  Values get the same YAML 1.1 quoting
+    as :func:`write_section`.  The caller is responsible for validation.
+    """
+    from ruamel.yaml.comments import CommentedMap
+
+    yaml_rt = _round_trip_yaml()
+    with open(path, encoding="utf-8") as f:
+        doc = yaml_rt.load(f) or CommentedMap()
+
+    body = doc.get(section)
+    if body is None:
+        body = doc[section] = CommentedMap()
+    elif not isinstance(body, dict):
+        raise ValueError(f"[{section}] is not a mapping")
+    for key in remove:
+        body.pop(key, None)
+    for key, value in set_values.items():
+        body[key] = _quote_yaml11_scalars(value)
+
+    with open(path, "w", encoding="utf-8") as f:
+        yaml_rt.dump(doc, f)
+
+
 def write_full_config(path: str, new_data: dict[str, Any]) -> None:
     """Replace the entire config document at ``path``.
 

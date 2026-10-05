@@ -24,6 +24,7 @@ from src.playbooks.required import (
     retain_required_route_needed_event,
 )
 from src.playbooks.run_state import ArtifactVerificationFailed
+from src.playbooks.recovery import RestartReconciler
 from src.playbooks.services import (
     INTEGRATION_LIFECYCLE_PLAYBOOK_IDS,
     IntegrationRouteTarget,
@@ -101,11 +102,16 @@ class V2PlaybookRuntime:
         llm: Any,
         bus: Any,
         required_playbook_status: dict[str, Any] | None = None,
+        process_started_at: float | None = None,
     ) -> None:
         self._config = config
         self._db = db
         self._bus = bus
         self._engine = build_v2_engine(config=config, db=db, handler=handler, llm=llm, bus=bus)
+        self.restart_reconciler = RestartReconciler(
+            self._engine, db, ExecutionPrincipal.service("playbook-restart-recovery"),
+            process_started_at=time.time() if process_started_at is None else process_started_at,
+        )
         self._store = ArtifactStore(
             config.compiled_root,
             max_artifact_bytes=config.playbooks.v2_max_artifact_bytes,
@@ -687,8 +693,12 @@ class V2PlaybookRuntime:
                 error=f"{type(exc).__name__}: {exc}"[:2000],
             )
 
+    async def recover_interrupted_runs(self) -> tuple[str, ...]:
+        return await self.restart_reconciler.tick()
+
     async def shutdown(self) -> None:
         self._integration_shutting_down = True
+        await self.restart_reconciler.shutdown()
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None

@@ -164,7 +164,7 @@ class IntegrationReconciler:
         kinds: Sequence[SubjectKind] = (SubjectKind.ROOT_BATCH,),
         page_size: int = 100,
         interval_seconds: float = 5.0,
-        call_timeout_seconds: float = 30.0,
+        call_timeout_seconds: float = 180.0,
         bookkeeping_timeout_seconds: float = 60.0,
         backoff_seconds: float = 5.0,
         backoff_ceiling_seconds: float = 300.0,
@@ -250,7 +250,9 @@ class IntegrationReconciler:
             logger.exception("integration subject due page failed")
 
     async def _bounded(self, operation: Awaitable[Any]) -> Any:
-        return await asyncio.wait_for(operation, timeout=self._timeout)
+        # No call timeout: a slow observe/seal/build finishes instead of being
+        # cancelled and restarted from scratch on the next visit.
+        return await operation
 
     async def _committed(self, operation: Awaitable[Any]) -> Any:
         """Bound the local durable commit by its own budget, never the call one.
@@ -301,7 +303,10 @@ class IntegrationReconciler:
                 raise ValueError("observer returned another subject or version")
             if self._diagnostics is not None and subject.engine is SubjectEngine.RECONCILER:
                 try:
-                    await self._bounded(self._diagnostics(subject, facts))
+                    # Advisory work keeps a call budget: it never stalls the visit.
+                    await asyncio.wait_for(
+                        self._diagnostics(subject, facts), timeout=self._timeout
+                    )
                 except Exception as exc:
                     # Diagnostic failure must not change the authoritative policy.
                     evidence = {
@@ -669,3 +674,18 @@ class IntegrationReconciler:
                 await asyncio.wait_for(self._stop.wait(), timeout=self._interval)
             except TimeoutError:
                 pass
+
+
+class ScopedIntegrationDB:
+    """Select runtime-owned project modes before paging shared subject kinds."""
+
+    def __init__(self, db, integration_modes):
+        self.db, self.integration_modes = db, tuple(integration_modes)
+
+    def __getattr__(self, name):
+        return getattr(self.db, name)
+
+    async def due_integration_subject_page(self, **kwargs):
+        return await self.db.due_integration_subject_page(
+            **{**kwargs, "integration_modes": self.integration_modes}
+        )

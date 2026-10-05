@@ -21,8 +21,8 @@ from src.playbooks.definition import load_definition_json
 from src.playbooks.required import DEFAULT_SYSTEM_PLAYBOOK_IDS, REQUIRED_SYSTEM_PLAYBOOK_IDS
 from src.profiles.capabilities import DENY_ALL
 from tests.db_fixtures import lease_dsn
-from tests.test_report_requests import completed_task, service as hourly_service
-from tests.test_report_requests import Clock
+from tests.test_report_requests import Clock, completed_task
+from tests.test_report_requests import service as hourly_service
 
 CHANNEL = "424242424242424242"
 BASE = 1_800_000.0
@@ -241,17 +241,32 @@ async def test_permission_faults_back_off_and_stop_without_burning_held_attempts
     assert not transport.messages
 
 
-async def test_thread_adapter_and_morning_summary_budget(db):
+async def test_frozen_thread_route_and_morning_summary_budget(db):
     clock, transport = Clock(BASE), SinkTransport()
-    row, _ = await reserve(db, text="x" * 1400)
+    probe, _ = await reserve(db, key="budget-probe")
+    text_budget = 1500 - len(probe["marker"]) - 1
+    row, _ = await reserve(db, text="x" * text_budget)
     transport.threads["thread-1"] = "root-1"
-    thread, _ = await reserve(db, key="reply", thread_id="thread-1", owner_kind="conversation")
+    thread, _ = await reserve(db, key="reply", thread_id="thread-1")
     await dispatcher(db, transport, clock).pump()
     assert (await db.get_outbound_delivery(row["id"]))["state"] == "sent"
     assert (await db.get_outbound_delivery(thread["id"]))["state"] == "sent"
     assert any(message.thread_id == "thread-1" for message in transport.messages.values())
+    assert all(len(message.content) <= 1500 for message in transport.messages.values())
+    with pytest.raises(ValueError, match="1500"):
+        await reserve(db, key="over-budget", text="x" * (text_budget + 1))
     with pytest.raises(ValueError, match="1500"):
         await reserve(db, key="too-long", text="x" * 1500)
+
+
+async def test_conversation_rows_wait_for_a_bound_domain_adapter(db):
+    clock, transport = Clock(BASE), SinkTransport()
+    row, _ = await reserve(db, owner_kind="conversation")
+    await dispatcher(db, transport, clock).pump()
+    stored = await db.get_outbound_delivery(row["id"])
+    assert stored["state"] == "retry"
+    assert stored["last_error"] == "conversation adapter is not bound"
+    assert transport.messages == {}
 
 
 class Commands(ReportCommandsMixin):
@@ -325,6 +340,7 @@ def test_optional_bundle_uses_only_durable_requests_and_no_model_steps():
 async def test_migration_creates_missing_outbox_and_preserves_existing_receipts(db):
     import importlib
     from unittest.mock import patch
+
     from src.database.tables import outbound_deliveries
 
     revision = importlib.import_module("migrations.versions.a00000000032_outbound_deliveries")
@@ -384,6 +400,7 @@ async def test_escalation_probe_failure_holds_all_shared_sends(db):
 
 async def test_shared_pump_and_submission_choose_one_frozen_winner(db):
     from sqlalchemy import update
+
     from src.database.tables import digest_windows
 
     clock = Clock(BASE + 3600)

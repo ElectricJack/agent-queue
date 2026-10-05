@@ -12,10 +12,29 @@ reference, rig, scorer, render-profile and policy hashes. It requires a
 finite first wave, a whole-attempt budget, scorer/retry reserve per wave,
 a separate final-suite reserve,
 and the exact approved brief review revision and document hash.
+The three round caps — `max_rounds`, `max_repair_rounds` and
+`max_plateau_rounds` — are start input and part of that fixed identity.
 The command creates the finalization child and its event gate in the same
 transaction as the loop row. The first candidate is admitted only by
 `object_loop_reconcile` after that transaction commits. A repeated start with
 the same fixed inputs returns the existing loop; conflicting inputs fail.
+
+The start packet records `reference_kind`, either `calibrated` (the default)
+or `self`. An explicit supervisor `self` packet discharges only the calibrated
+reference precondition for a plumbing pilot. The kind is fixed for the attempt
+and cannot change on replay. Candidate and finalization descriptions label
+self-reference results as indicative, for plumbing only. All repair, plateau,
+round, whole-attempt budget and final-suite reserve bounds continue to apply,
+as does the experiment publication refusal.
+
+`incumbent_capture_sha256` is required for both kinds and identifies the retained
+baseline capture receipt (`job_retain`'s artifact of kind `capture_receipt`).
+It is fixed for the attempt and remains distinct from `incumbent_sha256`, which
+identifies the candidate manifest. For `self`, packet validation requires
+`reference_sha256 == incumbent_capture_sha256` before any loop or child is
+created. For `calibrated`, the reference hash remains independent of this
+baseline capture hash. Legacy loops lacking that capture identity can still
+reconcile, but a new start cannot silently bind them to a claimed baseline.
 
 `object_loop_reconcile` is safe to call from task, review or timer events and
 after restart. It takes the loop row lock and re-reads task settlement. Its
@@ -38,8 +57,14 @@ external scorer supplies per-view measurements; this command never computes
 an image metric. Missing receipts or cost coverage marked unknown charges the
 full wave reservation even when a lower measured aggregate is supplied. A
 continue decision reserves every sibling and retry allowance together in the
-same loop-row update as the score decision. Eight rounds, repair and plateau
-caps are enforced.
+same loop-row update as the score decision. The round, repair and plateau caps
+are enforced. The round ceiling is `object_loop_start`'s `max_rounds`, one to
+eight and eight by default, so a pilot cap of three rounds is three rounds of
+its wave size rather than a `calls` budget that happens to fit one variant per
+wave. It is fixed input: a repeat start with a different `max_rounds` is
+refused as different fixed inputs, and a row admitted before the field existed
+keeps the eight-round ceiling it was admitted with. A refused continuation is
+a cap, not a dead loop — the loop still records a stop with its reason.
 
 An exhausted FAILED or BLOCKED scorer may instead record a defect stop with
 the exact loop version, `action=stop`, an explicit nonblank reason and no
@@ -80,6 +105,59 @@ durable URIs and SHA-256 digests; the object command validates the schema,
 cross-references and completeness. The external artifact adapter remains
 responsible for serving bytes by those URIs and verifying their digest during
 materialization. Arbitrary local paths are not accepted as durable URIs.
+
+### Producing the two identities a receipt needs
+
+Two producers close the gap between a finished render and a startable loop.
+Both are commands, both are scoped to the caller's own job, and both are
+idempotent.
+
+`job_retain <job_id>` is the retention step. It copies the capture members a
+receipt names — each view's image and the capture receipt — out of the transient
+`runs/<job>/capture` tree into `{data_dir}/artifacts/objects`, a
+content-addressed store whose objects are fsynced, never overwritten and never
+reached through a symlink. Each retained member is re-hashed and refused if
+those bytes no longer match the digest the completion receipt recorded. The
+identity planes and the adapter's own transcript stay behind `aq job logs`
+unless `--include-channels` asks for them, because a receipt names evidence and
+not logs.
+
+It also mints the *candidate artifact*. `candidate_sha256` is the digest of the
+canonical candidate manifest with its own declaration removed, so retaining
+those exact bytes produces an artifact whose digest **is** the declared
+identity — which is what `ScoreReceipt` requires, since it refuses a receipt
+whose candidate digest is missing from its artifacts. The bundle lives in the
+author's workspace, so a released workspace is reported as such instead of
+substituting a near-miss identity.
+
+`artifact_verify <uri>` is the other half: it resolves an `artifact://sha256/`
+URI and re-hashes the bytes behind it. A URI is a claim; something has to check
+it. `s3://` and `https://` receipts belong to the external artifact adapter and
+are refused here rather than guessed at.
+
+### The render profile
+
+`render_profile_sha256` is the digest of a canonical render-profile document:
+the preset that produced the pixels — `editor_sha256`, `adapter_sha256`,
+`gpu_id`, the admitted rig's `hold_frames`, the view set with each view's
+resolution, and the VT readiness counters that prove the frame had converged —
+plus the admitted candidate and rig identities and the capture's readiness
+state. The document is built from named fields only and hashed in AQ's single
+canonical JSON form, so run ids, request ids, timestamps and absolute paths
+cannot leak into it: one preset yields one digest, and any change to any of
+those inputs changes it.
+
+`hold_frames` is the rig's *admitted budget*, not the frames a run happened to
+settle on. A real four-view capture reports 95, 96, 95 and 106 stable frames for
+one render, so hashing the observed count would give every run its own profile
+identity and refuse every variation. The budget is admitted with the rest of
+the render preset and recorded on the job contract.
+
+The profile is computed where the result is assembled and covered by
+`result_hash`, so `job_result` returns it and a start packet quotes a value AQ
+computed. A result with no retained capture records no profile, and one whose
+receipt cannot yield a profile records why: a passed render must not become a
+failed job over a reporting field, and the gap must stay visible.
 
 Candidate, scoring and finalization tasks carry the `object_experiment` metadata marker at
 creation. The development publisher excludes marked tasks, and hierarchical

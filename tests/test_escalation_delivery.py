@@ -107,6 +107,35 @@ def facts_for(row) -> EscalationFacts:
     return EscalationFacts.from_row(row)
 
 
+@pytest.mark.parametrize("state", ["needs_human", "reply_received", "resolved", "stale"])
+def test_supervisor_delivery_plans_never_post_or_replace_a_human_notice(state):
+    facts = EscalationFacts(
+        id="internal", project_id="p", state=state, revision=0, severity="high",
+        summary="Supervisor offline", investigation="Internal delivery delay",
+        decision_requested="Restore delivery", source_kind="supervisor_delivery",
+    )
+    assert not plan_deliveries(facts, deliveries=[], messages=[]).deliveries
+    assert plan_replacement(facts, []) is None
+
+
+@pytest.mark.parametrize("kind", ["root", "ack", "relay", "resolution"])
+async def test_legacy_supervisor_delivery_rows_never_call_the_human_transport(db, kind):
+    incident = await make_incident(db, source_kind="supervisor_delivery")
+    await db.enqueue_escalation_delivery(
+        incident["id"], dedup_key=f"legacy:{kind}", kind=kind, payload={}, available_at=10,
+    )
+    transport = SinkTransport()
+    service = make_service(db, transport)
+    assert await service.reconcile(incident) == []
+    await service.pump()
+    assert transport.calls == []
+    delivery = (await db.list_escalation_deliveries(incident["id"]))[0]
+    assert delivery["status"] == "unknown"
+    assert "internal-only" in delivery["last_error"]
+    await service.tick()
+    assert transport.calls == []
+
+
 # ---------------------------------------------------------------- rendering
 
 
@@ -137,7 +166,9 @@ def test_root_post_carries_the_identifying_fields_and_only_configured_mentions()
     assert "Migration blocked" in text
     assert "Roll forward or hold?" in text
     assert f"<@{MENTION_USER}>" in text and f"<@&{MENTION_ROLE}>" in text
-    assert f"{BASE_URL}/settings/messaging#escalation-reply-esc-1" in text
+    # §6.1: the post's one link is the incident's focus page, never settings.
+    assert text.endswith(f"<{BASE_URL}/focus/escalations/esc-1>")
+    assert "/settings/" not in text
     assert "esc-1" in text and "aq-esc:esc-1:root:0" in text
 
 
@@ -170,7 +201,7 @@ def test_replacement_root_repeats_the_incident_without_repeating_the_ping():
     assert "reposted" in text
     assert "Migration blocked" in text
     assert "Roll forward or hold?" in text
-    assert f"{BASE_URL}/settings/messaging#escalation-reply-esc-1" in text
+    assert text.endswith(f"<{BASE_URL}/focus/escalations/esc-1>")
     assert "aq-esc:esc-1:root:1" in text
 
 
@@ -211,7 +242,7 @@ def test_resolved_root_drops_the_mention_entirely():
         decision_requested="d",
         terminal_outcome="Rolled the replica forward",
     )
-    text = render_resolved_root(facts, base_url=BASE_URL, dedup_key="esc-1:resolution:0:root")
+    text = render_resolved_root(facts, dedup_key="esc-1:resolution:0:root")
     assert "<@" not in text
     assert "Rolled the replica forward" in text
     assert "Resolved" in text
@@ -394,7 +425,7 @@ async def test_ambiguous_send_is_reconciled_from_history_instead_of_reposting(db
     # The request left and landed; the response never arrived.
     original_post = sink.post_root
 
-    async def ambiguous_post(*, channel_id: str, content: str):
+    async def ambiguous_post(*, channel_id: str, content: str, buttons=()):
         sink.record(channel_id, content)  # it really did land
         raise TransportAmbiguous("timed out waiting for the response")
 
@@ -474,7 +505,7 @@ async def test_unreconcilable_ambiguity_is_recorded_unknown_not_reposted(db):
     clock = Clock()
     service = make_service(db, sink, clock=clock)
 
-    async def ambiguous_post(*, channel_id: str, content: str):
+    async def ambiguous_post(*, channel_id: str, content: str, buttons=()):
         raise TransportAmbiguous("timed out waiting for the response")
 
     sink.post_root = ambiguous_post  # type: ignore[method-assign]
@@ -495,7 +526,7 @@ async def test_a_confirmed_root_interrupted_before_binding_is_reconciled_not_rep
     clock = Clock()
     service = make_service(db, sink, clock=clock)
 
-    async def crash_after_posting(*, channel_id: str, content: str):
+    async def crash_after_posting(*, channel_id: str, content: str, buttons=()):
         sink.record(channel_id, content)  # Discord accepted it...
         raise RuntimeError("process died before the binding was persisted")
 
@@ -524,7 +555,7 @@ async def test_a_reclaimed_root_with_no_evidence_is_unknown_rather_than_reposted
     clock = Clock()
     service = make_service(db, sink, clock=clock)
 
-    async def crash_after_posting(*, channel_id: str, content: str):
+    async def crash_after_posting(*, channel_id: str, content: str, buttons=()):
         sink.record(channel_id, content)
         raise RuntimeError("process died before the binding was persisted")
 
@@ -582,7 +613,7 @@ async def test_missing_permission_is_an_actionable_fault_and_stops_after_the_bud
     clock = Clock()
     service = make_service(db, sink, clock=clock, max_attempts=2)
 
-    async def forbidden(*, channel_id: str, content: str):
+    async def forbidden(*, channel_id: str, content: str, buttons=()):
         raise TransportUnavailable("missing permission (403)")
 
     sink.post_root = forbidden  # type: ignore[method-assign]

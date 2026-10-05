@@ -42,9 +42,38 @@ def capture_inputs(args: list[str], cwd: Path) -> tuple[str, dict]:
             "candidate_sha256": candidate["candidate_sha256"],
             "rig_sha256": candidate["rig_sha256"],
             "views": names,
+            # The rig's frame budget is part of the render preset, so it is
+            # admitted with the rest of it and recorded on the job contract.
+            # The capture reports how many frames the camera actually settled
+            # on, which varies per view and per run; hashing that would make
+            # every render its own profile identity.
+            "hold_frames": candidate["manifest"]["rig"].get("hold_frames"),
         }
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
         raise JobError("jobs.cwd_invalid") from exc
+
+
+def candidate_document(path: Path) -> tuple[dict, str]:
+    """The canonical candidate manifest and the identity it declares.
+
+    Matter stamps ``candidate_sha256`` on its candidate manifest as the digest of
+    that manifest's canonical form with the declaration itself removed, and does
+    the same for ``manifest_sha256`` and ``rig_sha256`` over their subtrees.
+    Reproducing those bytes is what lets an object-loop receipt carry the
+    candidate as an artifact whose digest *is* the declared identity instead of a
+    file digest that happens to sit next to it.
+    """
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("candidate manifest is not a readable file")
+    if path.stat().st_size > 1024**2:
+        raise ValueError("candidate manifest too large")
+    document = read_json(path)
+    if not isinstance(document, dict) or document.get("version") != 1:
+        raise ValueError("unsupported candidate")
+    declared = document.get("candidate_sha256")
+    if not isinstance(declared, str) or len(declared) != 64:
+        raise ValueError("candidate manifest declares no candidate identity")
+    return {k: v for k, v in document.items() if k != "candidate_sha256"}, declared
 
 
 def preset(settings) -> Preset:

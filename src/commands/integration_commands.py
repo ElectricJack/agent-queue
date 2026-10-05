@@ -12,6 +12,7 @@ import json
 import time
 from typing import Any
 
+from src.integration.reconciler_repair_close import reconciler_batch_subject
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 from src.commands.supervisor_authority import integration_operator
 from src.git.manager import GitError
@@ -1234,6 +1235,35 @@ class IntegrationCommandsMixin:
             return _failure("unauthorized", refusal)
         return await self._integration_control_service().resume(operation_id)
 
+    async def _cmd_integration_reevaluate_repair(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationReevaluateRepairArgs
+
+        request = IntegrationReevaluateRepairArgs.model_validate(args)
+        _principal, refusal = await self._integration_operator_for_operation(request.operation_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        operation = await self.db.get_integration_operation(request.operation_id)
+        if operation is None:
+            return _failure("not_found", "operation does not exist")
+        subject = None
+        if request.expected_head_sha:
+            subject = ({"kind": "parent", "generation": request.expected_generation,
+                        "head_sha": request.expected_head_sha}
+                       if operation["target_kind"] == "parent" else
+                       {"kind": "batch", "revision": request.expected_generation,
+                        "candidate_sha": request.expected_head_sha})
+        service = self._integration_repair_service()
+        result = await service.reevaluate(
+            request.operation_id, dry_run=request.dry_run, expected_subject=subject,
+            expected_episode_id=request.expected_episode_id,
+            expected_generation=request.expected_generation, expected_stage=request.expected_stage,
+            expected_fence_token=request.expected_fence_token, reason=request.reason,
+            expected_snapshot_digest=request.expected_snapshot_digest,
+        )
+        return _with_reason(result["outcome"] in {
+            "would_reevaluate", "reevaluated", "already_settled",
+        }, result)
+
     async def _cmd_integration_abort(self, args: dict) -> dict:
         operation_id = str(args.get("operation_id") or "")
         reason = str(args.get("reason") or "")
@@ -1904,11 +1934,13 @@ class IntegrationCommandsMixin:
             return service
         from src.integration.scheduler import TrainService
         from src.integration.migration_heads import MigrationInspector
+        from src.integration.source_ci import RootAdmissionReader
 
         return TrainService(
             self.db,
             default_mode=self.config.integration.default_mode,
             migration_inspector=MigrationInspector(self._integration_promotion_service()),
+            admission_reader=RootAdmissionReader(self._integration_promotion_service()),
             delivery_observer=getattr(self.orchestrator, "delivery_observer", None),
         )
 
@@ -2197,6 +2229,26 @@ class IntegrationCommandsMixin:
                         )
                     )
                 ).scalar_one_or_none() is not None
+        if request.expected_base_sha is not None and not moved_main:
+            # A built revision whose construction base is not the caller's
+            # observed main is stale: ``build`` would answer ``already_built``
+            # for it forever (the reconciler's base-moved loop).
+            from sqlalchemy import select
+
+            from src.database.tables import integration_candidate_revisions
+
+            async with self.db._engine.connect() as conn:
+                built_base = (
+                    await conn.execute(
+                        select(integration_candidate_revisions.c.construction_base_sha).where(
+                            integration_candidate_revisions.c.batch_id == request.batch_id,
+                            integration_candidate_revisions.c.revision
+                            == batch["current_revision"],
+                            integration_candidate_revisions.c.head_sha.is_not(None),
+                        )
+                    )
+                ).scalar_one_or_none()
+            moved_main = built_base is not None and built_base != request.expected_base_sha
         if moved_main and batch["policy_snapshot"].get("on_main_moved", "rebuild") != "rebuild":
             return {
                 "success": False,
@@ -2204,7 +2256,9 @@ class IntegrationCommandsMixin:
                 "batch_id": request.batch_id,
                 "revision": int(batch["current_revision"]),
             }
+        rebuilt = False
         if moved_main and getattr(service, "app_client", None) is not None:
+            rebuilt = True
             repository = await service._repository(batch["repository_id"])
             new_base = await service.app_client.exact_head_ref(repository.default_branch)
             result = (
@@ -2224,12 +2278,14 @@ class IntegrationCommandsMixin:
             repository = await service._repository(batch["repository_id"])
             new_base = await service.app_client.exact_head_ref(repository.default_branch)
             if new_base is not None:
+                rebuilt = True
                 result = await service.rebuild(
                     request.batch_id, int(batch["current_revision"]), new_base
                 )
         if (
             request.expected_revision is not None
             and result.revision != request.expected_revision
+            and not (rebuilt and result.outcome in {"built", "already_built"})
         ):
             return _failure("stale_revision", "candidate revision changed during build")
         return _with_reason(
@@ -2484,6 +2540,7 @@ class IntegrationCommandsMixin:
                 None,
             ),
             owner_recovery=owner_recovery_for(self.orchestrator),
+            promotion=self._integration_promotion_service(),
         )
 
     async def _integration_operation_project_id(self, operation: dict) -> str | None:
@@ -3188,7 +3245,8 @@ class IntegrationCommandsMixin:
                 with principal_context(exact_principal):
                     accepted = await service.accept_repair(reservation["id"])
                 continuation = None
-                if accepted.outcome in {"accepted", "already_accepted"}:
+                if (accepted.outcome in {"accepted", "already_accepted"}
+                    and await reconciler_batch_subject(self.db, batch["id"], include_done=True) is None):
                     continuation = await service.build(batch["id"])
             except CandidateAuthorizationError as exc:
                 return _failure("unauthorized", str(exc))
@@ -3291,7 +3349,8 @@ class IntegrationCommandsMixin:
                 await service.push_repair(reservation_id, fence)
                 accepted = await service.accept_repair(reservation_id)
             continuation = None
-            if accepted.outcome in {"accepted", "already_accepted"}:
+            if (accepted.outcome in {"accepted", "already_accepted"}
+                and await reconciler_batch_subject(self.db, batch["id"], include_done=True) is None):
                 continuation = await service.build(batch["id"])
         except CandidateAuthorizationError as exc:
             return _failure("unauthorized", str(exc))

@@ -41,6 +41,7 @@ PLAYBOOK_IDS = (
     "blocked-task-escalation",
     "supervisor-failure-triage",
     "morning-report",
+    "supervisor-digest",
 )
 
 
@@ -129,6 +130,11 @@ async def test_imports_all_reviewed_fixtures_without_activating(db, tmp_path):
         assert result["artifact_sha256"].startswith("sha256:")
         assert await db.get_playbook_artifact(result["artifact_sha256"]) is not None
         assert handler._store.exists(result["artifact_sha256"])
+        from src.playbooks.definition import source_digest
+        row = await db.get_playbook_artifact_row(result["artifact_sha256"])
+        assert source_digest(handler._store.load_source(result["artifact_sha256"])) == (
+            row["source_digest"]
+        )
     assert await db.list_playbook_activations() == []
 
 

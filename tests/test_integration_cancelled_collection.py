@@ -69,6 +69,7 @@ from src.integration.models import (
 from src.integration.ownership import BranchOwnership, StaleFence
 from src.integration.promotion import PromotionConflict, PromotionService
 from src.integration.repair import RepairService
+from src.integration.verifier_subject import latest_red_parent_evidence
 from src.models import (
     Agent, AgentState, Project, RepoConfig, RepoSourceType, SessionRecord, Task, TaskStatus, Workspace,
 )
@@ -431,6 +432,103 @@ async def test_held_red_verifier_recovery_preserves_evidence_and_detach_proof(
                                reason="replay"))["outcome"] == "not_eligible"
     assert len(await _rows(case.db, task_completion_records)) == 1
     provider.stop.assert_awaited_once()
+
+
+def _red_unit_row(*, observed_at: float) -> dict:
+    """A conclusive red parent-evidence row for the ``unit`` required check."""
+    return {
+        "id": "red-unit",
+        "operation_id": "op",
+        "parent_task_id": "epic",
+        "parent_generation": 1,
+        "parent_head_sha": "f" * 40,
+        "producer_id": "forge",
+        "workflow_id": "suite-a",
+        "run_id": "run-a",
+        "attempt": 1,
+        "required_check_version": "v1",
+        "checks": {"unit": "failure"},
+        "conclusion": "failure",
+        "classification": "conclusive",
+        "observed_at": observed_at,
+    }
+
+
+def test_latest_red_parent_evidence_survives_a_later_green_sibling_suite() -> None:
+    """A green sibling observed *after* a red sibling keeps the red visible.
+
+    Regression: required checks can span multiple suites; ``ci.py`` stamps one
+    evidence row per suite with ``observed_at=self.clock()``.  When the green
+    sibling's row is written a fraction later, only the group-by-suite rule sees
+    the red; a naive ``max(observed_at)`` picks the green sibling and drops it.
+    """
+    operation = {
+        "id": "op",
+        "parent_task_id": "epic",
+        "required_check_version": "v1",
+        "policy_snapshot": {"parent": {
+            "required_checks": {"version": "v1", "names": ["unit"], "producer_id": "forge"},
+        }},
+    }
+    checkpoint = {"generation": 1, "checkpoint_sha": "f" * 40}
+    red = _red_unit_row(observed_at=100.0)
+    green_sibling = dict(
+        _red_unit_row(observed_at=100.0005),
+        id="sibling-green",
+        workflow_id="suite-b",
+        run_id="run-b",
+        checks={"deploy": "success"},
+        conclusion="success",
+    )
+    for order in ([red, green_sibling], [green_sibling, red]):
+        found = latest_red_parent_evidence(
+            order, operation=operation, checkpoint=checkpoint
+        )
+        assert found is not None and found["id"] == "red-unit", (
+            f"red must surface for input order {order!r}"
+        )
+
+
+def test_latest_red_parent_evidence_still_superseded_by_later_green_same_suite() -> None:
+    """A later green of the *same* suite supersedes its prior red (no regression)."""
+    operation = {
+        "id": "op",
+        "parent_task_id": "epic",
+        "required_check_version": "v1",
+        "policy_snapshot": {"parent": {
+            "required_checks": {"version": "v1", "names": ["unit"], "producer_id": "forge"},
+        }},
+    }
+    checkpoint = {"generation": 1, "checkpoint_sha": "f" * 40}
+    red = _red_unit_row(observed_at=100.0)
+    green_rerun = dict(
+        _red_unit_row(observed_at=101.0),
+        id="green-rerun",
+        checks={"unit": "success"},
+        conclusion="success",
+    )
+    found = latest_red_parent_evidence(
+        [red, green_rerun], operation=operation, checkpoint=checkpoint
+    )
+    assert found is None
+
+
+def test_latest_red_parent_evidence_empty_and_no_required_red() -> None:
+    operation = {
+        "id": "op",
+        "parent_task_id": "epic",
+        "required_check_version": "v1",
+        "policy_snapshot": {"parent": {
+            "required_checks": {"version": "v1", "names": ["unit"], "producer_id": "forge"},
+        }},
+    }
+    checkpoint = {"generation": 1, "checkpoint_sha": "f" * 40}
+    assert latest_red_parent_evidence([], operation=operation, checkpoint=checkpoint) is None
+    green_only = [dict(_red_unit_row(observed_at=100.0),
+                       checks={"deploy": "success"}, conclusion="success")]
+    assert latest_red_parent_evidence(
+        green_only, operation=operation, checkpoint=checkpoint
+    ) is None
 
 
 @pytest.mark.parametrize("mismatch", [

@@ -501,12 +501,54 @@ class ProviderCommandsMixin:
         return getattr(getattr(self, "orchestrator", None), "provider_reroute", None)
 
     @staticmethod
-    def _task_id_list(raw: Any) -> list[str] | None:
-        if raw is None or raw == "" or raw == []:
+    def _reroute_request(command: str, args: dict) -> tuple[Any, dict | None]:
+        """*args* read through *command*'s model, or the refusal.
+
+        The scope layer validates with the same model before its target check
+        and forwards the canonical ids, so the ids this handler acts on are the
+        ids that check resolved (:mod:`src.providers.reroute_args`).
+        """
+        from pydantic import ValidationError
+
+        from src.providers.reroute_args import REROUTE_ARGUMENT_MODELS, validation_error_text
+
+        try:
+            return REROUTE_ARGUMENT_MODELS[command].model_validate(args), None
+        except ValidationError as exc:
+            return None, {
+                "success": False,
+                "error": f"invalid {command} arguments: {validation_error_text(exc)}",
+            }
+
+    def _caller_project_id(self) -> str | None:
+        """The project a per-project supervisor's token confines it to.
+
+        ``None`` for the operator, the global supervisor and a playbook step,
+        which act across projects.
+        """
+        scope = self._current_scope or {}
+        if scope.get("kind") == "session" and scope.get("elevated"):
+            return scope.get("project_id") or None
+        return None
+
+    async def _foreign_task_refusal(
+        self, command: str, task_ids: list[str], project_id: str
+    ) -> dict | None:
+        """Refuse *task_ids* that are not *project_id*'s own (a missing id included)."""
+        foreign = []
+        for task_id in task_ids:
+            task = await self.db.get_task(task_id)
+            if task is None or task.project_id != project_id:
+                foreign.append(task_id)
+        if not foreign:
             return None
-        if isinstance(raw, str):
-            raw = [part for part in raw.replace(",", " ").split() if part]
-        return [str(item).strip() for item in raw if str(item).strip()]
+        return {
+            "success": False,
+            "error": (
+                f"out of scope: {command} may only name tasks of project {project_id} "
+                f"({', '.join(foreign)})"
+            ),
+        }
 
     async def _cmd_provider_reroute(self, args: dict) -> dict:
         """Plan and apply one re-route sweep (``aq provider reroute``, D11-D16).
@@ -544,15 +586,34 @@ class ProviderCommandsMixin:
         availability = self._availability()
         if service is None or availability is None:
             return {"success": False, "error": "provider failover is not running"}
-        task_ids = self._task_id_list(args.get("task_id") or args.get("task_ids"))
-        force = bool(args.get("force"))
-        to_profile = str(args.get("to_profile") or "").strip() or None
-        dry_run = bool(args.get("dry_run"))
+        request, refusal = self._reroute_request("provider_reroute", args)
+        if refusal:
+            return refusal
+        task_ids = request.task_id
+        force = bool(request.force)
+        to_profile = (request.to_profile or "").strip() or None
+        dry_run = bool(request.dry_run)
         if (force or to_profile) and not task_ids:
             return {
                 "success": False,
                 "error": "force and to_profile move named tasks only; pass task_id",
             }
+        project_id = self._caller_project_id()
+        if project_id is not None:
+            # A sweep moves every project's tasks; a per-project supervisor
+            # moves only the ones it names, and only its own.
+            if not task_ids:
+                return {
+                    "success": False,
+                    "error": (
+                        f"out of scope: a token scoped to project {project_id} "
+                        "re-routes named tasks only; pass task_id"
+                    ),
+                }
+            if refusal := await self._foreign_task_refusal(
+                "provider_reroute", task_ids, project_id
+            ):
+                return refusal
         if to_profile is not None:
             profile = await self.db.get_profile(to_profile)
             if profile is None:
@@ -560,8 +621,8 @@ class ProviderCommandsMixin:
             if error := self._task_execution_profile_error(profile):
                 return {"success": False, "error": error}
         provider = None
-        if args.get("provider"):
-            provider, error = await self._resolve_provider_arg(availability, args["provider"])
+        if request.provider:
+            provider, error = await self._resolve_provider_arg(availability, request.provider)
             if error:
                 return error
         if task_ids:
@@ -572,7 +633,7 @@ class ProviderCommandsMixin:
             provider=provider,
             task_ids=task_ids,
             to_profile=to_profile,
-            include_paused=bool(args.get("include_paused")),
+            include_paused=bool(request.include_paused),
             dry_run=dry_run,
             force=force,
             actor=self._provider_actor(),
@@ -586,6 +647,9 @@ class ProviderCommandsMixin:
         marker.  Refused per task while the original provider is still
         unavailable, unless ``force``.
 
+        A per-project supervisor names only its own project's tasks, and a
+        batch -- a sweep spans projects -- undoes only its project's moves.
+
         Args:
             batch_id: Undo every un-undone move of one batch.
             task_id: One task id, or a list.
@@ -597,15 +661,32 @@ class ProviderCommandsMixin:
         service = self._reroute_service()
         if service is None:
             return {"success": False, "error": "provider failover is not running"}
-        batch_id = str(args.get("batch_id") or args.get("batch") or "").strip() or None
-        task_ids = self._task_id_list(args.get("task_id") or args.get("task_ids"))
+        request, refusal = self._reroute_request("provider_reroute_undo", args)
+        if refusal:
+            return refusal
+        batch_id = (request.batch_id or "").strip() or None
+        task_ids = request.task_id
         if not batch_id and not task_ids:
             return {"success": False, "error": "pass batch_id or task_id"}
+        # The injected ``project_id`` argument is not the authority: the scope
+        # the request arrived under is.
+        project_id = self._caller_project_id()
+        if (
+            project_id is not None
+            and task_ids
+            and (
+                refusal := await self._foreign_task_refusal(
+                    "provider_reroute_undo", task_ids, project_id
+                )
+            )
+        ):
+            return refusal
         return await service.undo(
             batch_id=batch_id,
             task_ids=task_ids,
-            force=bool(args.get("force")),
+            force=bool(request.force),
             actor=self._provider_actor(),
+            project_id=project_id,
         )
 
     async def _finish_probe(self, provider: str, payload: dict) -> dict:

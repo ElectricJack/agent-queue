@@ -618,6 +618,71 @@ async def test_config_reload_does_not_swap_live_github_credential_provider(tmp_p
     assert original_access.credential_identity.mode is GitHubCredentialMode.EXISTING_LOGIN
 
 
+async def test_daemon_start_and_cycle_schedule_interrupted_playbook_runs(tmp_path):
+    from dataclasses import replace
+    import time
+
+    from src.config import PlaybooksConfig
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.runtime import V2PlaybookRuntime
+    from src.playbooks.services import build_v2_engine
+    from tests.test_child_task_reconciler import seed_artifact
+    from tests.test_v2_restart_resume import drain_recovery, fresh_engine, orphan_snapshot
+    from tests.test_v2_engine import ok
+
+    config = AppConfig(
+        database=DatabaseConfig(url=lease_dsn("daemon_restart_playbooks")),
+        workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
+        playbooks=PlaybooksConfig(enabled=True),
+    )
+    daemon = Orchestrator(config, runtimes=MockAdapterFactory())
+    # Seed exactly what the previous daemon left behind, before initialize.
+    await daemon.db.initialize()
+    engine, adapter, ref = fresh_engine("two-rules-one-event.artifact.json", runs=daemon.db)
+    # Production clocks advance past the process boundary on every receipt.
+    store = ArtifactStore(config.compiled_root)
+    store.put(
+        engine.services.artifact_store.load(ref.artifact_sha256),
+        source_digest=ref.source_digest,
+        contract_fingerprint=ref.contract_fingerprint,
+        profile_fingerprint="test",
+        compiler_build=ref.compiler_build,
+    )
+    engine.services = replace(engine.services, clock=time.time, artifact_store=store)
+    await seed_artifact(daemon.db, ref)
+    await daemon.db.create_run(orphan_snapshot(ref, run_id="startup-orphan"))
+    handler = CommandHandler(daemon, config)
+    handler._v2_playbook_engine = engine
+    daemon.set_command_handler(handler)
+    adapter.queue.append(ok("startup-review"))
+    try:
+        await daemon.initialize()
+        runtime = daemon.playbook_manager
+        assert isinstance(runtime, V2PlaybookRuntime)
+        assert runtime._engine is build_v2_engine(config=config, db=daemon.db, handler=handler)
+        assert runtime.restart_reconciler.process_started_at == daemon._process_started_at
+        await drain_recovery(runtime.restart_reconciler)
+        assert (await daemon.db.load_run("startup-orphan")).lifecycle.value == "completed"
+
+        # Startup scanned one bounded page; later pages/retries use the real
+        # cycle, without an event, operator resume, or a synthesized cause.
+        await daemon.db.create_run(orphan_snapshot(ref, run_id="cycle-orphan"))
+        adapter.queue.append(ok("cycle-review"))
+        await daemon.run_one_cycle()
+        await drain_recovery(runtime.restart_reconciler)
+        assert (await daemon.db.load_run("cycle-orphan")).lifecycle.value == "completed"
+        assert len(adapter.calls) == 2
+
+        config.playbooks.enabled = False
+        await daemon.db.create_run(orphan_snapshot(ref, run_id="disabled-orphan"))
+        await daemon.run_one_cycle()
+        assert (await daemon.db.load_run("disabled-orphan")).lifecycle.value == "running"
+        assert len(adapter.calls) == 2
+    finally:
+        await daemon.shutdown()
+
+
 @pytest.fixture
 async def orch(tmp_path):
     config = AppConfig(
@@ -1494,6 +1559,46 @@ class TestAgentReconcilerWiring:
     scheduling tick so READY tasks dispatch without manual `aq agent create`.
     See docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md §7.
     """
+
+    @pytest.mark.parametrize("initial_status", [TaskStatus.READY, TaskStatus.DEFINED])
+    async def test_held_task_never_dispatches_until_all_holds_are_removed(
+        self, session_orch, initial_status
+    ):
+        orch = session_orch
+        await _create_session_project(orch)
+        await orch.db.create_task(Task(
+            id="adoption-fixture", project_id="p-1", title="Operator adoption", description="",
+            status=initial_status, profile_id="claude", route_source="legacy",
+            branch_name="fixture-feature",
+        ))
+        for label in ("hold:adoption", "hold:operator", "fixture"):
+            await orch.db.add_task_label("adoption-fixture", label)
+
+        for label in (None, "hold:adoption"):
+            if label:
+                await orch.db.remove_task_label("adoption-fixture", label)
+            await _run_cycle_and_wait(orch)
+            task = await orch.db.get_task("adoption-fixture")
+            assert task.status == TaskStatus.READY
+            assert task.branch_name == "fixture-feature"
+            assert task.assigned_agent_id is None
+            assert await orch.db.get_session_for_task(task.id) is None
+            assert all(agent.role == "supervisor" for agent in await orch.db.list_agents())
+            assert [t.id for t in await orch.db.list_active_tasks()] == [task.id]
+
+        await orch.db.remove_task_label("adoption-fixture", "hold:operator")
+        await _run_cycle_and_wait(orch)
+        task = await orch.db.get_task("adoption-fixture")
+        assert task.status == TaskStatus.IN_PROGRESS
+        session = await orch.db.get_session_for_task(task.id)
+        assert session is not None
+
+        # A hold controls new dispatch; in-flight work still counts toward
+        # concurrency and remains visible in the scheduler's snapshot.
+        await orch.db.add_task_label(task.id, "hold:operator")
+        await orch._schedule()
+        assert task.id in {t.id for t in orch._last_scheduler_state.tasks}
+        assert (await orch.db.get_session_for_task(task.id)).id == session.id
 
     async def test_ready_task_dispatches_with_only_workspace_and_a_route(
         self, session_orch

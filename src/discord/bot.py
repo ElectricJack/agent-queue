@@ -3,7 +3,8 @@
 Discord no longer owns task controls, worker input, project chat, execution
 threads, lifecycle notifications, or slash commands. Outbound escalation and
 digest delivery live in their dedicated durable transports. Escalation replies
-route first; enabled conversations pass verified input through the command boundary.
+and §5.3's choice buttons route first; enabled conversations pass verified input
+through the command boundary.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ class AgentQueueBot(commands.Bot):
         )
         self._guild: discord.Guild | None = None
         self._escalation_intake_impl: tuple[Any, Any] | None = None
+        self._escalation_buttons_impl: tuple[Any, Any] | None = None
         self._inbound_router_impl: tuple[Any, Any, Any] | None = None
         self._conversation_backfill_impl: tuple[Any, Any] | None = None
         # Outlives any one intake adapter: a handler swap rebuilds the adapter,
@@ -74,6 +76,23 @@ class AgentQueueBot(commands.Bot):
             )
             self._escalation_intake_impl = (handler, intake)
             return intake
+        return cached[1]
+
+    def _escalation_buttons(self):
+        """Build the §5.3 press handler lazily against the current handler."""
+        from src.discord.escalation_buttons import EscalationButtonPress
+
+        cached = self._escalation_buttons_impl
+        handler = self.handler
+        if cached is None or cached[0] is not handler:
+            press = EscalationButtonPress(
+                handler,
+                self.config,
+                reconcile=self._reconcile_escalation,
+                on_ignore=self._intake_diagnostics.record,
+            )
+            self._escalation_buttons_impl = (handler, press)
+            return press
         return cached[1]
 
     async def _reconcile_escalation(self, escalation_id: str) -> None:
@@ -230,6 +249,35 @@ class AgentQueueBot(commands.Bot):
             return
         bot_user_id = getattr(self.user, "id", None)
         await self._inbound_router().route(message, bot_user_id=bot_user_id)
+
+    async def on_interaction(self, interaction: discord.Interaction) -> None:
+        """Answer an escalation button press (§5.3), and nothing else.
+
+        Every component interaction reaches here, whether or not a view owns it,
+        because discord.py dispatches through its in-memory view store first and
+        then emits the event regardless.  That is exactly what this feature
+        wants: the views sent with a post are stopped once they are on the
+        message, so the press of a post that outlived the daemon that sent it is
+        still handled, by the same code path as one sent a minute ago.
+
+        Slash commands never arrive here -- ``app_commands`` dispatches those
+        through the command tree -- and a custom id that is not one of ours is
+        returned without a log line, a reply or a reaction.
+        """
+        from src.escalations.interactions import parse_custom_id
+
+        data = getattr(interaction, "data", None) or {}
+        if getattr(interaction, "type", None) is not discord.InteractionType.component:
+            return
+        if parse_custom_id(data.get("custom_id")) is None:
+            return
+        ready = getattr(self, "_cutover_complete", None)
+        if ready is not None and not ready.is_set():
+            return
+        try:
+            await self._escalation_buttons().handle(interaction)
+        except Exception:
+            logger.warning("escalation button press failed", exc_info=True)
 
 
 __all__ = ["AgentQueueBot"]

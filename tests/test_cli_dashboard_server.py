@@ -28,7 +28,6 @@ from click.testing import CliRunner
 import src.cli.daemon as daemon_mod
 from src.cli.app import cli
 from src.dashboard_server import process
-from tests.dashboard_server_helpers import unused_port
 from tests.test_dashboard_server_app import stage_bundle
 
 
@@ -46,12 +45,13 @@ def _pg_backend(monkeypatch):
 
 
 @pytest.fixture
-def state(tmp_path, monkeypatch):
+def state(tmp_path, monkeypatch, unused_tcp_port_factory):
     """A private state dir, config, and staged bundle; returns a namespace of paths."""
     state_dir = tmp_path / "state"
     state_dir.mkdir()
-    port = unused_port()
-    api_port = unused_port()
+    # Released ephemeral ports can repeat; the config requires distinct ports.
+    port = unused_tcp_port_factory()
+    api_port = unused_tcp_port_factory()
     config = state_dir / "config.yaml"
     config.write_text(
         f"dashboard:\n  server:\n    port: {port}\nmcp_server:\n  port: {api_port}\n",

@@ -17,7 +17,9 @@ from src.integration.observe import (
     GitObservationReader,
     IntegrationObserver,
 )
-from src.integration.reconciler import CompiledPolicyAdapter, IntegrationReconciler, VisitTransition
+from src.integration.reconciler import (
+    CompiledPolicyAdapter, IntegrationReconciler, ScopedIntegrationDB, VisitTransition,
+)
 from src.integration.root_adapters import RootPrimitiveAdapters
 from src.integration.shadow import diagnostics_for
 from src.integration.subjects import (
@@ -33,6 +35,7 @@ from src.integration.subjects import (
     WriterLease,
     WriterStatus,
     budget_values,
+    schedule_values,
     subject_key,
     writer_values,
 )
@@ -90,14 +93,24 @@ class PinnedRootPolicy(CompiledPolicyAdapter):
 
 
 class RootObserver(IntegrationObserver):
-    def __init__(self, db, git, **kwargs):
+    def __init__(self, db, git, *, open_prs=None, **kwargs):
         self.db = db
-        super().__init__(_RootObservationReader(db), git, **kwargs)
+        super().__init__(_RootObservationReader(db, open_prs=open_prs), git, **kwargs)
 
     async def observe(self, subject):
         # Legacy repair stages own the clock/attempt rows during phase one.
         # Re-read those rather than letting a mirrored budget hide new results.
         facts = await super().observe(subject)
+        if subject.kind is SubjectKind.ROOT_BATCH and not subject.batch_id:
+            contained = {m.task_id for m in facts.members if m.ancestry == "contained"}
+            facts = facts.model_copy(update={
+                "members": tuple(m for m in facts.members if m.task_id not in contained),
+                # Admission fetches and verifies each exact source. Missing
+                # local source objects must not prevent reaching that port.
+                "unknown": tuple(r for r in facts.unknown if not r.startswith((
+                    "ancestry_unknown:", "member_head_missing:",
+                ))),
+            })
         if (
             subject.engine is SubjectEngine.RECONCILER
             and facts.candidate
@@ -191,7 +204,32 @@ class RootObserver(IntegrationObserver):
                 t.integration_outbox.c.project_id == subject.project_id,
                 t.integration_outbox.c.event_type == "integration.repair_delegate_closed",
             )
-        if owner is not None and owner["owner_id"] == task_id:
+        handoff = (subject.writer.stop_proof or {}).get("stop_proof", {})
+        latest = max(sessions, key=lambda row: row["started_at"] or 0, default=None)
+        closed_handoff = (
+            handoff.get("kind") == "accepted_handoff"
+            and handoff.get("task_id") == task_id
+            and task is not None and task["status"] in {"COMPLETED", "BLOCKED", "FAILED"}
+            and handoff.get("claim_epoch") == task["claim_epoch"]
+            and not locked
+            and (owner is None or owner["owner_id"] != task_id
+                 or (owner["handoff_state"] == "released"
+                     and owner["fence_token"] == handoff.get("fence_token")))
+            and (latest is None or (
+                handoff.get("session_id") == latest["id"]
+                and handoff.get("instance_token") == latest["instance_token"]
+                and handoff.get("confirmed_at", 0) >= (latest["started_at"] or 0)
+            ))
+        )
+        if closed_handoff and handoff.get("outcome") == "fail":
+            # The worker explicitly surrendered this attempt. The pinned
+            # successor action still enforces its original absolute deadline.
+            stopped = self._project_writer(facts, facts.writer.model_copy(update={
+                "status": WriterStatus.STOPPED, "stop_proof": subject.writer.stop_proof,
+            }))
+            return stopped.model_copy(update={"ladder_exhausted": True})
+        if (owner is not None and owner["owner_id"] == task_id
+                and owner["handoff_state"] != "released"):
             return facts  # the writer still holds its fenced ref
         decided = {
             row["subject_version"]: row for row in journal if row["entry_kind"] == "decision"
@@ -206,6 +244,10 @@ class RootObserver(IntegrationObserver):
                 and observed.get("writer_status") == WriterStatus.STOPPED.value
             ):
                 return self._project_writer(facts, WriterLease())
+        if closed_handoff:
+            return self._project_writer(facts, facts.writer.model_copy(update={
+                "status": WriterStatus.STOPPED, "stop_proof": subject.writer.stop_proof,
+            }))
         if (
             not sessions
             and not locked
@@ -301,7 +343,8 @@ def _legacy_phase(lifecycle):
 
 
 class _RootObservationReader:
-    def __init__(self, db):
+    def __init__(self, db, *, open_prs=None):
+        self.db, self.open_prs = db, open_prs
         self.reader = DatabaseObservationReader(db)
 
     async def read(self, subject_id):
@@ -309,6 +352,28 @@ class _RootObservationReader:
         if snapshot is None:
             return None
         subject = snapshot.subject
+        if subject.kind is SubjectKind.ROOT_BATCH and not subject.batch_id:
+            eligible, after = set(), None
+            async with self.db._engine.connect() as conn:
+                while True:
+                    page = await self.db.eligible_root_page_on(
+                        conn, project_id=subject.project_id, repository_id=subject.repository_id,
+                        after=after, limit=100,
+                    )
+                    if not page:
+                        break
+                    eligible.update(row["task_id"] for row in page)
+                    after = (page[-1]["task_id"], page[-1]["source_head"])
+            tasks = tuple(row for row in snapshot.all("tasks") if row["id"] in eligible)
+            if self.open_prs and tasks:
+                try:
+                    urls = await self.open_prs(snapshot.repository)
+                    tasks = tuple(row for row in tasks if row.get("pr_url") in urls)
+                except Exception:
+                    # Seal will report a fresh per-source observation failure.
+                    # Do not interpret an unavailable remote as an empty frontier.
+                    pass
+            snapshot = replace(snapshot, rows={**snapshot.rows, "tasks": tasks})
         changes = {"budget": None}
         batch = next(iter(snapshot.all("integration_batches")), None)
         if subject.kind is SubjectKind.ROOT_BATCH and batch:
@@ -325,6 +390,16 @@ class _RootObservationReader:
                 head_sha=revision["head_sha"] if revision else None,
                 base_sha=revision["construction_base_sha"] if revision else batch["base_sha"],
             )
+            operation = next((r for r in snapshot.all("integration_repair_operations")
+                              if r["batch_id"] == subject.batch_id), None)
+            stage = next((r for r in snapshot.all("integration_repair_stages")
+                          if operation and r["operation_id"] == operation["id"]
+                          and r["ordinal"] == operation["active_stage"]), None)
+            if (stage and stage["repair_task_id"]
+                    and stage["repair_task_id"] != subject.writer.task_id):
+                # The legacy stage can dispatch a successor inside a visit,
+                # before its subject writer mirror has been committed.
+                changes["writer"] = WriterLease()
             if subject.engine is SubjectEngine.LEGACY:
                 changes["phase"] = SubjectPhase(_legacy_phase(batch["lifecycle"]))
         return replace(snapshot, subject=subject.model_copy(update=changes))
@@ -391,18 +466,19 @@ class RootSubjectRuntime:
         diagnostics=None,
     ):
         self.db, self.policy, self.clock = db, policy, clock
+        scoped_db = ScopedIntegrationDB(db, ("train", "hierarchy"))
         self.loops = []
         if active:
             self.loops.append(
                 IntegrationReconciler(
-                    db, observer.observe, policy, ports, mode=JournalMode.ACTIVE, clock=clock,
-                    diagnostics=diagnostics,
+                    scoped_db, observer.observe, policy, ports, mode=JournalMode.ACTIVE,
+                    clock=clock, diagnostics=diagnostics,
                 )
             )
         if shadow:
             self.loops.append(
                 IntegrationReconciler(
-                    _ShadowDB(db),
+                    _ShadowDB(scoped_db),
                     observer.observe,
                     policy,
                     ports,
@@ -560,6 +636,10 @@ class RootSubjectRuntime:
             ).first()
             if not batch and not owner:
                 return  # shadow starts after legacy seals, avoiding a stale admitting mirror
+            if project["outstanding_request_id"] is not None:
+                await self._supersede_admitting(
+                    conn, project["id"], repository_id, project["outstanding_request_id"], now
+                )
             repository = await self.db.get_repo(repository_id)
             phase = SubjectPhase.ADMITTING
             head, base, generation = None, None, 0
@@ -605,7 +685,93 @@ class RootSubjectRuntime:
                 created_at=now,
                 updated_at=now,
             )
+            if phase is SubjectPhase.ADMITTING:
+                blocker = (
+                    await conn.execute(
+                        select(t.integration_subjects.c.id).where(
+                            t.integration_subjects.c.project_id == project["id"],
+                            t.integration_subjects.c.repository_id == repository_id,
+                            t.integration_subjects.c.kind == "root_batch",
+                            t.integration_subjects.c.phase == "admitting",
+                        )
+                    )
+                ).scalar_one_or_none()
+                if blocker is not None:
+                    logger.warning(
+                        "integration: root subject for %s waits; admitting subject %s "
+                        "still holds %s",
+                        request_id,
+                        blocker,
+                        repository_id,
+                    )
+                    return
             await self.db.ensure_integration_subject_on(conn, subject.to_row())
+
+    async def _supersede_admitting(self, conn, project_id, repository_id, request_id, now):
+        """Close admitting roots whose sweep request is no longer outstanding.
+
+        Sealing refuses a request that is not outstanding, so such a subject
+        can never form a batch, yet it holds the repository's one admitting
+        slot (``uq_integration_subjects_admitting_root``) against the request
+        that replaced it: a released stale request, or the next one after a
+        promotion. A subject already bound to a batch is never touched.
+        """
+        current = subject_key(SubjectKind.ROOT_BATCH, repository_id, request_id)
+        rows = (
+            (
+                await conn.execute(
+                    select(t.integration_subjects)
+                    .where(
+                        t.integration_subjects.c.project_id == project_id,
+                        t.integration_subjects.c.repository_id == repository_id,
+                        t.integration_subjects.c.kind == "root_batch",
+                        t.integration_subjects.c.engine == "reconciler",
+                        t.integration_subjects.c.phase == "admitting",
+                        t.integration_subjects.c.batch_id.is_(None),
+                        t.integration_subjects.c.subject_key != current,
+                    )
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .all()
+        )
+        for row in rows:
+            subject = Subject.from_row(row)
+            stale = subject.subject_key.removeprefix(f"root_batch:{repository_id}:")
+            reason = f"superseded: request {stale} is no longer outstanding ({request_id} is)"
+            schedule = SubjectSchedule.close(
+                now=now, reason=reason, max_wait_seconds=subject.schedule.max_wait_seconds
+            )
+            closed = await self.db.update_integration_subject_on(
+                conn,
+                subject_id=subject.id,
+                expected_version=subject.version,
+                values={"phase": SubjectPhase.DONE.value, **schedule_values(schedule)},
+                now=now,
+            )
+            if closed is None:
+                continue  # a visit moved it first; the next seed re-reads it
+            await self.db.append_integration_subject_journal_on(
+                conn,
+                {
+                    "subject_id": subject.id,
+                    "entry_kind": "action",
+                    "idempotency_key": f"seed-supersede:{subject.version}",
+                    "visit_id": f"seed:{subject.version}",
+                    "mode": JournalMode.ACTIVE.value,
+                    "policy_artifact_sha256": subject.policy.artifact_sha256,
+                    "subject_version": subject.version,
+                    "phase": subject.phase.value,
+                    "head_sha": subject.head_sha,
+                    "generation": subject.generation,
+                    "primitive": Primitive.RECORD_DECISION.value,
+                    "outcome": "recorded",
+                    "payload": {"reason": reason, "superseded_by": current},
+                    "recorded_at": now,
+                },
+            )
+            logger.warning("integration: %s (subject %s)", reason, subject.id)
 
 
 def root_runtime_for(orchestrator):
@@ -614,9 +780,13 @@ def root_runtime_for(orchestrator):
         return None
     observer = RootObserver(
         orchestrator.db,
-        GitObservationReader(orchestrator.git),
+        RootGitObservationReader(
+            orchestrator.git, orchestrator.integration_attestation_service._store
+        ),
         facts_type=IntegrationPolicyFacts,
         session_probe=orchestrator._root_subject_session_probe,
+        candidate_ci=root_candidate_ci_reader(orchestrator),
+        open_prs=root_open_prs_reader(orchestrator.git),
     )
     policy = PinnedRootPolicy(orchestrator._load_playbook_artifact)
     ports = RootPrimitiveAdapters(
@@ -637,3 +807,84 @@ def root_runtime_for(orchestrator):
     )
     runtime.subscribe(orchestrator.bus)
     return runtime
+
+
+class RootGitObservationReader(GitObservationReader):
+    """Prefer retained candidate objects; unsealed frontiers still use the base checkout."""
+
+    def __init__(self, git, store_for):
+        super().__init__(git)
+        self.store_for = store_for
+
+    async def remote_head(self, repository, ref):
+        store = self.store_for(repository["id"])
+        if store.exists():
+            reader = GitObservationReader(self.git, checkout=lambda _: str(store))
+            result = await reader.remote_head(repository, ref)
+            if result.state != "unknown":
+                return result
+        return await super().remote_head(repository, ref)
+
+    async def remote_heads(self, repository, refs):
+        heads = {}
+        store = self.store_for(repository["id"])
+        if store.exists():
+            reader = GitObservationReader(self.git, checkout=lambda _: str(store))
+            retained = await reader.remote_heads(repository, refs)
+            heads = {ref: head for ref, head in retained.items() if head.state != "unknown"}
+        rest = [ref for ref in refs if ref not in heads]
+        if rest:
+            heads.update(await super().remote_heads(repository, rest))
+        return heads
+
+    async def is_ancestor(self, repository, ancestor, descendant):
+        result = await self.git.ais_ancestor(
+            str(self.store_for(repository["id"])), ancestor, descendant, strict=True
+        )
+        if result is not None:
+            return result
+        return await super().is_ancestor(repository, ancestor, descendant)
+
+
+def root_candidate_ci_reader(orchestrator):
+    """Read authenticated checks for the frozen candidate, without an evidence-row prerequisite."""
+    from src.integration.ci_producers import HostedCIProducer
+    from src.integration.observe import _required
+    from src.integration.subjects import CIEvidence
+
+    async def read(snapshot, head):
+        repo = await orchestrator.db.get_repo(head.repository_id)
+        binding = await orchestrator.github_repository_binding_resolver(repo)
+        required = _required(snapshot)
+        state = {
+            "project_id": snapshot.subject.project_id,
+            "canonical_repository_id": head.repository_id,
+            "repository_numeric_id": binding.repository_id,
+            "repository_full_name": binding.full_name,
+            "batch_id": snapshot.subject.batch_id,
+            "revision": head.generation,
+            "candidate_sha": head.sha,
+            "operation_id": snapshot.subject.id,
+            "policy_snapshot": {"root": {"required_checks": dict(required)}},
+        }
+        trust, client = await orchestrator.integration_attestation_service._load_trust(state)
+        observed = await HostedCIProducer(client, trust).observe(snapshot.subject, head)
+        return CIEvidence(
+            head_sha=head.sha, state=observed.state, producer=observed.producer,
+            observed_at=observed.observed_at, age_seconds=0,
+        )
+
+    return read
+
+
+def root_open_prs_reader(git):
+    async def read(repository):
+        binding = await git.bind_github_repository(repository["url"])
+        pulls = await git._github_client(binding).paged_list(
+            f"/repositories/{binding.repository_id}/pulls?state=open&per_page=100"
+        )
+        if any(pull.get("state") != "open" or not pull.get("html_url") for pull in pulls):
+            raise ValueError("open PR listing is malformed")
+        return {pull["html_url"] for pull in pulls}
+
+    return read

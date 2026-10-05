@@ -52,6 +52,9 @@ from .archive_settings_response_blocked_item import ArchiveSettingsResponseBlock
 from .archive_task_request import ArchiveTaskRequest
 from .archive_task_response import ArchiveTaskResponse
 from .artifact_ref_dto import ArtifactRefDTO
+from .artifact_verify_request import ArtifactVerifyRequest
+from .artifact_verify_response import ArtifactVerifyResponse
+from .artifact_verify_response_422 import ArtifactVerifyResponse422
 from .assignment_route_detail import AssignmentRouteDetail
 from .assignment_route_detail_override_type_0 import AssignmentRouteDetailOverrideType0
 from .benchmark_stage_record_request import BenchmarkStageRecordRequest
@@ -220,8 +223,15 @@ from .delete_task_request import DeleteTaskRequest
 from .delete_task_response import DeleteTaskResponse
 from .deleted_branch import DeletedBranch
 from .digest_escalation_settings import DigestEscalationSettings
+from .digest_facts_request import DigestFactsRequest
+from .digest_facts_response import DigestFactsResponse
+from .digest_facts_response_facts import DigestFactsResponseFacts
+from .digest_post_request import DigestPostRequest
+from .digest_post_response import DigestPostResponse
 from .digest_preview_request import DigestPreviewRequest
 from .digest_preview_response import DigestPreviewResponse
+from .digest_request_request import DigestRequestRequest
+from .digest_request_response import DigestRequestResponse
 from .digest_schedule_settings import DigestScheduleSettings
 from .digest_status_request import DigestStatusRequest
 from .digest_status_response import DigestStatusResponse
@@ -310,6 +320,12 @@ from .escalation_record import EscalationRecord
 from .escalation_record_terminal_evidence_type_0 import EscalationRecordTerminalEvidenceType0
 from .escalation_reply_request import EscalationReplyRequest
 from .escalation_reply_response import EscalationReplyResponse
+from .escalation_resolve_request import EscalationResolveRequest
+from .escalation_resolve_response import EscalationResolveResponse
+from .escalation_sweep_request import EscalationSweepRequest
+from .escalation_sweep_response import EscalationSweepResponse
+from .escalation_sweep_response_plan import EscalationSweepResponsePlan
+from .escalation_sweep_response_report import EscalationSweepResponseReport
 from .escalation_update_request import EscalationUpdateRequest
 from .escalation_update_request_terminal_evidence_type_0 import EscalationUpdateRequestTerminalEvidenceType0
 from .escalation_update_response import EscalationUpdateResponse
@@ -346,6 +362,7 @@ from .find_merge_conflict_workspaces_request import FindMergeConflictWorkspacesR
 from .find_merge_conflict_workspaces_response import FindMergeConflictWorkspacesResponse
 from .find_merge_conflict_workspaces_response_422 import FindMergeConflictWorkspacesResponse422
 from .find_merge_conflict_workspaces_response_conflicts_item import FindMergeConflictWorkspacesResponseConflictsItem
+from .flock_session import FlockSession
 from .formula_cook_request import FormulaCookRequest
 from .formula_cook_request_vars_type_0 import FormulaCookRequestVarsType0
 from .formula_cook_response import FormulaCookResponse
@@ -617,6 +634,12 @@ from .job_response_job import JobResponseJob
 from .job_result_args import JobResultArgs
 from .job_result_response import JobResultResponse
 from .job_result_response_result_type_0 import JobResultResponseResultType0
+from .job_retain_args import JobRetainArgs
+from .job_retain_response import JobRetainResponse
+from .job_retain_response_artifacts_item import JobRetainResponseArtifactsItem
+from .job_retain_response_candidate_artifact import JobRetainResponseCandidateArtifact
+from .job_retain_response_captures_item import JobRetainResponseCapturesItem
+from .job_retain_response_render_profile_type_0 import JobRetainResponseRenderProfileType0
 from .job_submit_args import JobSubmitArgs
 from .knowledge_authority_grant_request import KnowledgeAuthorityGrantRequest
 from .knowledge_authority_grant_request_review_type_0 import KnowledgeAuthorityGrantRequestReviewType0
@@ -1448,6 +1471,8 @@ from .session_nudge_response_422 import SessionNudgeResponse422
 from .session_peek_request import SessionPeekRequest
 from .session_peek_response import SessionPeekResponse
 from .session_peek_response_422 import SessionPeekResponse422
+from .session_prune_request import SessionPruneRequest
+from .session_prune_response_422 import SessionPruneResponse422
 from .session_show_request import SessionShowRequest
 from .session_show_response_422 import SessionShowResponse422
 from .session_sleep_request import SessionSleepRequest
@@ -1807,6 +1832,9 @@ __all__ = (
     "ArchiveTaskRequest",
     "ArchiveTaskResponse",
     "ArtifactRefDTO",
+    "ArtifactVerifyRequest",
+    "ArtifactVerifyResponse",
+    "ArtifactVerifyResponse422",
     "AssignmentRouteDetail",
     "AssignmentRouteDetailOverrideType0",
     "BenchmarkStageRecordRequest",
@@ -1975,8 +2003,15 @@ __all__ = (
     "DeleteTaskRequest",
     "DeleteTaskResponse",
     "DigestEscalationSettings",
+    "DigestFactsRequest",
+    "DigestFactsResponse",
+    "DigestFactsResponseFacts",
+    "DigestPostRequest",
+    "DigestPostResponse",
     "DigestPreviewRequest",
     "DigestPreviewResponse",
+    "DigestRequestRequest",
+    "DigestRequestResponse",
     "DigestScheduleSettings",
     "DigestStatusRequest",
     "DigestStatusResponse",
@@ -2063,6 +2098,12 @@ __all__ = (
     "EscalationRecordTerminalEvidenceType0",
     "EscalationReplyRequest",
     "EscalationReplyResponse",
+    "EscalationResolveRequest",
+    "EscalationResolveResponse",
+    "EscalationSweepRequest",
+    "EscalationSweepResponse",
+    "EscalationSweepResponsePlan",
+    "EscalationSweepResponseReport",
     "EscalationUpdateRequest",
     "EscalationUpdateRequestTerminalEvidenceType0",
     "EscalationUpdateResponse",
@@ -2099,6 +2140,7 @@ __all__ = (
     "FindMergeConflictWorkspacesResponse",
     "FindMergeConflictWorkspacesResponse422",
     "FindMergeConflictWorkspacesResponseConflictsItem",
+    "FlockSession",
     "FormulaCookRequest",
     "FormulaCookRequestVarsType0",
     "FormulaCookResponse",
@@ -2366,6 +2408,12 @@ __all__ = (
     "JobResultArgs",
     "JobResultResponse",
     "JobResultResponseResultType0",
+    "JobRetainArgs",
+    "JobRetainResponse",
+    "JobRetainResponseArtifactsItem",
+    "JobRetainResponseCandidateArtifact",
+    "JobRetainResponseCapturesItem",
+    "JobRetainResponseRenderProfileType0",
     "JobSubmitArgs",
     "KnowledgeAuthorityGrantRequest",
     "KnowledgeAuthorityGrantRequestReviewType0",
@@ -3191,6 +3239,8 @@ __all__ = (
     "SessionPeekRequest",
     "SessionPeekResponse",
     "SessionPeekResponse422",
+    "SessionPruneRequest",
+    "SessionPruneResponse422",
     "SessionShowRequest",
     "SessionShowResponse422",
     "SessionSleepRequest",

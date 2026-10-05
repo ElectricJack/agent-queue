@@ -382,6 +382,26 @@ def format_task_detail(
 # ---------------------------------------------------------------------------
 
 
+def format_flock(result: dict):
+    """The execution roster is exhaustive; worker definitions follow it."""
+    from rich.console import Group
+    from src.cli.adapters import agent_proxy
+
+    table = Table(title="Flock sessions", expand=True)
+    for column in ("Session", "Role", "Scope", "Provider / model / class", "Task", "State",
+                   "Uptime", "Activity"):
+        table.add_column(column)
+    for row in result.get("sessions", []):
+        table.add_row(
+            row["session_id"], row["role"], row["scope"],
+            " / ".join(row.get(key) or "unknown" for key in
+                       ("provider", "model", "intelligence_class")),
+            row.get("task_id") or "—", row["state"],
+            f"{int(row['uptime_seconds'])}s", _relative_time(row.get("last_activity")),
+        )
+    return Group(table, format_agent_table([agent_proxy(row) for row in result.get("agents", [])]))
+
+
 def format_agent_table(agents: list[Any]) -> Table:
     """Format a list of agents as a Rich table."""
     table = Table(

@@ -29,16 +29,24 @@ def exact_red_parent_evidence(evidence: dict, *, operation: dict, checkpoint: di
 
 
 def latest_red_parent_evidence(evidence, *, operation, checkpoint):
-    """A later observation supersedes red, but its sibling workflows do not."""
+    """A required check whose latest observation is red keeps the head red.
+
+    Evidence is grouped by ``workflow_id`` (suite identity): a re-observation of
+    the same suite supersedes its prior red, but a sibling suite observed at a
+    slightly different ``observed_at`` never does, so red is detected whenever
+    required checks span multiple suites.
+    """
     if not evidence:
         return None
-    latest = max(row["observed_at"] for row in evidence)
-    return next(
-        (row for row in sorted(evidence, key=lambda row: row["id"])
-         if row["observed_at"] == latest
-         and exact_red_parent_evidence(row, operation=operation, checkpoint=checkpoint)),
-        None,
-    )
+    latest_by_suite: dict[str, dict] = {}
+    for row in sorted(evidence, key=lambda row: (row["observed_at"], row["id"])):
+        latest_by_suite[row["workflow_id"]] = row
+    reds = [
+        row
+        for row in latest_by_suite.values()
+        if exact_red_parent_evidence(row, operation=operation, checkpoint=checkpoint)
+    ]
+    return max(reds, key=lambda row: (row["observed_at"], row["id"])) if reds else None
 
 
 async def verifier_subject_on(

@@ -106,10 +106,14 @@ aq project set PROJECT_ID integration-policy POLICY_JSON --expected-integration-
 ```
 
 The controls keyed by a task, operation, batch or reservation — `resume`, `abort`,
-`retry-cleanup`, `eject`, `redrive-root`, `redrive-child`, `reopen-collection`, `record-noop`,
+`retry-cleanup`, `eject`, `redrive-root`, `redrive-child`, `reopen-collection`,
 `reserve-owner`, `release-owner` — take no `project_id`, so who may run them is decided by
 *whose target they name*: the project's own supervisor may run them against its own work, and
-is refused anything belonging to another project. `PROJECT_ID`-keyed controls
+is refused anything belonging to another project. `record-noop` takes no `project_id` either
+but is the exception in that set: a local operator records no-code receipts (or a playbook
+whose policy grants `integration_record_noop`), and *every* session is refused it, the
+project's own supervisor included — the handler admits a session only for the root train's
+guarded re-drive capabilities. `PROJECT_ID`-keyed controls
 (`enable`, `flush`, `waive-history`, …) are the reverse shape and are pinned to the token's
 project directly. The scope model is [aq-surface §7.3](../specs/design/aq-surface.md#73-elevated-scopes-and-the-commands-that-carry-no-project_id).
 
@@ -644,7 +648,7 @@ A reviewer filed under an active parent is itself a child in the collection
 episode. Its `pass --work-outcome no-op` close records the review verdict, but
 the parent still needs a disposition receipt for the reviewer's own branch.
 When parent readiness reports `receipt_missing` for that child, a local
-operator can record the exact no-code disposition:
+operator records the exact no-code disposition:
 
 ```bash
 aq --json task show CHILD_TASK_ID | jq -r '.data.integration_delivery.checkpoint_sha'
@@ -657,7 +661,10 @@ still its reserved base, resolves that commit's tree from Git, and writes a
 receipt for the current parent episode. Repeating the command returns the same
 receipt; a new no-op completion gets a new receipt revision. A playbook may
 invoke the contracted `integration_record_noop` command when its policy grants
-that exact capability. Worker sessions cannot invoke it.
+that exact capability. No session can invoke it: worker and supervisor
+principals are both refused, so a no-code child always needs a local operator
+(and a supervisor asked to record one reports the child id and its checkpoint
+head instead).
 
 ### Root delivery in `task show`
 
@@ -760,8 +767,9 @@ aq integration authorize-root TASK_ID --apply --head HEAD_SHA --reason "..."
 The row in `integration_root_authorizations` pins the root's exact base, head and
 checkpoint generation and stands in for the kind allowlist only. Policy,
 generation, task type, active batches and their frozen snapshots are untouched.
-Holds, open gates, a rejected review, `reviewed` admission and source CI still
-bind, unrelated roots stay refused, and a moved head needs a new authorization.
+Holds, open gates, a rejected review and `reviewed` admission still bind,
+unrelated roots stay refused, and a moved head needs a new authorization.
+Source PR CI does not gate admission; the batch candidate's exact green CI does.
 Missing legacy root checkpoints still
 require the audited `integration materialize-root` proof; branches without task
 provenance remain outside admission.
@@ -781,12 +789,13 @@ Failed and terminally cancelled source checks file deduplicated repair roots wit
 exact source identity and actionable check links. A newer pending/successful
 rerun supersedes an old cancellation. A PR GitHub reports as conflicting runs no
 `pull_request` CI; with no required check on its head it is recorded as
-`conflict`, and under `repair.conflict_scope: batch` it enters the train so the
-batch repair resolves the conflict and the candidate's CI gates it. Repair branches preserve source ancestry;
-when a repaired source is green, both it and its covered original source can
+`conflict`. Every otherwise eligible reviewed source enters the train regardless
+of its PR CI state, including missing checks. The batch repair resolves conflicts
+and the candidate's CI gates delivery. Repair branches preserve source ancestry;
+both a completed reviewed repair and its covered original source can
 enter the train and receive normal delivery/cleanup receipts. If the original
 already reached the default branch through another route, that delivery satisfies
-the repair's ancestry requirement and the completed green repair can enter alone.
+the repair's ancestry requirement and the completed reviewed repair can enter alone.
 Every final candidate still requires its own exact authenticated green CI.
 
 Before filing a repair, AQ asks canonical delivery truth the same way root

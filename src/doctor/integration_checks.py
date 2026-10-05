@@ -1763,6 +1763,190 @@ async def _fix_stranded_delegates(ctx: DoctorContext) -> CheckResult:
 #: sweep counts as stuck rather than merely queued.
 _UNDELIVERED_SWEEP_ATTEMPTS = 3
 
+#: An accepted ``integration.sweep_due`` older than this with no batch sealed and
+#: no run that has moved since is an orphaned seal: five minutes is the longest a
+#: surviving pending-event dispatch may hold its claim across a restart
+#: (``PENDING_EVENT_DISPATCH_LEASE_SECONDS``), so nothing will seal it sooner.
+_ORPHANED_SWEEP_AFTER_SECONDS = 5 * 60
+#: The event type whose run seals a sweep request.
+_SWEEP_DUE_EVENT = "integration.sweep_due"
+
+
+async def _seal_run_on(conn, request_id: str) -> dict | None:
+    """The most recent run that accepted *request_id*'s sweep, if any.
+
+    A run's in-memory executor dies with the process that started it, so this is
+    the evidence for whether a seal is still coming, never the proof of one.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import playbook_v2_runs
+
+    row = (
+        await conn.execute(
+            select(
+                playbook_v2_runs.c.run_id,
+                playbook_v2_runs.c.playbook_id,
+                playbook_v2_runs.c.lifecycle,
+                playbook_v2_runs.c.updated_at,
+            )
+            .where(
+                playbook_v2_runs.c.event_id == request_id,
+                playbook_v2_runs.c.event_type == _SWEEP_DUE_EVENT,
+            )
+            .order_by(playbook_v2_runs.c.started_at.desc())
+            .limit(1)
+        )
+    ).mappings().one_or_none()
+    return dict(row) if row is not None else None
+
+
+def _seal_is_live(run: dict | None, *, now: float) -> bool:
+    """Whether *run* is still working on the request rather than parked on it.
+
+    An open run counts as live only while it has moved inside the same window the
+    request itself must stay unsealed: one that has not advanced across it is
+    queued behind a wait, or was dropped by a restart, and no amount of further
+    waiting will seal the request.
+    """
+    if run is None:
+        return False
+    from src.playbooks.run_state import TERMINAL_LIFECYCLES
+
+    if run["lifecycle"] in {lifecycle.value for lifecycle in TERMINAL_LIFECYCLES}:
+        return False
+    return float(run["updated_at"]) > now - _ORPHANED_SWEEP_AFTER_SECONDS
+
+
+async def _find_orphaned_sweeps(ctx: DoctorContext) -> list[dict]:
+    """Sweep requests accepted long ago that no live seal will answer.
+
+    The alarm for a daemon restart that dropped a sealing run: the request is
+    ``unsealed``, its event was accepted, no batch exists, and the run that took
+    it is gone, finished or has not moved across the window.  Every flush and tick
+    coalesces into it meanwhile, so the whole frontier waits on a seal that is not
+    coming.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import project_integration_schedules
+    from src.integration.stale_schedule import classify_outstanding_request_on
+
+    now = time.time()
+    findings = []
+    async with ctx.db._engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                select(project_integration_schedules)
+                .where(project_integration_schedules.c.outstanding_request_id.is_not(None))
+                .order_by(project_integration_schedules.c.project_id)
+                .limit(200)
+            )
+        ).mappings().all()
+        for row in rows:
+            state = await classify_outstanding_request_on(
+                conn, row["project_id"], row, now=now
+            )
+            if state.verdict != "unsealed" or state.event is None:
+                continue
+            accepted_at = float(state.event["delivered_at"] or 0.0)
+            if now - accepted_at < _ORPHANED_SWEEP_AFTER_SECONDS:
+                continue
+            run = await _seal_run_on(conn, state.request_id or "")
+            if _seal_is_live(run, now=now):
+                continue
+            findings.append(
+                {
+                    **state.as_dict(),
+                    "accepted_at": accepted_at,
+                    "requested_at": row["outstanding_requested_at"],
+                    "last_completed_sweep_at": row["last_completed_sweep_at"],
+                    "seal_run": run,
+                }
+            )
+    return findings
+
+
+def _orphaned_sweep_ok() -> CheckResult:
+    return CheckResult(
+        id="integration.orphaned_sweep",
+        severity=Severity.OK,
+        detail="every unsealed train sweep request still has a seal that can arrive",
+    )
+
+
+async def _check_orphaned_sweep(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return CheckResult(
+            id="integration.orphaned_sweep",
+            severity=Severity.INFO,
+            detail="database not initialised — integration sweep state unknown",
+        )
+    findings = await _find_orphaned_sweeps(ctx)
+    if not findings:
+        return _orphaned_sweep_ok()
+    first = findings[0]
+    run = first["seal_run"]
+    holder = (
+        f"its seal run {run['run_id']} is {run['lifecycle']} and has not moved"
+        if run is not None
+        else "no run ever took it"
+    )
+    return CheckResult(
+        id="integration.orphaned_sweep",
+        severity=Severity.WARN,
+        detail=(
+            f"{len(findings)} train sweep request(s) have been accepted and unsealed for over "
+            f"{_ORPHANED_SWEEP_AFTER_SECONDS // 60} minutes with no live seal — e.g. "
+            f"{first['project_id']}: {first['request_id']} ({holder}). Every flush answers "
+            "`coalesced` and no batch is sealed meanwhile. A daemon restart drops the sealing "
+            "run; the start sweep frees the request it orphaned, and this frees it now"
+        ),
+        fixable=True,
+        data={"count": len(findings), "sweeps": findings},
+    )
+
+
+async def _fix_orphaned_sweep(ctx: DoctorContext) -> CheckResult:
+    """Free each orphaned request with the proofs ``clear-stale-request`` uses.
+
+    Unsealed, no batch, no lease and no blockers: nothing this can free could
+    orphan a remote write.  The daemon's start sweep normally beats this to it.
+    """
+    from src.integration.stale_schedule import OPERATOR_RELEASABLE, release_stale_request
+
+    findings = await _find_orphaned_sweeps(ctx)
+    if not findings:
+        return _orphaned_sweep_ok()
+    cleared = []
+    for item in findings:
+        result = await release_stale_request(
+            ctx.db,
+            item["project_id"],
+            now=time.time(),
+            released_by="doctor",
+            reason=f"aq doctor --check integration.orphaned_sweep --fix: {item['reason']}",
+            expected_request_id=item["request_id"],
+            releasable=OPERATOR_RELEASABLE,
+        )
+        if result["outcome"] == "cleared":
+            cleared.append({"project_id": item["project_id"], **result["release"]})
+    remaining = len(findings) - len(cleared)
+    detail = f"freed {len(cleared)} orphaned train sweep request(s)"
+    if remaining:
+        detail += (
+            f"; {remaining} still hold write evidence or a lease — see "
+            "`aq integration clear-stale-request <project>`"
+        )
+    return CheckResult(
+        id="integration.orphaned_sweep",
+        severity=Severity.WARN if remaining else Severity.OK,
+        detail=detail,
+        fixable=True,
+        fix_applied=bool(cleared),
+        data={"count": len(cleared), "cleared": cleared},
+    )
+
 
 async def _find_stale_schedules(ctx: DoctorContext) -> list[dict]:
     """Train schedules whose outstanding request nothing will end on its own.
@@ -2646,6 +2830,15 @@ def integration_checks() -> list[DoctorCheck]:
             id="integration.stale_schedule",
             run=_check_stale_schedule,
             fix=_fix_stale_schedule,
+            owner=OWNER,
+        ),
+        # Report-and-fix for the hour ``stale_schedule`` deliberately waits: an
+        # accepted request with no live seal left to produce one.  The fix is
+        # ``clear-stale-request``'s release, under the same four proofs.
+        DoctorCheck(
+            id="integration.orphaned_sweep",
+            run=_check_orphaned_sweep,
+            fix=_fix_orphaned_sweep,
             owner=OWNER,
         ),
         # Report-only.  The collector already records completion evidence

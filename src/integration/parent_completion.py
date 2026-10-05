@@ -496,6 +496,7 @@ class ParentCompletion:
         checkpoint: dict[str, Any],
         operation: dict[str, Any],
         additional_extension: dict[str, Any] | None = None,
+        receipt_covered_extensions: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         episode = (
             await conn.execute(
@@ -692,6 +693,10 @@ class ParentCompletion:
         except ValueError:
             extensions = []
             blockers.append({"task_id": parent["id"], "reason": "repair_head_proof"})
+        if receipt_covered_extensions:
+            # Operator recovery proves these duplicate records against their
+            # receipts and Git before persisting the coverage on apply.
+            extensions = [edge for edge in extensions if edge not in receipt_covered_extensions]
         if additional_extension is not None:
             # Recovery previews a strictly audited edge before committing it.
             # Ordinary readiness reads only the durable stage dossiers.

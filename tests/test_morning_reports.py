@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -17,8 +17,8 @@ from src.cli.app import cli
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.commands.report_commands import ReportCommandsMixin
 from src.config import AppConfig
-from src.database import Database
-from src.database import tables
+from src.database import Database, tables
+from src.delivery.message import operation_marker
 from src.git.manager import GitManager
 from src.models import Project, Task
 from src.profiles.capabilities import DENY_ALL
@@ -394,7 +394,7 @@ async def test_truncated_completion_commits_cannot_prove_landing():
 )
 def test_preview_uses_report_zone_and_latest_default_boundary(zone, day, expected):
     def epoch(value):
-        return datetime.fromisoformat(value).replace(tzinfo=timezone.utc).timestamp()
+        return datetime.fromisoformat(value).replace(tzinfo=UTC).timestamp()
 
     assert preview_until(epoch(day), zone) == epoch(expected)
 
@@ -711,7 +711,7 @@ async def test_git_failure_is_a_gap_and_command_operands_are_hashes(caplog, tmp_
 
 
 def utc(value):
-    return datetime.fromisoformat(value).replace(tzinfo=timezone.utc).timestamp()
+    return datetime.fromisoformat(value).replace(tzinfo=UTC).timestamp()
 
 
 @pytest.mark.parametrize(
@@ -1134,6 +1134,7 @@ async def test_structured_author_submit_finalizes_coverage_and_immutable_content
 
 async def test_submit_deadline_race_has_one_immutable_winner(scheduled):
     import asyncio
+
     from src.reports.fallback import build_fallback
 
     now = utc("2026-09-25T07:00:00")
@@ -1212,6 +1213,7 @@ async def test_disable_cancels_author_request_but_retains_readable_brief(schedul
 
 async def test_morning_report_validation_requires_scoped_grounded_manual_checks():
     import copy
+
     from src.reports.authoring import validate_morning_report
     from src.reports.fallback import build_fallback
 
@@ -1482,6 +1484,7 @@ async def test_ambiguous_morning_transport_never_resubmits_or_blind_reposts(sche
 
 async def test_finalization_crash_before_outbox_reservation_recovers_once(scheduled):
     import asyncio
+
     from src.escalations.transport import SinkTransport
     from tests.test_report_requests import Clock
 
@@ -1656,12 +1659,13 @@ async def test_scoped_fallback_delivers_without_supervisor_and_summary_budget_in
     assert text.endswith(f"https://dashboard.example.test/focus/reports/{row['id']}")
     assert "@everyone" not in text
     # Same marker size the shared primitive appends.
-    assert len(text) + 1 + len("aq-out:" + "a" * 16) <= 1500
+    assert len(text) + 1 + len(operation_marker("x", prefix="aq-out")) <= 1500
     collector.assert_awaited_once()
 
 
 async def test_cancelled_delivery_migration_upgrades_old_constraint_idempotently(db):
     import importlib.util
+
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
     from sqlalchemy import inspect

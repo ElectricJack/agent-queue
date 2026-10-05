@@ -28,7 +28,7 @@ outbound products and one inbound one:
 
 | Direction | What crosses the seam | Owner |
 |---|---|---|
-| Out | The hourly activity digest — one message per eligible window | `src/discord/embeds.py`, driven by the digest scheduler |
+| Out | The hourly activity digest — one message per eligible window | `src/digest/render.py`, driven by the digest scheduler |
 | Out | One escalation root post and its thread, plus acks, relays and the resolution edit | `src/escalations` + `src/discord/escalation_transport.py` |
 | In | A verified reply in a known escalation thread → `escalation_reply` | `src/discord/escalation_intake.py` |
 
@@ -44,7 +44,7 @@ See the [replacement capability checklist](../../guides/discord-replacement-chec
 |---|---|---|
 | **Adapter / bot core** | Connection, authorization, the startup cutover pass, and inbound escalation-reply routing | `AgentQueueBot` (`src/discord/bot.py`), `DiscordMessagingAdapter` (`src/discord/adapter.py`) |
 | **Transports** | Durable, leased, deduplicated outbound delivery for escalations and digests | `src/discord/escalation_transport.py`, the digest dispatcher |
-| **Formatting** | Pure functions producing platform-native output | `src/discord/embeds.py`, `src/discord/notifications.py` |
+| **Formatting** | Pure functions producing platform-native output | `src/digest/render.py`, `src/escalations/render.py`, and the transport-neutral `src/notifications/render.py` |
 
 There is no Commands layer. `src/discord/commands.py` and the 122-command mirror
 are deleted, and `src/discord/slash_commands.py` now exists only to *unregister*
@@ -52,10 +52,12 @@ the six retired commands at sync time. Plugin-registered slash commands are the
 one thing the bot still adds to the command tree; Agent Queue itself registers
 none.
 
-`src/discord/notifications.py` retains the lifecycle formatters as pure
-functions. Nothing in `src/discord/` subscribes them to the bus any more — the
-daemon imports `classify_error` and `format_task_started` directly — so treat
-that module as a formatting library, not as an active notification consumer.
+`src/notifications/render.py` holds the lifecycle formatters as pure functions.
+Nothing in `src/discord/` subscribes them to the bus any more — the daemon
+imports `classify_error` and `format_task_started` directly — so treat that
+module as a formatting library, not as an active notification consumer. It
+replaced `src/discord/notifications.py`, whose embed variants had no caller and
+were deleted.
 
 ---
 
@@ -185,7 +187,7 @@ text, and the one inbound action is a typed reply.
 
 ## 10. Error Classification (Shared Logic)
 
-`classify_error(error_message)` maps error messages to `(label, suggestion)` pairs by keyword matching on the lowercased error string. The first matching pattern wins. This logic is platform-agnostic and used by notification formatters on both platforms.
+`classify_error(error_message)` maps error messages to `(label, suggestion)` pairs by keyword matching on the lowercased error string. The first matching pattern wins. This logic is platform-agnostic: `src/notifications/render.py` exports it for `task show`, and the notification formatters call it.
 
 | Keyword | Label | Suggestion |
 |---|---|---|

@@ -611,7 +611,9 @@ async def test_first_pool_claim_survives_launch_completion(orch, db, monkeypatch
     row = (await db.list_sessions(lifecycle="pool"))[0]
     agent = await db.get_agent(row.agent_id)
     assert agent.state == AgentState.BUSY and agent.current_task_id == "pooled"
-    assert visible_states == [AgentState.IDLE]
+    # Registration is observable while the agent remains reserved; launch
+    # acknowledgement must preserve the claim made during that window.
+    assert visible_states == [AgentState.BUSY]
 
 
 async def test_concurrent_pool_teardown_stops_and_releases_only_once(orch, db, monkeypatch):
@@ -988,7 +990,7 @@ async def test_slow_launch_does_not_block_other_project_or_oversubscribe(orch, d
     await asyncio.wait_for(orch._reconcile_pools(), timeout=5)
     await asyncio.wait_for(entered.wait(), timeout=5)
     await asyncio.wait_for(fast_started.wait(), timeout=5)
-    # The slow launch holds no session row yet, but its capacity is reserved.
+    # The slow launch has a committed STARTING row and reserved capacity.
     measurement = await orch._measure_pools()
     supply = measurement.supply[PoolKey("worker")]
     assert supply.starting + supply.running_idle + supply.running_busy == 2
@@ -1024,7 +1026,10 @@ async def test_cancelled_background_start_stops_process_and_releases_resources(o
     assert any(ws.locked_by_agent_id for ws in await db.list_workspaces(PROJECT_ID))
     await orch.wait_for_pool_launches(cancel=True)
     assert not orch._pool_launches
-    assert await db.list_sessions(lifecycle="pool") == []
+    rows = await db.list_sessions(lifecycle="pool")
+    assert len(rows) == 1
+    assert rows[0].state == rows[0].desired_state == "stopped"
+    assert rows[0].ended_at and rows[0].end_reason == "launch_failed"
     assert all(ws.locked_by_agent_id is None for ws in await db.list_workspaces(PROJECT_ID))
     assert all(agent.state == AgentState.IDLE for agent in await db.list_agents())
     assert provider.sessions == {}
@@ -1166,7 +1171,11 @@ async def test_cancelled_start_keeps_resources_when_process_stop_is_unconfirmed(
     await orch.wait_for_pool_launches(cancel=True)
     assert provider.sessions
     assert any(ws.locked_by_agent_id for ws in await db.list_workspaces(PROJECT_ID))
-    assert all(agent.state == AgentState.ERROR for agent in await db.list_agents())
+    # The registered writer retains its BUSY reservation until reconciliation
+    # proves termination; it no longer needs an untracked ERROR placeholder.
+    rows = await db.list_sessions(lifecycle="pool")
+    assert len(rows) == 1 and rows[0].state == "starting"
+    assert all(agent.state == AgentState.BUSY for agent in await db.list_agents())
     assert not orch._pool_launches
 
 

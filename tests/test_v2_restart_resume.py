@@ -1,21 +1,10 @@
-"""Restart and idempotency boundaries — Package 4 child plan T-15.
+"""Restart recovery and idempotency boundaries — Package 4 child plan T-15.
 
-This file is created by the wait + loop slice and covers **two** of T-15's
-five parameterisations: the wait boundary and the loop boundary.  The command,
-LLM and agent-task boundaries, the ``multiprocessing`` process-kill
-integration cases and T-10's operator-resolution suite land with the dry-run
-and restart task that follows this one; the two here are in-process, because
-the property they assert is about *durable state*, not about process death:
-
-    build the snapshot a crash leaves behind, construct a **fresh**
-    ``PlaybookEngine`` against the same repository, resume, and assert that
-    (a) no acknowledged attempt is duplicated, (b) bindings are intact, and
-    (c) the run still reaches its terminal.
-
-A fresh engine is the right stand-in for a fresh process here precisely
-because the engine holds no per-run state: everything a restart needs is on
-the snapshot, and a test that could only be written with a real fork would be
-saying the opposite.
+PostgreSQL tests exercise automatic recovery of durable rows left by a prior
+daemon, including replay safety, driver ownership, bounded scans and diagnosis.
+Isolated repository and process-kill tests cover each executor boundary and
+operator resolution. A fresh engine retains only the durable snapshot; its
+driver registry describes ownership in the current process.
 """
 
 from __future__ import annotations
@@ -33,12 +22,15 @@ import pytest
 from src.commands.principal import TRUSTED_LOCAL
 from src.commands.principal import PrincipalKind
 from src.playbooks.engine import (
+    EVENT_RUN_FINISHED,
     ChildTaskCompleted,
     EventArrived,
     HumanDecision,
+    InterruptedByRestart,
     OperatorResolution,
     PlaybookEngine,
     TimerFired,
+    WaitScheduler,
 )
 from src.playbooks.executors.base import EngineServices, ExecutionMode
 from src.playbooks.executors.foreach import collection_digest
@@ -46,6 +38,7 @@ from src.playbooks.executors.wait import wait_id_for
 from src.playbooks.run_state import LoopFrame, RunLifecycle, RunSnapshot
 from src.playbooks.receipts import StepReceipt
 from src.playbooks.waits import WaitSpec
+from src.playbooks.recovery import RestartReconciler
 from tests.fixtures.contracts.engine_contracts import (
     ENSURE_TASK,
     LIST_TASKS,
@@ -104,6 +97,393 @@ def fresh_engine(
         activations=StubActivations([ref]),
     )
     return engine, adapter, ref
+
+
+@pytest.fixture
+async def restart_db():
+    from src.database import Database
+    from tests.db_fixtures import lease_dsn
+
+    database = Database(lease_dsn("v2_restart_recovery"))
+    await database.initialize()
+    yield database
+    await database.close()
+
+
+async def recovery_engine(database, artifact_name="two-rules-one-event.artifact.json", adapter=None):
+    from tests.test_child_task_reconciler import seed_artifact
+
+    engine, adapter, ref = fresh_engine(artifact_name, runs=database, waits=database, adapter=adapter)
+    await seed_artifact(database, ref)
+    return engine, adapter, ref
+
+
+def orphan_snapshot(ref, **overrides):
+    fields = {
+        "run_id": "orphan",
+        "playbook_id": ref.playbook_id,
+        "artifact_sha256": ref.artifact_sha256,
+        "rule_id": "review",
+        "current_step_id": "ensure-review-task",
+        "event": event("task-completed-code"),
+        "started_at": 1_000.0,
+        "updated_at": 1_000.0,
+    }
+    fields.update(overrides)
+    return RunSnapshot(**fields)
+
+
+async def drain_recovery(recovery):
+    # Join only already-scheduled work; tests never construct a resume cause.
+    await asyncio.gather(*tuple(recovery._tasks.values()))
+    await asyncio.sleep(0)
+
+
+async def test_restart_sweep_replays_a_fenced_keyed_command_once(restart_db):
+    engine, adapter, ref = await recovery_engine(restart_db)
+    snapshot = await restart_db.create_run(orphan_snapshot(ref))
+    fence = replace(
+        interrupted_attempt(snapshot, step_id="ensure-review-task"),
+        snapshot_version=snapshot.version + 1,
+    )
+    await restart_db.commit_boundary(snapshot, fence)
+    adapter.queue.append(ok("review-1"))
+    recovery = RestartReconciler(engine, restart_db, TRUSTED_LOCAL, process_started_at=1_500)
+
+    assert await recovery.tick() == (snapshot.run_id,)
+    await drain_recovery(recovery)
+    stored = await restart_db.load_run(snapshot.run_id)
+    assert stored.lifecycle is RunLifecycle.COMPLETED
+    assert stored.bindings["review"]["task_id"] == "review-1"
+    assert stored.context["resume_cause"] == {
+        "kind": "interrupted_by_restart", "process_started_at": 1_500,
+    }
+    receipts = await restart_db.list_receipts(snapshot.run_id)
+    assert any(row.receipt_kind == "interrupted" for row in receipts)
+    command = [row for row in receipts if row.step_id == "ensure-review-task"]
+    assert {row.idempotency_key for row in command} == {"orphan:ensure-review-task:-:1"}
+    assert await recovery.tick() == ()
+    assert len(adapter.calls) == 1
+    assert len(await restart_db.list_receipts(snapshot.run_id)) == len(receipts)
+    await recovery.shutdown()
+
+
+@pytest.mark.parametrize("kind", ["llm", "agent_task", "unsafe_command"])
+async def test_restart_sweep_preserves_ambiguous_external_effects(restart_db, kind):
+    from src.commands.contracts.models import IdempotencySpec
+    from src.playbooks.definition import PlaybookDefinition
+    from tests.test_agent_task_executor import agent_task_artifact
+    from tests.test_child_task_reconciler import seed_artifact
+
+    if kind == "agent_task":
+        artifact = agent_task_artifact()
+        ref = artifact_ref_for(artifact)
+        await seed_artifact(restart_db, ref)
+        engine, adapter, _ = fresh_engine("two-rules-one-event.artifact.json", runs=restart_db)
+        engine.services.artifact_store.put(artifact)
+        engine.activations = StubActivations([ref])
+        step_id, rule_id = "delegate", "r"
+    else:
+        artifact_name = (
+            "review-pipeline.artifact.json" if kind == "llm"
+            else "two-rules-one-event.artifact.json"
+        )
+        engine, adapter, ref = await recovery_engine(restart_db, artifact_name)
+        step_id = "classify-risk" if kind == "llm" else "ensure-review-task"
+        rule_id = "review-on-task-completed" if kind == "llm" else "review"
+        if kind == "unsafe_command":
+            unsafe = ENSURE_TASK.model_copy(update={
+                "execution": ENSURE_TASK.execution.model_copy(update={
+                    "retry_safe": False, "idempotency": IdempotencySpec(mode="none"),
+                }),
+            })
+            engine.services = replace(engine.services, contracts=registry_with(unsafe)[0])
+    assert isinstance(engine.services.artifact_store.load(ref.artifact_sha256), PlaybookDefinition)
+    snapshot = orphan_snapshot(ref, current_step_id=step_id, rule_id=rule_id, context={
+        "_in_flight_attempt": {
+            "step_id": step_id, "step_kind": "command" if kind == "unsafe_command" else kind,
+            "iteration": -1, "attempt": 1, "started_at": 1_000,
+            "idempotency_key": f"orphan:{step_id}:-:1",
+        },
+    })
+    await restart_db.create_run(snapshot)
+    recovery = RestartReconciler(engine, restart_db, TRUSTED_LOCAL, process_started_at=1_500)
+    await recovery.tick()
+    await drain_recovery(recovery)
+
+    stored = await restart_db.load_run(snapshot.run_id)
+    assert stored.lifecycle is RunLifecycle.PAUSED
+    assert stored.operator_decision is not None
+    assert stored.context["resume_cause"]["kind"] == "interrupted_by_restart"
+    assert stored.bindings == {}
+    assert not adapter.calls
+    assert await recovery.tick() == ()
+    await recovery.shutdown()
+
+
+@pytest.mark.parametrize("boundary", ["wait", "loop", "decision", "terminal"])
+async def test_restart_sweep_recovers_internal_boundaries(restart_db, boundary):
+    if boundary == "wait":
+        engine, adapter, ref = await recovery_engine(restart_db, "wait-kinds.artifact.json")
+        snapshot = orphan_snapshot(ref, rule_id="correlate", current_step_id="await-review",
+                                   event=event("spec-approved"))
+    elif boundary == "loop":
+        engine, adapter, ref = await recovery_engine(restart_db, "sequential-loop.artifact.json")
+        snapshot = crashed_mid_loop(ref, index=1, items=["d-1", "d-2", "d-3"])
+        adapter.queue.extend([ok("t-2"), ok("t-3")])
+    else:
+        engine, adapter, ref = await recovery_engine(restart_db)
+        snapshot = orphan_snapshot(
+            ref, rule_id="sweep" if boundary == "decision" else "review",
+            current_step_id="check-empty" if boundary == "decision" else "review-done",
+            bindings={"downstream": {"tasks": [], "count": 0}} if boundary == "decision" else {},
+        )
+    await restart_db.create_run(snapshot)
+    recovery = RestartReconciler(engine, restart_db, TRUSTED_LOCAL, process_started_at=1_500)
+    await recovery.tick()
+    await drain_recovery(recovery)
+    stored = await restart_db.load_run(snapshot.run_id)
+    if boundary == "wait":
+        assert stored.lifecycle is RunLifecycle.PAUSED
+        assert [row.wait_id for row in await restart_db.list_active(snapshot.run_id)] == [
+            wait_id_for(snapshot.run_id, "await-review", -1, 1)
+        ]
+    else:
+        assert stored.lifecycle is RunLifecycle.COMPLETED
+    if boundary == "loop":
+        assert [args.title for args in adapter.args_for("ensure_task")] == ["Gate: d-2", "Gate: d-3"]
+        assert [item["index"] for item in stored.bindings["sweep_result"]["items"]] == [0, 1, 2]
+    assert await recovery.tick() == ()
+    await recovery.shutdown()
+
+
+async def test_restart_sweep_settles_cancel_intent_without_replaying(restart_db):
+    engine, adapter, ref = await recovery_engine(restart_db)
+    snapshot = orphan_snapshot(ref, lifecycle=RunLifecycle.CANCELLING, cancel_requested_at=1_010)
+    await restart_db.create_run(snapshot)
+    recovery = RestartReconciler(engine, restart_db, TRUSTED_LOCAL, process_started_at=1_500)
+    await recovery.tick()
+    await drain_recovery(recovery)
+    stored = await restart_db.load_run(snapshot.run_id)
+    assert stored.lifecycle is RunLifecycle.CANCELLED
+    assert stored.context["resume_cause"]["kind"] == "interrupted_by_restart"
+    assert not adapter.calls
+    assert (await restart_db.list_receipts(snapshot.run_id))[-1].cancelled_at is not None
+    await recovery.shutdown()
+
+
+@pytest.mark.parametrize("lifecycle", [RunLifecycle.RUNNING, RunLifecycle.CANCELLING])
+async def test_restart_sweep_advances_past_bad_artifacts_and_retries(restart_db, lifecycle):
+    engine, adapter, ref = await recovery_engine(restart_db)
+    broken = orphan_snapshot(ref, run_id="a-broken", lifecycle=lifecycle)
+    healthy = orphan_snapshot(ref, run_id="b-healthy")
+    await restart_db.create_run(broken)
+    await restart_db.create_run(healthy)
+    original = engine._ref_for
+
+    async def unavailable(snapshot):
+        if snapshot.run_id == broken.run_id:
+            raise FileNotFoundError("artifact unavailable")
+        return await original(snapshot)
+
+    engine._ref_for = unavailable
+    adapter.queue.append(ok("review-1"))
+    recovery = RestartReconciler(
+        engine, restart_db, TRUSTED_LOCAL, process_started_at=1_500, concurrency=1,
+    )
+    assert await recovery.tick() == (broken.run_id,)
+    await drain_recovery(recovery)
+    assert await restart_db.load_run(broken.run_id) == broken
+    assert await recovery.tick() == (healthy.run_id,)
+    await drain_recovery(recovery)
+    assert (await restart_db.load_run(healthy.run_id)).lifecycle is RunLifecycle.COMPLETED
+    assert await recovery.tick() == ()  # Finish the keyset pass.
+    assert await recovery.tick() == (broken.run_id,)  # Retry on the next pass.
+    await drain_recovery(recovery)
+    assert await restart_db.load_run(broken.run_id) == broken
+    engine._ref_for = original
+    adapter.queue.append(ok("review-retry"))
+    assert await recovery.tick() == ()
+    assert await recovery.tick() == (broken.run_id,)
+    await drain_recovery(recovery)
+    stored = await restart_db.load_run(broken.run_id)
+    assert stored.lifecycle is (
+        RunLifecycle.CANCELLED if lifecycle is RunLifecycle.CANCELLING else RunLifecycle.COMPLETED
+    )
+    await recovery.shutdown()
+
+
+async def test_restart_resume_rechecks_candidates_and_does_not_wake_paused_runs(restart_db):
+    engine, adapter, ref = await recovery_engine(restart_db)
+    for lifecycle, stamp in [(RunLifecycle.PAUSED, 1_000), (RunLifecycle.RUNNING, 1_500)]:
+        snapshot = orphan_snapshot(ref, run_id=lifecycle.value, lifecycle=lifecycle, updated_at=stamp)
+        await restart_db.create_run(snapshot)
+        outcome = await engine.resume(snapshot.run_id, InterruptedByRestart(1_500), TRUSTED_LOCAL)
+        assert outcome.outcome == "restart_recovery_not_needed"
+        assert await restart_db.load_run(snapshot.run_id) == snapshot
+    assert not adapter.calls
+
+
+async def test_a_current_driver_is_reserved_before_its_first_read(restart_db, monkeypatch):
+    engine, adapter, ref = await recovery_engine(restart_db)
+    snapshot = await restart_db.create_run(orphan_snapshot(ref))
+    started, release = asyncio.Event(), asyncio.Event()
+    original = restart_db.load_run
+    reads = 0
+
+    async def delayed_read(run_id):
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            started.set()
+            await release.wait()
+        return await original(run_id)
+
+    monkeypatch.setattr(restart_db, "load_run", delayed_read)
+    adapter.queue.append(ok("review-1"))
+    driver = asyncio.create_task(engine.resume(snapshot.run_id, EventArrived("manual"), TRUSTED_LOCAL))
+    await asyncio.wait_for(started.wait(), 5)
+    try:
+        duplicate = await engine.resume(snapshot.run_id, InterruptedByRestart(1_500), TRUSTED_LOCAL)
+        assert duplicate.outcome == "already_driving"
+        assert await restart_db.list_receipts(snapshot.run_id) == []
+        recovery = RestartReconciler(engine, restart_db, TRUSTED_LOCAL, process_started_at=1_500)
+        assert await recovery.tick() == ()
+    finally:
+        release.set()
+        await driver
+    assert len(adapter.calls) == 1
+    assert not engine.active_run_ids
+    await recovery.shutdown()
+
+
+async def test_timer_resume_is_not_lost_while_recovery_finishes_pausing(restart_db, monkeypatch):
+    engine, adapter, ref = await recovery_engine(restart_db, "wait-kinds.artifact.json")
+    snapshot = orphan_snapshot(
+        ref, rule_id="sleep", current_step_id="await-timer", event=event("task-created"),
+    )
+    await restart_db.create_run(snapshot)
+    finishing, release, paused_read = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    emit, load = engine._emit, restart_db.load_run
+
+    async def hold_finished(event_type, current, **kwargs):
+        await emit(event_type, current, **kwargs)
+        if current.lifecycle is RunLifecycle.PAUSED and event_type == EVENT_RUN_FINISHED:
+            finishing.set()
+            await release.wait()
+
+    async def observe_paused(run_id):
+        current = await load(run_id)
+        if current and current.lifecycle is RunLifecycle.PAUSED:
+            paused_read.set()
+        return current
+
+    monkeypatch.setattr(engine, "_emit", hold_finished)
+    monkeypatch.setattr(restart_db, "load_run", observe_paused)
+    recovery = RestartReconciler(engine, restart_db, TRUSTED_LOCAL, process_started_at=1_500)
+    await recovery.tick()
+    timer = None
+    try:
+        await asyncio.wait_for(finishing.wait(), 5)
+        timer = asyncio.create_task(WaitScheduler(engine, restart_db, TRUSTED_LOCAL).tick(now=3_000))
+        await asyncio.wait_for(paused_read.wait(), 5)
+    finally:
+        release.set()
+        await drain_recovery(recovery)
+        if timer is not None:
+            await asyncio.wait_for(timer, 5)
+        await recovery.shutdown()
+    stored = await restart_db.load_run(snapshot.run_id)
+    assert stored.lifecycle is RunLifecycle.COMPLETED
+    assert stored.current_step_id == "sleep-done"
+    assert "fired_at" in stored.bindings["timer"]
+    assert await restart_db.list_active(snapshot.run_id) == []
+    assert not adapter.calls
+
+
+async def test_slow_recovery_does_not_block_siblings_and_shutdown_is_recoverable(restart_db):
+    from tests.fixtures.contracts.engine_contracts import ScriptedAdapter
+
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class SlowAdapter(ScriptedAdapter):
+        def invoke_for(self, name):
+            invoke = super().invoke_for(name)
+
+            async def delayed(args, principal):
+                if args.title == "Review: Slow":
+                    started.set()
+                    await release.wait()
+                return await invoke(args, principal)
+
+            return delayed
+
+    engine, adapter, ref = await recovery_engine(restart_db, adapter=SlowAdapter())
+    slow = orphan_snapshot(ref, run_id="a-slow", event=dict(event("task-completed-code"), title="Slow"))
+    fast = orphan_snapshot(ref, run_id="b-fast")
+    await restart_db.create_run(slow)
+    await restart_db.create_run(fast)
+    adapter.queue.append(ok("fast-review"))
+    recovery = RestartReconciler(
+        engine, restart_db, TRUSTED_LOCAL, process_started_at=1_500, concurrency=2,
+    )
+    assert await asyncio.wait_for(recovery.tick(), 5) == (slow.run_id, fast.run_id)
+    await asyncio.wait_for(started.wait(), 5)
+    await recovery._tasks[fast.run_id]
+    assert (await restart_db.load_run(fast.run_id)).lifecycle is RunLifecycle.COMPLETED
+    assert await recovery.tick() == ()
+    assert slow.run_id in recovery.active_run_ids
+    await recovery.shutdown()
+    assert not engine.active_run_ids
+    assert not recovery._tasks
+    assert await recovery.tick() == ()
+    stored = await restart_db.load_run(slow.run_id)
+    assert stored.lifecycle is RunLifecycle.RUNNING
+    assert stored.context["_in_flight_attempt"]["step_id"] == "ensure-review-task"
+
+    restarted, replay_adapter, _ = fresh_engine("two-rules-one-event.artifact.json", runs=restart_db)
+    replay_adapter.queue.append(ok("slow-review"))
+    second = RestartReconciler(restarted, restart_db, TRUSTED_LOCAL, process_started_at=2_500)
+    assert await second.tick() == (slow.run_id,)
+    await drain_recovery(second)
+    assert (await restart_db.load_run(slow.run_id)).lifecycle is RunLifecycle.COMPLETED
+    assert replay_adapter.args_for("ensure_task")[0].dedup_key == "a-slow:ensure-review-task:-:1"
+    await second.shutdown()
+
+
+async def test_orphan_doctor_names_runs_without_a_process_driver(restart_db):
+    from types import SimpleNamespace
+
+    from src.doctor.models import DoctorContext, Severity
+    from src.doctor.playbook_v2_checks import _check_orphaned_runs, playbook_v2_checks
+
+    engine, adapter, ref = await recovery_engine(restart_db)
+    await restart_db.create_run(orphan_snapshot(ref))
+    await restart_db.create_run(orphan_snapshot(ref, run_id="owned"))
+    await restart_db.create_run(orphan_snapshot(ref, run_id="waiting", lifecycle=RunLifecycle.PAUSED))
+    await restart_db.create_run(orphan_snapshot(ref, run_id="new", updated_at=1_500))
+    engine._driving.add("owned")
+    recovery = RestartReconciler(engine, restart_db, TRUSTED_LOCAL, process_started_at=1_500)
+    config = SimpleNamespace(playbooks=SimpleNamespace(enabled=True))
+    ctx = DoctorContext(config, db=restart_db, handler=SimpleNamespace(orchestrator=SimpleNamespace(
+        playbook_manager=SimpleNamespace(restart_reconciler=recovery),
+    )))
+    warning = await _check_orphaned_runs(ctx)
+    assert warning.severity is Severity.WARN
+    assert [row["run_id"] for row in warning.data["runs"]] == ["orphan"]
+    assert warning.data["runs"][0]["current_step_id"] == "ensure-review-task"
+    assert not warning.fixable
+    assert any(check.id == warning.id for check in playbook_v2_checks())
+    adapter.queue.append(ok("review-1"))
+    await recovery.tick()
+    await drain_recovery(recovery)
+    assert (await _check_orphaned_runs(ctx)).severity is Severity.OK
+    config.playbooks.enabled = False
+    assert (await _check_orphaned_runs(ctx)).severity is Severity.INFO
+    config.playbooks.enabled = True
+    assert (await _check_orphaned_runs(DoctorContext(config, db=restart_db))).severity is Severity.INFO
+    engine._driving.clear()
+    await recovery.shutdown()
 
 
 class TestRestartAtTheWaitBoundary:

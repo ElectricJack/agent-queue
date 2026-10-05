@@ -413,6 +413,7 @@ async def test_pause_during_provider_start_waits_then_stops_the_new_session(env,
     env.orch.session_providers = SimpleNamespace(create=lambda *_: provider)
     task = await env.db.get_task("t")
     await env.db.set_task_meta("t", "manual_pause_checkpoint", {"retained_until_launch": True})
+    await env.db.set_task_meta("t", "supervisor_recovery_checkpoint", {"sha": "abc"})
     launch = asyncio.create_task(
         env.orch._launch_session_for_task(
             AssignAction("agent", "t", "p"), task, await env.db.get_profile("worker"), str(tmp_path)
@@ -427,6 +428,7 @@ async def test_pause_during_provider_start_waits_then_stops_the_new_session(env,
     sessions = await env.db.list_sessions()
     assert sessions and all(s.state == "stopped" for s in sessions)
     assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+    assert await env.db.get_task_meta("t", "supervisor_recovery_checkpoint") is None
     assert (await env.db.get_task("t")).status == TaskStatus.PAUSED
 
 

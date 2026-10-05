@@ -26,6 +26,15 @@ The scheduler, the release service, both abort paths, the operator control and
 ``stale``      nothing will ever end it.  The scheduler releases it on its next
                pass.
 
+The hour :data:`UNSEALED_GRACE_SECONDS` grants an accepted request assumes the
+seal is still queued *in this process*.  A restart drops that: the asyncio task
+executing the sealing run dies with it, nothing re-drives the run, and the
+request keeps coalescing every flush until the grace runs out.  That is an hour
+of frozen delivery per restart (agent-queue, 2026-10-04), so a caller that knows
+when its process began passes an :class:`OrphanGrace`: a request accepted before
+``since`` is given :data:`RESTART_ORPHAN_GRACE_SECONDS` instead, and the daemon
+frees it on its first pass after start.
+
 Releasing never touches Git or the batch row.  It clears the schedule's request
 (or turns a recorded catch-up into the next request, exactly as release does),
 deletes the ended batch's own fenced lease, and records the reason as an
@@ -80,9 +89,29 @@ _SETTLED_INTENT_STATES = ("committed", "conflict", "superseded")
 #: hour is twelve default sweep intervals: long past a queued playbook run,
 #: short enough that a seal which failed is recovered the same working session.
 UNSEALED_GRACE_SECONDS = 60 * 60
+#: The grace a request accepted *before this process started* gets instead of
+#: the hour.  Nothing this process started is sealing it, and a seal queued by the
+#: process that accepted it died with it, so waiting buys nothing.  The price is a
+#: run genuinely parked on a wait across the restart: its seal then refuses a
+#: request that is no longer outstanding and that run fails terminally.  One dead
+#: run against an hour of frozen delivery.
+RESTART_ORPHAN_GRACE_SECONDS = 0.0
 #: Verdicts an operator may release.  The scheduler releases only ``stale``.
 OPERATOR_RELEASABLE = frozenset({"stale", "unsealed"})
 RELEASED_EVENT = "integration.schedule_request_released"
+
+
+@dataclass(frozen=True, slots=True)
+class OrphanGrace:
+    """The grace given to a request accepted before ``since``, not the hour.
+
+    ``since`` is when the current process started.  A caller that does not know
+    -- a test, a one-shot CLI -- passes ``None`` to the classifier and keeps
+    :data:`UNSEALED_GRACE_SECONDS` for every accepted request.
+    """
+
+    since: float
+    seconds: float = RESTART_ORPHAN_GRACE_SECONDS
 
 
 class RequestChanged(RuntimeError):
@@ -133,11 +162,13 @@ async def classify_outstanding_request_on(
     *,
     now: float,
     lock: bool = False,
+    orphan_grace: OrphanGrace | None = None,
 ) -> OutstandingRequest:
     """Classify *schedule*'s outstanding request inside the caller's transaction.
 
     ``lock`` takes the batch and lease rows for update; a caller that will
-    release the request passes it, a read-only report does not.
+    release the request passes it, a read-only report does not.  ``orphan_grace``
+    narrows the seal grace for a request a restart may have orphaned.
     """
     request_id = schedule["outstanding_request_id"] if schedule is not None else None
     sequence = int(schedule["request_sequence"]) if schedule is not None else 0
@@ -185,7 +216,9 @@ async def classify_outstanding_request_on(
     }
 
     if batch is None:
-        verdict, reason, event = await _unsealed_verdict_on(conn, request_id, now)
+        verdict, reason, event = await _unsealed_verdict_on(
+            conn, request_id, now, orphan_grace=orphan_grace
+        )
         blockers = _foreign_lease(lease, None)
         if blockers and verdict in OPERATOR_RELEASABLE:
             return OutstandingRequest(
@@ -247,7 +280,11 @@ async def classify_outstanding_request_on(
 
 
 async def _unsealed_verdict_on(
-    conn: Any, request_id: str, now: float
+    conn: Any,
+    request_id: str,
+    now: float,
+    *,
+    orphan_grace: OrphanGrace | None = None,
 ) -> tuple[Verdict, str, dict[str, Any] | None]:
     row = (
         await conn.execute(
@@ -273,13 +310,18 @@ async def _unsealed_verdict_on(
         if event["last_error"]:
             detail += f" ({event['attempts']} attempt(s); last error: {event['last_error']})"
         return "in_flight", detail, event
-    age = max(0.0, now - float(event["delivered_at"]))
-    if age < UNSEALED_GRACE_SECONDS:
+    accepted_at = float(event["delivered_at"])
+    elapsed = max(0.0, now - accepted_at)
+    orphaned = orphan_grace is not None and accepted_at < orphan_grace.since
+    grace = orphan_grace.seconds if orphaned else UNSEALED_GRACE_SECONDS
+    age = int(elapsed)
+    origin = ", before this process started" if orphaned else ""
+    if elapsed < grace:
         return "unsealed", (
-            f"integration.sweep_due was accepted {int(age)}s ago but no batch is sealed yet"
+            f"integration.sweep_due was accepted {age}s ago{origin} but no batch is sealed yet"
         ), event
     return "stale", (
-        f"integration.sweep_due was accepted {int(age)}s ago and no batch was ever sealed"
+        f"integration.sweep_due was accepted {age}s ago{origin} and no batch was ever sealed"
     ), event
 
 
@@ -483,12 +525,14 @@ async def release_stale_request(
     dry_run: bool = False,
     expected_request_id: str | None = None,
     releasable: frozenset[str] = frozenset({"stale"}),
+    orphan_grace: OrphanGrace | None = None,
 ) -> dict[str, Any]:
     """Classify, and unless *dry_run* release, one project's outstanding request.
 
     Opens its own transaction and takes the hierarchy lock first, the order
     every other schedule writer uses.  ``releasable`` widens what may be
     released; the operator control passes :data:`OPERATOR_RELEASABLE`.
+    ``orphan_grace`` reaches the classifier; see :class:`OrphanGrace`.
     """
     async with db.immediate() as conn:
         await db.lock_hierarchy_project(conn, project_id)
@@ -505,7 +549,7 @@ async def release_stale_request(
             )
         ).mappings().one_or_none()
         state = await classify_outstanding_request_on(
-            conn, project_id, schedule, now=now, lock=not dry_run
+            conn, project_id, schedule, now=now, lock=not dry_run, orphan_grace=orphan_grace
         )
         result: dict[str, Any] = {
             "project_id": project_id,
@@ -585,7 +629,9 @@ __all__ = [
     "LIVE_LIFECYCLES",
     "OPERATOR_RELEASABLE",
     "RELEASED_EVENT",
+    "RESTART_ORPHAN_GRACE_SECONDS",
     "UNSEALED_GRACE_SECONDS",
+    "OrphanGrace",
     "OutstandingRequest",
     "RequestChanged",
     "RequestRelease",
