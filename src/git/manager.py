@@ -5642,7 +5642,11 @@ class GitManager:
         ]
 
     async def apatch_id(self, checkout_path: str, base: str, head: str) -> str | None:
-        """Stable id of the entire base-to-head change; an empty diff has no id."""
+        """Stable whole-change id, or None for an empty/oversized diff.
+
+        Patch comparison is an optional delivery proof. Keep its input within
+        the runner's byte limit so large histories can use other Git proofs.
+        """
         diff = await self.arun_git_result(
             ["--no-replace-objects", "diff", "--no-ext-diff", "--no-textconv",
              "--no-renames", "--binary", _validate_rev(base), _validate_rev(head), "--"],
@@ -5650,7 +5654,7 @@ class GitManager:
         )
         if diff.returncode:
             raise GitError(diff.stderr or "cannot read whole-source diff")
-        if not diff.stdout:
+        if not diff.stdout or len(diff.stdout.encode("utf-8")) > self._MAX_STDIN_BYTES:
             return None
         patch = await self.arun_git_result(
             ["patch-id", "--stable"], cwd=checkout_path, stdin=diff.stdout,

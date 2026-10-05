@@ -84,6 +84,14 @@ never substituted for immutable completion evidence.
 
 ## Complete replacements
 
+The git-first train may additionally prove a whole-source change through a
+stable patch ID or reachable full-tree equality. Patch-ID inputs exceeding the
+Git runner's byte bound are skipped, both for the source and historical target
+ranges; they are not missing provenance. A failed individual historical patch
+probe does not stop later probes or full-tree proof. If no proof matches, the
+resolved source remains pending. Invalid source/base identity and unavailable
+repository observations still fail closed as unknown.
+
 Delivery proof is ancestry of the exact final source in the inspected target,
 with Git replacement objects disabled. The metadata commit itself is never
 tested for containment. Multi-commit work, another generation's trailer, a
