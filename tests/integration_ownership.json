@@ -8115,6 +8115,36 @@
     },
     "src/api/target_scope.py::CONTEXT_TARGET_RESOLVERS[('decision_list', 'object_id')]": {
       "reason": "Registers tagged integration operator decision read ownership."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.claim_frontier_exclusions": {
+      "reason": "Frontier diagnostics evaluate sibling delivery predicates using the revalidated Git prerequisite view."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.count_ready_by_profile": {
+      "reason": "Pool demand counts use the project Git prerequisite view to admit delivered sibling dependencies."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.queries.hierarchy_queries import HIERARCHY_MODES, ProjectIntegrationMode, container_flag_exists, delivered_prerequisites_for_projects, delivered_same_parent_prerequisites_when_hierarchical, materialized_origin_when_hierarchical, never_leaseable_container": {
+      "reason": "Imports project-specific integration delivery predicates and the preserved-origin frontier fences."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin.hierarchy_runnable_task_ids": {
+      "reason": "Scheduler readiness applies preserved-origin and Git delivery predicates for sibling prerequisites."
+    },
+    "src/database/queries/hierarchy_queries.py::delivered_prerequisites_for_projects": {
+      "reason": "Selects each project's revalidated Git delivery predicate while retaining receipt admission for other modes."
+    },
+    "src/doctor/task_checks.py::_check_ready_frontier_exclusions": {
+      "reason": "Doctor frontier findings use the same revalidated Git prerequisite delivery view as scheduling and claims."
+    },
+    "src/orchestrator/core.py::Orchestrator.run_one_cycle": {
+      "reason": "Builds one revalidated Git prerequisite view per cycle and shares it across scheduling and pool measurement."
+    },
+    "src/orchestrator/pools.py::import from src.database.queries.hierarchy_queries import ProjectIntegrationMode": {
+      "reason": "Carries the project integration mode and verified prerequisite set into pool demand measurement."
+    },
+    "src/database/queries/claim_queries.py::claim_frontier_predicates": {
+      "reason": "Composes the claim frontier with project-specific Git prerequisite delivery predicates for shared diagnostic and admission readers."
+    },
+    "src/doctor/task_checks.py::import from src.database.queries.claim_queries import claim_frontier_predicates": {
+      "reason": "Imports the integration-owned frontier predicate composer used by doctor to report Git prerequisite delivery exclusions."
     }
   },
   "exclusions": {
@@ -14444,7 +14474,6 @@
     "src/database/queries/chat_queries.py::ChatQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/claim_queries.py::ClaimQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/claim_queries.py::FRONTIER_PREDICATE_DETAILS": "Generic dependency; integration-specific definitions in this file are charged independently.",
-    "src/database/queries/claim_queries.py::claim_frontier_predicates": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/claim_queries.py::numeric_meta_value": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/claim_queries.py::route_claimable_in": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/collaboration_lifecycle_queries.py::CollaborationLifecycleQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
