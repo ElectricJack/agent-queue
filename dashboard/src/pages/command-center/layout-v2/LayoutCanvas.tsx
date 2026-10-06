@@ -75,6 +75,20 @@ const RELATION_LABELS: Record<string, string> = {
   "discovered-from": "discovered-from",
 };
 
+/** The shell publishes the resolved preference on html. Observe it because
+ * theme changes need to update React Flow without remounting the graph. */
+function useGraphColorMode(): "dark" | "light" {
+  const read = () => document.documentElement.dataset.theme === "light" ? "light" : "dark";
+  const [mode, setMode] = useState<"dark" | "light">(read);
+  useEffect(() => {
+    const observer = new MutationObserver(() => setMode(read()));
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    setMode(read());
+    return () => observer.disconnect();
+  }, []);
+  return mode;
+}
+
 interface Viewport { x: number; y: number; zoom: number }
 
 function movable(node: Node): boolean {
@@ -216,6 +230,7 @@ function Inner(props: LayoutCanvasProps) {
     runningTarget, manualRunningTarget = false, onTaskClick,
     onBackgroundClick, selectedTaskId, playbooks = NO_PLAYBOOKS, selectedPlaybookId, onPlaybookClick,
   } = props;
+  const colorMode = useGraphColorMode();
   const { density, manualPositions, saveGraphPosition } = useGraphState();
   // Entering a container is the root view one level down: the same variant,
   // so "Show completed" still means what it says inside a container. The
@@ -661,7 +676,7 @@ function Inner(props: LayoutCanvasProps) {
   }
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col">
+    <div className="aq-task-graph flex h-full min-h-0 w-full flex-col bg-g-ground font-g text-g-text">
       {layerError && <p role="alert" className="shrink-0 border-b border-amber-800/50 bg-amber-950/30 px-4 py-2 text-sm text-amber-200">
         Could not load the graph. {layerError.message}{" "}
         <button type="button" className="underline" onClick={retryLayers}>Retry</button>
@@ -689,7 +704,7 @@ function Inner(props: LayoutCanvasProps) {
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
-          colorMode="dark"
+          colorMode={colorMode}
           onlyRenderVisibleElements
           defaultViewport={initialViewport}
           minZoom={0.15}
@@ -713,7 +728,7 @@ function Inner(props: LayoutCanvasProps) {
           onNodeDragStop={onNodeDragStop}
           onPaneClick={clearSelection}
         >
-          <Background gap={24} color="#1f2937" />
+          <Background gap={24} />
           <Controls position="bottom-right" showInteractive={false} />
           <AgentAvatarLayer agents={workers} />
           {relationTypes.length > 0 && (
@@ -735,12 +750,12 @@ function Inner(props: LayoutCanvasProps) {
             </Panel>
           )}
         </ReactFlow>
-        {pending && <div role="status" className="pointer-events-none absolute inset-0 flex items-center justify-center bg-gray-950/70 text-sm text-gray-300">Laying out…</div>}
+        {pending && <div role="status" className="pointer-events-none absolute inset-0 flex items-center justify-center bg-g-ground/70 text-sm text-g-muted">Laying out…</div>}
         {allLoaded && !pending && !layerError && nothingDrawn && <GraphScopeNotice
           requestedVariant={requestVariant} appliedVariant={(appliedVariant as Variant | null) ?? null}
           emptyReason={emptyReason} showCompleted={filters.showCompleted} onShowCompleted={setShowCompleted}
           hiddenFinishedCount={hiddenFinishedCount} showBanner={false}
-          emptyClassName="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center text-sm text-gray-500" />}
+          emptyClassName="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center text-sm text-g-muted" />}
       </div>
     </div>
   );
