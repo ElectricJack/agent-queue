@@ -323,7 +323,7 @@ async def test_local_lane_never_calls_attestation_publish(batch_env, monkeypatch
     from src.integration.train import TrainTarget
     from src.integration.train_sources import DaemonLanes
 
-    db, ops, repo, base, _, _, batch, members, _, _, snapshot, _ = batch_env
+    db, ops, repo, _, _, _, batch, members, _, _, snapshot, _ = batch_env
     monkeypatch.setattr(db, "get_repo", AsyncMock(return_value=SimpleNamespace(
         url=str(ops.git.remote_path), default_branch="main",
     )))
@@ -341,15 +341,14 @@ async def test_local_lane_never_calls_attestation_publish(batch_env, monkeypatch
         SimpleNamespace(validation="none", commands=()), "v1",
     )))
     lane = await lanes(TrainTarget("p", "r", batch.target_ref, "development"))
-    # No validation is a passing local gate; it still cannot publish an App check.
+    # No validation is a passing local gate; the local lane publishes without an App check.
     testing = await lane.service.visit(batch, members, await snapshot())
     await lane.checks.for_candidate(batch, testing.candidate_sha)
-    refused = await lane.service.visit(batch, members, await snapshot())
-    assert refused.state == "held"
-    assert refused.detail["outcome"] == "attestation_unavailable"
+    delivered = await lane.service.visit(batch, members, await snapshot())
+    assert delivered.state == "delivered"
     attestation.publish.assert_not_called()
     attestation._load_trust.assert_not_called()
-    assert git(ops.git.remote_path, "rev-parse", batch.target_ref) == base
+    assert git(ops.git.remote_path, "rev-parse", batch.target_ref) == testing.candidate_sha
 
 
 @pytest.mark.parametrize("change", ["hold", "candidate"])

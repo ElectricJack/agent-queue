@@ -531,7 +531,7 @@ class DaemonLanes:
             from src.integration.main_promotion import RootAttestationSubject
 
             attestation = getattr(self.orchestrator, "integration_attestation_service", None)
-            if local or attestation is None:
+            if attestation is None:
                 return "unavailable"
             exact = await checks.for_candidate(batch, candidate_sha)
             producer = None if exact is None else exact.provider.producer
@@ -545,7 +545,8 @@ class DaemonLanes:
             return (await attestation.publish(subject, producer=producer)).outcome
 
         service = BatchService(self.store, gitops, publish=self.publish,
-                               eligible=self.batches.eligible, gate=checks.gate, attest=attest)
+                               eligible=self.batches.eligible, gate=checks.gate,
+                               attest=None if local else attest, require_attestation=not local)
 
         async def snapshot() -> GitTruthSnapshot:
             return await self.truth.snapshot(

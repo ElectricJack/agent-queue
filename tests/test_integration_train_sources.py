@@ -1092,7 +1092,7 @@ async def development_train(world, tmp_path, monkeypatch, validation: str):
     return train, target
 
 
-async def test_development_lane_refuses_attestation_after_exact_candidate_job_passes(
+async def test_development_lane_publishes_without_attestation_after_exact_candidate_job_passes(
     world, tmp_path, monkeypatch,
 ):
     origin = world.origin
@@ -1109,34 +1109,34 @@ async def test_development_lane_refuses_attestation_after_exact_candidate_job_pa
     assert git(origin.url, "rev-parse", "refs/heads/main") == main
 
     await finish(world.db, job, exit_code=0)
-    refused = await train.visit(target)
-    assert (refused.state, refused.checks) == ("held", "green"), refused
-    assert refused.detail["outcome"] == "attestation_unavailable"
+    delivered = await train.visit(target)
+    assert (delivered.state, delivered.checks) == ("delivered", "green"), delivered
+    # The local-validation lane never attests; it publishes on its own gate.
     train.attestation_publisher.assert_not_called()
     tip = git(origin.url, "rev-parse", "refs/heads/main")
-    assert tip == main
-    assert git(origin.url, "merge-base", "--is-ancestor", a, testing.candidate_sha) == ""
+    assert tip == testing.candidate_sha
+    git(origin.url, "merge-base", "--is-ancestor", a, tip)
 
 
-@pytest.mark.parametrize("validation", ["focused", "advisory"])
-async def test_development_red_job_repairs_focused_and_refuses_advisory_attestation(
-    world, tmp_path, monkeypatch, validation,
+@pytest.mark.parametrize(("validation", "published"), [("focused", False), ("advisory", True)])
+async def test_development_red_job_repairs_focused_and_publishes_advisory(
+    world, tmp_path, monkeypatch, validation, published,
 ):
     origin = world.origin
     await completed(world, "a")
     train, target = await development_train(world, tmp_path, monkeypatch, validation)
     main = git(origin.url, "rev-parse", "refs/heads/main")
 
-    await train.visit(target)
+    testing = await train.visit(target)
     [job] = await job_rows(world.db)
     await finish(world.db, job, exit_code=1)
     after = await train.visit(target)
     tip = git(origin.url, "rev-parse", "refs/heads/main")
-    if validation == "advisory":
-        assert after.state == "held" and after.detail["outcome"] == "attestation_unavailable", after
+    if published:
+        assert after.state == "delivered" and tip == testing.candidate_sha, after
     else:
         assert (after.state, after.checks, after.repair["outcome"]) == ("repair", "red", "filed")
-    assert tip == main
+        assert tip == main
     train.attestation_publisher.assert_not_called()
 
 
