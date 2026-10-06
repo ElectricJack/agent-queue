@@ -840,6 +840,12 @@ class IntegrationStatusService:
                 "ci_not_triggered", missing_push["reason"], ref,
                 candidate_sha=visit.get("candidate_sha"), evidence=missing_push,
             ))
+        detail = visit.get("detail") or {}
+        if detail.get("blocker") == "candidate_failing_checks_unknown":
+            blockers.append(_blocker(
+                detail["blocker"], detail["reason"], ref,
+                candidate_sha=visit.get("candidate_sha"), evidence=detail,
+            ))
         if visit["state"] == "testing":
             code = "checks_red" if visit.get("checks") == "red" else "checks_pending"
             blockers.append(_blocker(

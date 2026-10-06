@@ -35,6 +35,14 @@ recorded stall's Git, check, tree-review and task-transition evidence.
   Every other target requires the hosted checks named by the frozen policy's
   `root.required_checks` (`parent.required_checks` for parent branches), from the
   trusted producer only.
+- **Check evidence.** Each cached check keeps its own conclusion, even when its
+  workflow fails. Baseline comparison uses those individual conclusions. A red
+  repair brief names the failing checks, links their jobs (or the workflow when a
+  job is unavailable), and includes failing test IDs reported in check output.
+  An unavailable target baseline still produces a brief naming the candidate's
+  failures, without attributing them to the batch. A failed workflow with no
+  identifiable failing required check blocks publication and repair allocation
+  with `candidate_failing_checks_unknown`.
 - **Repairs.** A red candidate's checks are refreshed once more first; a green
   result ends the repair with no attempt counted. A red candidate is then measured
   against the target commit it was built on: a failing required check the target

@@ -296,7 +296,10 @@ async def test_missing_target_checks_leave_candidate_failures_repairable(
     visit = await t.visit(ROOT)
 
     assert visit.state == "repair" and visit.checks == "red"
-    assert len(repair.calls) == 1 and repair.calls[0][1]["brief"] == ""
+    assert len(repair.calls) == 1
+    brief = repair.calls[0][1]["brief"]
+    assert "target baseline is unavailable" in brief
+    assert "  - unit" in brief and "  - lint" in brief
     assert visit.detail["baseline"] == {
         "state": "unavailable", "target_sha": TARGET, "target_checks": "red",
         "repairable_checks": ["lint", "unit"], "pre_existing_checks": [],
@@ -383,6 +386,130 @@ async def test_hosted_target_baseline_distinguishes_absent_checks_from_real_fail
     candidate_rows = await rows(db, CANDIDATE)
     assert len(candidate_rows) == 1
     assert candidate_rows[0]["conclusion"] == "failure" and candidate_rows[0]["run_id"] == "32"
+
+
+@pytest.mark.parametrize("baseline_kind", ["mixed", "missing", "unwired"])
+async def test_hosted_mixed_checks_reach_status_baseline_and_filed_repair_brief(db, baseline_kind):
+    """Observe both exact heads, cache the jobs, then read the actual filed task."""
+    from src.integration.repair import OrdinaryRepairService
+    from src.integration.status import IntegrationStatusService
+    from tests.test_integration_ci_producers import github
+
+    names = ("unit", "lint", "e2e")
+    candidate_client, trust = github(
+        app=False, names=names, job_conclusions=("failure", "failure", "success"),
+        run_conclusion="failure",
+    )
+    for record in [*candidate_client.checks, *candidate_client.workflows, *candidate_client.jobs]:
+        record["head_sha"] = CANDIDATE
+    candidate_client.workflows[0]["id"] = 32
+    for index, job in enumerate(candidate_client.jobs):
+        job["run_id"] = 32
+        job["html_url"] = f"https://github.com/acme/widgets/actions/runs/32/job/{job['id']}"
+        # Test IDs are already available in the authenticated check listing;
+        # obtaining the brief must not add per-check or log reads.
+        if index < 2:
+            node = f"tests/test_{names[index]}.py::test_failure[param with spaces]"
+            candidate_client.checks[index]["output"] = {
+                "summary": f"FAILED {node} - AssertionError",
+                "text": f"ERROR {node} - teardown failed",
+            }
+
+    target_client, _ = github(
+        app=False, names=names, job_conclusions=("failure", "success", "success"),
+        run_conclusion="failure",
+    )
+    if baseline_kind == "missing":
+        target_client.workflows[0]["conclusion"] = "success"
+        for record in [*target_client.checks, *target_client.jobs]:
+            record["name"] = "unrelated / " + record["name"]
+
+    async def paged_items(path, *, key):
+        source = candidate_client if CANDIDATE in path or "/runs/32/" in path else target_client
+        return await source.paged_items(path, key=key)
+
+    client = SimpleNamespace(
+        credential_identity=candidate_client.credential_identity,
+        paged_items=AsyncMock(side_effect=paged_items),
+    )
+    trust = trust.model_copy(update={"canonical_repository_id": "r"})
+    checks = ExactChecks(db, HostedChecks(HostedCIProducer(client, trust)), clock=Clock())
+    frozen_batch = await frozen(db, f"batch-mixed-{baseline_kind}")
+    repairs = OrdinaryRepairService(db)
+    baseline = (CandidateBaselineService(db, clock=Clock())
+                if baseline_kind != "unwired" else None)
+    t = train(checks, baseline=baseline, repair=repairs, frozen_batch=frozen_batch)
+
+    await t.tick()
+    await t.drain()
+    status = await IntegrationStatusService(db, git_first="active", train=t).train_status("p")
+
+    [visit] = status["targets"]
+    assert visit["state"] == "repair" and visit["checks"] == "red"
+    assert {row["check_name"]: row["conclusion"] for row in visit["check_runs"]} == {
+        "unit": "failure", "lint": "failure", "e2e": "success",
+    }
+    classified = visit["detail"]["baseline"]
+    if baseline_kind == "mixed":
+        assert classified["repairable_checks"] == ["lint"]
+        assert classified["pre_existing_checks"] == ["unit"]
+        assert {row["check_name"]: row["conclusion"] for row in await rows(db, TARGET)} == {
+            "unit": "failure", "lint": "success", "e2e": "success",
+        }
+    else:
+        assert sorted(classified["repairable_checks"]) == ["lint", "unit"]
+        assert classified["pre_existing_checks"] == []
+    assert classified["unproven_checks"] == []
+
+    task = await db.get_task(visit["repair"]["task_id"])
+    brief = task.description.partition("\n\nRepair the observed head on")[0]
+    assert brief.startswith(f"Required checks are red on candidate {CANDIDATE}")
+    assert {line.strip()[2:] for line in brief.splitlines() if line.startswith("  - ")} == {
+        "unit", "lint",
+    }
+    for index, name in enumerate(names[:2]):
+        assert candidate_client.jobs[index]["html_url"] in brief
+        node = f"tests/test_{name}.py::test_failure[param with spaces]"
+        assert brief.count(f"Failing test: {node}") == 1
+    assert "e2e" not in brief
+    if baseline_kind == "mixed":
+        assert "  - lint" in brief.split("pre-existing")[0]
+        assert "  - unit" in brief.split("pre-existing")[1]
+    else:
+        assert "target baseline is unavailable" in brief
+    assert (await repairs.input(task.id))["starting_sha"] == CANDIDATE
+    listings = [call.kwargs["key"] for call in client.paged_items.await_args_list]
+    assert listings.count("check_runs") == (1 if baseline_kind == "unwired" else 2)
+
+
+async def test_failed_workflow_without_failed_required_jobs_reports_named_blocker(db):
+    from src.integration.status import IntegrationStatusService
+    from tests.test_integration_ci_producers import github
+
+    client, trust = github(app=False, names=("unit", "lint"), run_conclusion="failure")
+    for record in [*client.checks, *client.workflows, *client.jobs]:
+        record["head_sha"] = CANDIDATE
+    trust = trust.model_copy(update={"canonical_repository_id": "r"})
+    checks = ExactChecks(db, HostedChecks(HostedCIProducer(client, trust)), clock=Clock())
+    frozen_batch = await frozen(db, "batch-unknown-failures")
+    repair = Repair()
+    t = train(checks, baseline=CandidateBaselineService(db, clock=Clock()), repair=repair,
+              frozen_batch=frozen_batch)
+
+    await t.tick()
+    await t.drain()
+    status = await IntegrationStatusService(db, git_first="active", train=t).train_status("p")
+
+    [visit] = status["targets"]
+    assert visit["state"] == "blocked" and visit["checks"] == "red"
+    assert all(row["conclusion"] == "success" for row in visit["check_runs"])
+    assert visit["detail"]["blocker"] == "candidate_failing_checks_unknown"
+    assert "candidate_failing_checks_unknown" in {blocker["code"] for blocker in status["blockers"]}
+    assert repair.calls == []
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_batches.c.repair_attempt_count).where(
+            integration_batches.c.id == frozen_batch.id,
+        ))).scalar_one() == 0
 
 
 async def test_a_pre_existing_failure_files_no_repair_and_rerequests(db):
@@ -492,7 +619,9 @@ async def test_a_train_without_a_baseline_service_repairs_exactly_as_before(db):
     visit = await t.visit(ROOT)
 
     assert visit.state == "repair" and len(repair.calls) == 1
-    assert repair.calls[0][1]["brief"] == ""
+    brief = repair.calls[0][1]["brief"]
+    assert "target baseline is unavailable" in brief
+    assert "  - unit" in brief and "  - lint" not in brief
     assert UnrecordedBaseline is not t.baseline
 
 
