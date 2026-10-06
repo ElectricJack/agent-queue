@@ -7927,6 +7927,33 @@ async def test_ordinary_repair_next_allocation_counts_once_and_has_no_ceiling(or
     assert (await env.store.get("ordinary")).repair_attempt_count == 101
 
 
+async def test_ordinary_repair_missing_completed_input_does_not_spend_a_successor(ordinary_env):
+    from sqlalchemy import delete
+
+    from src.database.tables import task_context
+
+    env = ordinary_env
+    first = await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+        authorize=AsyncMock(return_value=True),
+    )
+    await env.db.update_task(first["task_id"], status=TaskStatus.COMPLETED)
+    await env.locks.release((await env.locks.get(env.target)).grant())
+    # Archival removes context; there is no authoritative start to compare.
+    async with env.db.immediate() as conn:
+        await conn.execute(delete(task_context).where(task_context.c.id == first["task_id"]))
+    blocker = AsyncMock(return_value=None)
+    result = await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha="c" * 40,
+        authorize=AsyncMock(return_value=True), completion_blocker=blocker,
+    )
+    assert (result["outcome"], result["reason"], result["task_id"], result["attempt_count"]) == (
+        "blocked", "repair_input_unconfirmed", first["task_id"], 1,
+    )
+    blocker.assert_not_awaited()
+    assert (await env.store.get("ordinary")).repair_attempt_count == 1
+
+
 @pytest.mark.parametrize("lost", ["released", "expired"])
 async def test_ordinary_repair_replay_restores_detached_reservation_without_allocation(
     ordinary_env, lost,
@@ -8264,4 +8291,3 @@ async def test_ordinary_repair_keeps_normal_recovery_task_after_lease_expiry(ord
     assert {r["task_id"] for r in results} == {first["task_id"]}
     assert {r["outcome"] for r in results} == {"exists"}
     assert (await env.store.get("ordinary")).repair_attempt_count == 1
-

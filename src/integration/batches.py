@@ -375,6 +375,41 @@ class BatchService:
         return (await self._authorized(batch, members) and
                 await self.gitops.remote(repo, candidate_ref(batch.id)) == head_sha)
 
+    async def repair_completion_blocker(self, batch, task_id, starting_sha, snapshot):
+        """An unchanged close missing this target cannot spend another allocation.
+
+        Use the immutable completion source from the fetched Git snapshot: the
+        candidate ref may already have been reset to this rebuild's partial head.
+        A reported commit or the mutable candidate cannot prove the worker's delta.
+        """
+        from src.integration.delivery_truth import load_delivery_requests
+
+        requests = await load_delivery_requests(
+            self.store.db, (task_id,), repository_id=batch.repository_id,
+            target_ref=batch.target_ref, reduced=True,
+        )
+        request = requests.get(task_id)
+        repo = await self.gitops.repository(batch)
+        provenance = GitProvenance(self.gitops.git, str(repo.store),
+                                   repository_url=snapshot.observation.repository_url)
+        record = None
+        if request and request.completion_id:
+            record = await provenance.read_completion(
+                CompletionIdentity(batch.project_id, batch.repository_id, task_id,
+                                   request.completion_id),
+                refs=snapshot.observation.source_heads,
+            )
+        if record is None:
+            return {"reason": "repair_completion_unconfirmed", "task_id": task_id,
+                    "starting_sha": starting_sha, "target_sha": snapshot.target_oid}
+        completed = record["source_oid"]
+        if (completed == starting_sha
+            and not await self.gitops.is_ancestor(repo, snapshot.target_oid, completed)):
+            return {"reason": "repair_no_progress_missing_target", "task_id": task_id,
+                    "starting_sha": starting_sha, "completed_sha": completed,
+                    "target_sha": snapshot.target_oid}
+        return None
+
     async def visit(self, batch: Batch, members: Iterable[BatchMember], snapshot: GitTruthSnapshot):
         """Derive progress from this visit's fetched refs; never from legacy lifecycle."""
         from src.operator_decisions import OperatorDecisions
@@ -434,13 +469,13 @@ class BatchService:
                 if result["outcome"] != "merged":
                     logger.warning("integration batch %s build %s on %s: %s",
                                    batch.id, result["outcome"], batch.target_ref, result)
-                    if result["outcome"] == "conflict" and candidate is None:
+                    if result["outcome"] == "conflict":
                         # A conflict may follow successful member merges. Retain
                         # their exact head as the repair's start, through the same
                         # expected-old managed publisher as a complete candidate.
                         head = result["head"]
                         transferred = await self._transfer(
-                            batch, repo, ref, head, ZERO,
+                            batch, repo, ref, head, candidate or ZERO,
                             lambda: self._authorized(batch, members),
                         )
                         if transferred != "published":
@@ -448,6 +483,8 @@ class BatchService:
                                 **result, "repair_publication": transferred,
                                 "repair_start_sha": head,
                             })
+                        if candidate and candidate != head:
+                            result = {**result, "replaced_candidate_sha": candidate}
                         candidate = head
                     return BatchObservation(result["outcome"], candidate, target, detail=result)
                 head = result["head"]
