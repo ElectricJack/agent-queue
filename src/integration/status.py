@@ -834,6 +834,12 @@ class IntegrationStatusService:
             blockers.append(_blocker("repair_target_unconfirmed",
                                      "the repair starting head is not confirmed on its remote ref",
                                      ref, evidence=visit["repair"]))
+        missing_push = (visit.get("detail") or {}).get("ci_not_triggered")
+        if missing_push:
+            blockers.append(_blocker(
+                "ci_not_triggered", missing_push["reason"], ref,
+                candidate_sha=visit.get("candidate_sha"), evidence=missing_push,
+            ))
         if visit["state"] == "testing":
             code = "checks_red" if visit.get("checks") == "red" else "checks_pending"
             blockers.append(_blocker(
