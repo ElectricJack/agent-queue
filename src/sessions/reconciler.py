@@ -56,6 +56,7 @@ from src.sessions.exit_classifier import (
     Verdict,
     classify_exit,
 )
+from src.sessions.harness_registry import runs_cli
 from src.sessions.opencode_store import OpenCodeActivity, resolve_liveness_store
 from src.sessions.provider import (
     Cap,
@@ -66,7 +67,11 @@ from src.sessions.provider import (
     SessionHandle,
 )
 from src.sessions.provider_liveness import request_inflight
-from src.sessions.usage_limit_screen import USAGE_LIMIT_PEEK_LINES, match_usage_limit_screen
+from src.sessions.usage_limit_screen import (
+    USAGE_LIMIT_PEEK_LINES,
+    UsageLimitScreen,
+    detect_usage_limit_screen,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -902,7 +907,7 @@ class SessionReconciler:
         The usage-limit shape is also provider evidence, and this is the only
         place it is ever seen: the worker holds no task, so the stall ladder's
         limit-screen check never runs for it.  Before tearing down, the pane
-        is read (:meth:`_idle_pool_usage_limit_line`); on a match the recycle
+        is read (:meth:`_idle_pool_usage_limit_screen`); on a match the recycle
         records the same ``exit_rate_limit`` evidence a death on a usage limit
         would, so two such workers trip the provider rather than pool sizing
         relaunching into the same limit indefinitely.  There is nothing to
@@ -943,8 +948,8 @@ class SessionReconciler:
             if current is None or current.instance_token != observed.instance_token:
                 continue
             reason = "claim_loop_stalled"
-            line = await self._idle_pool_usage_limit_line(current)
-            if line is None:
+            screen = await self._idle_pool_usage_limit_screen(current)
+            if screen is None:
                 logger.warning(
                     "Pool session %s has not claimed for %.0fs (last result %s); recycling",
                     current.id,
@@ -958,19 +963,21 @@ class SessionReconciler:
                     "usage-limit screen (%r); recording a rate-limit exit and recycling",
                     current.id,
                     stall_seconds,
-                    line,
+                    screen.line,
                 )
                 availability = self._provider_availability()
                 if availability is not None:
-                    # Medium evidence, as a RATE_LIMIT exit verdict is: one
-                    # recycle only degrades the provider; two sessions trip it.
+                    # Broad limit messages need corroboration. An explicit
+                    # free-quota statement on a retry screen exhausts now.
                     await availability.record_rate_limit_exit(
                         current,
-                        reason=f"usage-limit screen on an idle pool worker: {line[:160]}",
+                        reason=f"usage-limit screen on an idle pool worker: {screen.line[:160]}",
+                        usage_exhausted=screen.usage_exhausted,
+                        resets_at=now + screen.retry_after if screen.retry_after else None,
                     )
             await self.orchestrator._terminate_pool_session(current, reason=reason)
 
-    async def _idle_pool_usage_limit_line(self, row: SessionRecord) -> str | None:
+    async def _idle_pool_usage_limit_screen(self, row: SessionRecord) -> UsageLimitScreen | None:
         """The limit line if an idle pool worker's pane is its usage-limit screen.
 
         Read after the recycle fence and before teardown, while the pane still
@@ -986,7 +993,16 @@ class SessionReconciler:
         provider = self._provider_for(row)
         if provider is None:
             return None
-        return match_usage_limit_screen(await self._peek(provider, row, USAGE_LIMIT_PEEK_LINES))
+        return await self._usage_limit_screen(provider, row)
+
+    def _runs_opencode(self, row: SessionRecord) -> bool:
+        return runs_cli("opencode", row.harness, self.harnesses, row.project_id)
+
+    async def _usage_limit_screen(self, provider, row: SessionRecord) -> UsageLimitScreen | None:
+        return detect_usage_limit_screen(
+            await self._peek(provider, row, USAGE_LIMIT_PEEK_LINES),
+            opencode=self._runs_opencode(row),
+        )
 
     # -- step 3: exits -----------------------------------------------------
 
@@ -1035,6 +1051,7 @@ class SessionReconciler:
                 peek,
                 now=now,
                 rapid_crash_window=float(self.sessions_config.restart_window_seconds),
+                opencode=self._runs_opencode(row),
             )
             await self._apply_verdict(provider, row, task, verdict, now)
 
@@ -1103,9 +1120,14 @@ class SessionReconciler:
         )
         availability = self._provider_availability()
         if verdict.verdict is Verdict.RATE_LIMIT and availability is not None:
-            # Medium evidence (provider-failover D2): pane text, so one exit
-            # alone only degrades the provider; two sessions trip it.
-            await availability.record_rate_limit_exit(row, reason=verdict.reason)
+            # Broad pane text needs two sessions (D2/D3). The strict retry
+            # screen can also carry an explicit quota statement and reset.
+            await availability.record_rate_limit_exit(
+                row,
+                reason=verdict.reason,
+                usage_exhausted=verdict.usage_exhausted,
+                resets_at=verdict.resets_at,
+            )
 
         if await self._apply_provider_failover(row, task, verdict, now):
             return
@@ -1899,7 +1921,8 @@ class SessionReconciler:
     # -- step 4: stall ladder ---------------------------------------------
 
     async def _exit_usage_limit_screen(
-        self, provider, row: SessionRecord, task, now: float
+        self, provider, row: SessionRecord, task, now: float,
+        *, screen: UsageLimitScreen | None = None,
     ) -> bool:
         """Take a stalled session parked on its usage-limit screen out as a ``RATE_LIMIT`` exit.
 
@@ -1928,8 +1951,8 @@ class SessionReconciler:
         failover = getattr(self.config, "provider_failover", None)
         if failover is None or not failover.enforcing:
             return False
-        line = match_usage_limit_screen(await self._peek(provider, row, USAGE_LIMIT_PEEK_LINES))
-        if line is None:
+        screen = screen or await self._usage_limit_screen(provider, row)
+        if screen is None:
             return False
         logger.warning(
             "Session %s (%s) on task %s is parked on a usage-limit screen (%r) after "
@@ -1937,7 +1960,7 @@ class SessionReconciler:
             row.id,
             row.name,
             row.task_id,
-            line,
+            screen.line,
             now - (row.last_activity or row.started_at),
         )
         try:
@@ -1955,8 +1978,10 @@ class SessionReconciler:
         await self.db.set_task_meta(row.task_id, META_STALL_LAST_ACTION, str(now))
         verdict = ExitVerdict(
             Verdict.RATE_LIMIT,
-            f"usage-limit screen on a stalled session: {line[:160]}",
-            cooldown_seconds=DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
+            f"usage-limit screen on a stalled session: {screen.line[:160]}",
+            cooldown_seconds=screen.retry_after or DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
+            usage_exhausted=screen.usage_exhausted,
+            resets_at=now + screen.retry_after if screen.retry_after else None,
         )
         await self._apply_verdict(provider, row, task, verdict, now)
         return True
@@ -1990,6 +2015,30 @@ class SessionReconciler:
             waiting, resumed = await self._wait_lease(row, now)
             if waiting:
                 continue
+            # OpenCode's retry countdown continuously repaints its pane. A
+            # blocking retry footer is positive evidence even when that
+            # activity clock is fresh and the remote backend has no probe.
+            failover = getattr(self.config, "provider_failover", None)
+            checked_limit = False
+            if self._runs_opencode(row) and failover is not None and failover.enforcing:
+                provider = self._provider_for(row)
+                if provider is not None:
+                    screen = await self._usage_limit_screen(provider, row)
+                    checked_limit = True
+                    fresh = await self._still_live(row) if screen is not None else None
+                    if (
+                        fresh is not None
+                        and fresh.state == "running"
+                        and fresh.instance_token == row.instance_token
+                        and fresh.task_id == row.task_id
+                        and fresh.claim_phase == row.claim_phase
+                    ):
+                        task = await self.db.get_task(row.task_id)
+                        if task is not None and task.status is TaskStatus.IN_PROGRESS:
+                            if await self._exit_usage_limit_screen(
+                                provider, row, task, now, screen=screen
+                            ):
+                                continue
             last = max(row.last_activity or row.started_at or 0.0, resumed)
             wedged: OpenCodeActivity | None = None
             if now - last <= ttl:
@@ -2020,7 +2069,7 @@ class SessionReconciler:
             if task is None or task.status is not TaskStatus.IN_PROGRESS:
                 continue
 
-            if await self._exit_usage_limit_screen(provider, row, task, now):
+            if not checked_limit and await self._exit_usage_limit_screen(provider, row, task, now):
                 continue
 
             # A provider with no input channel (subprocess) has nothing to

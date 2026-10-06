@@ -418,6 +418,19 @@ nothing is discarded to make a move possible. In `observe`/`off` mode the old
 behaviour stands: the task pauses 15 minutes, or a pool worker's task returns
 to the frontier with its pool key quarantined for that window.
 
+Live workers parked on a blocking usage screen take the same checkpoint and
+handoff path in enforce mode. OpenCode's free-usage retry footer is checked
+even while its countdown keeps repainting the pane: an explicit `Free limit
+reached` or `Free usage exceeded` retry status exhausts the provider, with
+the countdown used as its reset deadline. For example, `retrying in 15h 2m`
+keeps that provider unavailable for the stated window rather than the default
+15-minute backoff. A launch acknowledgement does not clear this deadline;
+fresh low usage evidence or the reset followed by a successful recovery
+canary does. Ordinary short server retries remain live; hour-long provider
+error retries require corroboration before exhausting the provider. An idle
+unclaimed pool worker records the same evidence when its guarded recycle
+runs in observe or enforce mode.
+
 ### When a provider runs out
 
 Each rate-limit exit, usage-limit or login screen, failed launch, usage reading

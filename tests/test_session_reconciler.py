@@ -50,6 +50,7 @@ from src.sessions.reconciler import (
     stall_reminder,
 )
 from tests.db_fixtures import lease_dsn
+from tests.test_usage_limit_screen import OPENCODE_LIMIT_PANE
 
 NOW = 1_000_000.0
 
@@ -348,6 +349,8 @@ class TestExitClassifier:
             "HTTP 429 Too Many Requests",
             "overloaded_error",
             "rate limit exceeded",
+            "Free limit reached",
+            "Free usage exceeded, subscribe to Go",
         ],
     )
     def test_rate_limit_text_wins_over_timing(self, text):
@@ -372,6 +375,13 @@ class TestExitClassifier:
 
         assert verdict.verdict is Verdict.DRAINED
         assert verdict.reason == "pool session intentionally stopped"
+
+    def test_dead_opencode_retry_carries_its_exhaustion_and_reset(self):
+        verdict = classify_exit(
+            self._row(), self._task(), OPENCODE_LIMIT_PANE, now=NOW, opencode=True
+        )
+        assert verdict.verdict is Verdict.RATE_LIMIT and verdict.usage_exhausted
+        assert verdict.resets_at == NOW + 15 * 3600 + 2 * 60
 
     def test_productive_death_outside_the_window(self):
         v = classify_exit(
@@ -3207,6 +3217,7 @@ class _Availability:
         self.unavailable = set(unavailable)
         self.rate_limit_exits: list[str] = []
         self.rate_limit_reasons: list[str] = []
+        self.rate_limit_details: list[tuple[bool, float | None]] = []
 
     def provider_for_harness(self, harness, project_id=None):
         return harness
@@ -3214,9 +3225,12 @@ class _Availability:
     def is_unavailable(self, provider, now=None):
         return provider in self.unavailable
 
-    async def record_rate_limit_exit(self, session, *, reason=""):
+    async def record_rate_limit_exit(
+        self, session, *, reason="", usage_exhausted=False, resets_at=None
+    ):
         self.rate_limit_exits.append(session.id)
         self.rate_limit_reasons.append(reason)
+        self.rate_limit_details.append((usage_exhausted, resets_at))
 
 
 class TestProviderAvailability:
@@ -3438,6 +3452,44 @@ class TestUsageLimitScreen:
         assert pool_reconciler.test_orch.provider_availability.rate_limit_exits == [row.id]
 
 
+    @pytest.mark.parametrize("mode", ["enforce", "observe", "off"])
+    async def test_opencode_retry_countdown_is_checked_even_with_fresh_pane_activity(
+        self, db, provider, config, registry, bus, mode
+    ):
+        config.provider_failover.mode = mode
+        rec, orch = self._reconciler(db, config, registry, bus)
+        rec.harnesses = HarnessRegistry()
+        rec.harnesses.upsert(Harness(id="opencode-zen", name="Zen", command="opencode"))
+        row = await self._parked(db, provider, text=OPENCODE_LIMIT_PANE, idle=0)
+        await db.update_session(row.id, harness="opencode-zen")
+
+        await rec.tick(now=NOW)
+
+        assert provider.sent_nudges == []
+        if mode == "enforce":
+            assert row.name not in provider.sessions
+            assert orch.provider_availability.rate_limit_details == [(True, NOW + 54120)]
+            assert (await db.get_task("t1")).status is TaskStatus.PAUSED
+        else:
+            assert row.name in provider.sessions
+            assert orch.provider_availability.rate_limit_exits == []
+
+    async def test_a_failed_opencode_stop_keeps_its_live_claim(
+        self, db, provider, config, registry, bus, monkeypatch
+    ):
+        async def fail_stop(*args, **kwargs):
+            raise RuntimeError("stop failed")
+
+        monkeypatch.setattr(provider, "stop", fail_stop)
+        rec, orch = self._reconciler(db, config, registry, bus)
+        row = await self._parked(db, provider, text=OPENCODE_LIMIT_PANE, idle=0)
+        await db.update_session(row.id, harness="opencode")
+        await rec.tick(now=NOW)
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert (await db.get_session(row.id)).state == "running"
+        assert orch.calls == [] and orch.provider_availability.rate_limit_exits == []
+
+
 # ---------------------------------------------------------------------------
 # Usage-limit screen on an idle pool worker (azure-ridge, provider-failover D2)
 # ---------------------------------------------------------------------------
@@ -3565,6 +3617,34 @@ class TestIdlePoolWorkerOnUsageLimitScreen:
             (first.id, "usage_limit_screen"),
             (second.id, "usage_limit_screen"),
         ]
+
+    @pytest.mark.parametrize("mode", ["observe", "enforce"])
+    async def test_idle_opencode_worker_exhausts_its_provider_before_recycle(
+        self, db, provider, pool_reconciler, mode
+    ):
+        pool_reconciler.config.provider_failover.mode = mode
+        harnesses = HarnessRegistry()
+        harnesses.upsert(Harness(id="opencode-zen", name="Zen", command="opencode"))
+        service = ProviderAvailabilityService(
+            db=db, config_getter=lambda: pool_reconciler.config,
+            harness_registry=harnesses, clock=lambda: NOW,
+        )
+        pool_reconciler.harnesses = harnesses
+        pool_reconciler.test_orch.provider_availability = service
+        row = await self._parked(
+            db, provider, pool_reconciler, text=OPENCODE_LIMIT_PANE, availability=False
+        )
+        await db.update_session(row.id, harness="opencode-zen")
+        row = await db.get_session(row.id)
+        try:
+            await pool_reconciler._step_abandoned_pool_claim_loop([row], NOW)
+            assert service.effective_state("opencode-zen") == EXHAUSTED
+            assert service.row("opencode-zen").until == NOW + 54120
+            assert service.suppresses("opencode-zen") == (mode == "enforce")
+            assert not service.suppresses("opencode")
+            assert pool_reconciler.test_orch.terminations == [(row.id, "usage_limit_screen")]
+        finally:
+            await service.close()
 
     async def test_with_failover_off_it_is_an_ordinary_stalled_claim_loop(
         self, db, provider, pool_reconciler
