@@ -16,7 +16,7 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any
 
 import yaml
@@ -38,10 +38,18 @@ from src.database.tables import (
     task_metadata,
     tasks,
 )
+from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, is_valid_git_oid
-from src.integration.batches import Batch, BatchMember, BatchObservation, BatchService, BatchStore
+from src.integration.batches import (
+    Batch, BatchMember, BatchObservation, BatchService, BatchStore, candidate_ref,
+)
 from src.integration.candidate_baseline import CandidateBaselineService
-from src.integration.ci import SubjectTrustError
+from src.integration.ci import (
+    AttestationError,
+    IntegrationTrustManifest,
+    SubjectTrustError,
+    select_trusted_attestation,
+)
 from src.integration.delivery_observer import DeliveryTarget, delivery_targets
 from src.integration.delivery_truth import DeliveryState, load_delivery_requests
 from src.integration.epics import EpicGraphReader, EpicPolicy, EpicReadinessEvaluator, HeadChecks
@@ -314,7 +322,7 @@ class DatabaseBatches:
         if current is not None:
             members = await service.store.members(current.id)
             # Old frozen inputs also stay out of duplicate epic publication.
-            if target.kind == "epic":
+            if target.kind == "epic" and not current.epic_sync:
                 delivered = await self.delivered(target, snapshot, [m.task_id for m in members])
                 if delivered:
                     blockers.append({
@@ -479,13 +487,17 @@ class DatabaseBatches:
             ))).scalars().all())
         if mode is None or mode[0] not in TRAIN_MODES or mode[1] != "ACTIVE":
             return False
+        if batch.epic_sync and await self.closed_epic_graph(TrainTarget(
+                batch.project_id, batch.repository_id, batch.target_ref, "epic")) is None:
+            return False
         requests = await load_delivery_requests(
             self.db, ids, repository_id=batch.repository_id, target_ref=batch.target_ref,
             reduced=True,
         )
         for task_id in ids:
             request, target = requests.get(task_id), routed.get(task_id)
-            if (task_id not in live or request is None or request.task_status != "COMPLETED" or
+            if ((not batch.epic_sync and task_id not in live)
+                    or request is None or request.task_status != "COMPLETED" or
                     target is None or
                     (target.repository_id, target.target_ref) !=
                     (batch.repository_id, batch.target_ref)):
@@ -497,6 +509,48 @@ class DatabaseBatches:
                                                    source=sources[task_id]):
                     return False
         return True
+
+    async def closed_epic_graph(self, target):
+        """Current closed-container identity, including archived/retired children."""
+        async with self.db._engine.connect() as conn:
+            ids = (await conn.execute(select(tasks.c.id).where(
+                tasks.c.project_id == target.project_id, tasks.c.status == "COMPLETED",
+                tasks.c.branch_name.in_((target.target_ref,
+                                        target.target_ref.removeprefix("refs/heads/"))),
+            ))).scalars().all()
+            if len(ids) != 1:
+                return None
+            graph = await EpicGraphReader(policy_on=epic_policy_on,
+                source_base_on=epic_source_base_on).read_on(conn, ids[0])
+        if (not graph.node(graph.epic_id).container
+                or graph.repository_id != target.repository_id or graph.project_holds
+                or any(node.holds or node.task_id != graph.node(graph.epic_id).parent_id
+                       and node.required and node.request.task_status != "COMPLETED"
+                       for node in graph.nodes)):
+            return None
+        return graph
+
+    async def sync_inputs(self, target, snapshot):
+        """Freeze collected exact children; never manufacture a child or reopen one."""
+        graph = await self.closed_epic_graph(target)
+        if graph is None:
+            return None
+        if graph.epic_id in await self.delivered(target, snapshot, [graph.epic_id]):
+            return None
+        members, requests = [], {}
+        for child in graph.children(graph.epic_id):
+            request = replace(child.request, target_ref=target.target_ref)
+            proof = await snapshot.is_delivered(request, source_base=child.source_base)
+            if proof.state is DeliveryState.NO_ARTIFACT:
+                continue
+            if proof.state is not DeliveryState.CONTAINED or not is_valid_git_oid(proof.source_oid):
+                return None
+            if child.container and proof.source_oid != snapshot.for_target(child.branch_ref).target_oid:
+                return None
+            members.append(BatchMember(child.task_id, proof.source_oid,
+                                       child.source_base or proof.source_oid))
+            requests[child.task_id] = request
+        return (members, requests) if members else None
 
     async def _epic_current_on(self, conn, task_id, generation, *, source=None) -> bool:
         """Recheck ordinary inputs and cached head/review verdicts at admission."""
@@ -816,10 +870,127 @@ class DaemonLanes:
             )
 
         complete_epic = None
+        sync_default_branch = None
+        sync_closed_epic = None
         if target.kind == "epic":
             complete_epic = self._epic_completion(target, binding)
+
+            async def sync_default_branch(batch, snapshot, candidate_sha, names):
+                return await self._default_branch_sync(
+                    target, retained, binding, policy, batch, snapshot, candidate_sha, names,
+                )
+
+            async def sync_closed_epic(snapshot):
+                if snapshot.error or not snapshot.target_oid:
+                    return None
+                inputs = await self.batches.sync_inputs(target, snapshot)
+                if inputs is None:
+                    return None
+                members, requests = inputs
+                identity = (target.key, snapshot.target_oid, tuple(
+                    (member.task_id, member.source_sha) for member in members))
+                batch = Batch("train-epic-sync-" + hashlib.sha256(repr(identity).encode()).hexdigest(),
+                              target.project_id, target.repository_id, target.target_ref,
+                              created_at=self.clock())
+                try:
+                    exact = await resolve(batch, snapshot.target_oid)
+                    if exact is None:
+                        return None
+                    from src.integration.checks import Conclusion
+                    from src.integration.subjects import HeadIdentity
+
+                    result = await exact.refresh(HeadIdentity(
+                        repository_id=target.repository_id, ref=target.target_ref,
+                        sha=snapshot.target_oid, generation=0,
+                    ))
+                    names = tuple(check.name for check in result.checks
+                                  if check.conclusion is Conclusion.FAILURE)
+                    if not names or not await sync_default_branch(
+                            batch, snapshot, snapshot.target_oid, names):
+                        return None
+                    frozen = await service.freeze(batch, members, requests=requests, snapshot=snapshot)
+                    return BatchSelection(frozen, await self.store.members(frozen.id))
+                except (AttestationError, GitHubAccessError, GitError, OSError, ValueError):
+                    return None
+
         return TrainLane(snapshot=snapshot, service=service, checks=checks,
-                         complete_epic=complete_epic)
+                         complete_epic=complete_epic, sync_default_branch=sync_default_branch,
+                         sync_closed_epic=sync_closed_epic)
+
+    async def _default_branch_sync(
+        self, target, retained, binding, policy, batch, snapshot, candidate_sha, names,
+    ) -> dict[str, Any] | None:
+        """An epic may merge only a verified current default head, once per batch.
+
+        Read the default ref from the same fetched snapshot as the candidate.
+        Its own policy and exact-tree trust govern fresh hosted checks. A known
+        root batch's fetched candidate at that same OID proves train production;
+        otherwise require the trusted App's exact-head attestation. Neither
+        cached green alone nor ancestry of an older green head suffices.
+        """
+        default_ref = _branch(retained.default_branch)
+        if target.kind != "epic" or target.target_ref == default_ref or not names:
+            return None
+        default = snapshot.for_target(default_ref)
+        sha = default.target_oid
+        if default.error or not is_valid_git_oid(sha):
+            return None
+        try:
+            if await self.git.ais_ancestor(str(retained.store), sha, candidate_sha, strict=True):
+                # The proposed fix is already in this candidate. Repeating the
+                # merge cannot repair it, even on a new repair generation.
+                return None
+            root = TrainTarget(target.project_id, target.repository_id, default_ref)
+            exact = await self._hosted(policy, binding, root, batch, sha)
+            if exact is None or not set(names) <= set(exact.required.names):
+                return None
+            from src.integration.checks import Conclusion
+            from src.integration.subjects import HeadIdentity
+
+            result = await exact.refresh(HeadIdentity(
+                repository_id=target.repository_id, ref=default_ref, sha=sha,
+                generation=batch.repair_attempt_count,
+            ))
+            rows = {check.name: check for check in result.checks}
+            if any(rows[name].conclusion is not Conclusion.SUCCESS for name in names):
+                return None
+            async with self.db._engine.connect() as conn:
+                root_batches = (await conn.execute(select(integration_batches.c.id).where(
+                    integration_batches.c.project_id == target.project_id,
+                    integration_batches.c.repository_id == target.repository_id,
+                    integration_batches.c.target_ref == default_ref,
+                ))).scalars().all()
+            produced = any(snapshot.for_target(candidate_ref(id_)).target_oid == sha
+                           for id_ in root_batches)
+            provenance = "train_candidate"
+            if not produced:
+                producer = exact.provider.producer
+                trust = producer.trust
+                if not isinstance(trust, IntegrationTrustManifest):
+                    return None
+                attestation = self.orchestrator.integration_attestation_service
+                records = await attestation._attestation_records(producer.client, trust, sha)
+                select_trusted_attestation(records, trust, expected_head_sha=sha)
+                provenance = "attestation"
+            merged = await self.git.arun_git_result(
+                ["--no-replace-objects", "merge-tree", "--write-tree", "--name-only", "-z",
+                 candidate_sha, sha], cwd=str(retained.store),
+            )
+            if merged.returncode not in {0, 1}:
+                raise GitError(merged.stderr or "default sync merge inspection failed")
+            decision = {"ref": default_ref, "sha": sha, "checks": sorted(names),
+                        "provenance": provenance}
+            if merged.returncode:
+                files = merged.stdout.split("\0\0", 1)[0].split("\0")[1:]
+                if not files:
+                    raise GitError("default sync conflict inspection did not name files")
+                decision["conflicting_files"] = sorted(set(files))
+            return decision
+        except (AttestationError, GitHubAccessError, GitError, OSError, ValueError):
+            # Unavailable or invalid default evidence never weakens the epic's
+            # existing human blocker or spends a repair attempt.
+            logger.info("integration batch %s default-branch sync evidence unavailable", batch.id)
+            return None
 
     def _epic_completion(self, target, binding):
         from src.integration.subjects import HeadIdentity

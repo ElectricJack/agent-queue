@@ -87,6 +87,8 @@ class OrdinaryRepairService:
 
     The train supplies a freshly observed head and trusted exact green SHA.
     Attempts guide policy/priority; they never limit allocation or green.
+    A default-branch sync is a single ordinary filing per batch, identified by
+    its dedup key; a spent sync returns to the pre-existing-failure blocker.
     Ordinary routing, claims, workspace recovery and task close own the worker
     lifecycle. The immutable task input is not a publication/recovery journal.
     """
@@ -103,6 +105,7 @@ class OrdinaryRepairService:
         intelligence_class: str | None = None, priority: int = 100,
         brief: str = "", ttl_seconds: float = 480,
         authorize: Callable[[], Awaitable[bool]] | None = None,
+        sync_default_branch: dict[str, Any] | None = None,
     ) -> dict:
         from src.integration.batches import candidate_ref
 
@@ -120,6 +123,7 @@ class OrdinaryRepairService:
             if target_ref not in {candidate_ref(batch_id), batch["target_ref"]}:
                 raise ValueError("repair target is not this batch's candidate or epic ref")
             attempt = batch["repair_attempt_count"]
+            sync_key = f"repair:{batch_id}:sync-default-branch"
 
             def answer(outcome, **detail):
                 return {"success": True, "outcome": outcome, "batch_id": batch_id,
@@ -154,7 +158,7 @@ class OrdinaryRepairService:
                     ).with_for_update())).mappings().one_or_none()
                     if current is not None:
                         break
-                if current and current["dedup_key"] != f"repair:{batch_id}:{attempt}":
+                if current and current["dedup_key"] not in {f"repair:{batch_id}:{attempt}", sync_key}:
                     raise ValueError("ordinary repair filing identity collision")
 
             owner = await self.locks.lock_on(conn, target)
@@ -201,6 +205,17 @@ class OrdinaryRepairService:
                             live_lease = True
                     return answer("exists", task_id=current_id,
                                   lease_expired=not live_lease)
+            if sync_default_branch:
+                # Ordinary filing identity survives archival. Keep the one-sync
+                # bound under the batch lock, across candidate generations and
+                # daemon restarts; never consume a second allocation for it.
+                for table in (tasks, archived_tasks):
+                    previous = await conn.scalar(select(table.c.id).where(
+                        table.c.project_id == batch["project_id"],
+                        table.c.dedup_key == sync_key,
+                    ))
+                    if previous:
+                        return answer("sync_exhausted", task_id=previous)
             if live_lease:
                 return answer("busy")
             # The train must prove a published exact start before a task can
@@ -221,6 +236,8 @@ class OrdinaryRepairService:
             repair_input = {"batch_id": batch_id, "attempt": attempt,
                             "repository_id": batch["repository_id"], "target_ref": target_ref,
                             "starting_sha": head_sha}
+            if sync_default_branch:
+                repair_input["sync_default_branch"] = dict(sync_default_branch)
             fence = await self.locks.acquire_on(
                 conn, target, task_id, ttl_seconds=ttl_seconds, role="repair",
             )
@@ -234,7 +251,7 @@ class OrdinaryRepairService:
                 task_type=TaskType.BUGFIX, priority=priority,
                 branch_name=target_ref.removeprefix("refs/heads/"),
                 class_hint=intelligence_class, created_by_kind="system", created_by_id=batch_id,
-                dedup_key=f"repair:{batch_id}:{attempt}",
+                dedup_key=sync_key if sync_default_branch else f"repair:{batch_id}:{attempt}",
             ), conn=conn, routing_policy=self.routing_policy)
             await conn.execute(insert(task_context).values(
                 id=task_id, task_id=task_id, type="snippet", label="Repair input",

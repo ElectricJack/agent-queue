@@ -34,6 +34,7 @@ from src.integration.batches import (
     candidate_ref,
 )
 from src.integration.attestation import IntegrationAttestationService
+from src.integration.candidate_baseline import BASELINE_BLOCKER, CandidateBaselineService
 from src.integration.ci import ATTESTATION_CHECK_NAME, IntegrationTrustManifest
 from src.integration.delivery_observer import DeliveryObserver
 from src.integration.git_truth import GitTruth
@@ -1388,6 +1389,297 @@ async def test_old_epic_workflow_files_repair_and_exact_push_then_delivers(colle
     assert case.trusts[-1][2]["names"] == ["unit"]
     for source in case.children:
         git(case.origin.url, "merge-base", "--is-ancestor", source, repaired)
+
+
+async def preexisting_epic_with_default_fix(case, *, provenance="train_candidate"):
+    """Deliver a default fix through the real train while the epic stays on its old base."""
+    case.train.baseline = CandidateBaselineService(case.db)
+    case.github.rerequest_check_suite = AsyncMock()
+    await completed(case.world, "default-fix")
+    root = await case.train.visit(MAIN)
+    assert root.state == "testing", root
+    case.github.runs[root.candidate_sha] = "success"
+    delivered = await case.train.visit(MAIN)
+    assert delivered.state == "delivered", delivered
+    main = delivered.target_sha
+    assert git(case.origin.url, "rev-parse", "aq/epic") == case.base
+    if provenance != "train_candidate":
+        git(case.origin.clone, "push", "origin", "--delete",
+            candidate_ref(root.batch_id).removeprefix("refs/heads/"))
+    if provenance != "attestation":
+        case.github.records.clear()
+    case.github.runs[case.base] = "failure"
+    testing = await case.train.visit(case.target)
+    assert testing.state == "testing", testing
+    case.github.runs[testing.candidate_sha] = "failure"
+    return main, testing
+
+
+@pytest.mark.parametrize("provenance", ["train_candidate", "attestation"])
+async def test_preexisting_epic_syncs_verified_default_and_requires_repaired_exact_ci(
+    collected_epic, provenance,
+):
+    """Main's fix authorizes one managed merge; only the repaired candidate can publish."""
+    case = collected_epic
+    main, testing = await preexisting_epic_with_default_fix(case, provenance=provenance)
+    visit = await case.train.visit(case.target)
+    assert (visit.state, visit.checks) == ("repair", "red"), visit
+    assert visit.detail["baseline"]["pre_existing_checks"] == ["unit"]
+    decision = visit.detail["sync_default_branch"]
+    assert decision == {"ref": MAIN.target_ref, "sha": main, "checks": ["unit"],
+                        "provenance": provenance, "outcome": "filed"}
+    task = await case.db.get_task(visit.repair["task_id"])
+    assert f"merge the pinned commit {main}" in task.description
+    assert "regenerated, never hand-merged" in task.description
+    assert "unchanged trusted required checks and attestation" in task.description
+    for child, source in zip(("child-a", "child-b"), case.children, strict=True):
+        assert f"{child} (source {source})" in task.description
+    repair_input = await case.train.repair.input(task.id)
+    assert repair_input["sync_default_branch"] == {
+        key: value for key, value in decision.items() if key != "outcome"
+    }
+    status = await IntegrationStatusService(
+        case.db, git_first="active", train=case.train,
+    ).control_status("p")
+    own = next(row for row in status["batches"] if row["id"] == testing.batch_id)
+    assert [row["task_id"] for row in own["repairs"]] == [task.id]
+    members = await BatchStore(case.db).members(testing.batch_id)
+    assert {member.source_sha for member in members} == set(case.children)
+    again = await case.train.visit(case.target)
+    assert (again.repair["outcome"], again.repair["task_id"], again.repair["attempt_count"]) == (
+        "exists", task.id, 1,
+    )
+    assert git(case.origin.url, "rev-parse", "aq/epic") == case.base
+    assert case.github.rerequest_check_suite.await_count == 0
+
+    # Act on the immutable brief, retaining both parents and every frozen member.
+    git(case.origin.clone, "checkout", "--detach", testing.candidate_sha)
+    git(case.origin.clone, "merge", "--no-ff", main, "-m", "Sync verified default fix")
+    repaired = git(case.origin.clone, "rev-parse", "HEAD")
+    locks = BranchLock(case.db)
+    fence = Fence.model_validate(visit.repair["fence"])
+    await locks.fenced_push(
+        fence, git=case.train.lane_for.git, checkout_path=str(case.origin.clone),
+        repository=GitHubRepositoryBinding(123, HostedGitHub.full_name),
+        tip_oid=repaired, expected_old_oid=testing.candidate_sha,
+    )
+    await locks.release(fence)
+    pending = await case.train.visit(case.target)
+    assert (pending.state, pending.candidate_sha) == ("testing", repaired)
+    assert git(case.origin.url, "rev-parse", "aq/epic") == case.base
+    assert all(record["head_sha"] != repaired for record in case.github.records)
+    case.github.runs[repaired] = "success"
+    delivered = await case.train.visit(case.target)
+    assert (delivered.state, delivered.checks) == ("delivered", "green"), delivered
+    assert git(case.origin.url, "rev-parse", "aq/epic") == repaired
+    assert case.github.records[-1]["head_sha"] == repaired
+    for source in (main, testing.candidate_sha, *case.children):
+        git(case.origin.url, "merge-base", "--is-ancestor", source, repaired)
+    assert await BatchStore(case.db).members(testing.batch_id) == members
+
+
+@pytest.mark.parametrize("reason", [
+    "main_red", "main_pending", "unproduced", "stale_attestation", "wrong_app",
+    "missing_required_name", "unproven_base",
+])
+async def test_preexisting_epic_keeps_human_blocker_without_verified_default_fix(
+    collected_epic, reason,
+):
+    case = collected_epic
+    provenance = "unproduced" if reason == "unproduced" else (
+        "attestation" if reason in {"stale_attestation", "wrong_app"} else "train_candidate"
+    )
+    main, testing = await preexisting_epic_with_default_fix(case, provenance=provenance)
+    if reason == "main_red":
+        case.github.runs[main] = "failure"
+    elif reason == "main_pending":
+        del case.github.runs[main]
+    elif reason == "stale_attestation":
+        moved = commit(case.origin.clone, {"new-default.txt": "unattested"}, base=main)
+        git(case.origin.clone, "push", "origin", f"{moved}:main")
+        case.github.runs[moved] = "success"
+    elif reason == "wrong_app":
+        case.github.records[-1]["app"] = {"id": 999}
+    elif reason == "missing_required_name":
+        async with case.db._engine.begin() as conn:
+            policy = await conn.scalar(select(projects.c.hierarchical_integration_policy).where(
+                projects.c.id == "p"))
+            policy["root"]["required_checks"]["names"] = ["other-check"]
+            await conn.execute(update(projects).where(projects.c.id == "p").values(
+                hierarchical_integration_policy=policy))
+    elif reason == "unproven_base":
+        del case.github.runs[case.base]
+    for _ in range(3):
+        visit = await case.train.visit(case.target)
+        assert visit.state == "preexisting" and visit.repair is None, visit
+        assert "sync_default_branch" not in visit.detail
+    assert visit.detail["re_request"]["blocker"] == BASELINE_BLOCKER
+    assert (await BatchStore(case.db).get(testing.batch_id)).repair_attempt_count == 0
+    assert git(case.origin.url, "rev-parse", "aq/epic") == case.base
+
+
+async def test_preexisting_epic_does_not_sync_default_already_in_candidate(collected_epic):
+    case = collected_epic
+    main, testing = await preexisting_epic_with_default_fix(case)
+    git(case.origin.clone, "checkout", "--detach", testing.candidate_sha)
+    git(case.origin.clone, "merge", "--no-ff", main, "-m", "Default already collected")
+    candidate = git(case.origin.clone, "rev-parse", "HEAD")
+    git(case.origin.clone, "push", "origin", f"{candidate}:{candidate_ref(testing.batch_id)}")
+    case.github.runs[candidate] = "failure"
+    visit = await case.train.visit(case.target)
+    assert visit.state == "preexisting" and visit.repair is None
+    assert "sync_default_branch" not in visit.detail
+    assert (await BatchStore(case.db).get(testing.batch_id)).repair_attempt_count == 0
+
+
+async def test_spent_default_sync_returns_to_bounded_human_blocker(collected_epic):
+    case = collected_epic
+    _, testing = await preexisting_epic_with_default_fix(case)
+    first = await case.train.visit(case.target)
+    await case.db.update_task(first.repair["task_id"], status=TaskStatus.COMPLETED)
+    await BranchLock(case.db).release(Fence.model_validate(first.repair["fence"]))
+    # Reconstruct the visit loop with only its durable ordinary repair identity.
+    previous = case.train
+    case.train = IntegrationTrain(
+        targets=previous.targets, batches=previous.batches, lane_for=previous.lane_for,
+        repair=OrdinaryRepairService(case.db), baseline=CandidateBaselineService(case.db),
+    )
+    for _ in range(3):
+        visit = await case.train.visit(case.target)
+        assert visit.state == "preexisting" and visit.repair is None
+        assert visit.detail["sync_default_branch"]["outcome"] == "sync_exhausted"
+    assert visit.detail["re_request"]["blocker"] == BASELINE_BLOCKER
+    assert (await BatchStore(case.db).get(testing.batch_id)).repair_attempt_count == 1
+
+
+@pytest.mark.parametrize("archived", [False, True])
+async def test_closed_epic_sync_after_abort_hands_code_conflicts_to_worker(collected_epic, archived):
+    """Reproduce the parked phase-3 shape without reopening delivered children."""
+    case = collected_epic
+    collected = await collect_epic(case)
+    if archived:
+        async with case.db._engine.begin() as conn:
+            await conn.execute(update(task_branch_origins).where(
+                task_branch_origins.c.task_id.in_(("child-a", "child-b")),
+            ).values(retired_at=time.time()))
+        for tid in ("child-a", "child-b"):
+            await case.db.archive_task(tid)
+    prior = Batch("aborted-epic-work", "p", "r", case.target.target_ref)
+    store = BatchStore(case.db)
+    members = [BatchMember(tid, source, case.base, order)
+               for order, (tid, source) in enumerate(zip(
+                   ("child-a", "child-b"), case.children, strict=True))]
+    await store.freeze(prior, members, trees={member.task_id: git(
+        case.origin.url, "rev-parse", f"{member.source_sha}^{{tree}}") for member in members})
+    await store.set_intent(prior.id, "aborted")
+    files = ["src/integration/service.py", "src/orchestrator/core.py",
+             "src/integration/development_runtime.py", "docs/specs/train.md"]
+    old = commit(case.origin.clone, {path: "epic code\n" for path in files}, base=collected)
+    git(case.origin.clone, "push", "origin", f"{old}:aq/epic")
+    fix = commit(case.origin.clone, {path: "default code\n" for path in files}, base=case.base)
+    await completed(case.world, "default-fix", head=fix)
+    root = await case.train.visit(MAIN)
+    assert root.state == "testing", root
+    case.github.runs[root.candidate_sha] = "success"
+    main = (await case.train.visit(MAIN)).target_sha
+    case.github.runs[old] = "failure"
+    case.train.baseline = CandidateBaselineService(case.db)
+    assert case.target in await DatabaseTargets(case.db).targets(time.time())
+    visit = await case.train.visit(case.target)
+    assert visit.state == "repair", visit
+    batch = await store.get(visit.batch_id)
+    assert batch.epic_sync and visit.batch_id != prior.id
+    frozen = await store.members(batch.id)
+    assert {member.source_sha for member in frozen} == set(case.children)
+    decision = visit.detail["sync_default_branch"]
+    assert decision["sha"] == main
+    assert decision["conflicting_files"] == sorted(files)
+    task = await case.db.get_task(visit.repair["task_id"])
+    assert task.parent_task_id is None
+    assert "Every frozen member is already merged" in task.description
+    assert "scripts/regenerate-generated.sh" in task.description
+    for path in files:
+        assert path in task.description
+    for member in frozen:
+        assert f"{member.task_id} (source {member.source_sha})" in task.description
+    # Inspection has neither resolved code nor moved the epic or its candidate.
+    assert git(case.origin.url, "rev-parse", "aq/epic") == old
+    assert visit.candidate_sha == old
+    again = await case.train.visit(case.target)
+    assert (again.repair["outcome"], again.repair["task_id"]) == ("exists", task.id)
+
+    # An ordinary worker merges and resolves the named source conflicts.
+    git(case.origin.clone, "checkout", "--detach", old)
+    merge = subprocess.run(["git", "merge", "--no-ff", main], cwd=case.origin.clone,
+                           capture_output=True, text=True)
+    assert merge.returncode == 1
+    assert set(git(case.origin.clone, "diff", "--name-only", "--diff-filter=U").splitlines()) == set(files)
+    for path in files:
+        (case.origin.clone / path).write_text("epic code\ndefault code\n")
+    git(case.origin.clone, "add", *files)
+    git(case.origin.clone, "commit", "-m", "Worker resolves default sync")
+    repaired = git(case.origin.clone, "rev-parse", "HEAD")
+    locks = BranchLock(case.db)
+    fence = Fence.model_validate(visit.repair["fence"])
+    await locks.fenced_push(
+        fence, git=case.train.lane_for.git, checkout_path=str(case.origin.clone),
+        repository=GitHubRepositoryBinding(123, HostedGitHub.full_name),
+        tip_oid=repaired, expected_old_oid=old,
+    )
+    await locks.release(fence)
+    assert (await case.train.visit(case.target)).state == "testing"
+    assert git(case.origin.url, "rev-parse", "aq/epic") == old
+    case.github.runs[repaired] = "success"
+    delivered = await case.train.visit(case.target)
+    assert delivered.state == "delivered", delivered
+    assert git(case.origin.url, "rev-parse", "aq/epic") == repaired
+    assert case.github.records[-1]["head_sha"] == repaired
+    for source in (old, main, *case.children):
+        git(case.origin.url, "merge-base", "--is-ancestor", source, repaired)
+    assert await store.members(batch.id) == frozen
+    assert (await store.get(prior.id)).intent == "aborted"
+    assert (await case.db.get_task("epic")).status is TaskStatus.COMPLETED
+    assert (await case.train.visit(case.target)).batch_id is None
+
+
+@pytest.mark.parametrize("reason", ["default_red", "hold", "spent", "aborted"])
+async def test_closed_epic_sync_remains_bounded_and_respects_holds(collected_epic, reason):
+    case = collected_epic
+    collected = await collect_epic(case)
+    await completed(case.world, "default-fix")
+    root = await case.train.visit(MAIN)
+    case.github.runs[root.candidate_sha] = "success"
+    main = (await case.train.visit(MAIN)).target_sha
+    case.github.runs[collected] = "failure"
+    case.train.baseline = CandidateBaselineService(case.db)
+    if reason == "default_red":
+        case.github.runs[main] = "failure"
+    elif reason == "hold":
+        await case.db.add_task_label("epic", "hold:operator")
+    if reason in {"default_red", "hold"}:
+        for _ in range(3):
+            visit = await case.train.visit(case.target)
+            assert visit.state == "blocked" and visit.batch_id is None and visit.repair is None
+        return
+    first = await case.train.visit(case.target)
+    assert first.state == "repair", first
+    await case.db.update_task(first.repair["task_id"], status=TaskStatus.COMPLETED)
+    await BranchLock(case.db).release(Fence.model_validate(first.repair["fence"]))
+    if reason == "aborted":
+        await BatchStore(case.db).set_intent(first.batch_id, "aborted")
+    previous = case.train
+    case.train = IntegrationTrain(
+        targets=previous.targets, batches=previous.batches, lane_for=previous.lane_for,
+        repair=OrdinaryRepairService(case.db), baseline=CandidateBaselineService(case.db),
+    )
+    for _ in range(3):
+        visit = await case.train.visit(case.target)
+        assert visit.batch_id == first.batch_id and visit.repair is None
+        assert visit.state == ("held" if reason == "aborted" else "preexisting"), visit
+    if reason == "spent":
+        assert visit.detail["re_request"]["blocker"] == BASELINE_BLOCKER
+    assert (await BatchStore(case.db).get(first.batch_id)).repair_attempt_count == 1
+    assert git(case.origin.url, "rev-parse", "aq/epic") == collected
 
 
 async def test_hosted_lane_missing_attestation_service_refuses_target_publication(world):
