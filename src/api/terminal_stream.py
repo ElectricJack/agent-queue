@@ -24,6 +24,11 @@ from src.api.auth import (
     request_operator_viewer,
     request_remote_dashboard_viewer,
 )
+from src.api.host_shell import (
+    HOST_SHELL_NO_BEARER,
+    HOST_SHELL_VIEWER_REQUIRED,
+    audit_host_shell,
+)
 from src.models import TaskStatus
 from src.sessions.host_shell import HostShellManager, is_host_shell_name
 from src.sessions.terminal_pty import TerminalAttachError
@@ -179,9 +184,9 @@ class TerminalStreamService:
             if not self.host_shell_enabled():
                 raise TerminalStreamError("Host shells are disabled", 4403)
             if token is not None:
-                raise TerminalStreamError("Host shells are for the local operator only", 4403)
+                raise TerminalStreamError(HOST_SHELL_NO_BEARER, 4403)
             if not self.host_shell_viewer(ws):
-                raise TerminalStreamError("Host shells are for the local operator only", 4403)
+                raise TerminalStreamError(HOST_SHELL_VIEWER_REQUIRED, 4403)
         scope = LOCAL_SCOPE
         if token is not None:
             if self.token_store is None:
@@ -268,6 +273,7 @@ class TerminalStreamService:
         current = asyncio.current_task()
         registered = False
         host_shell = is_host_shell_name(session_id)
+        audited = False
         try:
             self._check_origin(ws)
             token = self._credentials(ws)
@@ -287,6 +293,12 @@ class TerminalStreamService:
             row, generation = await self._session(session_id)
             await ws.accept(subprotocol=_PROTOCOL if _PROTOCOL in ws.scope.get("subprotocols", []) else None)
             accepted = True
+            if host_shell:
+                # Audit the accepted connection even if the attach backend fails.
+                audited = True
+                await audit_host_shell(
+                    self, ws, "input_connected" if input_only else "attached", session_id,
+                )
             provider = self.orchestrator.session_providers.create(row.provider)
             if input_only:
                 client = await self.attach_input(provider, row)
@@ -426,6 +438,10 @@ class TerminalStreamService:
                     await client.close()
             if registered:
                 self._handlers.discard(current)
+            if audited:
+                await audit_host_shell(
+                    self, ws, "input_disconnected" if input_only else "detached", session_id,
+                )
 
 
 def build_terminal_router(orchestrator, config, *, token_store=None, **kwargs) -> APIRouter:

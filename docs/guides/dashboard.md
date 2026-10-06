@@ -262,10 +262,14 @@ The flags are read per request; no restart is needed.
   DNS-rebound Host is refused, and a daemon with `api_auth.require_session_token: true`
   refuses host shells too.
 - **Audit.** Every open and close is logged (`aq.audit.host_shell`) and recorded as a
-  `host_shell.opened` / `host_shell.closed` event with the caller's identity:
+  `host_shell.opened` / `host_shell.closed` event. Accepted terminal sockets also record
+  `host_shell.attached` / `host_shell.detached`; input-only sockets record
+  `host_shell.input_connected` / `host_shell.input_disconnected`. Each log line and event
+  has a timestamp and the caller's identity:
   `local-operator (…)`, `local-operator via dashboard (peer …)` or
   `remote-dashboard-viewer (peer …)`, the peer being the browser's real address as the
-  dashboard server saw it.
+  dashboard server saw it. Disconnects include backend errors and shutdowns. Terminal
+  input is never audit-logged.
 - **Environment.** The shell starts from `env -i` with only `HOME`, `USER`, `LOGNAME`,
   `PATH`, locale and `TZ`, so no `AQ_*` agent or session token, DSN or daemon secret
   reaches it; tmux global variables are also removed for the session's later windows.
