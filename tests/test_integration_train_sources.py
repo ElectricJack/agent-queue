@@ -15,6 +15,7 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -32,7 +33,8 @@ from src.integration.batches import (
     BatchStore,
     candidate_ref,
 )
-from src.integration.ci import IntegrationCITrust
+from src.integration.attestation import IntegrationAttestationService
+from src.integration.ci import ATTESTATION_CHECK_NAME, IntegrationTrustManifest
 from src.integration.delivery_observer import DeliveryObserver
 from src.integration.git_truth import GitTruth
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
@@ -561,6 +563,7 @@ def lane(world, transport, *, regenerate=DEFAULT_REGENERATE_COMMAND):
             authority=SubjectGitAuthority(db, trusted_green=_never_trusted),
         ),
         publish=LeasedPublish(db, transport), eligible=batches.eligible, gate=candidates.gate,
+        attest=AsyncMock(return_value="published"),
     )
 
     async def lane_snapshot():
@@ -841,9 +844,10 @@ class HostedGitHub:
     full_name = "acme/widgets"
 
     def __init__(self):
-        self.credential_identity = GitHubCredentialIdentity.existing_login()
+        self.credential_identity = GitHubCredentialIdentity.app(101, 202)
         self.runs: dict[str, str] = {}
         self.observed: list[str] = []
+        self.records: list[dict] = []
 
     def _rows(self, sha):
         n = list(self.runs).index(sha) + 1
@@ -865,10 +869,18 @@ class HostedGitHub:
             return [self._rows(list(self.runs)[run - 31])[2]]
         sha = re.search(r"[0-9a-f]{40}", path).group(0)
         self.observed.append(sha)
+        if "check_name=Agent%20Queue%20Integration%20Attestation" in path:
+            return [record for record in self.records if record["head_sha"] == sha]
         if sha not in self.runs:
             return []
         check, run, _ = self._rows(sha)
         return [check] if key == "check_runs" else [run]
+
+    async def request_json(self, method, path, *, json_body, expected_statuses):
+        assert method == "POST" and expected_statuses == {201}
+        record = {"id": 7001 + len(self.records), "app": {"id": 101}, **json_body}
+        self.records.append(record)
+        return {"id": record["id"]}
 
 
 async def hosted_train(world, *, retained_store=None):
@@ -885,10 +897,12 @@ async def hosted_train(world, *, retained_store=None):
     async def load_trust(state, *, boundary):
         required = state["policy_snapshot"][boundary]["required_checks"]
         trusts.append((boundary, state["candidate_sha"], required))
-        return IntegrationCITrust(
+        return IntegrationTrustManifest(
+            schema="aq.integration-trust.v1",
             canonical_repository_id=state["canonical_repository_id"],
             repository_id=state["repository_numeric_id"],
-            full_name=state["repository_full_name"], producer_id="15368",
+            full_name=state["repository_full_name"], ci_producer_app_id=15368,
+            attestation_app_id=101, attestation_name=ATTESTATION_CHECK_NAME,
             required_checks=required,
         ), github
 
@@ -898,10 +912,15 @@ async def hosted_train(world, *, retained_store=None):
     async def store(repo_row):
         return retained_store or origin.clone
 
+    attestation = IntegrationAttestationService(
+        db, data_dir=origin.clone.parent, git_manager=LocalGit(Path(origin.url)),
+        github_client_factory=None,
+    )
+    attestation._load_trust = load_trust
     orchestrator = SimpleNamespace(
         db=db, git=LocalGit(Path(origin.url)), github_repository_binding_resolver=binding,
         development_integration=SimpleNamespace(store=store),
-        integration_attestation_service=SimpleNamespace(_load_trust=load_trust),
+        integration_attestation_service=attestation,
     )
     batches = DatabaseBatches(db)
     train = IntegrationTrain(
@@ -1001,6 +1020,9 @@ async def test_hosted_lane_publishes_only_the_exact_candidate_github_passed(worl
     assert (delivered.state, delivered.checks) == ("delivered", "green"), delivered
     tip = git(origin.url, "rev-parse", "refs/heads/main")
     assert tip == candidate
+    [attestation] = github.records
+    assert attestation["head_sha"] == candidate
+    assert attestation["name"] == ATTESTATION_CHECK_NAME
     git(origin.url, "merge-base", "--is-ancestor", a, tip)
 
 
@@ -1017,6 +1039,21 @@ async def test_hosted_red_candidate_files_one_repair_and_never_publishes(world):
     assert (red.state, red.checks) == ("repair", "red"), red
     assert (red.repair["outcome"], again.repair["outcome"]) == ("filed", "exists")
     assert again.repair["task_id"] == red.repair["task_id"]
+    assert git(origin.url, "rev-parse", "refs/heads/main") == main
+
+
+async def test_hosted_lane_missing_attestation_service_refuses_target_publication(world):
+    origin = world.origin
+    await completed(world, "a")
+    train, github, _ = await hosted_train(world)
+    main = git(origin.url, "rev-parse", "refs/heads/main")
+    testing = await train.visit(MAIN)
+    github.runs[testing.candidate_sha] = "success"
+    train.lane_for.orchestrator.integration_attestation_service = None
+    refused = await train.visit(MAIN)
+    assert refused.state == "held"
+    assert refused.detail["outcome"] == "attestation_unavailable"
+    assert github.records == []
     assert git(origin.url, "rev-parse", "refs/heads/main") == main
 
 
@@ -1042,6 +1079,7 @@ async def development_train(world, tmp_path, monkeypatch, validation: str):
         db=db, git=LocalGit(Path(origin.url)), _command_handler=jobs_handler(db, tmp_path),
         config=config, _load_playbook_artifact=load,
         github_repository_binding_resolver=binding, development_integration=SimpleNamespace(),
+        integration_attestation_service=SimpleNamespace(publish=AsyncMock()),
     )
     batches = DatabaseBatches(db)
     train = IntegrationTrain(
@@ -1050,10 +1088,11 @@ async def development_train(world, tmp_path, monkeypatch, validation: str):
     )
     [target] = await DatabaseTargets(db).targets(time.time())
     assert target.kind == "development"
+    train.attestation_publisher = orchestrator.integration_attestation_service.publish
     return train, target
 
 
-async def test_development_lane_publishes_only_after_its_exact_candidate_job_passes(
+async def test_development_lane_refuses_attestation_after_exact_candidate_job_passes(
     world, tmp_path, monkeypatch,
 ):
     origin = world.origin
@@ -1070,32 +1109,35 @@ async def test_development_lane_publishes_only_after_its_exact_candidate_job_pas
     assert git(origin.url, "rev-parse", "refs/heads/main") == main
 
     await finish(world.db, job, exit_code=0)
-    delivered = await train.visit(target)
-    assert (delivered.state, delivered.checks) == ("delivered", "green"), delivered
+    refused = await train.visit(target)
+    assert (refused.state, refused.checks) == ("held", "green"), refused
+    assert refused.detail["outcome"] == "attestation_unavailable"
+    train.attestation_publisher.assert_not_called()
     tip = git(origin.url, "rev-parse", "refs/heads/main")
-    assert tip == testing.candidate_sha
-    git(origin.url, "merge-base", "--is-ancestor", a, tip)
+    assert tip == main
+    assert git(origin.url, "merge-base", "--is-ancestor", a, testing.candidate_sha) == ""
 
 
-@pytest.mark.parametrize(("validation", "published"), [("focused", False), ("advisory", True)])
-async def test_development_red_job_repairs_focused_and_publishes_advisory(
-    world, tmp_path, monkeypatch, validation, published,
+@pytest.mark.parametrize("validation", ["focused", "advisory"])
+async def test_development_red_job_repairs_focused_and_refuses_advisory_attestation(
+    world, tmp_path, monkeypatch, validation,
 ):
     origin = world.origin
     await completed(world, "a")
     train, target = await development_train(world, tmp_path, monkeypatch, validation)
     main = git(origin.url, "rev-parse", "refs/heads/main")
 
-    testing = await train.visit(target)
+    await train.visit(target)
     [job] = await job_rows(world.db)
     await finish(world.db, job, exit_code=1)
     after = await train.visit(target)
     tip = git(origin.url, "rev-parse", "refs/heads/main")
-    if published:
-        assert after.state == "delivered" and tip == testing.candidate_sha, after
+    if validation == "advisory":
+        assert after.state == "held" and after.detail["outcome"] == "attestation_unavailable", after
     else:
         assert (after.state, after.checks, after.repair["outcome"]) == ("repair", "red", "filed")
-        assert tip == main
+    assert tip == main
+    train.attestation_publisher.assert_not_called()
 
 
 async def test_train_status_still_publishes_the_configuration_generation(world):

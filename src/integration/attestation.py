@@ -39,6 +39,7 @@ from src.git.manager import GitError
 from src.integration.ci import (
     TRUST_MANIFEST_PATH,
     AttestationError,
+    AttestationPayload,
     AuthenticatedGitHubObserver,
     CIService,
     CandidateCISubject,
@@ -51,6 +52,7 @@ from src.integration.ci import (
     is_numeric_producer_id,
     select_trusted_attestation,
 )
+from src.integration.ci_producers import HostedCIProducer
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
 from src.integration.main_promotion import RootAttestationProof, RootAttestationSubject
 from src.integration.repair import RepairService
@@ -111,9 +113,13 @@ class IntegrationAttestationService:
         # Refused subject trees by operation id, for ``aq integration status``.
         self._subject_trust: dict[str, dict[str, Any]] = {}
 
-    async def publish(self, subject: RootAttestationSubject) -> AttestationPublicationResult:
+    async def publish(
+        self, subject: RootAttestationSubject, *, producer: HostedCIProducer | None = None,
+    ) -> AttestationPublicationResult:
         if not isinstance(subject, RootAttestationSubject):
             raise TypeError("publish requires RootAttestationSubject")
+        if producer is not None:
+            return await self._publish_train(subject, producer)
         initial = await self._green_state(subject, allow_promoting=False)
         if initial is None:
             return AttestationPublicationResult(outcome="stale", subject=subject)
@@ -184,6 +190,40 @@ class IntegrationAttestationService:
             )
         if not await self._finish_publication(initial, claim, proof):
             return AttestationPublicationResult(outcome="stale", subject=subject)
+        return AttestationPublicationResult(outcome="published", subject=subject, proof=proof)
+
+    async def _publish_train(self, subject, producer) -> AttestationPublicationResult:
+        """Attest a git-first candidate without legacy candidate/progress rows."""
+        if not isinstance(producer, HostedCIProducer):
+            return AttestationPublicationResult(outcome="configuration_blocked", subject=subject)
+        trust = producer.trust
+        if not isinstance(trust, IntegrationTrustManifest):
+            return AttestationPublicationResult(outcome="configuration_blocked", subject=subject)
+        if (subject.repository_numeric_id, subject.repository_full_name,
+            subject.required_check_version) != (
+            trust.repository_id, trust.full_name, trust.required_checks.version,
+        ):
+            return AttestationPublicationResult(outcome="stale", subject=subject)
+        try:
+            identity = credential_identity_from_client(producer.client)
+            if (identity.mode is not GitHubCredentialMode.APP or
+                identity.app_id != trust.attestation_app_id):
+                return AttestationPublicationResult(outcome="configuration_blocked", subject=subject)
+            observer = AuthenticatedGitHubObserver(producer.client, expected_event="push")
+            observed = await observer.observe(trust, subject.candidate_sha)
+            if not isinstance(observed, TrustedCIObservation) or not isinstance(
+                observed.payload, AttestationPayload,
+            ):
+                return AttestationPublicationResult(outcome="not_green", subject=subject)
+            record_id = await observer.publish(trust, observed.payload)
+            records = await self._attestation_records(producer.client, trust, subject.candidate_sha)
+            proof = self._proof_from_records(records, trust, subject, {
+                "aggregate_external_id": observed.payload.external_id,
+            })
+            if proof is None or proof.check_run_id != record_id:
+                return AttestationPublicationResult(outcome="configuration_blocked", subject=subject)
+        except (AttestationError, GitHubAccessError, GitError, OSError, ValueError):
+            return AttestationPublicationResult(outcome="configuration_blocked", subject=subject)
         return AttestationPublicationResult(outcome="published", subject=subject, proof=proof)
 
     async def resolve(self, subject: RootAttestationSubject) -> RootAttestationProof | None:
