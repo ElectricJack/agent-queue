@@ -1417,7 +1417,7 @@
       ]
     }
   },
-  "digest": "sha256:db025887c72cb0727a0f573158c092e9902919526b4377bcd291011e6b7659df",
+  "digest": "sha256:8ebf4455ababb5e597ae6a2301ce82915126934ec1ad96451806326dd593587b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -12633,7 +12633,9 @@
         "src.sessions.launch",
         "src.sessions.provider"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "In-flight provider failures: requeue instead of pausing into a dead provider."
     },
     "tests/test_provider_intent.py": {
