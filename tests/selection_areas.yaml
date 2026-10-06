@@ -369,6 +369,7 @@ areas:
       - tests/test_integration_operator_decisions.py
       - tests/test_integration_train.py
       - tests/test_integration_train_sources.py
+      - tests/test_integration_stacked_branches.py
       - tests/test_integration_candidate_baseline.py
       - tests/test_integration_cutover.py
       - tests/test_integration_settling.py

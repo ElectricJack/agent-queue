@@ -224,6 +224,7 @@ class HierarchicalIntegrationPolicy(BaseModel):
     branchless_parent: Literal["skip", "declared", "verifier"]
     on_failed_child: Literal["block", "ask"]
     on_main_moved: Literal["rebuild", "wait"] = "rebuild"
+    prerequisite_branches: Literal["stacked", "wait-for-parent"] | None = None
     cleanup: IntegrationCleanupPolicy = Field(default_factory=IntegrationCleanupPolicy)
     max_wait_seconds: float = Field(
         default=DEFAULT_INTEGRATION_MAX_WAIT_SECONDS, gt=0, allow_inf_nan=False
@@ -236,6 +237,8 @@ class HierarchicalIntegrationPolicy(BaseModel):
         # Dumping the default would make every in-flight operation look
         # corrupt after an upgrade, so only a configured bound is written.
         dumped = handler(self)
+        if self.prerequisite_branches is None:
+            dumped.pop("prerequisite_branches", None)
         if self.max_wait_seconds == DEFAULT_INTEGRATION_MAX_WAIT_SECONDS:
             dumped.pop("max_wait_seconds", None)
         return dumped

@@ -43,14 +43,31 @@ refused while live subjects, owners or unresolved publication intents retain it.
 Policy routes must resolve to reviewed artifacts available to the project.
 Configuration changes never replace an in-flight subject's frozen artifact.
 
-A child with a completed `blocks` prerequisite under the same parent becomes
-claimable after Git proves the sibling's current work reached that parent.
-Workspace preparation merges the exact proven parent head into the child's
-branch under its managed writer fence before activation. Existing local and
-published child commits survive; the immutable filing origin stays unchanged.
-This uses the parent branch, even when the default branch has newer unrelated
-commits. Unknown or stale delivery evidence leaves the child unclaimable. A
-merge conflict fails preparation and preserves the child's committed work.
+The project policy `hierarchical_integration_policy.prerequisite_branches` accepts
+`stacked` or `wait-for-parent`. The `agent-queue` project defaults to `stacked`;
+other projects default to `wait-for-parent`.
+
+In stacked mode, a child with completed `blocks` prerequisites under the same
+parent can start as soon as Git proves their checkpointed heads on their own
+task branches. One prerequisite supplies the child's base directly; multiple
+prerequisites are merged over the epic head. The origin records this stack
+separately from its immutable filing base. Preparation preserves existing child
+commits under the managed writer fence. Scheduler, pool demand, explain and
+claim consume the same verified frontier rule.
+
+A batch carries prerequisites before their dependents, or proves the absent
+prerequisites already reached its target. It tests the exact combined candidate.
+Before batching an idle completed dependent, changed prerequisite heads are
+merged into its preserved branch and recorded as a new completion. Conflicts
+file an isolated repair task; the dependent stays withheld until the repair
+resolves and current heads are included. Reopened, abandoned or unproven
+prerequisites pause dependent delivery. A refreshed source gets a new batch;
+the former frozen candidate cannot publish it. Explicit batch pauses still hold.
+
+In wait-for-parent mode, Git must prove the sibling's current work reached the
+shared parent first. Preparation merges that exact parent head into the child.
+Both modes preserve the filing origin and exclude unrelated default-branch
+commits. Unknown or stale evidence leaves the child unclaimable.
 
 For an existing historical subject, `engine-transfer` and
 `development-engine-transfer` offer a forward-only audited transfer to

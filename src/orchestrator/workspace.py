@@ -651,7 +651,13 @@ class WorkspaceMixin:
         if origin is None or not origin.get("reserved") or not origin.get("materialized"):
             raise ValueError("exact branch origin is not materialized")
         canonical_base_sha = origin["base_sha"]
-        prerequisite_head = await self.db.hierarchy_prerequisite_delivery_head(task.id)
+        from src.integration.stacked_branches import StackedBranches
+
+        stack = await StackedBranches(self.db).prepare(task.id) if operation is None else None
+        prerequisite_head = (stack["base_sha"] if stack else
+                             await self.db.hierarchy_prerequisite_delivery_head(task.id))
+        if stack:
+            origin = dict(origin) | stack
         if prerequisite_head is not None:
             # Overlay the proven parent tip without changing the filing origin.
             # Existing child commits must survive this update, including retries.
@@ -868,6 +874,10 @@ class WorkspaceMixin:
                     workspace, origin, fence, repository_url=project.repo_url or ""
                 )
             if ws.is_slot:
+                if origin.get("stack_store"):
+                    await self.git._arun(
+                        ["fetch", "--no-tags", str(origin["stack_store"]), base_sha], cwd=workspace,
+                    )
                 if role == "repair":
                     base_sha = await self._hierarchy_repair_start(
                         workspace, origin, fence, repository_url=project.repo_url or ""
@@ -914,6 +924,10 @@ class WorkspaceMixin:
             if role == "repair":
                 base_sha = await self._hierarchy_repair_start(
                     workspace, origin, fence, repository_url=project.repo_url or ""
+                )
+            if origin.get("stack_store"):
+                await self.git._arun(
+                    ["fetch", "--no-tags", str(origin["stack_store"]), base_sha], cwd=workspace,
                 )
             if role == "worker" and origin.get("prerequisite_head"):
                 await self.git.aprepare_child_branch(workspace, branch, base_sha)
