@@ -557,6 +557,7 @@
         "tests/test_integration_stranded_children.py",
         "tests/test_parent_ci_publication.py",
         "tests/test_promotion_flow.py",
+        "tests/test_promotion_rulesets.py",
         "tests/test_repair_checkout_refs.py"
       ]
     },
@@ -1420,7 +1421,7 @@
       ]
     }
   },
-  "digest": "sha256:9a8473a962ad18886a6d43219ad09d227660090e85f638ca10dde43d475bc557",
+  "digest": "sha256:466b295b51136e11eb0303d7c7f1af1962e3eaf7e7798585c5b9da990b65b102",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -12498,6 +12499,30 @@
         "parametrize"
       ],
       "summary": "Dev-branch releases §3.1/§3.11: pure validation and its command surfaces."
+    },
+    "tests/test_promotion_rulesets.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.cli.app",
+        "src.commands.contracts",
+        "src.commands.contracts.models",
+        "src.commands.principal",
+        "src.commands.promote_commands",
+        "src.git.github_contracts",
+        "src.integration.app_mode",
+        "src.integration.promotion_steps",
+        "src.integration.protection",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Promotion protection and workflow configuration (revision 3 §3.8 / fidelity B11)."
     },
     "tests/test_prompt_builder.py": {
       "areas": [

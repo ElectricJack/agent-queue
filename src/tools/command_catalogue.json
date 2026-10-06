@@ -13873,6 +13873,63 @@
         }
       }
     },
+    "promote_rulesets": {
+      "name": "promote_rulesets",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "flow": {
+            "default": null,
+            "title": "Flow"
+          },
+          "use_stored": {
+            "default": true,
+            "title": "Use Stored",
+            "type": "boolean"
+          },
+          "remote": {
+            "default": false,
+            "title": "Remote",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "PromoteValidateArgs",
+        "type": "object"
+      }
+    },
     "promote_schema": {
       "name": "promote_schema",
       "description": "Authenticated hierarchical integration operational control.",

@@ -118,6 +118,7 @@ somehow declares none.
     "prime",
     "promote_schema",
     "promote_validate",
+    "promote_rulesets",
     "review_list",
     "review_attachment_add",
     "review_attachment_list",

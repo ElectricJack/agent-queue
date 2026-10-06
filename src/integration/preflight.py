@@ -210,6 +210,8 @@ async def daemon_functional_preflight(
         # blocker above names the cause.
         return FunctionalPreflight(blockers)
 
+    from src.integration.promotion_steps import read_stored_promotion_flow
+
     report = await app_mode.evaluate(
         app_mode.AppModeContext(
             project_id=project_id,
@@ -219,6 +221,7 @@ async def daemon_functional_preflight(
             client=client,
             identity=credential_identity,
             policy=policy,
+            promotion_flow=await read_stored_promotion_flow(orchestrator.db, project_id),
         )
     )
     return FunctionalPreflight([*blockers, *report.blockers], report.warnings)

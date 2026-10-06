@@ -8170,6 +8170,9 @@
     "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_validate": {
       "reason": "Read-only layered promotion-flow validation against designated-repository trust."
     },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_rulesets": {
+      "reason": "Read-only admin ruleset and workflow configuration derived from the validated promotion chain."
+    },
     "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_manifest": {
       "reason": "Reads committed integration trust for promotion-flow validation."
     },

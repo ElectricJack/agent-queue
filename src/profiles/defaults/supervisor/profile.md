@@ -204,6 +204,7 @@ start code work, tests or QA from a digest author turn.
     "prime",
     "promote_schema",
     "promote_validate",
+    "promote_rulesets",
     "provider_allocation_preview",
     "provider_allocation_status",
     "provider_held_tasks",

@@ -462,6 +462,255 @@ def flow_targets(flow: Any) -> list[str]:
     ]
 
 
+def promotion_rulesets(
+    flow: list[dict] | None, *, default_branch: str, app_id: int
+) -> list[dict]:
+    """The admin-owned branch and tag rulesets of revision 3 §3.8, in chain order.
+
+    Accept a normalized, validated flow. A bypass covers an entire ruleset,
+    so tag creation and immutability must always be separate.
+    """
+    branches = [(f"Train-only {default_branch}", default_branch, DEFAULT_ATTESTATION)]
+    branches += [
+        (f"Promotion-only {step['target']}", step["target"], step["gate"]["attestation"])
+        for step in flow or ()
+    ]
+
+    def ruleset(name: str, target: str, ref: str, rules: list[dict], bypass: list) -> dict:
+        return {
+            "name": name, "target": target, "enforcement": "active",
+            "conditions": {"ref_name": {"include": [ref], "exclude": []}},
+            "rules": rules, "bypass_actors": bypass,
+        }
+
+    result = [
+        ruleset(name, "branch", f"refs/heads/{branch}", [
+            {"type": "required_status_checks", "parameters": {
+                "strict_required_status_checks_policy": False,
+                "do_not_enforce_on_create": False,
+                "required_status_checks": [{"context": attestation, "integration_id": app_id}],
+            }},
+            {"type": "deletion"}, {"type": "non_fast_forward"},
+        ], [])
+        for name, branch, attestation in branches
+    ]
+    for step in flow or ():
+        versioning = step["versioning"]
+        if versioning["kind"] == "none":
+            continue
+        ref = "refs/tags/" + tag_glob(versioning["tag_format"])
+        result += [
+            ruleset(f"Promotion-tag creation ({step['id']})", "tag", ref,
+                    [{"type": "creation"}],
+                    [{"actor_id": app_id, "actor_type": "Integration", "bypass_mode": "always"}]),
+            ruleset(f"Promotion-tag immutability ({step['id']})", "tag", ref,
+                    [{"type": "update"}, {"type": "deletion"}, {"type": "non_fast_forward"}], []),
+        ]
+    return result
+
+
+async def read_stored_promotion_flow(db: Any, project_id: str) -> Any:
+    """Read the project column; lightweight injected databases may omit an engine."""
+    from sqlalchemy import select
+
+    from src.database.tables import projects
+
+    if getattr(db, "_engine", None) is None:
+        return None
+    async with db._engine.connect() as conn:
+        return (await conn.execute(
+            select(projects.c.promotion_flow).where(projects.c.id == project_id)
+        )).scalar_one()
+
+
+def promotion_workflow_triggers(flow: list[dict] | None, *, default_branch: str) -> dict:
+    """Copyable workflow event configuration derived from the same chain as protection."""
+    branches = [default_branch, *flow_targets(flow)]
+    return {
+        ".github/workflows/tests.yml": {
+            "pull_request": {
+                "branches": branches,
+                "types": ["opened", "synchronize", "reopened", "ready_for_review"],
+            },
+            "push": {"branches": ["aq/parent/**", "aq/integration/**",
+                                   "aq/batches/**", "aq/promote/**"]},
+        },
+        ".github/workflows/main-attestation.yml": {"push": {"branches": branches}},
+    }
+
+
+async def read_promotion_protection(
+    client: Any, binding: Any, flow: list[dict] | None, *, default_branch: str,
+    app_id: int, policy: Any = None,
+) -> dict:
+    """Read every chain branch and tag pair, never issuing a GitHub write.
+
+    A hidden bypass list cannot prove tag immutability or exclusive creation.
+    Such a pair is reported as unverifiable, never as an empty actor list.
+    """
+    from src.integration.protection import MAX_RULE_PAGES, read_protection
+
+    expected = promotion_rulesets(flow, default_branch=default_branch, app_id=app_id)
+    branches = []
+    for item in expected:
+        if item["target"] != "branch":
+            continue
+        branch = item["conditions"]["ref_name"]["include"][0].removeprefix("refs/heads/")
+        attestation = item["rules"][0]["parameters"]["required_status_checks"][0]["context"]
+        reading = await read_protection(
+            client, binding, branch, app_id=app_id, policy=policy, attestation_name=attestation,
+        )
+        branches.append({"branch": branch, "attestation": attestation, **reading.as_dict()})
+    warnings = []
+
+    def warn(code: str, message: str, **evidence: Any) -> None:
+        warnings.append({"code": code, "pointer": "", "layer": 4,
+                         "message": message, **evidence})
+
+    try:
+        root = f"/repositories/{binding.repository_id}"
+        summaries = await client.paged_list(
+            f"{root}/rulesets?includes_parents=true&per_page=100", max_pages=MAX_RULE_PAGES,
+        )
+        documents = []
+        for summary in summaries:
+            if not isinstance(summary, dict) or type(summary.get("id")) is not int:
+                raise ValueError("a ruleset summary has no numeric id")
+            document = await client.request_json("GET", f"{root}/rulesets/{summary['id']}")
+            if document.get("id") != summary["id"]:
+                raise ValueError("a ruleset answered another id")
+            documents.append(document)
+    except Exception as exc:  # noqa: BLE001 - provider boundary; unreadable is not missing
+        warn("ruleset_unverifiable", f"Remote rulesets could not be read: {type(exc).__name__}.")
+        return {"branches": branches, "tags": [], "warnings": warnings}
+
+    tags = []
+    for item in expected:
+        # Names identify the admin's copyable rulesets; semantic fields are
+        # compared too, so a disabled or repurposed namesake never passes.
+        candidates = [doc for doc in documents if doc.get("name") == item["name"]]
+        classification = "unverifiable"
+        if not candidates:
+            warn("ruleset_missing", f"Missing ruleset {item['name']!r}.", ruleset=item["name"])
+            classification = "missing"
+        elif len(candidates) != 1:
+            warn("ruleset_check_mismatch", f"Ambiguous ruleset {item['name']!r}.",
+                 ruleset=item["name"])
+        else:
+            observed = candidates[0]
+            # Order of rules and actors is immaterial. Unknown parameters or
+            # extra rules are drift; server-supplied metadata is ignored.
+            def canonical(entries: Any) -> Any:
+                import json
+
+                return sorted(json.dumps(entry, sort_keys=True) for entry in entries) \
+                    if isinstance(entries, list) else None
+
+            mismatch = any(observed.get(key) != item[key]
+                           for key in ("target", "enforcement", "conditions"))
+            mismatch |= canonical(observed.get("rules")) != canonical(item["rules"])
+            if "bypass_actors" in observed:
+                mismatch |= canonical(observed["bypass_actors"]) != canonical(item["bypass_actors"])
+            if mismatch:
+                classification = "mismatched"
+                warn("ruleset_check_mismatch", f"Ruleset {item['name']!r} differs from the flow.",
+                     ruleset=item["name"], ruleset_id=observed["id"])
+            elif "bypass_actors" not in observed:
+                warn("ruleset_unverifiable", f"Bypass actors of {item['name']!r} are hidden.",
+                     ruleset=item["name"], ruleset_id=observed["id"])
+            elif item["target"] == "tag":
+                classification = "tag_create_app_only" if item["bypass_actors"] else "tag_immutable"
+            else:
+                classification = "attested_only"
+        if item["target"] == "tag":
+            tags.append({"ruleset": item["name"], "classification": classification,
+                         "ref": item["conditions"]["ref_name"]["include"][0]})
+    for branch in branches:
+        if branch["classification"] != "attested_only":
+            code = "ruleset_unverifiable" if branch["classification"] == "unverifiable" \
+                else "ruleset_check_mismatch"
+            warn(code, f"Branch {branch['branch']!r} is "
+                 f"{branch['classification']}, expected attested_only.", branch=branch["branch"])
+    return {"branches": branches, "tags": tags, "warnings": warnings}
+
+
+def _workflow_accepts(event: Any, branch: str) -> bool:
+    """GitHub's ordered positive/negative branch filters, with slash-aware stars."""
+    if event is None:
+        return True
+    if not isinstance(event, dict) or event.get("paths") or event.get("paths-ignore"):
+        return False  # Required checks must run for every promotion source tree.
+
+    def matches(pattern: str) -> bool:
+        pattern = re.escape(pattern).replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
+        pattern = pattern.replace(r"\?", "[^/]")
+        return re.fullmatch(pattern, branch) is not None
+
+    include = event.get("branches")
+    excluded = event.get("branches-ignore", [])
+    if not isinstance(excluded, list) or not all(isinstance(p, str) for p in excluded):
+        return False
+    if any(matches(pattern) for pattern in excluded):
+        return False
+    if include is None:
+        return not event.get("tags") and not event.get("tags-ignore")
+    if not isinstance(include, list):
+        return False
+    accepted = False
+    for pattern in include:
+        if not isinstance(pattern, str):
+            return False
+        if matches(pattern.removeprefix("!")):
+            accepted = not pattern.startswith("!")
+    return accepted
+
+
+async def validate_promotion_remote(
+    client: Any, binding: Any, flow: list[dict] | None, *, default_branch: str, app_id: int,
+) -> dict:
+    """Layer-four ruleset and workflow warnings at the default's exact remote SHA."""
+    import yaml
+
+    from src.integration.app_mode import read_file_at
+
+    report = await read_promotion_protection(
+        client, binding, flow, default_branch=default_branch, app_id=app_id,
+    )
+    expected = promotion_workflow_triggers(flow, default_branch=default_branch)
+    warnings = report["warnings"]
+    try:
+        sha = await client.exact_head_ref(default_branch)
+        if not sha:
+            raise ValueError("the default branch is missing")
+        for path, events in expected.items():
+            raw = await read_file_at(client, binding, path, sha)
+            if raw is None and path.endswith("main-attestation.yml"):
+                raw = await read_file_at(client, binding, ".github/workflows/unattested-push.yml", sha)
+            document = yaml.safe_load(raw) if raw is not None else {}
+            triggers = document.get("on", document.get(True, {})) if isinstance(document, dict) else {}
+            for event, settings in events.items():
+                configured = triggers.get(event) if isinstance(triggers, dict) else None
+                present = event in triggers if isinstance(triggers, (dict, list)) else triggers == event
+                for branch in settings["branches"]:
+                    # Use a concrete nested ref to require ** rather than *.
+                    sample = branch.replace("**", "step/request")
+                    types = configured.get("types") if isinstance(configured, dict) else None
+                    if event == "pull_request" and types is None:
+                        types = ["opened", "synchronize", "reopened"]  # GitHub's default activity types.
+                    lifecycle = event != "pull_request" or (
+                        isinstance(types, list) and set(settings["types"]).issubset(types)
+                    )
+                    if not present or not lifecycle or not _workflow_accepts(configured, sample):
+                        warnings.append({"code": "workflow_trigger_missing", "pointer": "",
+                                         "layer": 4, "message": f"{path} lacks {event} for {branch}.",
+                                         "workflow": path, "event": event, "branch": branch})
+    except Exception as exc:  # noqa: BLE001 - unreadable workflow is never success
+        warnings.append({"code": "workflow_unverifiable", "pointer": "", "layer": 4,
+                         "message": f"Workflow triggers could not be read: {type(exc).__name__}."})
+    return {"protection": {key: report[key] for key in ("branches", "tags")},
+            "workflow_triggers": expected, "warnings": warnings}
+
+
 def flow_status(
     document: Any, *, default_branch: str | None, recorded: Any = ()
 ) -> dict[str, Any] | None:

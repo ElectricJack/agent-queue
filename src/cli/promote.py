@@ -43,7 +43,7 @@ def promote_schema(ctx: click.Context) -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="YAML or JSON flow; omit to validate the stored flow.",
 )
-@click.option("--remote", is_flag=True, help="Request remote checks (deferred to phase 2).")
+@click.option("--remote", is_flag=True, help="Read remote rulesets and workflow triggers.")
 @click.pass_context
 @_handle_errors
 def promote_validate(

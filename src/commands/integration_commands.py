@@ -1128,6 +1128,8 @@ class IntegrationCommandsMixin:
         refusal, inputs = await self._integration_app_inputs(args)
         if refusal is not None:
             return refusal
+        from src.integration.promotion_steps import read_stored_promotion_flow
+
         binding = inputs["binding"]
         report = await app_mode.evaluate(
             app_mode.AppModeContext(
@@ -1141,6 +1143,7 @@ class IntegrationCommandsMixin:
                 mode=getattr(inputs["project"], "hierarchical_integration_mode", None),
                 policy_path=args.get("policy_path") if args.get("policy") is not None else None,
                 repository_arg=args.get("repository_id") or None,
+                promotion_flow=await read_stored_promotion_flow(self.db, inputs["project_id"]),
             )
         )
         return {

@@ -118,6 +118,13 @@ class PromoteValidateValue(CommandValue):
     layer: int | None = None
     problems: tuple[dict[str, Any], ...] = ()
     warnings: tuple[dict[str, Any], ...] = ()
+    protection: dict[str, Any] | None = None
+    workflow_triggers: dict[str, Any] | None = None
+
+
+class PromoteRulesetsValue(PromoteValidateValue):
+    app_id: int | None = None
+    rulesets: tuple[dict[str, Any], ...] = ()
 
 
 class IntegrationAbortBatchArgs(CommandArgs):
@@ -1100,6 +1107,13 @@ PROMOTE_VALIDATE = _operational_contract(
     "promote_validate", PromoteValidateArgs, ("valid", "invalid", "not_found"),
     successes=frozenset({"valid"}), side_effect=SideEffectClass.READ,
     result_model=PromoteValidateValue,
+)
+
+# E1 read-only configuration registration, independent of promotion intents.
+PROMOTE_RULESETS = _operational_contract(
+    "promote_rulesets", PromoteValidateArgs, ("rulesets", "invalid", "not_found"),
+    successes=frozenset({"rulesets"}), side_effect=SideEffectClass.READ,
+    result_model=PromoteRulesetsValue,
 )
 
 INTEGRATION_STATUS = _operational_contract(
@@ -2701,6 +2715,13 @@ async def _promote_validate_adapter(args: PromoteValidateArgs, ctx: CommandConte
     )
 
 
+async def _promote_rulesets_adapter(args: PromoteValidateArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "promote_rulesets", args, ctx, PromoteRulesetsValue,
+        {"rulesets", "invalid", "not_found", "unauthorized"},
+    )
+
+
 async def _trust_manifest_adapter(
     args: IntegrationTrustManifestArgs, ctx: CommandContext | None
 ):
@@ -2969,6 +2990,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_STATUS, _status_adapter),
         (PROMOTE_SCHEMA, _promote_schema_adapter),
         (PROMOTE_VALIDATE, _promote_validate_adapter),
+        (PROMOTE_RULESETS, _promote_rulesets_adapter),
         (INTEGRATION_TRUST_MANIFEST, _trust_manifest_adapter),
         (INTEGRATION_APP_VERIFY, _app_verify_adapter),
         (INTEGRATION_EJECT, _eject_adapter),

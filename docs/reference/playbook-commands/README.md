@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-170 commands are registered.
+171 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -191,6 +191,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`object_loop_reconcile`](object_loop_reconcile.md) | Object Loop Reconcile | Coordinate a bounded, durable object evaluation round. |
 | [`object_loop_start`](object_loop_start.md) | Object Loop Start | Coordinate a bounded, durable object evaluation round. |
 | [`object_score_record`](object_score_record.md) | Object Score Record | Coordinate a bounded, durable object evaluation round. |
+| [`promote_rulesets`](promote_rulesets.md) | Promote Rulesets | Authenticated hierarchical integration operational control. |
 | [`promote_schema`](promote_schema.md) | Promote Schema | Authenticated hierarchical integration operational control. |
 | [`promote_validate`](promote_validate.md) | Promote Validate | Authenticated hierarchical integration operational control. |
 | [`provider_allocation_preview`](provider_allocation_preview.md) | Preview a provider worker allocation | Show what one provider allocation would change -- the selected profiles before and after, the provider-wide ceiling, the sessions it drains and the busy set an interrupt would need, the pins and manual agents it leaves alone -- with the token apply consumes, without changing anything. |

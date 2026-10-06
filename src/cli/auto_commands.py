@@ -36,6 +36,7 @@ HANDCRAFTED_COVERAGE = {
     "remove_task",
     "promote_schema",
     "promote_validate",
+    "promote_rulesets",
     # pool_provider.py mounts schema-generated status/apply in a nested group
     # and translates preview's operator flags into structured arguments.
     "provider_allocation_status",

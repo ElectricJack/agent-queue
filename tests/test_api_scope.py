@@ -98,6 +98,7 @@ EXPECTED_AGENT_COMMANDS = {
     # Promotion validation is read-only and pinned to the worker's project.
     "promote_schema",
     "promote_validate",
+    "promote_rulesets",
     "integration_resolve_candidate_member",
     "review_submit",
     "review_show",

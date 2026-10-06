@@ -307,7 +307,7 @@ def handler():
     return value
 
 
-async def test_command_validates_using_repository_default_and_reports_remote_gap():
+async def test_command_validates_using_repository_default_and_reports_unavailable_remote():
     value = handler()
     result = await value._cmd_promote_validate(
         {
@@ -318,7 +318,7 @@ async def test_command_validates_using_repository_default_and_reports_remote_gap
         }
     )
     assert result["success"] and result["valid"]
-    assert result["warnings"][0]["code"] == "not_implemented"
+    assert result["warnings"][0]["code"] == "remote_unverifiable"
     assert result["warnings"][0]["layer"] == 4
     value._promotion_manifest.assert_awaited_once()
 
