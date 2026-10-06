@@ -13,6 +13,13 @@ cannot decide anything: the baseline is requested and observed once before it is
 classified, and checks it has still not decided are unproven rather than assumed
 to be the batch's.
 
+A required check marked MISSING on the target is not an observed failure. The
+target may never have run the required workflow, as with a hand-pushed main whose
+only push workflow is attestation. Such a target has no comparable baseline, so
+the candidate's failing checks remain repairable. Missing candidate checks still
+fail the required set, and publication still requires trusted exact-candidate
+success.
+
 An unproven or pre-existing failure is never repaired.  The candidate's failing
 check suites are re-requested under bounded exponential backoff, exactly as
 source-CI infrastructure handling is, and the bound names the
@@ -20,9 +27,9 @@ source-CI infrastructure handling is, and the bound names the
 forever.  The counters are durable per exact candidate, so a repaired or moved
 candidate starts from zero, like its repair lineage.
 
-Comparison is a property of the checks provider, not of the batch: hosted checks
-have a target baseline to read (every push to the target ran its workflows), while
-local validation jobs only ever exist for candidates, so a lane whose provider
+Comparison is a property of the checks provider and the exact target's evidence,
+not of the batch: hosted checks can compare targets that ran the required checks,
+while local validation jobs only ever exist for candidates. A lane whose provider
 cannot compare a target keeps filing repairs exactly as before.
 """
 
@@ -42,9 +49,8 @@ from src.integration.subjects import HeadIdentity
 
 logger = logging.getLogger(__name__)
 
-#: The conclusions that make a required check red. ``MISSING`` is a required check
-#: the provider finished without producing, which fails the required set rather
-#: than deferring it.
+#: The conclusions that make a candidate's required check red. ``MISSING`` fails
+#: the candidate's required set, but cannot establish a pre-existing target failure.
 RED_CONCLUSIONS = frozenset({Conclusion.FAILURE, Conclusion.MISSING})
 
 #: Bounded re-requests of one exact candidate's checks, then a named blocker.
@@ -68,8 +74,9 @@ def failing(result: ChecksResult) -> tuple[str, ...]:
 class Baseline:
     """How the target's own verdict classifies a red candidate's failures.
 
-    ``unavailable`` means the target's checks could not be read at all, so no
-    claim is made about the candidate: every failure stays repairable.  Otherwise
+    ``unavailable`` means the provider cannot compare the target, or a required
+    target check is missing, so no claim is made about the candidate: every
+    failure stays repairable. Otherwise
     each failing check is ``repairable`` (the target succeeded it),
     ``pre_existing`` (the target failed it too) or ``unproven`` (the target has
     not decided it).
@@ -81,6 +88,7 @@ class Baseline:
     pre_existing: tuple[str, ...]
     unproven: tuple[str, ...]
     unavailable: bool = False
+    missing_target_checks: tuple[str, ...] = ()
 
     @property
     def state(self) -> str:
@@ -109,6 +117,10 @@ class Baseline:
                 "repairable_checks": list(self.repairable),
                 "pre_existing_checks": list(self.pre_existing),
                 "unproven_checks": list(self.unproven),
+                **({
+                    "reason": "target_required_checks_missing",
+                    "missing_target_checks": list(self.missing_target_checks),
+                } if self.missing_target_checks else {}),
             },
         }
 
@@ -119,13 +131,29 @@ def compare(candidate: ChecksResult, target: ChecksResult) -> Baseline:
     Pure, and comparable only because both results were produced by one trusted
     producer under one required-check version.
     """
+    missing = tuple(sorted(
+        check.name for check in target.checks
+        if check.name in target.required.names and check.conclusion is Conclusion.MISSING
+    ))
+    if missing:
+        # A completed push suite can establish absence without having run the
+        # required workflow. Do not infer that the target failed those checks.
+        return Baseline(
+            target_sha=target.sha,
+            target_state=str(target.state),
+            repairable=tuple(sorted(failing(candidate))),
+            pre_existing=(),
+            unproven=(),
+            unavailable=True,
+            missing_target_checks=missing,
+        )
     rows = {check.name: check for check in target.checks}
     repairable, pre_existing, unproven = [], [], []
     for name in failing(candidate):
         row = rows.get(name)
         if row is None:
             unproven.append(name)
-        elif row.conclusion in RED_CONCLUSIONS:
+        elif row.conclusion is Conclusion.FAILURE:
             pre_existing.append(name)
         elif row.conclusion is Conclusion.SUCCESS:
             repairable.append(name)

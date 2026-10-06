@@ -499,10 +499,11 @@ class IntegrationTrain:
             batch, candidate=result, target_sha=observation.target_sha, checks=checks,
         )
         if baseline.repair:
-            return await self._repair(
+            visit = await self._repair(
                 target, lane, batch, members, observation, result,
                 brief=red_brief(baseline, head.sha),
             )
+            return replace(visit, detail={**(visit.detail or {}), **baseline.detail()})
         _progress("rerequest_preexisting", candidate_sha=head.sha)
         re_requested = await self.baseline.re_request(
             batch, candidate=result, baseline=baseline, checks=checks,
