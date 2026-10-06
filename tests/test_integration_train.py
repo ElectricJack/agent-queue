@@ -238,7 +238,9 @@ async def test_red_candidate_allocates_one_repair_for_the_exact_head():
     assert (args["target_ref"], args["head_sha"], args["held"]) == (
         candidate_ref("batch-1"), CANDIDATE, False)
     assert await args["authorize"]()
-    assert args["brief"] == ""
+    assert args["brief"].startswith(f"Required checks are red on candidate {CANDIDATE}")
+    assert "target baseline is unavailable" in args["brief"]
+    assert "  - unit" in args["brief"]
 
 
 async def test_green_on_refresh_ends_repair_without_an_attempt():
