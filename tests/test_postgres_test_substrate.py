@@ -213,8 +213,8 @@ async def test_reset_restarts_used_identity_sequences():
         await conn.close()
 
 
-async def test_reset_leaves_planner_stats_as_a_truncate_did():
-    """Emptied tables must read as never vacuumed, as a truncate left them.
+async def test_reset_clears_relation_and_column_planner_stats():
+    """Emptied tables read as never vacuumed, without an earlier fixture's samples.
 
     VACUUM records them as vacuumed-empty (``reltuples = 0``), which turns off
     the planner's minimum-size guess for fresh tables: a table the next test
@@ -233,6 +233,10 @@ async def test_reset_leaves_planner_stats_as_a_truncate_did():
             "INSERT INTO tasks (id, project_id, title, description, created_at, updated_at) "
             "SELECT 't' || g, 'p1', 't', '', 0, 0 FROM generate_series(1, 500) g"
         )
+        await conn.execute("ANALYZE tasks")
+        assert await conn.fetchval(
+            "SELECT count(*) FROM pg_stats WHERE schemaname = 'public' AND tablename = 'tasks'"
+        ) > 0
     finally:
         await conn.close()
 
@@ -241,6 +245,9 @@ async def test_reset_leaves_planner_stats_as_a_truncate_did():
     conn = await db_fixtures._connect_admin(dsn)
     try:
         rows = [tuple(row) for row in await conn.fetch(stats)]
+        assert await conn.fetchval(
+            "SELECT count(*) FROM pg_stats WHERE schemaname = 'public' AND tablename = 'tasks'"
+        ) == 0
     finally:
         await conn.close()
     assert rows == [
@@ -248,6 +255,30 @@ async def test_reset_leaves_planner_stats_as_a_truncate_did():
         ("tasks", 0, -1.0),
         ("tasks_pkey", 0, -1.0),
     ]
+
+
+async def test_reset_clears_column_stats_from_an_already_empty_table():
+    """A fixture can delete its own rows after ANALYZE, before the pool reset."""
+    dsn = lease_dsn("empty-stats")
+    stats = (
+        "SELECT count(*) FROM pg_stats WHERE schemaname = 'public' AND tablename = 'projects'"
+    )
+    conn = await db_fixtures._connect_admin(dsn)
+    try:
+        await conn.execute("INSERT INTO projects (id, name, created_at) VALUES ('p1', 'p1', 0)")
+        await conn.execute("ANALYZE projects")
+        assert await conn.fetchval(stats) > 0
+        await conn.execute("DELETE FROM projects")
+    finally:
+        await conn.close()
+
+    await db_fixtures.reset_all(dsn)
+
+    conn = await db_fixtures._connect_admin(dsn)
+    try:
+        assert await conn.fetchval(stats) == 0
+    finally:
+        await conn.close()
 
 
 @pytest.mark.parametrize(
