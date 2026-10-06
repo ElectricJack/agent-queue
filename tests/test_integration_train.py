@@ -165,6 +165,25 @@ def test_target_rejects_unknown_kind_and_missing_fields():
         TrainTarget("p", "r", "main")
 
 
+async def test_promotion_target_visits_its_own_lane_and_keeps_a_step_snapshot():
+    step = {"id": "release", "target": "main", "gate": {"approval": "operator"}}
+    promotion = TrainTarget("p", "r", "refs/heads/main", "promotion", step=step)
+    development = TrainTarget("p", "r", "refs/heads/dev", "development")
+    step["gate"]["approval"] = "requester"
+    assert promotion.step_id == "release"
+    assert promotion.step["gate"]["approval"] == "operator"
+    t = train(Targets(development, promotion), Batches(), {
+        development.key: lane(Service()), promotion.key: lane(Service()),
+    })
+    started = await t.tick()
+    await t.drain()
+    assert len(started["started"]) == 2
+    assert {(row["target_ref"], row["kind"], row["state"]) for row in t.status()} == {
+        ("refs/heads/dev", "development", "idle"),
+        ("refs/heads/main", "promotion", "idle"),
+    }
+
+
 async def test_no_open_batch_is_idle_and_reports_the_fetched_target():
     t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service())})
     visit = await t.visit(ROOT)

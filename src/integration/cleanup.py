@@ -37,7 +37,7 @@ from src.database.tables import (
 )
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitError
-from src.integration.delivery_branches import branch_of, deletable
+from src.integration.delivery_branches import branch_of, deletable, repository_protected_branches
 
 
 logger = logging.getLogger(__name__)
@@ -360,8 +360,12 @@ class IntegrationCleanupService:
 
     async def _cleanup_remote_ref(self, row, repository, binding):
         short = self._short_head(row["target_ref"])
-        if short == repository.default_branch:
-            return "conflict", "default branch cleanup is forbidden"
+        async with self.db._engine.connect() as conn:
+            protected = await repository_protected_branches(
+                conn, row["repository_id"], default_branch=repository.default_branch,
+            )
+        if short in protected:
+            return "conflict", "protected branch cleanup is forbidden"
         if row["member_ordinal"] is not None:
             async with self.db._engine.connect() as conn:
                 owner = (
@@ -405,8 +409,12 @@ class IntegrationCleanupService:
 
     async def _cleanup_local_ref(self, row, repository):
         short = self._short_head(row["target_ref"])
-        if short == repository.default_branch:
-            return "conflict", "default branch cleanup is forbidden"
+        async with self.db._engine.connect() as conn:
+            protected = await repository_protected_branches(
+                conn, row["repository_id"], default_branch=repository.default_branch,
+            )
+        if short in protected:
+            return "conflict", "protected branch cleanup is forbidden"
         if self.git is None:
             return "retryable", "local cleanup transport is unavailable"
         store = str(self.retained_store(row["repository_id"]))
@@ -1031,6 +1039,10 @@ class IntegrationCleanupService:
             "updated_at": now,
         }
         items = []
+        repo = await self.db.get_repo(batch["repository_id"])
+        protected = await repository_protected_branches(
+            conn, batch["repository_id"], default_branch=repo.default_branch,
+        )
         for task_id, (row, ordinal) in sorted(descendants.items()):
             branch = branch_of(row["branch_name"])
             head = heads.get(task_id)
@@ -1038,7 +1050,7 @@ class IntegrationCleanupService:
                 ordinal not in delete_ordinals
                 or row["status"] != "COMPLETED"
                 or not branch
-                or not deletable(branch, "main")
+                or not deletable(branch, repo.default_branch, protected=protected)
                 or not head
             ):
                 continue
@@ -1302,6 +1314,10 @@ class SubjectCleanup:
         pending, retained, deleted, retention_deadlines = [], [], [], []
         try:
             repo = await self.gitops._repository(subject)
+            async with self.gitops.db._engine.connect() as conn:
+                protected = await repository_protected_branches(
+                    conn, subject.repository_id, default_branch=repo.default_branch,
+                )
             async with self.gitops.exclusion(repo.repository_id, subject):
                 await self.gitops.authority(subject)
                 items = await self.inventory(subject)
@@ -1314,7 +1330,8 @@ class SubjectCleanup:
                         item.failed_at + args.retain_failed_seconds
                         if item.failed_at is not None else 0
                     ))
-                    if (item.identity in {subject.target_ref, f"refs/heads/{repo.default_branch}"}
+                    if (item.identity == subject.target_ref
+                            or branch_of(item.identity) in protected
                             or item.successful_source and not args.delete_successful_sources
                             or self.clock() < deadline):
                         retained.append(item.identity)
