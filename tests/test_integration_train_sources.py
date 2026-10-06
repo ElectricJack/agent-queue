@@ -171,8 +171,11 @@ async def world(tmp_path):
 
 
 async def completed(world, tid, *, parent=None, needs=(), land=False, done=True,
-                    head=None) -> str:
-    """A task with a branch origin and, when *done*, a retained completion."""
+                    head=None, pr=True) -> str:
+    """A task with a branch origin and, when *done*, a retained completion.
+
+    Cleanup-only scenarios use ``pr=False`` for sources without a tracked PR.
+    """
     db, origin = world.db, world.origin
     await db.create_task(Task(
         id=tid, project_id="p", repo_id="r", title=tid, description="",
@@ -192,7 +195,7 @@ async def completed(world, tid, *, parent=None, needs=(), land=False, done=True,
         ))
     if done:
         await close(db, tid, [head], origin=origin)
-        if parent is None:
+        if parent is None and pr:
             url = f"https://github.com/acme/widgets/pull/{sum(tid.encode()) + 100}"
             await db.update_task(tid, pr_url=url)
             if hasattr(world, "github"):
@@ -731,8 +734,9 @@ async def test_promoted_train_cleans_refs_and_comments_only_repair_commits(world
     """Fidelity §6 tests 9 and 3: exact promotion cleanup and a reviewer-visible fix."""
     db, origin = world.db, world.origin
     sources = {tid: await completed(world, tid) for tid in ("a", "b")}
-    for tid in sources:
+    for number, tid in enumerate(sources, 1):
         origin.land(tid)
+        await db.update_task(tid, pr_url=f"https://github.com/test/repo/pull/{number}")
     start = git(origin.clone, "rev-parse", "HEAD")
     batch = await freeze_cleanup_batch(world, "train-clean", sources)
     git(origin.clone, "push", "origin", f"{start}:{candidate_ref(batch.id)}")
@@ -746,11 +750,6 @@ async def test_promoted_train_cleans_refs_and_comments_only_repair_commits(world
     locks = BranchLock(db)
     owner = await locks.get(BranchKey(repository_id="r", branch=candidate_ref(batch.id)))
     await locks.release(owner.grant())
-    async with db.immediate() as conn:
-        for number, tid in enumerate(sources, 1):
-            await conn.execute(update(tasks).where(tasks.c.id == tid).values(
-                pr_url=f"https://github.com/test/repo/pull/{number}",
-            ))
     forge = TrainCleanupForge(enumerate(sources.values(), 1))
     cleanup = train_cleanup(world, tmp_path, forge=forge)
     await publish_cleanup_candidate(world, batch, fix, cleanup=cleanup)
@@ -780,7 +779,7 @@ async def test_promoted_train_cleans_refs_and_comments_only_repair_commits(world
 
 
 async def test_promoted_train_bundles_rewritten_member_without_deleting_it(world, tmp_path):
-    head = await completed(world, "a", land=True)
+    head = await completed(world, "a", land=True, pr=False)
     batch = await freeze_cleanup_batch(world, "train-rewritten", {"a": head})
     promoted = git(world.origin.url, "rev-parse", "refs/heads/main")
     await publish_cleanup_candidate(world, batch, promoted)
@@ -796,7 +795,7 @@ async def test_promoted_train_bundles_rewritten_member_without_deleting_it(world
 
 
 async def test_first_advance_backfills_all_pending_promoted_train_batches(world, tmp_path):
-    sources = {tid: await completed(world, tid, land=True) for tid in "abcdefghijklmnopqrs"}
+    sources = {tid: await completed(world, tid, land=True, pr=False) for tid in "abcdefghijklmnopqrs"}
     promoted = git(world.origin.url, "rev-parse", "refs/heads/main")
     for tid, head in sources.items():
         # Before this change, freeze left both source identity fields null.
@@ -822,7 +821,7 @@ async def test_first_advance_backfills_all_pending_promoted_train_batches(world,
 
 
 async def test_promoted_train_cleanup_honors_retention_and_live_epic_target(world, tmp_path):
-    head = await completed(world, "epic", done=False)
+    head = await completed(world, "epic", done=False, pr=False)
     world.origin.land("epic")
     batch = await freeze_cleanup_batch(world, "train-open-epic", {"epic": head})
     promoted = git(world.origin.url, "rev-parse", "refs/heads/main")
@@ -851,7 +850,7 @@ async def test_promoted_train_cleanup_protects_open_subject_target(world, tmp_pa
         PolicyArtifactPin, Subject, SubjectKind, SubjectPhase, SubjectSchedule,
     )
 
-    head = await completed(world, "epic", land=True)
+    head = await completed(world, "epic", land=True, pr=False)
     batch = await freeze_cleanup_batch(world, "train-subject-target", {"epic": head})
     promoted = git(world.origin.url, "rev-parse", "main")
     await publish_cleanup_candidate(world, batch, promoted)
@@ -901,7 +900,7 @@ async def test_promoted_train_cleanup_uses_frozen_retry_policy(world, tmp_path):
     from src.database.tables import integration_cleanup_items
     from src.git.manager import GitError
 
-    head = await completed(world, "a", land=True)
+    head = await completed(world, "a", land=True, pr=False)
     async with world.db.immediate() as conn:
         await conn.execute(update(projects).where(projects.c.id == "p").values(
             hierarchical_integration_policy={"cleanup": {"max_attempts": 3,
@@ -943,7 +942,7 @@ async def test_promoted_train_cleanup_uses_frozen_retry_policy(world, tmp_path):
 async def test_promoted_train_cleanup_defers_to_writer_and_settles_delete_response(
     world, tmp_path, ambiguous,
 ):
-    head = await completed(world, "a", land=True)
+    head = await completed(world, "a", land=True, pr=False)
     batch = await freeze_cleanup_batch(world, "train-writer", {"a": head})
     promoted = git(world.origin.url, "rev-parse", "refs/heads/main")
     await publish_cleanup_candidate(world, batch, promoted)
