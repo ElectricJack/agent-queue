@@ -276,10 +276,14 @@ function Inner(props: LayoutCanvasProps) {
     });
   }, []);
 
+  const EDGE_STRIPES_ZOOM = 0.45;
   // A boolean, not the zoom: it flips once on the way past the threshold, so
   // the label rebuild happens on that crossing and not on every frame of a
   // pinch.
   const hideEdgeLabels = (viewport?.zoom ?? 1) < EDGE_LABEL_ZOOM;
+  // §3.3: stop animating the stripes when they stop being legible (zoom below
+  // 0.45) so the drift never costs a frame that isn't showing it anyway.
+  const stripesStatic = (viewport?.zoom ?? 1) < EDGE_STRIPES_ZOOM;
 
   // Projects stack vertically: each starts below the previous project's extent.
   const extents = useLayoutExtents(projectIds, requestVariant);
@@ -676,7 +680,7 @@ function Inner(props: LayoutCanvasProps) {
   }
 
   return (
-    <div className="aq-task-graph flex h-full min-h-0 w-full flex-col bg-g-ground font-g text-g-text">
+    <div className={`aq-task-graph flex h-full min-h-0 w-full flex-col bg-g-ground font-g text-g-text ${stripesStatic ? "aq-static-stripes" : ""}`}>
       {layerError && <p role="alert" className="shrink-0 border-b border-amber-800/50 bg-amber-950/30 px-4 py-2 text-sm text-amber-200">
         Could not load the graph. {layerError.message}{" "}
         <button type="button" className="underline" onClick={retryLayers}>Retry</button>
@@ -731,24 +735,25 @@ function Inner(props: LayoutCanvasProps) {
           <Background gap={24} />
           <Controls position="bottom-right" showInteractive={false} />
           <AgentAvatarLayer agents={workers} />
-          {relationTypes.length > 0 && (
-            <Panel position="bottom-left">
-              <details className="max-w-xs rounded border border-gray-700 bg-gray-950/95 px-3 py-2 text-[10px] text-gray-300">
-                <summary className="cursor-pointer">Dependencies · arrows point to dependent tasks</summary>
-                <ul className="mt-2 space-y-1">
-                  {relationTypes.map((type) => (
-                    <li key={type} className="flex items-center gap-2">
-                      <svg aria-hidden width="28" height="10">
-                        <path d="M0 5h25m-4-3 4 3-4 3" fill="none" style={edgeStyleForType(type)} />
-                      </svg>
-                      {RELATION_LABELS[type] ?? type}
-                    </li>
-                  ))}
-                </ul>
-                <p className="mt-2 text-gray-500">Parent/origin → child. ×N combines links from collapsed tasks.</p>
-              </details>
-            </Panel>
-          )}
+           {relationTypes.length > 0 && (
+             <Panel position="bottom-left">
+               {/* §2.3: one line, bottom-left, always visible — the dash
+                 * patterns carry the meaning (arrowheads take the stroke
+                 * colour), then a sentence about the arrow direction and ×N.
+                 */}
+               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-g-border bg-g-panel/95 px-3 py-1.5 text-[10px] text-g-muted">
+                 {relationTypes.map((type) => (
+                   <span key={type} className="flex items-center gap-1.5">
+                     <svg aria-hidden width="22" height="8">
+                       <path d="M0 4h18m-4-3 4 3-4 3" fill="none" style={edgeStyleForType(type)} />
+                     </svg>
+                     {RELATION_LABELS[type] ?? type}
+                   </span>
+                 ))}
+                 <span className="text-g-dim">arrows point to the dependent task · ×N folds links from hidden tasks</span>
+               </div>
+             </Panel>
+           )}
         </ReactFlow>
         {pending && <div role="status" className="pointer-events-none absolute inset-0 flex items-center justify-center bg-g-ground/70 text-sm text-g-muted">Laying out…</div>}
         {allLoaded && !pending && !layerError && nothingDrawn && <GraphScopeNotice

@@ -281,7 +281,7 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext, previous?: 
       // A `discovered-from` edge is provenance, not a dependency: it draws
       // as a quiet dashed annotation (edgeStyleForType) with no arrowhead,
       // so it never reads as another blocker line.
-      markerEnd: e.dep_type === "discovered-from" ? undefined : { type: MarkerType.ArrowClosed },
+      markerEnd: e.dep_type === "discovered-from" ? undefined : { type: MarkerType.ArrowClosed, color: "var(--g-edge)" },
       style: edgeStyleForType(e.dep_type), data: { depType: e.dep_type },
     };
     cache.edges.set(id, { sig, edge });

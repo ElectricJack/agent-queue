@@ -107,6 +107,27 @@
   --xy-controls-box-shadow: var(--g-shadow);
 }
 
+/* §3.3 stripes: an in-progress card wears faint diagonal stripes that drift
+   slowly so the running state is visible without stealing attention. The
+   canvas flips `.aq-static-stripes` on while zooming is low (below ~0.45)
+   or more than ~60 striped cards are on screen, so the animation never
+   becomes the most expensive frame on the page; it also stops under
+   `prefers-reduced-motion`. */
+[data-task-card].aq-stripe {
+  background-image: repeating-linear-gradient(
+    135deg, var(--g-stripe) 0 9px, transparent 9px 20px
+  );
+  background-repeat: repeat;
+  animation: aq-stripe-drift 2.8s linear infinite;
+}
+@keyframes aq-stripe-drift {
+  to { background-position: 28px 0; }
+}
+.aq-task-graph.aq-static-stripes [data-task-card].aq-stripe { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  [data-task-card].aq-stripe { animation: none; }
+}
+
 [data-theme="light"] .aq-task-graph {
   color-scheme: light;
 }

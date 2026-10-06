@@ -17,8 +17,8 @@ interface Props {
 }
 
 const VARIANT_CLASS = {
-  strip: "flex min-h-7 border-t border-violet-400/40 px-2 text-[10px]",
-  chip: "flex max-w-[14rem] rounded border border-violet-400/60 px-1 text-[9px]",
+  strip: "flex min-h-7 border-t border-g-accent/40 px-2 text-[10px]",
+  chip: "flex max-w-[14rem] rounded border border-g-accent/60 px-1 text-[9px]",
 } as const;
 
 /**
@@ -39,13 +39,13 @@ export function ReviewWaitBadge({ waits, variant = "strip" }: Props) {
       data-review-wait={first.blocking ? "blocking" : "released"}
       aria-label={more > 0 ? `${describe(first)} (${more} more)` : describe(first)}
       title={title}
-      className={`nodrag nopan ${VARIANT_CLASS[variant]} shrink-0 items-center gap-1 bg-violet-950/70 text-violet-100 hover:bg-violet-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-300`}
+      className={`nodrag nopan ${VARIANT_CLASS[variant]} shrink-0 items-center gap-1 bg-g-accent-soft text-g-accent-ink hover:bg-g-border focus-visible:outline focus-visible:outline-2 focus-visible:outline-g-accent`}
       onClick={(event) => event.stopPropagation()}
       onKeyDown={(event) => { if (event.key !== "Escape") event.stopPropagation(); }}
     >
       <DocumentMagnifyingGlassIcon aria-hidden className="h-3.5 w-3.5 shrink-0" />
       {variant === "strip" && <span className="shrink-0 font-semibold">{first.blocking ? "Awaiting review" : "Reviewed"}</span>}
-      <span className="min-w-0 truncate font-mono underline decoration-violet-300/60 underline-offset-2">{first.review_id}</span>
+      <span className="min-w-0 truncate font-mono underline decoration-g-accent/60 underline-offset-2">{first.review_id}</span>
       <span className={`ml-auto shrink-0 rounded px-1 ${REVIEW_STATE_TONE[first.review_state] ?? REVIEW_STATE_TONE.withdrawn}`}>
         {reviewStateLabel(first.review_state)}
       </span>

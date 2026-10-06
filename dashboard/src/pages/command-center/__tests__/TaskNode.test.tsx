@@ -193,8 +193,8 @@ describe("review waits", () => {
     const { container } = inRouter(<TaskCard data={reviewCard([wait()])} />);
     const shell = container.querySelector("[data-task-card]")!;
     expect(shell).toHaveAttribute("data-review-blocked");
-    expect(shell).toHaveClass("border-violet-400");
-    expect(shell).not.toHaveClass("border-yellow-300");
+    expect(shell).toHaveClass("border-g-accent");
+    expect(shell).not.toHaveClass("border-violet-400");
     expect(screen.getByTitle("DEFINED · waiting on review brisk-lantern-7 (pending)")).toBeInTheDocument();
   });
 

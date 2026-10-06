@@ -8,11 +8,11 @@ const STATE_LABEL: Record<string, string> = {
 };
 
 export const REVIEW_STATE_TONE: Record<string, string> = {
-  in_review: "bg-violet-500/25 text-violet-100",
-  changes_requested: "bg-amber-500/25 text-amber-100",
-  rejected: "bg-red-500/25 text-red-100",
-  approved: "bg-emerald-500/25 text-emerald-100",
-  withdrawn: "bg-gray-500/25 text-gray-200",
+  in_review: "bg-g-accent-soft text-g-accent-ink",
+  changes_requested: "bg-g-blocked-soft text-g-blocked",
+  rejected: "bg-g-failed-soft text-g-failed",
+  approved: "bg-g-done-soft text-g-done",
+  withdrawn: "bg-g-pending-soft text-g-muted",
 };
 
 export function reviewStateLabel(state: string): string {

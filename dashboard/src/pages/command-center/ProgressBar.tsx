@@ -28,11 +28,11 @@ export function ProgressBar({ done, total, running = 0, blocked = 0, className =
       aria-valuemin={0}
       aria-valuemax={total}
       aria-valuenow={doneW}
-      className={`flex h-1 w-full overflow-hidden rounded bg-white/10 ${className}`}
+      className={`flex h-1 w-full overflow-hidden rounded bg-g-border ${className}`}
     >
-      <span aria-hidden data-segment="done" className="block h-full bg-emerald-400" style={{ width: `${pct(doneW)}%` }} />
-      <span aria-hidden data-segment="running" className="block h-full bg-indigo-400" style={{ width: `${pct(runningW)}%` }} />
-      <span aria-hidden data-segment="blocked" className="block h-full bg-amber-400" style={{ width: `${pct(blockedW)}%` }} />
+      <span aria-hidden data-segment="done" className="block h-full bg-g-done" style={{ width: `${pct(doneW)}%` }} />
+      <span aria-hidden data-segment="running" className="block h-full bg-g-accent" style={{ width: `${pct(runningW)}%` }} />
+      <span aria-hidden data-segment="blocked" className="block h-full bg-g-blocked" style={{ width: `${pct(blockedW)}%` }} />
     </span>
   );
 }

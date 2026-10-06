@@ -30,7 +30,7 @@ const STATUS_TONE: Record<string, string> = {
 
 /** A task held by a review wears the review's colour on its border, whatever
  *  its stored status, so a review wait never reads as a generic block. */
-const REVIEW_WAIT_BORDER = "border-violet-400";
+const REVIEW_WAIT_BORDER = "border-g-accent";
 
 interface CardProps {
   data: TaskNodeData;
