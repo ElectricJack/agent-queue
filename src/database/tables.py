@@ -3043,6 +3043,8 @@ task_branch_origins = Table(
     Column("parent_repository_id", Text, nullable=True),
     Column("parent_ref", Text, nullable=True),
     Column("base_sha", Text, nullable=False),
+    # Exact prerequisite heads used by a child, separate from its filing origin.
+    Column("stack_snapshot", JSONB, nullable=True),
     Column("creation_generation", Integer, nullable=False),
     Column("reserved", Boolean, nullable=False, server_default=false()),
     Column("materialized", Boolean, nullable=False, server_default=false()),
