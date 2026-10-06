@@ -50,6 +50,13 @@ async def checkpoint(db, tid, head):
         )
 
 
+async def stack_record(stack):
+    async with stack.db._engine.connect() as conn:
+        return await conn.scalar(select(task_branch_origins.c.stack_snapshot).where(
+            task_branch_origins.c.task_id == "child",
+        ))
+
+
 @pytest.fixture
 async def stack(world):  # noqa: F811 - imported pytest fixture
     db, origin = world.db, world.origin
@@ -163,7 +170,199 @@ async def test_changed_prerequisite_merges_preserves_child_and_rotates_completio
     assert completion.id.startswith("stack-") and completion.commits == [head]
     assert await stack.service.current("child", source_sha=head)
     assert not await stack.service.current("child", source_sha=stack.child)
+    await stack.service.prepare("child")
+    assert (await stack_record(stack))["refreshed_head"] == head
     assert await stack.service.refresh("child", stack.gitops) == "unchanged"
+
+
+async def test_reclosed_dependent_retains_its_new_recorded_completion(stack):
+    next_head = stack.origin.work("first", "revision")
+    await close(stack.db, "first", [next_head], close_id="first-revised", origin=stack.origin)
+    await checkpoint(stack.db, "first", next_head)
+    assert await stack.service.refresh("child", stack.gitops) == "refreshed"
+    previous = (await stack_record(stack))["refreshed_head"]
+    await stack.db.transition_task("child", TaskStatus.IN_PROGRESS, force=True)
+    await stack.service.prepare("child")
+    assert (await stack_record(stack))["refreshed_head"] == previous
+    head = stack.origin.work("child", "reviewed rework")
+    await close(stack.db, "child", [head], close_id="child-reclosed", origin=stack.origin)
+    await checkpoint(stack.db, "child", head)
+    child_generation = await generation(stack.db, "child")
+    assert await stack.service.refresh("child", stack.gitops) == "unchanged"
+    assert await stack.service.current("child", source_sha=head)
+    assert (await stack.db.get_task_completion("child")).id == "child-reclosed"
+    assert await generation(stack.db, "child") == child_generation
+    assert git(stack.origin.url, "rev-parse", "refs/heads/aq/child") == head
+
+
+async def test_dependent_tip_moved_after_completion_is_held_without_approval(stack):
+    original = await stack.db.get_task_completion("child")
+    child_generation = await generation(stack.db, "child")
+    extra = stack.origin.work("child", "unreviewed post-close work")
+    next_head = stack.origin.work("first", "revision")
+    await close(stack.db, "first", [next_head], close_id="first-revised", origin=stack.origin)
+    await checkpoint(stack.db, "first", next_head)
+    assert await stack.service.refresh("child", stack.gitops) == "source_changed"
+    assert (await stack_record(stack))["hold"] == "source_changed"
+    assert git(stack.origin.url, "rev-parse", "refs/heads/aq/child") == extra
+    assert (await stack.db.get_task_completion("child")).id == original.id
+    assert await generation(stack.db, "child") == child_generation
+    target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    blockers = []
+    members, _, _ = await DatabaseBatches(stack.db).pending(
+        target, await snapshot(stack.world, target), blockers=blockers,
+    )
+    assert [member.task_id for member in members] == ["first"]
+    assert any(blocker["code"] == "stack_source_changed" for blocker in blockers)
+
+
+async def test_checkpoint_must_match_current_completion_before_refresh(stack):
+    original = await stack.db.get_task_completion("child")
+    extra = stack.origin.work("child", "unrecorded checkpoint")
+    await checkpoint(stack.db, "child", extra)
+    assert await stack.service.refresh("child", stack.gitops) == "source_unrecorded"
+    assert (await stack_record(stack))["hold"] == "source_unrecorded"
+    assert (await stack.db.get_task_completion("child")).id == original.id
+    assert git(stack.origin.url, "rev-parse", "refs/heads/aq/child") == extra
+
+
+async def test_undelivered_dependent_with_missing_ref_is_held(stack):
+    original = await stack.db.get_task_completion("child")
+    git(stack.origin.clone, "push", "origin", ":aq/child")
+    assert await stack.service.refresh("child", stack.gitops) == "source_missing"
+    assert (await stack_record(stack))["hold"] == "source_missing"
+    assert (await stack.db.get_task_completion("child")).id == original.id
+    target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    blockers = []
+    members, _, _ = await DatabaseBatches(stack.db).pending(
+        target, await snapshot(stack.world, target), blockers=blockers,
+    )
+    assert [member.task_id for member in members] == ["first"]
+    assert any(blocker["code"] == "stack_source_missing" for blocker in blockers)
+
+
+async def test_non_descendant_prerequisite_rework_is_held(stack):
+    original = await stack.db.get_task_completion("child")
+    git(stack.origin.clone, "checkout", "-B", "aq/first", stack.base)
+    (stack.origin.clone / "replacement.txt").write_text("replacement prerequisite\n")
+    git(stack.origin.clone, "add", ".")
+    git(stack.origin.clone, "commit", "-qm", "replace discarded prerequisite")
+    replacement = git(stack.origin.clone, "rev-parse", "HEAD")
+    git(stack.origin.clone, "push", "--force", "origin", "aq/first")
+    await close(stack.db, "first", [replacement], close_id="first-replaced", origin=stack.origin)
+    await checkpoint(stack.db, "first", replacement)
+    assert await stack.service.refresh("child", stack.gitops) == "prerequisite_superseded"
+    assert (await stack_record(stack))["hold"] == "prerequisite_superseded"
+    assert not await stack.service.current("child")
+    assert git(stack.origin.url, "rev-parse", "refs/heads/aq/child") == stack.child
+    assert (await stack.db.get_task_completion("child")).id == original.id
+
+
+async def test_transient_freshness_hold_clears_without_new_completion(stack, monkeypatch):
+    from src.integration.stacked_branches import StackView
+
+    original = await stack.db.get_task_completion("child")
+    child_generation = await generation(stack.db, "child")
+    with monkeypatch.context() as patch:
+        patch.setattr(StackView, "fresh", AsyncMock(return_value=False))
+        assert await stack.service.refresh("child", stack.gitops) == "waiting_prerequisite"
+    assert not await stack.service.current("child")
+    await stack.service.prepare("child")
+    assert (await stack_record(stack))["hold"] == "prerequisite_reopened_or_unavailable"
+    assert await stack.service.refresh("child", stack.gitops) == "unchanged"
+    assert "hold" not in await stack_record(stack)
+    assert await stack.service.current("child")
+    assert (await stack.db.get_task_completion("child")).id == original.id
+    assert await generation(stack.db, "child") == child_generation
+
+
+@pytest.mark.parametrize("delivered_to", ["aq/epic", "main"])
+async def test_already_delivered_dependent_keeps_its_completion(stack, delivered_to):
+    original = await stack.db.get_task_completion("child")
+    child_generation = await generation(stack.db, "child")
+    git(stack.origin.clone, "push", "origin", f"{stack.child}:{delivered_to}")
+    next_head = stack.origin.work("first", "revision after dependent delivery")
+    await close(stack.db, "first", [next_head], close_id="first-revised", origin=stack.origin)
+    await checkpoint(stack.db, "first", next_head)
+    assert await stack.service.refresh("child", stack.gitops) == "already_delivered"
+    assert git(stack.origin.url, "rev-parse", "refs/heads/aq/child") == stack.child
+    assert (await stack.db.get_task_completion("child")).id == original.id
+    assert await generation(stack.db, "child") == child_generation
+
+
+async def test_delivery_during_refresh_does_not_create_a_completion(stack):
+    original = await stack.db.get_task_completion("child")
+    next_head = stack.origin.work("first", "revision")
+    await close(stack.db, "first", [next_head], close_id="first-revised", origin=stack.origin)
+    await checkpoint(stack.db, "first", next_head)
+
+    async def deliver_after_observation():
+        git(stack.origin.clone, "push", "origin", f"{stack.child}:aq/epic")
+        stack.gitops.git.read_hook = None
+
+    stack.gitops.git.read_hook = deliver_after_observation
+    assert await stack.service.refresh("child", stack.gitops) == "changed"
+    assert git(stack.origin.url, "rev-parse", "refs/heads/aq/child") == stack.child
+    assert (await stack.db.get_task_completion("child")).id == original.id
+
+
+async def test_stack_freshness_batches_refs_and_caches_only_advisory_reads(stack, monkeypatch):
+    import src.integration.stacked_branches as module
+
+    second = await completed(stack.world, "second", parent="epic")
+    await checkpoint(stack.db, "second", second)
+    await stack.db.add_dependency("child", "second")
+    observer = stack.service.observer
+    observer._recent.clear()
+    observer._stack_ref_cache.clear()
+    batched = AsyncMock(wraps=observer.git.als_remote_refs)
+    monkeypatch.setattr(observer.git, "als_remote_refs", batched)
+    monkeypatch.setattr(observer.git, "als_remote_ref", AsyncMock(
+        side_effect=AssertionError("per-prerequisite ref lookup"),
+    ))
+    now = module.time.monotonic()
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now))
+    view = await observe_stacks(observer, "p", task_id="child", max_age=30)
+    assert await view.fresh()
+    assert batched.await_count == 1
+    assert set(batched.call_args.args[1]) == {"main", "aq/first", "aq/second"}
+    another = await observe_stacks(observer, "p", task_id="child", max_age=30)
+    assert await another.fresh()
+    assert batched.await_count == 1
+    git(stack.origin.clone, "push", "--force", "origin", f"{stack.base}:aq/second")
+    # A guarded writer bypasses the advisory cache even inside its TTL.
+    strict = await observe_stacks(observer, "p", task_id="child")
+    strict.proofs = view.proofs
+    assert not await strict.fresh()
+    assert batched.await_count == 2
+    now += 3
+    assert not await view.fresh()
+    assert batched.await_count == 3
+
+
+async def test_open_batch_refreshes_only_its_targets_candidate_window(stack, monkeypatch):
+    from src.integration.batches import BatchService, BatchStore
+
+    child_stack = await stack_record(stack)
+    await completed(stack.world, "other-epic")
+    await completed(stack.world, "foreign-child", parent="other-epic")
+    async with stack.db.immediate() as conn:
+        from sqlalchemy import update
+
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == "foreign-child",
+        ).values(stack_snapshot=child_stack))
+    refresh = AsyncMock(return_value="unchanged")
+    monkeypatch.setattr(StackedBranches, "refresh", refresh)
+    batches = DatabaseBatches(stack.db, limit=1)
+    target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    observed = await snapshot(stack.world, target)
+    service = BatchService(BatchStore(stack.db), stack.gitops, publish=AsyncMock(),
+                           eligible=batches.eligible, gate=AsyncMock(), require_attestation=False)
+    await batches.open_batch(target, observed, service)
+    assert refresh.await_count == 1
+    assert refresh.call_args.args == ("child", stack.gitops)
+    assert refresh.call_args.kwargs == {"snapshot": observed}
 
 
 @pytest.mark.parametrize("operation", ["reopen", "abandon", "missing", "rewind"])
@@ -317,7 +516,8 @@ async def test_changed_stack_replaces_frozen_inputs_and_tests_exact_combined_can
         targets=SimpleNamespace(targets=AsyncMock(return_value=[target])),
         batches=batches,
         lane_for=AsyncMock(return_value=TrainLane(observe, service, candidates)),
-        repair=SimpleNamespace(allocate=AsyncMock(side_effect=AssertionError("unexpected repair"))),
+        repair=SimpleNamespace(allocate=AsyncMock(side_effect=AssertionError("unexpected repair")),
+                               settle_green=AsyncMock()),
     )
     old = await train.visit(target)
     assert old.state == "testing", old
@@ -377,6 +577,10 @@ async def test_conflict_dispatches_isolated_repairs_and_adopts_resolution(stack,
     repair = await stack.db.get_task(record["repair_task_id"])
     assert repair.parent_task_id == "epic" and repair.status is TaskStatus.READY
     assert await generation(stack.db, "epic") == 1
+    # Workspace preparation must not erase the pending repair or its delivery hold.
+    await stack.service.prepare("child")
+    prepared = await stack_record(stack)
+    assert prepared["repair_task_id"] == repair.id and prepared["hold"] == "stack_conflict"
     assert await stack.service.refresh("child", stack.gitops) == "repair_pending"
     git(origin.clone, "fetch", "origin")
     git(origin.clone, "checkout", "-b", repair.branch_name, f"origin/{repair.branch_name}")

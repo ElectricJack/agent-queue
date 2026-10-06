@@ -14269,10 +14269,10 @@
       "reason": "Root settling timestamps for currently PR-admitted exact completions. Eligibility is recomputed from Git and PR proof on every visit; these hints preserve the bounded cadence across restarts and never authorize membership, replay a ref or prove delivery. Stale hints and frozen-batch hints are deleted."
     },
     "src/integration/stacked_branches.py::StackedBranches.refresh::be3be394bad4eaa21aa8a28db135b02557490ddb64be7fdc9e1c1efef1d879ec": {
-      "line": 637,
+      "line": 770,
       "owner": "StackedBranches.refresh",
       "call": "pg_insert",
-      "owner_fingerprint": "042004049d471c553d2e90d6f4cec686e8444fb1ab258b3a74be9b5e51900085",
+      "owner_fingerprint": "7a1bc3f333a758f54cc05eb78b7d12bff7e19157bae45de6e1daa3ec7687905b",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Current immutable completion locator after a fenced source merge; ordinary completion state, never delivery or ref replay authority."

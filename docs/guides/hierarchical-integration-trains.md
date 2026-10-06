@@ -96,11 +96,26 @@ claim consume the same verified frontier rule.
 A batch carries prerequisites before their dependents, or proves the absent
 prerequisites already reached its target. It tests the exact combined candidate.
 Before batching an idle completed dependent, changed prerequisite heads are
-merged into its preserved branch and recorded as a new completion. Conflicts
+merged from its recorded checkpoint and recorded as a new completion. Its
+remote branch must still equal that checkpoint, and the current completion
+must name the same source. Post-close remote drift holds delivery with
+`stack_source_changed`; an absent ref uses `stack_source_missing`, and a
+missing matching completion uses `stack_source_unrecorded`. Each old
+prerequisite head must be an ancestor of its replacement; rewritten history holds delivery with
+`stack_prerequisite_superseded` so discarded prerequisite work cannot ride
+along through the dependent. Conflicts
 file an isolated repair task; the dependent stays withheld until the repair
 resolves and current heads are included. Reopened, abandoned or unproven
 prerequisites pause dependent delivery. A refreshed source gets a new batch;
 the former frozen candidate cannot publish it. Explicit batch pauses still hold.
+Already-delivered dependents keep their existing completions. Workspace
+preparation retains the recorded stack, its hold, pending repair and refreshed
+head. A transient freshness hold clears without creating another completion.
+After a dependent is reopened and closed again, refresh recognizes its matching
+recorded source without replacing that completion.
+Each train target refreshes only its own candidate window using the visit's
+fetched Git view. Advisory stack freshness batches refs and caches them for
+at most two seconds; preparation, claim and refresh use uncached ref checks.
 
 In wait-for-parent mode, Git must prove the sibling's current work reached the
 shared parent first. Preparation merges that exact parent head into the child.
