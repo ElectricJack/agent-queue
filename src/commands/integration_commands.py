@@ -1200,7 +1200,7 @@ class IntegrationCommandsMixin:
     async def _cmd_integration_eject(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationEjectArgs
         from src.integration.batches import BatchStore
-        from src.integration.train_controls import TrainControls
+        from src.integration.train_controls import TrainControlError, TrainControls
 
         batch = await BatchStore(self.db).get(str(args.get("batch_id") or ""))
         if batch is not None:
@@ -1208,6 +1208,8 @@ class IntegrationCommandsMixin:
             operator, refusal = await integration_operator(self.db, batch.project_id)
             if refusal:
                 return _failure("unauthorized", refusal)
+            if request.task_id not in {m.task_id for m in await BatchStore(self.db).members(batch.id)}:
+                return _failure("not_a_member", "task is not a frozen batch member")
             train = getattr(self.orchestrator, "integration_train", None)
             if train is None:
                 return _failure("refused", "the integration train is not active")
@@ -1221,6 +1223,8 @@ class IntegrationCommandsMixin:
                 result = await TrainControls(self.db).eject(batch.id, request.task_id,
                     service=lane.service, dry_run=request.dry_run,
                     operator_id=operator, reason=request.reason)
+            except TrainControlError as exc:
+                return _failure(exc.outcome, str(exc))
             except (ValueError, GitError, OSError) as exc:
                 return _failure("refused", str(exc))
             return {"success": True, **result}
@@ -1230,6 +1234,12 @@ class IntegrationCommandsMixin:
         batch_id = str(args.get("batch_id") or "")
         task_id = str(args.get("task_id") or "")
         reason = str(args.get("reason") or "")
+        if not await self.db.get_integration_batch(batch_id):
+            principal = current_principal() or TRUSTED_LOCAL
+            _operator, refusal = await integration_operator(self.db, principal.project_id)
+            if refusal:
+                return _failure("unauthorized", refusal)
+            return _failure("unknown_batch", "batch is missing")
         if not batch_id or not task_id or not reason.strip():
             return _failure("invalid_state", "batch_id, task_id and reason are required")
         if args.get("dry_run"):

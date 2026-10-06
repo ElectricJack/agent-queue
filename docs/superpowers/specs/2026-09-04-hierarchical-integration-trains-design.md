@@ -452,6 +452,18 @@ explicit eject from a human-held operation rearms a bounded deadline while retai
 attempts. A later delegate receives a revision-specific identity. Ejecting the final
 member aborts the batch and releases its sweep request. Reviews are never revoked.
 
+On the Git-first train, ejection instead aborts the old immutable batch and
+freezes the remaining inputs in a replacement batch. Only the authorized eject
+command writes the original batch's durable release instruction, bound to its
+project, frozen member, operator and reason. Task archival or deletion cannot
+erase that instruction; worker task metadata and legacy ejection markers cannot
+authorize release. An ordinary supervisor abort continues withholding its inputs.
+Pause requires open intent and resume requires paused intent; repeated or invalid
+transitions refuse. Pause, resume, eject and seal-now default to preview and remain
+operator/supervisor controls scoped to the owning project. Eject returns
+`not_a_member` or `unknown_batch` for those refusals. Seal-now returns
+`existing_batch` when a frozen batch already owns the target.
+
 Persist reviewed-file guard failures against the exact current revision in the
 repair dossier. Both `integration.reviewed_file_guard` and `stall.sweep` report the
 batch, blocked invariant and safe eject/rechain recovery path. Old revision failures

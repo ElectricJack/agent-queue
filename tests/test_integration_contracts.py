@@ -774,12 +774,14 @@ async def test_root_promotion_command_is_registered_and_strictly_typed():
      {"outcome": "preview", "batch_id": "batch", "intent": "open", "dry_run": True}),
     ("integration_resume_batch", {"batch_id": "batch"},
      {"outcome": "preview", "batch_id": "batch", "intent": "paused", "dry_run": True}),
-    ("integration_eject", {"batch_id": "batch", "task_id": "c", "dry_run": True},
+    ("integration_eject", {"batch_id": "batch", "task_id": "c"},
      {"outcome": "preview", "replacement_batch_id": "new", "members": ["a", "b"]}),
     ("integration_seal_now", {"project_id": "p"},
      {"outcome": "preview", "project_id": "p", "members": ["a"]}),
     ("integration_seal_now", {"project_id": "p", "dry_run": False},
      {"outcome": "no_ready_work", "project_id": "p", "blockers": []}),
+    ("integration_seal_now", {"project_id": "p", "dry_run": False},
+     {"outcome": "existing_batch", "project_id": "p", "batch_id": "existing"}),
 ])
 @pytest.mark.parametrize("preview", [False, True])
 async def test_train_control_contracts_preserve_preview_identity_and_result(name, payload, answer, preview):
@@ -806,3 +808,24 @@ async def test_train_control_contracts_preserve_preview_identity_and_result(name
         if key != "outcome":
             actual = getattr(result.value, key)
             assert actual == (tuple(value) if isinstance(value, list) else value)
+
+
+@pytest.mark.parametrize("outcome", ["unknown_batch", "not_a_member", "refused"])
+async def test_train_eject_contract_preserves_named_refusals(outcome):
+    class Handler:
+        async def execute(self, command, args):
+            assert command == "integration_eject" and args["dry_run"] is True
+            return {"success": False, "outcome": outcome, "error": "control refused"}
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    registration = registry.require("integration_eject")
+    set_handler_provider(Handler)
+    try:
+        args = registration.contract.execution.args_model.model_validate({
+            "batch_id": "batch", "task_id": "not-a-member"})
+        result = await registration.invoke(args, None)
+    finally:
+        set_handler_provider(None)
+    assert result.outcome == outcome
+    assert result.classification(registration.contract).value != "success"

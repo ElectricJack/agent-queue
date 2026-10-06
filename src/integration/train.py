@@ -374,6 +374,7 @@ class BatchSelection:
     members: tuple[BatchMember, ...] = ()
     blockers: tuple[dict[str, Any], ...] = ()
     detail: dict[str, Any] | None = None
+    existing: bool = False
 
 
 @dataclass

@@ -364,7 +364,7 @@ class DatabaseBatches:
                         "task_ids": sorted(delivered),
                     })
                     return BatchSelection(blockers=tuple(blockers))
-            return BatchSelection(current, members, tuple(blockers))
+            return BatchSelection(current, members, tuple(blockers), existing=True)
         if pending is None:
             if target.kind == "root" and not snapshot.error and snapshot.target_oid and not blockers:
                 await self._clear_admissions(target)

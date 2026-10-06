@@ -16,10 +16,10 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import Protocol
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import func, insert, select, union_all, update
 
 from src.database.tables import (
-    archived_tasks, integration_batch_members, integration_batches, projects, task_metadata, tasks,
+    archived_tasks, integration_batch_members, integration_batches, projects, tasks,
 )
 from src.git.manager import GitError, is_valid_git_oid
 from src.integration.delivery_truth import DeliveryRequest
@@ -33,9 +33,24 @@ EJECTION_KEY_PREFIX = "integration_train_ejection:"
 
 
 def ejection_instruction(batch_identity):
-    """A durable instruction releases an aborted batch's inputs to pending."""
-    return select(task_metadata.c.task_id).where(
-        task_metadata.c.key == EJECTION_KEY_PREFIX + batch_identity,
+    """Only a batch-owned eject record for its frozen member releases inputs.
+
+    Task metadata is untrusted, including legacy ejection markers. The record
+    is written atomically by eject and survives member archival/deletion.
+    """
+    batch = integration_batches.alias("ejected_batch")
+    member = integration_batch_members.alias("ejected_member")
+    record = batch.c.ejection_record
+    return select(batch.c.id).select_from(batch.join(member,
+        member.c.batch_id == batch.c.id)).where(
+        batch.c.id == batch_identity,
+        batch.c.intent == "aborted",
+        record["batch_id"].astext == batch.c.id,
+        record["project_id"].astext == batch.c.project_id,
+        record["task_id"].astext == member.c.task_id,
+        member.c.repository_id == batch.c.repository_id,
+        func.length(func.trim(record["operator_id"].astext)) > 0,
+        func.length(func.trim(record["reason"].astext)) > 0,
     ).exists()
 
 
@@ -257,8 +272,8 @@ class BatchStore:
                     dry_run, operator_id, reason):
         """Abort and replace under the publisher's lock; never edit membership.
 
-        Task metadata carries the operator's release instruction. It changes
-        neither the sealed batch identity nor its completion/delivery evidence.
+        The batch owns the operator's release instruction. It changes neither
+        the sealed batch identity nor its completion/delivery evidence.
         """
         async with self.db.immediate() as conn:
             await self._target_lock(conn, batch)
@@ -277,6 +292,16 @@ class BatchStore:
                 for i, r in enumerate(r for r in frozen if r["task_id"] != task_id))
             if not any(r["task_id"] == task_id for r in frozen) or expected != members:
                 raise ValueError("frozen batch membership changed")
+            source_projects = (await conn.execute(union_all(*(
+                select(table.c.project_id).where(table.c.id == task_id)
+                for table in (tasks, archived_tasks)
+            )))).scalars().all()
+            if source_projects != [batch.project_id]:
+                raise ValueError("ejected member does not belong to the batch project")
+            if not (operator_id or "").strip():
+                raise ValueError("ejection requires an operator")
+            if not dry_run and not reason.strip():
+                raise ValueError("ejection requires a nonblank reason")
             await self._exclusive_target(conn, replacement or batch, excluding=batch.id)
             # Fence reopen/abandon and origin refresh alongside publication.
             ids = sorted(r["task_id"] for r in frozen)
@@ -286,18 +311,19 @@ class BatchStore:
                 raise ValueError("batch sources, target or candidate changed; preview again")
             if dry_run:
                 return
+            instruction = {"batch_id": batch.id, "project_id": batch.project_id,
+                           "task_id": task_id,
+                           "replacement_batch_id": replacement.id if replacement else None,
+                           "operator_id": operator_id, "reason": reason}
             await conn.execute(update(integration_batches).where(
                 integration_batches.c.id == batch.id,
             ).values(intent="aborted", lifecycle="aborted",
-                     human_abort_reason=reason, cleanup_state="pending", updated_at=self.clock()))
+                     human_abort_reason=reason, ejection_record=instruction,
+                     cleanup_state="pending", updated_at=self.clock()))
             if replacement is not None:
                 await self._freeze_on(conn, replacement, members, trees=trees)
             import json
 
-            instruction = {"replacement_batch_id": replacement.id if replacement else None,
-                           "operator_id": operator_id, "reason": reason}
-            await conn.execute(insert(task_metadata).values(task_id=task_id,
-                key=EJECTION_KEY_PREFIX + batch.id, value=json.dumps(instruction)))
             await self.db.log_event("integration.batch_ejected", project_id=batch.project_id,
                 task_id=task_id, payload=json.dumps({"batch_id": batch.id,
                     "replacement_batch_id": replacement.id if replacement else None,
@@ -319,6 +345,10 @@ class BatchStore:
                 raise ValueError("promoted batch intent cannot change")
             if intent == "aborted" and row["lifecycle"] == "promoted":
                 raise ValueError("promoted batch cannot be aborted")
+            if intent == "paused" and row["intent"] != "open":
+                raise ValueError("only an open batch can be paused")
+            if intent == "open" and row["intent"] != "paused":
+                raise ValueError("only a paused batch can be resumed")
             if authorize is not None and not await authorize():
                 raise ValueError("batch target or candidate changed; preview again")
             if dry_run:

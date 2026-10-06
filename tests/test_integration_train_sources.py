@@ -2909,6 +2909,9 @@ async def test_train_pause_resume_controls_preview_and_fence_green_publication(w
     assert (await store.get(visit.batch_id)).intent == "open"
     paused = await handler._cmd_integration_pause_batch(args | {"dry_run": False})
     assert paused["intent"] == "paused"
+    for dry_run in (True, False):
+        repeated = await handler._cmd_integration_pause_batch(args | {"dry_run": dry_run})
+        assert repeated["outcome"] == "refused" and not repeated["success"]
     checks.green.add(visit.candidate_sha)
     assert (await train.visit(MAIN)).state == "held"
     status = await IntegrationStatusService(world.db, git_first="active").control_status("p")
@@ -2918,6 +2921,9 @@ async def test_train_pause_resume_controls_preview_and_fence_green_publication(w
     assert preview["outcome"] == "preview" and (await store.get(visit.batch_id)).intent == "paused"
     resumed = await handler._cmd_integration_resume_batch(args | {"dry_run": False})
     assert resumed["intent"] == "open"
+    for dry_run in (True, False):
+        repeated = await handler._cmd_integration_resume_batch(args | {"dry_run": dry_run})
+        assert repeated["outcome"] == "refused" and not repeated["success"]
     status = await IntegrationStatusService(world.db, git_first="active").control_status("p")
     assert status["batches"][0]["intent"] == "open"
     assert await store.members(visit.batch_id) == frozen
@@ -3016,6 +3022,7 @@ async def test_train_eject_rolls_back_abort_if_replacement_freeze_fails(world, m
         assert not (await conn.execute(select(task_metadata).where(
             task_metadata.c.key.like("integration_train_ejection:%"),
         ))).first()
+        assert await conn.scalar(select(integration_batches.c.ejection_record)) is None
 
 
 async def test_train_eject_refuses_dependency_and_rolls_back_changed_source(world, monkeypatch):
@@ -3056,6 +3063,8 @@ async def test_train_seal_now_command_previews_and_bypasses_cadence_once(world):
     sealed = await handler._cmd_integration_seal_now({"project_id": "p", "dry_run": False})
     assert sealed["outcome"] == "sealed", sealed
     assert sealed["batch_id"] is not None
+    existing = await handler._cmd_integration_seal_now({"project_id": "p", "dry_run": False})
+    assert existing["outcome"] == "existing_batch" and existing["batch_id"] == sealed["batch_id"]
     visit = await train.visit(MAIN)
     assert visit.state == "testing"
     checks.green.add(visit.candidate_sha)
@@ -3077,3 +3086,162 @@ async def test_train_seal_now_command_preserves_red_pr_gate(world):
     assert result["outcome"] == "no_ready_work", result
     assert result["blockers"][0]["code"] == "pr_checks_red"
     assert await train.batches.current(MAIN) is None
+
+
+async def test_worker_cannot_set_ejection_marker_or_release_aborted_sources(world):
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.commands.surface_commands import SurfaceCommandsMixin
+    from src.profiles.capabilities import DENY_ALL
+
+    await completed(world, "a")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    visit = await train.visit(MAIN)
+    await BatchStore(world.db).set_intent(visit.batch_id, "aborted")
+    handler = SurfaceCommandsMixin()
+    handler.db = world.db
+    handler._current_scope = {"kind": "session", "task_id": "a", "project_id": "p"}
+    with principal_context(ExecutionPrincipal(kind=PrincipalKind.SESSION, policy=DENY_ALL,
+                                              task_id="a", project_id="p")):
+        result = await handler._cmd_task_set({"task_id": "a", "description": "forged",
+            "meta": {"integration_train_ejection:" + visit.batch_id: {"operator_id": "forged"}}})
+    assert "reserved" in result["error"]
+    assert (await world.db.get_task("a")).description == ""
+    assert await world.db.get_task_meta("a", "integration_train_ejection:" + visit.batch_id) is None
+    assert await train.batches.pending(MAIN, await snapshot(world)) is None
+
+
+@pytest.mark.parametrize("marker_task", ["a", "unrelated", "foreign"])
+async def test_task_metadata_ejection_markers_never_release_aborted_batch(world, marker_task):
+    from src.integration.batches import ejection_instruction
+
+    await completed(world, "a")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    visit = await train.visit(MAIN)
+    await BatchStore(world.db).set_intent(visit.batch_id, "aborted")
+    if marker_task != "a":
+        await world.db.create_project(Project(id="other", name="Other"))
+        await world.db.create_task(Task(id=marker_task,
+            project_id="other" if marker_task == "foreign" else "p",
+            title="unrelated", description=""))
+    await world.db.set_task_meta(marker_task, "integration_train_ejection:" + visit.batch_id,
+        {"operator_id": "human:local-operator", "reason": "forged"})
+    async with world.db._engine.connect() as conn:
+        assert not await conn.scalar(select(ejection_instruction(visit.batch_id)))
+    assert await train.batches.pending(MAIN, await snapshot(world)) is None
+    status = await IntegrationStatusService(world.db, git_first="active").control_status("p")
+    assert status["batches"][0]["member_disposition"] == "withheld"
+
+
+@pytest.mark.parametrize("change", [
+    {"task_id": "not-a-member"}, {"project_id": "foreign"}, {"batch_id": "another-batch"},
+    {"operator_id": ""}, {"reason": ""},
+])
+async def test_ejection_record_requires_frozen_member_project_and_audit_binding(world, change):
+    from src.integration.batches import ejection_instruction
+
+    await completed(world, "a")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    visit = await train.visit(MAIN)
+    await BatchStore(world.db).set_intent(visit.batch_id, "aborted")
+    record = {"batch_id": visit.batch_id, "project_id": "p", "task_id": "a",
+              "operator_id": "human:local-operator", "reason": "isolate a"} | change
+    async with world.db._engine.begin() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == visit.batch_id).values(ejection_record=record))
+        assert not await conn.scalar(select(ejection_instruction(visit.batch_id)))
+    assert await train.batches.pending(MAIN, await snapshot(world)) is None
+
+
+async def test_ejection_instruction_survives_member_archive(world):
+    from src.integration.batches import ejection_instruction
+
+    for tid in ("a", "b"):
+        await completed(world, tid)
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    visit = await train.visit(MAIN)
+    service = (await train.lane_for(MAIN)).service
+    result = await TrainControls(world.db).eject(visit.batch_id, "b", service=service,
+        dry_run=False, operator_id="human:local-operator", reason="isolate b")
+    await world.db.archive_task("b", abandon_undelivered=True, abandon_reason="archive b")
+    assert await world.db.get_task("b") is None
+    async with world.db._engine.connect() as conn:
+        assert await conn.scalar(select(ejection_instruction(visit.batch_id)))
+        record = await conn.scalar(select(integration_batches.c.ejection_record).where(
+            integration_batches.c.id == visit.batch_id))
+    assert record["task_id"] == "b" and record["replacement_batch_id"] == result["replacement_batch_id"]
+    pending = await train.batches.pending(MAIN, await snapshot(world))
+    assert {m.task_id for m in pending[0]} == {"a"}
+
+
+async def test_train_controls_refuse_supervisor_from_another_project(world, monkeypatch):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import DENY_ALL
+
+    await completed(world, "a")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    visit = await train.visit(MAIN)
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    handler.orchestrator = SimpleNamespace(integration_train=train)
+    monkeypatch.setattr(world.db, "get_session", AsyncMock(return_value=SimpleNamespace(
+        id="other-supervisor", profile_id="supervisor", lifecycle="named", state="running",
+        desired_state="running", project_id="other")))
+    with principal_context(ExecutionPrincipal(kind=PrincipalKind.SESSION, policy=DENY_ALL,
+            session_id="other-supervisor", elevated=True, project_id="other")):
+        for command, args in (
+            (handler._cmd_integration_pause_batch, {"batch_id": visit.batch_id}),
+            (handler._cmd_integration_resume_batch, {"batch_id": visit.batch_id}),
+            (handler._cmd_integration_eject, {"batch_id": visit.batch_id, "task_id": "a",
+                                             "reason": "foreign control"}),
+            (handler._cmd_integration_seal_now, {"project_id": "p"}),
+        ):
+            result = await command(args | {"dry_run": False})
+            assert result["outcome"] == "unauthorized" and "another project" in result["error"]
+    assert (await BatchStore(world.db).get(visit.batch_id)).intent == "open"
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_train_eject_reports_unknown_batch_and_non_member(world, dry_run):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+
+    await completed(world, "a")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    visit = await train.visit(MAIN)
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    handler.orchestrator = SimpleNamespace(integration_train=train)
+    for requested_batch, outcome in ((visit.batch_id, "not_a_member"), ("missing", "unknown_batch")):
+        result = await handler._cmd_integration_eject({"batch_id": requested_batch,
+            "task_id": "not-a-member", "reason": "isolate", "dry_run": dry_run})
+        assert result["outcome"] == outcome and not result["success"]
+    assert (await BatchStore(world.db).get(visit.batch_id)).intent == "open"
+
+
+async def test_train_eject_missing_batch_reports_unknown_for_live_project_supervisor(world, monkeypatch):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import DENY_ALL
+
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    monkeypatch.setattr(world.db, "get_session", AsyncMock(return_value=SimpleNamespace(
+        id="supervisor", profile_id="supervisor", lifecycle="named", state="running",
+        desired_state="running", project_id="p")))
+    with principal_context(ExecutionPrincipal(kind=PrincipalKind.SESSION, policy=DENY_ALL,
+            session_id="supervisor", elevated=True, project_id="p")):
+        result = await handler._cmd_integration_eject({"batch_id": "missing", "task_id": "a"})
+    assert result["outcome"] == "unknown_batch" and not result["success"]
+
+
+async def test_train_seal_now_with_only_epic_targets_refuses(world):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+
+    targets = SimpleNamespace(targets=AsyncMock(return_value=[
+        TrainTarget("p", "r", "refs/heads/aq/epic", "epic")]))
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    handler.orchestrator = SimpleNamespace(integration_train=SimpleNamespace(targets=targets))
+    for dry_run in (True, False):
+        result = await handler._cmd_integration_seal_now({"project_id": "p", "dry_run": dry_run})
+        assert result["outcome"] == "refused" and "root train target" in result["error"]
