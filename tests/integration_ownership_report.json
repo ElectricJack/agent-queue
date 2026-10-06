@@ -9219,6 +9219,12 @@
     },
     "src/git/manager.py::GitManager.aprepare_child_branch": {
       "reason": "Integration workspace preparation merges a proven parent head under the managed child writer fence; preserves local and published child history."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_remove_task": {
+      "reason": "Operator removal coordinates stopped subtree cleanup with integration batch aborts, orphan retirement and preserved branch/audit identity."
+    },
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_task_on": {
+      "reason": "Transaction-scoped subtree archive enforces integration removal guards, retains abandonment and delegate retirement evidence, and preserves branch identity."
     }
   },
   "shared_state": {
