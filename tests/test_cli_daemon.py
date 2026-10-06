@@ -1018,6 +1018,7 @@ def predeploy_backup(tmp_path, monkeypatch):
     )
     restore = tmp_path / "pg_restore"
     restore.touch()
+    (tmp_path / "psql").touch()
     state = SimpleNamespace(archive=b"PGDMPmock archive", error=None, calls=[], docker=False)
     monkeypatch.setattr(
         "src.install.update.find_pg_dump",
@@ -1283,3 +1284,19 @@ def test_a_lock_is_only_released_by_the_owner_that_was_seen(tmp_path):
     assert (tmp_path / "daemon.lock").is_dir()
     assert release_start_lock(lock, owner=__import__("os").getpid()) is True
     assert not (tmp_path / "daemon.lock").exists()
+
+
+def test_stop_agent_sessions_kills_pool_task_and_named_sessions_only(monkeypatch):
+    from types import SimpleNamespace
+
+    commands = []
+    monkeypatch.setattr(daemon_mod, "_tmux_socket", lambda: "fixture-socket")
+
+    def run(argv, **kwargs):
+        commands.append(argv)
+        return SimpleNamespace(returncode=0, stdout="p-worker--fixture\ns-task\nn-supervisor\npersonal\n")
+
+    monkeypatch.setattr(daemon_mod.subprocess, "run", run)
+    assert daemon_mod.stop_agent_sessions(quiet=True) == 3
+    assert [argv[-1] for argv in commands[1:]] == ["p-worker--fixture", "s-task", "n-supervisor"]
+    assert all(argv[2] == "fixture-socket" for argv in commands)

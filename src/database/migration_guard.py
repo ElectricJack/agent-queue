@@ -151,10 +151,10 @@ class SchemaAheadPolicy:
             code = MigrationTree.from_directory(code_versions)
             if not current or set(current) == set(code.heads):
                 return False
+            if set(current) <= code.revisions.keys():
+                return False  # known heads: ordinary upgrade/verification owns them
             if len(current) != 1:
                 raise ValueError(f"database has multiple or missing heads: {list(current)}")
-            if current[0] in code.revisions:
-                return False  # behind: the ordinary upgrade/verification path owns it
             evidence = MigrationTree.from_directory(Path(self.migrations_path).expanduser())
             for revision_id, revision in code.revisions.items():
                 retained = evidence.revisions.get(revision_id)

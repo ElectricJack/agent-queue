@@ -786,10 +786,9 @@ def start_daemon(*, unless_stopped: bool = False) -> bool:
 
 
 #: tmux session-name prefixes the daemon owns: ``s-<task_id>`` for task
-#: sessions and ``n-<profile>--<project>`` for named ones.  The reconciler
-#: adopts on exactly these two prefixes, so they are also the safe set to
-#: reap — anything else on the socket belongs to someone else.
-_AQ_SESSION_PREFIXES = ("s-", "n-")
+#: sessions, ``n-<profile>--<project>`` for named ones and ``p-`` for pool
+#: workers. Reap these AQ sessions; leave other sessions on the socket alone.
+_AQ_SESSION_PREFIXES = ("s-", "n-", "p-")
 
 
 def _tmux_socket() -> str:

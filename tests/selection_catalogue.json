@@ -1421,7 +1421,7 @@
       ]
     }
   },
-  "digest": "sha256:f5b65ddc50fab37c0bc3eb4a5bb52f430aca333e2c46cb7d761559e8ba35d568",
+  "digest": "sha256:11e0f93999d12f96a036da73b382f954782c1bdaee0a1fb7235355253f50e2ec",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4686,7 +4686,8 @@
         "src.cli.db",
         "src.database.backup",
         "src.database.engine",
-        "src.database.schema_key"
+        "src.database.schema_key",
+        "src.install.update"
       ],
       "markers": [
         "parametrize"
@@ -5377,12 +5378,14 @@
       "imports": [
         "src.config",
         "src.database",
+        "src.database.schema_key",
         "src.doctor.db_checks",
         "src.doctor.models",
         "src.doctor.runner"
       ],
       "markers": [
-        "migration"
+        "migration",
+        "parametrize"
       ],
       "summary": "``db.alembic_orphan`` — the repair path for a poisoned ``alembic_version``."
     },
@@ -10715,8 +10718,11 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.cli",
+        "src.cli.client",
         "src.config",
         "src.database",
+        "src.database.adapters.postgresql",
         "src.database.engine",
         "src.database.migration_guard",
         "src.database.schema_key"
@@ -14945,6 +14951,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.models.system",
         "src.commands",
         "src.commands.handler",
         "src.commands.system_commands",
@@ -14958,7 +14965,9 @@
         "src.plugins.registry",
         "src.plugins.services"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Unit tests for system command handlers."
     },
     "tests/test_system_commands_prompt_path.py": {

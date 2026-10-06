@@ -119,3 +119,64 @@ async def test_real_startup_preserves_ahead_stamp_and_never_upgrades(tmp_path, v
             ]
     finally:
         await engine.dispose()
+
+
+@pytest.mark.parametrize("current", [("b", "c"), ("a", "b")])
+def test_known_multiple_heads_take_ordinary_behind_path(evidence, current):
+    code, newer = evidence
+    (code / "b.py").write_text(revision("b", "a"))
+    (code / "c.py").write_text(revision("c", "a"))
+    (code / "merge.py").write_text(revision("merge", ("b", "c")))
+    assert not SchemaAheadPolicy(str(newer), 0).accepts(current, code)
+
+
+def test_unknown_multiple_heads_are_still_refused(evidence):
+    code, newer = evidence
+    with pytest.raises(SchemaAheadCode, match="multiple or missing heads"):
+        SchemaAheadPolicy(str(newer)).accepts(("a", "unknown"), code)
+
+
+@pytest.mark.parametrize("limit,accepted", [(1, True), (0, False)])
+async def test_plugin_client_uses_retained_schema_policy(tmp_path, monkeypatch, limit, accepted):
+    import shutil
+    from src.cli import client as cli_client
+    from src.database.schema_key import PROJECT_ROOT
+
+    newer = tmp_path / "versions"
+    shutil.copytree(PROJECT_ROOT / "migrations" / "versions", newer)
+    (newer / "fixture.py").write_text(revision("plugin_ahead", alembic_head_revisions()[0]))
+    url = await create_scratch_database("plugin_ahead")
+    engine = create_postgres_engine(url)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32))"))
+            await conn.execute(text("INSERT INTO alembic_version VALUES ('plugin_ahead')"))
+        monkeypatch.setattr(
+            cli_client,
+            "_resolve_db_config",
+            lambda: dict(schema_ahead_migrations=str(newer), schema_ahead_max_revisions=limit),
+        )
+        client = cli_client.PluginClient(db_path=url)
+        # This exercises the real startup guard, without the subsequent data
+        # migrations which require a fully seeded application database.
+        from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+
+        async def initialize(self):
+            await run_schema_setup(engine, schema_ahead_policy=self._schema_ahead_policy)
+
+        monkeypatch.setattr(PostgreSQLDatabaseAdapter, "initialize", initialize)
+        try:
+            if accepted:
+                await client.connect()
+            else:
+                with pytest.raises(SchemaAheadCode, match="policy permits 0"):
+                    await client.connect()
+            async with engine.connect() as conn:
+                assert (
+                    await conn.scalar(text("SELECT version_num FROM alembic_version"))
+                    == "plugin_ahead"
+                )
+        finally:
+            await client.close()
+    finally:
+        await engine.dispose()

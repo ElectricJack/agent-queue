@@ -217,6 +217,7 @@ async def test_local_clients_use_configured_endpoint_and_keep_password_out_of_ar
     dump = tmp_path / "pg_dump"
     restore = tmp_path / "pg_restore"
     restore.touch()
+    (tmp_path / "psql").touch()
     monkeypatch.setattr("src.install.update.find_pg_dump", lambda: str(dump))
     clients = await backup.postgres_clients("postgresql+asyncpg://custom:secret@db.example:6543/aq")
     assert clients.prefix == ()
@@ -243,6 +244,7 @@ async def test_clients_use_serving_container_when_local_tools_are_older(
     tmp_path, monkeypatch, local_major, expected_prefix
 ):
     (tmp_path / "pg_restore").touch()
+    (tmp_path / "psql").touch()
     monkeypatch.setattr("src.install.update.find_pg_dump", lambda: str(tmp_path / "pg_dump"))
     monkeypatch.setattr(backup.shutil, "which", lambda _: "/usr/bin/docker")
     run = AsyncMock(
@@ -261,6 +263,7 @@ async def test_clients_use_serving_container_when_local_tools_are_older(
 
 async def test_local_clients_remain_available_when_docker_is_unavailable(tmp_path, monkeypatch):
     (tmp_path / "pg_restore").touch()
+    (tmp_path / "psql").touch()
     monkeypatch.setattr("src.install.update.find_pg_dump", lambda: str(tmp_path / "pg_dump"))
     monkeypatch.setattr(backup.shutil, "which", lambda _: "/usr/bin/docker")
     monkeypatch.setattr(
@@ -293,7 +296,11 @@ async def fixture_db(operator, monkeypatch):
         sessions=SimpleNamespace(tmux_socket="aq-test-db-restore"),
     )
     monkeypatch.setattr(db_cli, "_load_config", lambda: config)
-    monkeypatch.setattr(db_cli, "_make_engine", lambda _: (create_postgres_engine(url), url))
+    monkeypatch.setattr(
+        db_cli,
+        "_make_engine",
+        lambda cfg: (create_postgres_engine(cfg.database.url), cfg.database.url),
+    )
     async with engine.begin() as conn:
         await conn.execute(
             text("CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)")
@@ -370,15 +377,21 @@ async def test_backup_restore_round_trip_with_recovery_and_loss_counts(fixture_d
         }
 
 
-async def test_live_database_session_blocks_restore_with_force(fixture_db, tmp_path):
+async def test_unverified_database_session_blocks_restore_with_force(
+    fixture_db, tmp_path, monkeypatch
+):
     engine, _ = fixture_db
     dump = tmp_path / "database.dump"
     result = await invoke("db", "backup", str(dump))
     assert result.exit_code == 0, result.output
     async with engine.begin() as conn:
         await conn.execute(text("INSERT INTO sessions VALUES ('worker', 'sleeping', NULL)"))
+    real_which = backup.shutil.which
+    monkeypatch.setattr(
+        backup.shutil, "which", lambda name: None if name == "tmux" else real_which(name)
+    )
     result = await invoke("db", "restore", str(dump), "--force")
-    assert result.exit_code != 0 and "restore_sessions_live" in result.output
+    assert result.exit_code != 0 and "restore_sessions_unverified" in result.output
     assert not list((tmp_path / "backups").glob("pre-restore-*.dump"))
 
 
@@ -408,7 +421,9 @@ async def test_archive_schema_is_checked_and_unknown_revision_preserves_target(
     assert not list((tmp_path / "backups").glob("pre-restore-*.dump"))
 
 
-async def test_failed_restore_rolls_back_clean_and_keeps_recovery_archive(fixture_db, tmp_path):
+async def test_failed_restore_rolls_back_schema_replacement_and_keeps_recovery_archive(
+    fixture_db, tmp_path, monkeypatch
+):
     engine, config = fixture_db
     dump = tmp_path / "database.dump"
     result = await invoke("db", "backup", str(dump))
@@ -416,34 +431,168 @@ async def test_failed_restore_rolls_back_clean_and_keeps_recovery_archive(fixtur
     clients = await backup.postgres_clients(config.database.url)
     info = await backup.inspect_archive(clients, dump)
     async with engine.begin() as conn:
-        # A target-only dependency blocks dropping tasks, after other archive
-        # objects have been cleaned. The entire restore must roll back.
+        # Keep a target-only table and newer data to prove replacement rolls
+        # back when the archived SQL fails after DROP SCHEMA.
         await conn.execute(text("CREATE TABLE blocker (id text REFERENCES tasks(id))"))
         await conn.execute(
             text("INSERT INTO messages VALUES ('keep', :now)"),
             {"now": info.created_at.timestamp() + 10},
         )
+    real_run = backup.PostgresClients.run
+
+    async def broken_sql(self, tool, *args, **kwargs):
+        output = await real_run(self, tool, *args, **kwargs)
+        if tool == "pg_restore" and kwargs.get("destination"):
+            with kwargs["destination"].open("ab") as handle:
+                handle.write(b"\nSELECT * FROM restore_failure_fixture;\n")
+        return output
+
+    monkeypatch.setattr(backup.PostgresClients, "run", broken_sql)
     result = await invoke("db", "restore", str(dump), "--accept-data-loss", info.timestamp)
     assert result.exit_code != 0 and "backup_client_failed" in result.output
     async with engine.connect() as conn:
         assert await conn.scalar(text("SELECT id FROM tasks")) == "original"
         assert await conn.scalar(text("SELECT id FROM messages")) == "keep"
+        assert await conn.scalar(text("SELECT to_regclass('public.blocker')")) == "blocker"
     assert len(list((tmp_path / "backups").glob("pre-restore-*.dump"))) == 1
 
 
-async def test_surviving_tmux_session_blocks_before_database_probe(monkeypatch):
+@pytest.mark.parametrize("name", ["n-supervisor--fixture", "s-task", "p-worker--fixture"])
+async def test_surviving_tmux_session_blocks_before_database_probe(monkeypatch, name):
     monkeypatch.setattr(backup.shutil, "which", lambda _: "/usr/bin/tmux")
-    monkeypatch.setattr(backup, "_run", AsyncMock(return_value=b"n-supervisor--fixture\n"))
+    monkeypatch.setattr(backup, "_run", AsyncMock(return_value=(name + "\n").encode()))
     config = SimpleNamespace(sessions=SimpleNamespace(tmux_socket="test-socket"))
     with pytest.raises(backup.BackupError, match="restore_sessions_live"):
         await backup.assert_sessions_ended(config, None)
 
 
-async def test_tmux_probe_failure_does_not_authorize_restore(monkeypatch):
+@pytest.mark.parametrize(
+    "error", ["permission denied", "backup_client_unavailable: No such file or directory"]
+)
+async def test_tmux_probe_failure_does_not_authorize_restore(monkeypatch, error):
     monkeypatch.setattr(backup.shutil, "which", lambda _: "/usr/bin/tmux")
-    monkeypatch.setattr(
-        backup, "_run", AsyncMock(side_effect=backup.BackupError("permission denied"))
-    )
+    monkeypatch.setattr(backup, "_run", AsyncMock(side_effect=backup.BackupError(error)))
     config = SimpleNamespace(sessions=SimpleNamespace(tmux_socket="test-socket"))
-    with pytest.raises(backup.BackupError, match="permission denied"):
+    with pytest.raises(backup.BackupError, match=error):
         await backup.assert_sessions_ended(config, None)
+
+
+async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixture_db, tmp_path):
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    from src.database.engine import _ALEMBIC_INI
+
+    engine, config = fixture_db
+    script = ScriptDirectory.from_config(Config(str(_ALEMBIC_INI)))
+    older = script.get_revision(alembic_head_revisions()[0]).down_revision
+    async with engine.begin() as conn:
+        await conn.execute(text("UPDATE alembic_version SET version_num = :rev"), {"rev": older})
+        await conn.execute(text("CREATE TABLE integration_batches (id text PRIMARY KEY)"))
+        await conn.execute(text("INSERT INTO integration_batches VALUES ('original')"))
+    dump = tmp_path / "older.dump"
+    assert (await invoke("db", "backup", str(dump))).exit_code == 0
+    clients = await backup.postgres_clients(config.database.url)
+    info = await backup.inspect_archive(clients, dump)
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE later_table (id text REFERENCES tasks(id))"))
+        await conn.execute(text("INSERT INTO later_table VALUES ('original')"))
+        await conn.execute(text("ALTER TABLE tasks ADD COLUMN later_column text"))
+        await conn.execute(
+            text("UPDATE alembic_version SET version_num = :rev"),
+            {"rev": alembic_head_revisions()[0]},
+        )
+    result = await invoke("db", "restore", str(dump), "--accept-data-loss", info.timestamp)
+    assert result.exit_code == 0, result.output
+    async with engine.connect() as conn:
+        assert await conn.scalar(text("SELECT to_regclass('public.later_table')")) is None
+        assert await conn.scalar(text("SELECT version_num FROM alembic_version")) == older
+        assert await conn.scalar(text("SELECT id FROM tasks")) == "original"
+        assert (
+            await conn.scalar(
+                text(
+                    "SELECT count(*) FROM information_schema.columns "
+                    "WHERE table_name='tasks' AND column_name='later_column'"
+                )
+            )
+            == 0
+        )
+    # The next upgrade applies the actual newer migration to the restored
+    # scratch schema, rather than finding leftover post-deployment objects.
+    from src.database.engine import run_schema_setup
+
+    await run_schema_setup(engine)
+    async with engine.begin() as conn:
+        assert (
+            await conn.scalar(text("SELECT version_num FROM alembic_version"))
+            == alembic_head_revisions()[0]
+        )
+        assert await conn.scalar(text("SELECT baseline_generation FROM integration_batches")) == 0
+        assert await conn.scalar(text("SELECT id FROM tasks")) == "original"
+
+
+@pytest.mark.parametrize("no_server", [False, True])
+async def test_aq_stop_stale_session_rows_allow_restore_after_tmux_proof(
+    fixture_db, tmp_path, monkeypatch, no_server
+):
+    engine, config = fixture_db
+    dump = tmp_path / "stopped.dump"
+    assert (await invoke("db", "backup", str(dump))).exit_code == 0
+    clients = await backup.postgres_clients(config.database.url)
+    info = await backup.inspect_archive(clients, dump)
+    async with engine.begin() as conn:
+        await conn.execute(text("INSERT INTO sessions VALUES ('p-worker', 'sleeping', NULL)"))
+    real_run, real_which = backup._run, backup.shutil.which
+
+    async def probe(argv, **kwargs):
+        if argv[0] == "tmux":
+            if no_server:
+                raise backup.BackupError("no server running on fixture socket")
+            return b"personal-shell\n"
+        return await real_run(argv, **kwargs)
+
+    monkeypatch.setattr(
+        backup.shutil, "which", lambda name: "/usr/bin/tmux" if name == "tmux" else real_which(name)
+    )
+    monkeypatch.setattr(backup, "_run", probe)
+    result = await invoke("db", "restore", str(dump), "--accept-data-loss", info.timestamp)
+    assert result.exit_code == 0, result.output
+
+
+async def test_missing_restore_target_reports_a_clear_error(fixture_db, tmp_path, monkeypatch):
+    from sqlalchemy.engine import make_url
+
+    _, config = fixture_db
+    clients = await backup.postgres_clients(config.database.url)
+    dump = tmp_path / "source.dump"
+    info = await backup.backup_database(clients, dump)
+    missing = (
+        make_url(config.database.url)
+        .set(database="aq_test_restore_missing_fixture")
+        .render_as_string(hide_password=False)
+    )
+    config.database.url = missing
+    result = await invoke("db", "restore", str(dump), "--accept-data-loss", info.timestamp)
+    assert result.exit_code != 0
+    assert "restore_target_unavailable" in result.output
+    assert "target database exists" in result.output
+    assert "Traceback" not in result.output
+    assert not list((tmp_path / "backups").glob("pre-restore-*.dump"))
+
+
+async def test_backup_and_restore_clients_share_update_timeout(monkeypatch):
+    from src.install.update import BACKUP_TIMEOUT
+
+    proc = SimpleNamespace(communicate=AsyncMock(return_value=(b"ok", b"")), returncode=0)
+    monkeypatch.setattr(backup.asyncio, "create_subprocess_exec", AsyncMock(return_value=proc))
+    wait_for = backup.asyncio.wait_for
+    observed = []
+
+    async def capture(awaitable, timeout):
+        observed.append(timeout)
+        return await wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(backup.asyncio, "wait_for", capture)
+    clients = backup.PostgresClients((), "pg_dump", "pg_restore", (), {})
+    for tool in ("pg_dump", "pg_restore", "psql"):
+        await clients.run(tool, "--version")
+    assert observed == [BACKUP_TIMEOUT] * 3
