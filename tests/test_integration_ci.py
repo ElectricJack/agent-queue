@@ -31,6 +31,7 @@ from src.integration.ci import (
     TrustedCIObservation,
     TrustedFixtureObserver,
     ci_trust_from_policy,
+    failed_run_verdict,
     select_trusted_attestation,
 )
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
@@ -717,6 +718,111 @@ async def test_authenticated_observer_returns_normalized_conclusive_failure():
 
     assert isinstance(observation, FailedCIObservation)
     assert observation.conclusion == "failure"
+
+
+@pytest.mark.parametrize(
+    ("conclusions", "expected"),
+    [
+        # A real failure is conclusive whatever its cancelled siblings say.
+        (("failure", "cancelled"), "failure"),
+        (("cancelled", "failure"), "failure"),
+        (("success", "failure"), "failure"),
+        (("failure", "failure"), "failure"),
+        # GitHub concludes a run 'failure' when no runner was acquired for its
+        # jobs, so cancellations alone stay inconclusive and retry.
+        (("success", "cancelled"), "cancelled"),
+        (("cancelled", "success"), "cancelled"),
+        (("cancelled", "cancelled"), "cancelled"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_required_check_failure_outranks_cancelled_siblings(conclusions, expected):
+    checks = {
+        name: [
+            {
+                "id": 11 + index,
+                "name": name,
+                "head_sha": SHA,
+                "status": "completed",
+                "conclusion": conclusion,
+                "app": {"id": 404},
+                "check_suite": {"id": 21},
+            }
+        ]
+        for index, (name, conclusion) in enumerate(zip(("unit", "postgres"), conclusions))
+    }
+    workflows = [
+        {
+            "id": 31,
+            "workflow_id": 301,
+            "run_attempt": 1,
+            "check_suite_id": 21,
+            "head_sha": SHA,
+            "conclusion": "failure",
+        }
+    ]
+
+    observation = await AuthenticatedGitHubObserver(
+        FakeGitHubClient(checks, workflows)
+    ).observe(trust(), SHA)
+
+    assert isinstance(observation, FailedCIObservation)
+    assert observation.conclusion == expected
+
+
+@pytest.mark.asyncio
+async def test_a_required_check_the_run_never_produced_outranks_a_cancelled_attempt():
+    # 'postgres' never ran: its completed push attempt concluded 'cancelled'
+    # while the attempt carrying 'unit' succeeded. The absence is conclusive.
+    checks = {
+        "unit": [
+            {"id": 11, "name": "unit", "head_sha": SHA, "status": "completed",
+             "conclusion": "success", "app": {"id": 404}, "check_suite": {"id": 21}}
+        ],
+        "postgres": [],
+    }
+    workflows = [
+        {"id": 31, "workflow_id": 301, "run_attempt": 1, "check_suite_id": 21,
+         "head_sha": SHA, "status": "completed", "conclusion": "success", "event": "push"},
+        {"id": 32, "workflow_id": 302, "run_attempt": 1, "check_suite_id": 22,
+         "head_sha": SHA, "status": "completed", "conclusion": "cancelled", "event": "push"},
+    ]
+    observer = AuthenticatedGitHubObserver(
+        FakeGitHubClient(checks, workflows), expected_event="push"
+    )
+
+    observation = await observer.observe(trust(), SHA)
+
+    assert isinstance(observation, FailedCIObservation)
+    assert observation.conclusion == "failure"
+    assert {check["name"]: check["conclusion"] for check in observation.checks} == {
+        "unit": "success",
+        "postgres": "missing",
+    }
+
+
+@pytest.mark.parametrize(
+    ("check_conclusions", "run_conclusions", "verdict"),
+    [
+        (("failure", "cancelled"), ("failure",), "red"),
+        (("missing", "cancelled"), ("cancelled",), "red"),
+        (("failure", "success"), ("failure",), "red"),
+        (("success", "success"), ("failure",), "red"),
+        (("success", "cancelled"), ("failure",), "cancelled"),
+        (("cancelled", "success"), ("failure",), "cancelled"),
+        (("success", "success"), ("cancelled",), "cancelled"),
+        (("success", "skipped"), ("success",), "infra"),
+        (("success", "success"), ("skipped",), "infra"),
+    ],
+)
+def test_the_shared_precedence_reads_the_jobs_before_the_run(
+    check_conclusions, run_conclusions, verdict
+):
+    # One function, so no layer can be red where the one below it is infra.
+    checks = [{"name": str(index), "conclusion": c} for index, c in enumerate(check_conclusions)]
+    runs = [{"conclusion": c} for c in run_conclusions]
+
+    assert failed_run_verdict(checks, runs) == verdict
 
 
 @pytest.mark.asyncio

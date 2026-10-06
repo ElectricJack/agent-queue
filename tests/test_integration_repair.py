@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -12,6 +13,7 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+from src.commands.task_commands import TaskCommandsMixin
 from src.database.tables import (
     integration_batch_members,
     integration_batches,
@@ -2290,6 +2292,93 @@ async def test_never_claimed_delegate_extends_its_stage_and_notices_once(db):
     assert notices[0]["to_id"] == "supervisor-p"
 
 
+async def test_claim_after_the_deadline_starts_the_stage_budget(db):
+    """Queue time is not a repair attempt: the claim starts the stage's budget.
+
+    A stage's deadline runs from its activation, so a delegate the pool cannot
+    staff in time is claimed with its budget already spent. Its close is then
+    refused for a repair attempt that never began, which is how a claimed batch
+    repair ended up holding a claim it could neither complete nor release.
+    """
+    service, delegate = await _continuous_parent_stage(db)
+
+    running = await service.start_claimed_stage_budget(delegate, now=120.0)
+    assert running == {
+        "outcome": "within_budget", "operation_id": "operation", "stage": 0,
+        "deadline_at": 130.0,
+    }
+    assert (await _repair_stage(db, "operation", 0))["deadline_at"] == 130.0
+
+    # Not claimed on this delegate (the pool has not picked it up yet): its
+    # clock stays where activation put it, so a real attempt still meets its own
+    # budget.
+    unclaimed = await service.start_claimed_stage_budget(delegate, now=140.0)
+    assert unclaimed == {
+        "outcome": "not_claimed", "task_id": delegate,
+        "operation_id": "operation", "stage": 0,
+    }
+    assert (await _repair_stage(db, "operation", 0))["deadline_at"] == 130.0
+
+    await _claimed_writer(db, delegate, epoch=1, live=True, sid="late-writer")
+    started = await service.start_claimed_stage_budget(delegate, now=140.0)
+    assert started == {
+        "outcome": "started", "operation_id": "operation", "stage": 0,
+        "deadline_at": 170.0, "reason": "writer_claimed",
+    }
+
+    stage = await _repair_stage(db, "operation", 0)
+    assert (stage["state"], stage["attempts"], stage["repair_task_id"]) == ("active", 0, delegate)
+    assert stage["deadline_at"] == 170.0
+    assert stage["dossier"]["budget"]["deadline_at"] == 170.0
+    assert stage["dossier"]["deadline_deferral_count"] == 1
+    assert stage["dossier"]["deadline_deferrals"] == [
+        {
+            "reason": "writer_claimed", "at": 140.0,
+            "previous_deadline_at": 130.0, "deadline_at": 170.0,
+            "task_id": delegate, "task_status": "IN_PROGRESS", "claim_epoch": 1,
+        }
+    ]
+    assert await _ordinals(db) == [0]
+    operation = await db.get_integration_operation("operation")
+    assert (operation["active_stage"], operation["state"]) == (0, "active")
+
+    notices = await _notices(db, "integration_repair_deferred")
+    assert len(notices) == 1
+    assert delegate in notices[0]["body"]
+    assert "Queue time is not a repair attempt" in notices[0]["body"]
+
+    # A re-claim inside the fresh budget never extends it, and the supervisor
+    # hears about a late claim once per stage.
+    assert (await service.start_claimed_stage_budget(delegate, now=160.0)) == {
+        "outcome": "within_budget", "operation_id": "operation", "stage": 0,
+        "deadline_at": 170.0,
+    }
+    assert (await _repair_stage(db, "operation", 0))["deadline_at"] == 170.0
+    assert len(await _notices(db, "integration_repair_deferred")) == 1
+    assert await service.due_stages(now=169.0) == []
+    assert [stage["stage"] for stage in await service.due_stages(now=171.0)] == [0]
+
+
+async def test_a_claim_never_rearms_a_stage_it_did_not_claim(db):
+    """Only the claimed delegate's own current stage is re-armed."""
+    service, delegate = await _continuous_parent_stage(db)
+    await _claimed_writer(db, delegate, epoch=1, live=True, sid="late-writer")
+
+    unknown = await service.start_claimed_stage_budget("not-a-delegate", now=140.0)
+    assert unknown == {"outcome": "no_stage", "task_id": "not-a-delegate"}
+
+    # A stage the ladder already retired belongs to ``expire``, not to a claim:
+    # its ordinal and its successor are the ladder's to spend.
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "operation",
+            integration_repair_stages.c.ordinal == 0,
+        ).values(state="expired", deadline_at=100.0))
+    retired = await service.start_claimed_stage_budget(delegate, now=140.0)
+    assert retired == {"outcome": "no_stage", "task_id": delegate}
+    assert (await _repair_stage(db, "operation", 0))["deadline_at"] == 100.0
+
+
 async def test_live_writer_is_revisited_and_real_head_progress_escalates(db):
     service, delegate = await _continuous_parent_stage(db)
     await _claimed_writer(db, delegate, epoch=1, live=True, sid="live-writer")
@@ -2452,6 +2541,109 @@ async def _attached_dead_writer(db, delegate: str) -> None:
         await conn.execute(update(integration_branch_owners).values(
             handoff_state="attached", session_id="dead",
         ))
+
+
+async def _dead_writer_with_released_fence(db, delegate: str) -> None:
+    """A repair delegate whose worker died and whose fence owner recovery freed.
+
+    This is the shape ``aq task restart`` found on 2026-10-05: the writer's
+    session is gone, its claim is closed with the task BLOCKED, and the branch
+    fence is ``released`` — no reserved repair fence for the delegate.
+    """
+    await _claimed_writer(db, delegate, epoch=1, live=False, sid="dead")
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).values(
+            handoff_state="released",
+            fence_token=integration_branch_owners.c.fence_token + 1,
+            session_id=None,
+            workspace_id=None,
+            confirmed_workspace_id="ws-dead",
+        ))
+
+
+def _restart_command(db, service):
+    """The ``restart_task`` collaborators an integration delegate restart reads.
+
+    ``CommandHandler`` composes both mixins; these tests call the handler
+    method unbound, so the double carries the sibling methods explicitly.
+    """
+    command = SimpleNamespace(db=db, _integration_repair_service=lambda: service)
+    for name in ("_restart_repair_delegate", "_undo_refused_restart"):
+        setattr(command, name, partial(getattr(TaskCommandsMixin, name), command))
+    return command
+
+
+async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db):
+    """A restarted repair delegate must be claimable, not READY and stranded.
+
+    A repair delegate owns no branch origin: the pool claim frontier admits it
+    only on the exact reserved ``repair`` fence of its operation's branch. A
+    restart that only moved the row to READY left it off the frontier with
+    ``frontier_origin_not_materialized`` and zero counted demand, so no pool
+    worker could ever pick it up.
+    """
+    service, delegate = await _continuous_parent_stage(db)
+    await _dead_writer_with_released_fence(db, delegate)
+    stage_before = await _repair_stage(db, "operation", 0)
+    assert await db.is_hierarchy_task_runnable(delegate) is False
+
+    result = await TaskCommandsMixin._cmd_restart_task(
+        _restart_command(db, service), {"task_id": delegate}
+    )
+
+    assert result["restarted"] == delegate
+    assert (result["previous_status"], result["reservation"]) == ("BLOCKED", "acquired")
+    assert (await db.get_task(delegate)).status is TaskStatus.READY
+    owner = await BranchOwnership(db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert (owner["owner_id"], owner["owner_role"], owner["handoff_state"]) == (
+        delegate, "repair", "reserved",
+    )
+    assert owner["session_id"] is None and owner["workspace_id"] is None
+    assert await db.is_hierarchy_task_runnable(delegate) is True
+    assert await db.claim_frontier_exclusions(delegate) == []
+    # The claim predicate itself, in both the hoisted and the correlated form.
+    from src.database.queries.claim_queries import _frontier_where
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+    async with db._engine.connect() as conn:
+        for mode in (None, ProjectIntegrationMode(True, "repo")):
+            claimable = await conn.scalar(select(tasks.c.id).where(
+                tasks.c.id == delegate, _frontier_where("p", mode),
+            ))
+    assert claimable == delegate
+    # The same delegate and the same stage resume; no budget or clock was reset.
+    stage_after = await _repair_stage(db, "operation", 0)
+    for field in ("ordinal", "state", "repair_task_id", "writer_kind", "started_at",
+                  "deadline_at", "attempts", "starting_sha", "current_subject"):
+        assert stage_after[field] == stage_before[field]
+    assert await service.missing_delegate_reservations() == []
+
+
+@pytest.mark.parametrize("fence_state", ["attached", "handoff_pending"])
+async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db, fence_state):
+    """A fence no handoff can prove free is refused, naming the control to run."""
+    service, delegate = await _continuous_parent_stage(db)
+    await _claimed_writer(db, delegate, epoch=1, live=False, sid="dead")
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).values(
+            handoff_state=fence_state, session_id="dead",
+        ))
+
+    result = await TaskCommandsMixin._cmd_restart_task(
+        _restart_command(db, service), {"task_id": delegate}
+    )
+
+    assert "aq integration reserve-owner --task-id" in result["error"]
+    assert "aq integration release-owner --task-id" in result["error"]
+    assert (await db.get_task(delegate)).status is TaskStatus.BLOCKED
+    owner = await BranchOwnership(db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert (owner["owner_id"], owner["handoff_state"], owner["session_id"]) == (
+        delegate, fence_state, "dead",
+    )
+    assert await db.is_hierarchy_task_runnable(delegate) is False
 
 
 async def test_attached_stopped_writer_is_proven_by_owner_recovery_then_refiled(db):
@@ -3470,6 +3662,180 @@ async def test_root_active_adoption_still_refuses_at_deadline(db, head):
                     "commits": [] if head == STARTING_SHA else [head],
                 }, now=130.0,
             )
+
+
+async def test_an_expired_stage_with_a_late_push_rebuilds_and_releases_its_writer(db):
+    """The supported way forward for a batch whose expired stage left a push behind.
+
+    This is the state the incident batch was left in once the ladder ran:stage 0
+    out of budget, its writer having already pushed, so its ordinal is spent and
+    it must not bind a candidate revision.  Two routes exist, and both are
+    pinned here rather than left to the incident: the *batch* rebuilds on the
+    successor stage, and the *writer* is not stranded -- its seat is durably
+    retired, which is the proof the retired-delegate drain
+    (``aq session drain-ack``) needs to stop it after its own ack.  Before this
+    task, an attached writer whose stage had lapsed had neither.
+    """
+    from src.integration.repair import RepairService
+
+    policy = _policy()
+    policy["root"]["repair"]["on_exhausted"] = "continue"
+    operation_id = await _seed_root_operation(db, policy=policy)
+    await BranchOwnership(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/integration/batch"), operation_id, "collector",
+    )
+    service = RepairService(db)
+    await service.start(operation_id, STARTING_SHA, "batch", now=100.0)
+    dispatched = await service.dispatch(operation_id, 0)
+    delegate = dispatched["repair_task_id"]
+    await _claimed_writer(db, delegate, epoch=1, live=False, sid="late-pusher")
+
+    # The writer published before anything could close it, so the stage subject
+    # moved off the head its writer was allocated on. That is real progress, so
+    # the ladder escalates instead of waiting for a writer that is gone.
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == operation_id,
+            integration_repair_stages.c.ordinal == 0,
+        ).values(current_subject={"kind": "batch", "revision": 0, "candidate_sha": "e" * 40}))
+
+    expired = await service.expire(operation_id, 0, now=130.0)
+    assert (expired["outcome"], expired["action"], expired["stage"]) == (
+        "expired", "dispatch_debug", 1,
+    )
+
+    spent = await _repair_stage(db, operation_id, 0)
+    successor = await _repair_stage(db, operation_id, 1)
+    assert (spent["state"], spent["repair_task_id"]) == ("expired", delegate)
+    assert (successor["state"], successor["deadline_at"], successor["repair_task_id"]) == (
+        "active", 190.0, None,
+    )
+    rebuilt = await service.dispatch(operation_id, 1)
+    assert rebuilt["outcome"] == "dispatched", [
+        n["body"] for n in await _notices(db, "integration_repair_dispatch_unknown")
+    ]
+    assert rebuilt["repair_task_id"] != delegate
+    # The rebuild runs on the subject the push left behind.
+    assert (await _repair_stage(db, operation_id, 1))["current_subject"] == {
+        "kind": "batch", "revision": 0, "candidate_sha": "e" * 40,
+    }
+    assert (await db.get_integration_operation(operation_id))["active_stage"] == 1
+
+    # A spent ordinal never adopts: the close's own scope is already inactive,
+    # so the batch rebuilds on the successor rather than binding this revision
+    # from an expired stage.
+    async with db.immediate() as conn:
+        scope = await db.get_repair_filing_scope(delegate, session_id="late-pusher", conn=conn)
+    assert scope is not None
+    assert (scope["active"], scope["stage"], scope["operation_id"]) == (
+        False, 0, operation_id,
+    )
+
+    # And the writer is not left holding an unprovable claim: its seat is
+    # retired for good, which is exactly the proof the drain path requires.
+    async with db.immediate() as conn:
+        retirement = await db.get_retired_integration_writer(delegate, conn=conn)
+    assert retirement is not None
+    assert retirement["disposition"] == "superseded"
+    assert retirement["operation_id"] == operation_id
+
+    # The pool claim that would re-arm a budget re-arms nothing here: the stage
+    # belongs to the ladder now.
+    assert (await service.start_claimed_stage_budget(delegate, now=140.0)) == {
+        "outcome": "no_stage", "task_id": delegate,
+    }
+    assert (await _repair_stage(db, operation_id, 0))["deadline_at"] == spent["deadline_at"]
+
+    # The rebuild keeps the operation running, so the batch still has a route.
+    assert await service.due_stages(now=189.0) == []
+    assert [stage["stage"] for stage in await service.due_stages(now=191.0)] == [1]
+
+
+async def test_a_live_writer_close_rechecks_its_stage_instead_of_being_refused(db):
+    """A deadline bounds the wait for a writer, not the writer a stage already holds.
+
+    ``expire`` answers a due stage whose writer is live with a bounded recheck
+    (:data:`WRITER_RECHECK_SECONDS`), never a supersession.  The guarded close
+    holds that writer's exact fence, so it gets the same answer -- refusing it
+    instead is what left a worker holding a claim it could neither complete nor
+    release, retrying the same refused close forever.
+    """
+    from src.integration.repair import RepairService
+
+    operation_id = await _seed_root_operation(db)
+    service = RepairService(db)
+    await service.start(operation_id, STARTING_SHA, "batch", now=100.0)
+    dispatched = await service.dispatch(operation_id, 0)
+    delegate = dispatched["repair_task_id"]
+
+    async def close_at(now: float) -> dict:
+        async with db.immediate() as conn:
+            deferred = await service.defer_lapsed_writer_close(
+                conn, operation_id, delegate, now=now
+            )
+            if not deferred["deferred"]:
+                return deferred
+            await service.adopt_batch_repair_on(
+                conn, operation_id, head_sha=STARTING_SHA,
+                commit_proof={
+                    "base_sha": STARTING_SHA, "head_sha": STARTING_SHA, "commits": [],
+                },
+                now=now,
+            )
+            return deferred
+
+    # Nobody holds the fence yet: the guard stands, and the close is refused.
+    await _claimed_writer(db, delegate, epoch=1, live=False, sid="dead-writer")
+    stranded = await close_at(130.0)
+    assert stranded == {
+        "deferred": False, "reason": "writer_not_live",
+        "operation_id": operation_id, "stage": 0,
+    }
+    with pytest.raises(ValueError, match="stage is no longer active"):
+        async with db.immediate() as conn:
+            await service.adopt_batch_repair_on(
+                conn, operation_id, head_sha=STARTING_SHA,
+                commit_proof={
+                    "base_sha": STARTING_SHA, "head_sha": STARTING_SHA, "commits": [],
+                }, now=130.0,
+            )
+    assert (await _repair_stage(db, operation_id, 0))["deadline_at"] == 130.0
+
+    # The live writer closing late is recheked once, and its close lands.
+    await db.create_session(SessionRecord(
+        id="late-writer", task_id=delegate, project_id="p", profile_id="repairer",
+        harness="fake", provider="fake", name="late-writer", lifecycle="task",
+        state="running", desired_state="running", work_dir="/tmp/late-writer",
+        epoch="epoch", instance_token="late-writer", started_at=129.0, last_activity=140.0,
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == delegate).values(
+            status="IN_PROGRESS",
+        ))
+    deferred = await close_at(140.0)
+    assert deferred == {
+        "deferred": True, "reason": "writer_live",
+        "operation_id": operation_id, "stage": 0, "deadline_at": 440.0,
+    }
+
+    stage = await _repair_stage(db, operation_id, 0)
+    assert (stage["state"], stage["attempts"], stage["repair_task_id"]) == ("active", 0, delegate)
+    assert stage["deadline_at"] == 440.0
+    assert stage["dossier"]["deadline_deferrals"] == [
+        {
+            "reason": "writer_live", "at": 140.0,
+            "previous_deadline_at": 130.0, "deadline_at": 440.0,
+            "task_id": delegate, "task_status": "IN_PROGRESS", "claim_epoch": 1,
+        }
+    ]
+    assert await _ordinals(db) == [0]
+    # A live writer is not news, and a stage inside its budget is untouched.
+    assert await _notices(db, "integration_repair_deferred") == []
+    assert await close_at(200.0) == {
+        "deferred": False, "reason": "within_budget",
+        "operation_id": operation_id, "stage": 0, "deadline_at": 440.0,
+    }
+    assert (await _repair_stage(db, operation_id, 0))["deadline_at"] == 440.0
 
 
 async def test_root_green_waits_for_promotion_but_new_revision_reuses_budget(db):
@@ -5794,8 +6160,9 @@ async def test_batch_repair_delegate_can_file_only_explicit_project_root(
 
 @pytest.mark.parametrize("lifecycle", ["task", "pool"])
 @pytest.mark.parametrize("green", [False, True])
+@pytest.mark.parametrize("lapsed", [False, True])
 async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_slot(
-    command_handler_factory, lifecycle, green
+    command_handler_factory, lifecycle, green, lapsed
 ):
     """A root delegate anchors its proof on ``candidate_sha``, not ``head_sha``.
 
@@ -5804,6 +6171,15 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
     raised ``KeyError`` inside the close pipeline's guard, so a passing root
     repair landed BLOCKED with its pushed commits unrecorded — and on a pool
     session the slot was released with the delegate never completed.
+
+    With *lapsed* the stage's budget ran out while this exact fenced writer was
+    attached.  ``adopt_batch_repair_on`` refused such a close outright
+    ("stage is no longer active"), which is how a worker ended up holding a
+    claim it could neither complete nor release: every close was refused and
+    retried in session forever.  A deadline bounds the wait for a writer, not
+    the writer a stage already holds — the same answer ``expire`` gives a live
+    writer (``writer_live``, :data:`WRITER_RECHECK_SECONDS`) — so the guarded
+    close re-arms the stage and completes.
     """
     import time
 
@@ -5833,6 +6209,16 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
     dispatched = await service.dispatch(operation_id, 0)
     repair_task_id = dispatched["repair_task_id"]
     repair_head = STARTING_SHA if green else "d" * 40
+    if lapsed and not green:
+        # The stage ran out of budget before its worker got to the close, the
+        # way it does when the pool cannot staff the delegate in time.
+        async with handler.db.immediate() as conn:
+            await conn.execute(
+                update(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == operation_id,
+                    integration_repair_stages.c.ordinal == 0,
+                ).values(deadline_at=time.time() - 1.0)
+            )
     is_pool = lifecycle == "pool"
     await handler.db.create_agent(
         Agent(
@@ -6003,6 +6389,27 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
             "/tmp/root-repair", STARTING_SHA, repair_head,
         )
     handler.orchestrator.git.als_remote_ref.assert_awaited()
+    stage = await _repair_stage(handler.db, operation_id, 0)
+    if lapsed and not green:
+        # expire's live-writer recheck, applied by the close, and nothing else:
+        # no successor ordinal, no attempt spent, the writer's own fence intact.
+        assert stage["state"] == "active" and stage["attempts"] == 0
+        assert stage["deadline_at"] > time.time()
+        assert len(stage["dossier"]["deadline_deferrals"]) == 1
+        recheck = stage["dossier"]["deadline_deferrals"][0]
+        assert recheck["reason"] == "writer_live"
+        assert recheck["task_id"] == repair_task_id
+        assert (recheck["task_status"], recheck["claim_epoch"]) == ("IN_PROGRESS", 1)
+        assert recheck["deadline_at"] == stage["deadline_at"]
+        assert recheck["previous_deadline_at"] < time.time() < recheck["deadline_at"]
+        assert stage["dossier"]["budget"]["deadline_at"] == stage["deadline_at"]
+        # A live writer's recheck is not news.
+        assert await _notices(handler.db, "integration_repair_deferred") == []
+    else:
+        # A green handoff may outlive the deadline (adopt's
+        # ``awaiting_completion`` path), and a close inside budget re-arms
+        # nothing: no deferral either way.
+        assert stage["dossier"].get("deadline_deferrals") in (None, [])
     async with handler.db._engine.connect() as conn:
         close_events = (
             await conn.execute(

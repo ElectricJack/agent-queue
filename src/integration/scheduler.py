@@ -18,6 +18,7 @@ from src.database.queries.integration_schedule_queries import (
     INTEGRATION_LEASE_RENEW_WITHIN_SECONDS,
     INTEGRATION_LEASE_SECONDS,
 )
+from src.database.queries.integration_train_queries import legacy_batch_row
 from src.database.tables import (
     events,
     integration_batch_members,
@@ -269,6 +270,7 @@ class IntegrationScheduler:
                                     "promoted",
                                 )
                             ),
+                            legacy_batch_row(),
                         )
                     )
                 ).scalar_one_or_none()
@@ -803,6 +805,7 @@ class TrainService:
                                     "cleanup_pending",
                                 )
                             ),
+                            legacy_batch_row(),
                         )
                     )
                 ).mappings().one_or_none()

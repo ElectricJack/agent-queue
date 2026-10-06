@@ -707,8 +707,18 @@ integration_source_ci = Table(
     Column("repair_attempt", Integer, nullable=False, server_default="0"),
     Column("repair_history", JSONB, nullable=False, server_default="[]"),
     Column("observed_at", Float, nullable=False),
+    # Consecutive infrastructure-only observations of this exact head, and the
+    # backoff that bounds how often a re-run of that head is requested.  Reset
+    # by any observation that is not infrastructure-only.
+    Column("infra_observations", Integer, nullable=False, server_default="0"),
+    Column("infra_rerun_at", Float),
+    Column("infra_reruns", Integer, nullable=False, server_default="0"),
     CheckConstraint("generation >= 0", name="ck_integration_source_ci_generation"),
     CheckConstraint("repair_attempt >= 0", name="ck_integration_source_ci_attempt"),
+    CheckConstraint(
+        "infra_observations >= 0", name="ck_integration_source_ci_infra_observations"
+    ),
+    CheckConstraint("infra_reruns >= 0", name="ck_integration_source_ci_infra_reruns"),
     CheckConstraint(
         "state IN ('green', 'red', 'cancelled', 'pending', 'conflict')",
         name="ck_integration_source_ci_state",
@@ -3811,7 +3821,7 @@ integration_candidate_ref_mutations = Table(
     CheckConstraint(
         "(state = 'reserved' AND remote_sha IS NULL) OR "
         "(state = 'applied' AND remote_sha = desired_sha) OR "
-        "(state = 'superseded' AND purpose = 'root_main' AND remote_sha IS NULL)",
+        "(state = 'superseded' AND remote_sha IS NULL)",
         name="ck_integration_candidate_ref_mutations_remote",
     ),
     ForeignKeyConstraint(

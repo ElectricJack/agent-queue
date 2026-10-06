@@ -2161,6 +2161,12 @@
         4401
       ]
     },
+    "src/commands/task_commands.py::TaskCommandsMixin._restart_repair_delegate": {
+      "reason": "Restart a stopped integration repair delegate through its operation's exact branch reservation."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._undo_refused_restart": {
+      "reason": "Restore the repair delegate's prior task state when its branch reservation refuses restart."
+    },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_task_recover": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -12268,28 +12274,28 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: REPAIR_RECORD_META"
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::2142606549fbb7fc55f12062ec13ac7e0c300036166e68b70a945ed44a752050": {
-      "line": 1130,
+      "line": 1140,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "be0ad6e52a1617f4f40309c23e772931a5a770f724f65191e427851bacbb2f0b",
+      "owner_fingerprint": "5ba7c914e37316a951e47f0c0432a16e6d300799ce05ccd3642db78df5f43bd8",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'slot_reset_failure'"
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
-      "line": 1120,
+      "line": 1130,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "be0ad6e52a1617f4f40309c23e772931a5a770f724f65191e427851bacbb2f0b",
+      "owner_fingerprint": "5ba7c914e37316a951e47f0c0432a16e6d300799ce05ccd3642db78df5f43bd8",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
-      "line": 1073,
+      "line": 1083,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "be0ad6e52a1617f4f40309c23e772931a5a770f724f65191e427851bacbb2f0b",
+      "owner_fingerprint": "5ba7c914e37316a951e47f0c0432a16e6d300799ce05ccd3642db78df5f43bd8",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary claim-preparation attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: 'needs_attention'; records repair_target_unpublished without remote OIDs, publication intent or ref replay authority."

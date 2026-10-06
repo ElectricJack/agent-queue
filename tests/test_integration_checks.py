@@ -187,6 +187,47 @@ async def test_current_rerun_supersedes_cached_success(db):
 
 
 @pytest.mark.parametrize(
+    ("job_conclusions", "state"),
+    [
+        # GitHub concludes a run 'failure' when no runner was acquired for its
+        # jobs: the surviving job keeps its own success and the verdict waits.
+        (("success", "cancelled"), ChecksState.UNKNOWN),
+        (("cancelled", "success"), ChecksState.UNKNOWN),
+        # A genuinely failed job still decides the verdict.
+        (("failure", "cancelled"), ChecksState.RED),
+        (("cancelled", "failure"), ChecksState.RED),
+    ],
+)
+async def test_a_cancelled_job_is_not_a_run_failure(db, job_conclusions, state):
+    client, trust = github(
+        app=False, names=("unit", "lint"), job_conclusions=job_conclusions,
+        run_conclusion="failure",
+    )
+    job_states = {
+        "success": Conclusion.SUCCESS,
+        "cancelled": Conclusion.CANCELLED,
+        "failure": Conclusion.FAILURE,
+    }
+
+    result = await hosted(db, client, trust, Clock()).refresh(head())
+
+    assert result.state is state and not result.green
+    assert [check.conclusion for check in result.checks] == [
+        job_states[job] for job in job_conclusions
+    ]
+
+
+async def test_a_run_failure_with_no_cancelled_job_still_fails_its_checks(db):
+    client, trust = github(app=False, names=("unit", "lint"), run_conclusion="failure")
+
+    result = await hosted(db, client, trust, Clock()).refresh(head())
+
+    # A required check passes only within a successful workflow attempt.
+    assert result.state is ChecksState.RED
+    assert [check.conclusion for check in result.checks] == [Conclusion.FAILURE] * 2
+
+
+@pytest.mark.parametrize(
     ("change", "state", "conclusion"),
     [
         ("cancelled", ChecksState.UNKNOWN, Conclusion.CANCELLED),

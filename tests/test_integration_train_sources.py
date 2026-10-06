@@ -7,10 +7,15 @@ builds, gates and fast-forwards a target through the ref lease.
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -28,13 +33,15 @@ from src.integration.batches import (
     BatchStore,
     candidate_ref,
 )
-from src.integration.ci import IntegrationCITrust
+from src.integration.attestation import IntegrationAttestationService
+from src.integration.ci import ATTESTATION_CHECK_NAME, IntegrationTrustManifest
 from src.integration.delivery_observer import DeliveryObserver
 from src.integration.git_truth import GitTruth
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchBusy
+from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.repair import OrdinaryRepairService
 from src.integration.status import IntegrationStatusService
 from src.integration.train import CandidateChecks, IntegrationTrain, TrainLane, TrainTarget
@@ -50,12 +57,70 @@ from src.integration.train_sources import (
     _pending_tasks,
 )
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
+from src.test_selection import catalogue as Catalogue
 from tests.db_fixtures import lease_dsn
 from tests.test_delivery_consumers import Origin, close, git
 from tests.test_integration_gitops import LocalGit
 from tests.test_jobs import finish, job_rows, jobs_handler, pin_development
 
 MAIN = TrainTarget("p", "r", "refs/heads/main", "root")
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def catalogue_repository(origin: Origin) -> None:
+    """The origin repository as this project ships it: a real generated catalogue.
+
+    The regenerator is the project's own command under its own name, so the
+    train lane runs the same one a worker would.
+    """
+    clone = origin.clone
+    for name in ("catalogue.py", "discovery.py"):
+        target = clone / "src" / "test_selection" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / "src" / "test_selection" / name, target)
+    for package in (clone / "src", clone / "src" / "test_selection"):
+        (package / "__init__.py").touch()
+    scripts = clone / "scripts"
+    scripts.mkdir(exist_ok=True)
+    shutil.copyfile(ROOT / "scripts" / "generate-selection-catalogue.py",
+                    scripts / "generate-selection-catalogue.py")
+    regenerator = scripts / "regenerate-generated.sh"
+    regenerator.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        "python3 scripts/generate-selection-catalogue.py\n"
+    )
+    regenerator.chmod(0o755)
+    (clone / ".gitattributes").write_text(
+        f"{Catalogue.CATALOGUE_PATH} merge=aq-generated linguist-generated\n"
+    )
+    (clone / "pyproject.toml").write_text('[tool.pytest.ini_options]\ntestpaths = ["tests"]\n')
+    (clone / "tests").mkdir(exist_ok=True)
+    (clone / Catalogue.AREAS_PATH).write_text(
+        "version: 1\nareas:\n  - id: area\n    description: Tests.\n"
+        '    match: ["tests/test_*.py"]\n'
+    )
+    (clone / "tests" / "test_base.py").write_text("def test_base():\n    pass\n")
+    subprocess.run([sys.executable, str(scripts / "generate-selection-catalogue.py")],
+                   cwd=clone, capture_output=True, text=True, check=True)
+    git(clone, "add", "-A")
+    git(clone, "commit", "-qm", "selection inputs")
+    git(clone, "push", "-q", "origin", "main")
+
+
+def catalogue_branch(origin: Origin, tid: str, module: str) -> str:
+    """One task branch that adds a test module and regenerates the catalogue."""
+    clone = origin.clone
+    git(clone, "fetch", "-q", "origin")
+    git(clone, "checkout", "-q", "-B", f"aq/{tid}", "origin/main")
+    (clone / "tests" / f"test_{module}.py").write_text(f"def test_{module}():\n    pass\n")
+    subprocess.run(
+        [sys.executable, str(clone / "scripts" / "generate-selection-catalogue.py")],
+        cwd=clone, capture_output=True, text=True, check=True,
+    )
+    git(clone, "add", "-A")
+    git(clone, "commit", "-qm", f"{tid} adds {module}")
+    git(clone, "push", "-q", "origin", f"aq/{tid}")
+    return git(clone, "rev-parse", "HEAD")
 
 
 @pytest.fixture
@@ -78,7 +143,8 @@ async def world(tmp_path):
     await db.close()
 
 
-async def completed(world, tid, *, parent=None, needs=(), land=False, done=True) -> str:
+async def completed(world, tid, *, parent=None, needs=(), land=False, done=True,
+                    head=None) -> str:
     """A task with a branch origin and, when *done*, a retained completion."""
     db, origin = world.db, world.origin
     await db.create_task(Task(
@@ -87,7 +153,8 @@ async def completed(world, tid, *, parent=None, needs=(), land=False, done=True)
     ))
     for need in needs:
         await db.add_dependency(tid, need)
-    head = origin.work(tid)
+    if head is None:
+        head = origin.work(tid)
     async with db._engine.begin() as conn:
         await conn.execute(insert(task_branch_origins).values(
             id=f"{tid}-origin", task_id=tid, repository_id="r", branch_name=f"aq/{tid}",
@@ -472,14 +539,20 @@ class GreenWhen:
         return self._result(head)
 
 
-def lane(world, transport):
+def lane(world, transport, *, regenerate=DEFAULT_REGENERATE_COMMAND):
+    """A train lane over the origin clone. *regenerate* may be a callable, read
+    per visit, so a test can change the repository's configuration."""
     db, origin = world.db, world.origin
-    retained = RetainedRepository("r", origin.clone, GitHubRepositoryBinding(123, "test/repo"),
-                                  "main")
+    binding = GitHubRepositoryBinding(123, "test/repo")
+
+    def retained(command=None):
+        return RetainedRepository("r", origin.clone, binding, "main", regenerate=command)
+
+    command = regenerate if callable(regenerate) else lambda: regenerate
 
     async def repository(batch):
         assert batch.repository_id == "r"
-        return retained
+        return retained(command())
 
     batches = DatabaseBatches(db)
     checks = GreenWhen()
@@ -490,6 +563,7 @@ def lane(world, transport):
             authority=SubjectGitAuthority(db, trusted_green=_never_trusted),
         ),
         publish=LeasedPublish(db, transport), eligible=batches.eligible, gate=candidates.gate,
+        attest=AsyncMock(return_value="published"),
     )
 
     async def lane_snapshot():
@@ -504,7 +578,7 @@ def lane(world, transport):
 
     train = IntegrationTrain(targets=DatabaseTargets(db), batches=batches, lane_for=lane_for,
                              repair=OrdinaryRepairService(db))
-    return train, checks, retained
+    return train, checks, retained(command())
 
 
 async def test_visit_freezes_gates_and_fast_forwards_through_the_lease(world):
@@ -534,6 +608,71 @@ async def test_visit_freezes_gates_and_fast_forwards_through_the_lease(world):
     lease = await BranchLock(db).get(BranchKey(repository_id="r", branch="refs/heads/main"))
     assert lease is None or lease.holder is None
     assert (await train.visit(MAIN)).state == "idle"
+
+
+async def test_two_generated_catalogue_members_merge_by_regeneration(world):
+    """The cutover that rolled back twice: two members each regenerated the
+    selection catalogue on their own branch. The daemon's own lane rebuilds it
+    from the merged sources and produces a candidate; no member is parked."""
+    origin = world.origin
+    catalogue_repository(origin)
+    a = await completed(world, "a", head=catalogue_branch(origin, "a", "alpha"))
+    b = await completed(world, "b", head=catalogue_branch(origin, "b", "beta"))
+    train, github, _ = await hosted_train(world)
+    main = git(origin.url, "rev-parse", "refs/heads/main")
+
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing", testing
+    assert git(origin.url, "rev-parse", "refs/heads/main") == main
+    candidate = git(origin.url, "rev-parse", candidate_ref(testing.batch_id))
+    # The candidate's catalogue is the canonical rebuild of both branches'
+    # modules, and both sources are its ancestry.
+    modules = set(json.loads(git(origin.url, "show", f"{candidate}:{Catalogue.CATALOGUE_PATH}"))[
+        "modules"])
+    assert modules == {"tests/test_alpha.py", "tests/test_base.py", "tests/test_beta.py"}
+    for source in (a, b):
+        git(origin.url, "merge-base", "--is-ancestor", source, candidate)
+
+    github.runs[testing.candidate_sha] = "success"
+    delivered = await train.visit(MAIN)
+    assert delivered.state == "delivered", delivered
+    assert git(origin.url, "rev-parse", "refs/heads/main") == testing.candidate_sha
+
+
+async def test_missing_regenerator_is_a_named_blocker_and_fixes_itself(world):
+    """A repository configured without a regenerator names itself in status.
+
+    The visit neither publishes nor parks a member, and once the operator sets
+    a command the same batch rebuilds and delivers.
+    """
+    origin = world.origin
+    catalogue_repository(origin)
+    await completed(world, "a", head=catalogue_branch(origin, "a", "alpha"))
+    await completed(world, "b", head=catalogue_branch(origin, "b", "beta"))
+    command: list[str | None] = [None]
+    train, checks, _ = lane(world, LocalGit(Path(origin.url)), regenerate=lambda: command[0])
+    main = git(origin.url, "rev-parse", "refs/heads/main")
+
+    await train.tick()
+    await train.drain()
+    [blocked] = train.status()
+    assert blocked["state"] == "no_regenerator", blocked
+    assert blocked["repair"] is None
+    assert git(origin.url, "rev-parse", "refs/heads/main") == main
+    status = IntegrationStatusService(world.db, git_first="active", train=train)
+    project = await status.control_status("p")
+    assert [b["code"] for b in project["blockers"]] == ["no_regenerator"]
+    assert "regenerate" in project["blockers"][0]["detail"]
+    assert [b["code"] for b in (await status.task_blockers("a"))["blockers"]] == [
+        "no_regenerator"
+    ]
+
+    # The operator sets the command; the same batch then rebuilds and delivers.
+    command[0] = DEFAULT_REGENERATE_COMMAND
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing", testing
+    checks.green.add(testing.candidate_sha)
+    assert (await train.visit(MAIN)).state == "delivered"
 
 
 async def test_leased_publish_never_pushes_a_ref_someone_else_holds(world):
@@ -705,9 +844,10 @@ class HostedGitHub:
     full_name = "acme/widgets"
 
     def __init__(self):
-        self.credential_identity = GitHubCredentialIdentity.existing_login()
+        self.credential_identity = GitHubCredentialIdentity.app(101, 202)
         self.runs: dict[str, str] = {}
         self.observed: list[str] = []
+        self.records: list[dict] = []
 
     def _rows(self, sha):
         n = list(self.runs).index(sha) + 1
@@ -729,10 +869,18 @@ class HostedGitHub:
             return [self._rows(list(self.runs)[run - 31])[2]]
         sha = re.search(r"[0-9a-f]{40}", path).group(0)
         self.observed.append(sha)
+        if "check_name=Agent%20Queue%20Integration%20Attestation" in path:
+            return [record for record in self.records if record["head_sha"] == sha]
         if sha not in self.runs:
             return []
         check, run, _ = self._rows(sha)
         return [check] if key == "check_runs" else [run]
+
+    async def request_json(self, method, path, *, json_body, expected_statuses):
+        assert method == "POST" and expected_statuses == {201}
+        record = {"id": 7001 + len(self.records), "app": {"id": 101}, **json_body}
+        self.records.append(record)
+        return {"id": record["id"]}
 
 
 async def hosted_train(world, *, retained_store=None):
@@ -749,10 +897,12 @@ async def hosted_train(world, *, retained_store=None):
     async def load_trust(state, *, boundary):
         required = state["policy_snapshot"][boundary]["required_checks"]
         trusts.append((boundary, state["candidate_sha"], required))
-        return IntegrationCITrust(
+        return IntegrationTrustManifest(
+            schema="aq.integration-trust.v1",
             canonical_repository_id=state["canonical_repository_id"],
             repository_id=state["repository_numeric_id"],
-            full_name=state["repository_full_name"], producer_id="15368",
+            full_name=state["repository_full_name"], ci_producer_app_id=15368,
+            attestation_app_id=101, attestation_name=ATTESTATION_CHECK_NAME,
             required_checks=required,
         ), github
 
@@ -762,10 +912,15 @@ async def hosted_train(world, *, retained_store=None):
     async def store(repo_row):
         return retained_store or origin.clone
 
+    attestation = IntegrationAttestationService(
+        db, data_dir=origin.clone.parent, git_manager=LocalGit(Path(origin.url)),
+        github_client_factory=None,
+    )
+    attestation._load_trust = load_trust
     orchestrator = SimpleNamespace(
         db=db, git=LocalGit(Path(origin.url)), github_repository_binding_resolver=binding,
         development_integration=SimpleNamespace(store=store),
-        integration_attestation_service=SimpleNamespace(_load_trust=load_trust),
+        integration_attestation_service=attestation,
     )
     batches = DatabaseBatches(db)
     train = IntegrationTrain(
@@ -865,6 +1020,9 @@ async def test_hosted_lane_publishes_only_the_exact_candidate_github_passed(worl
     assert (delivered.state, delivered.checks) == ("delivered", "green"), delivered
     tip = git(origin.url, "rev-parse", "refs/heads/main")
     assert tip == candidate
+    [attestation] = github.records
+    assert attestation["head_sha"] == candidate
+    assert attestation["name"] == ATTESTATION_CHECK_NAME
     git(origin.url, "merge-base", "--is-ancestor", a, tip)
 
 
@@ -881,6 +1039,21 @@ async def test_hosted_red_candidate_files_one_repair_and_never_publishes(world):
     assert (red.state, red.checks) == ("repair", "red"), red
     assert (red.repair["outcome"], again.repair["outcome"]) == ("filed", "exists")
     assert again.repair["task_id"] == red.repair["task_id"]
+    assert git(origin.url, "rev-parse", "refs/heads/main") == main
+
+
+async def test_hosted_lane_missing_attestation_service_refuses_target_publication(world):
+    origin = world.origin
+    await completed(world, "a")
+    train, github, _ = await hosted_train(world)
+    main = git(origin.url, "rev-parse", "refs/heads/main")
+    testing = await train.visit(MAIN)
+    github.runs[testing.candidate_sha] = "success"
+    train.lane_for.orchestrator.integration_attestation_service = None
+    refused = await train.visit(MAIN)
+    assert refused.state == "held"
+    assert refused.detail["outcome"] == "attestation_unavailable"
+    assert github.records == []
     assert git(origin.url, "rev-parse", "refs/heads/main") == main
 
 
@@ -906,6 +1079,7 @@ async def development_train(world, tmp_path, monkeypatch, validation: str):
         db=db, git=LocalGit(Path(origin.url)), _command_handler=jobs_handler(db, tmp_path),
         config=config, _load_playbook_artifact=load,
         github_repository_binding_resolver=binding, development_integration=SimpleNamespace(),
+        integration_attestation_service=SimpleNamespace(publish=AsyncMock()),
     )
     batches = DatabaseBatches(db)
     train = IntegrationTrain(
@@ -914,10 +1088,11 @@ async def development_train(world, tmp_path, monkeypatch, validation: str):
     )
     [target] = await DatabaseTargets(db).targets(time.time())
     assert target.kind == "development"
+    train.attestation_publisher = orchestrator.integration_attestation_service.publish
     return train, target
 
 
-async def test_development_lane_publishes_only_after_its_exact_candidate_job_passes(
+async def test_development_lane_publishes_without_attestation_after_exact_candidate_job_passes(
     world, tmp_path, monkeypatch,
 ):
     origin = world.origin
@@ -936,6 +1111,8 @@ async def test_development_lane_publishes_only_after_its_exact_candidate_job_pas
     await finish(world.db, job, exit_code=0)
     delivered = await train.visit(target)
     assert (delivered.state, delivered.checks) == ("delivered", "green"), delivered
+    # The local-validation lane never attests; it publishes on its own gate.
+    train.attestation_publisher.assert_not_called()
     tip = git(origin.url, "rev-parse", "refs/heads/main")
     assert tip == testing.candidate_sha
     git(origin.url, "merge-base", "--is-ancestor", a, tip)
@@ -960,6 +1137,7 @@ async def test_development_red_job_repairs_focused_and_publishes_advisory(
     else:
         assert (after.state, after.checks, after.repair["outcome"]) == ("repair", "red", "filed")
         assert tip == main
+    train.attestation_publisher.assert_not_called()
 
 
 async def test_train_status_still_publishes_the_configuration_generation(world):

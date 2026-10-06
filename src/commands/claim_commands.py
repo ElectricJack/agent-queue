@@ -1014,6 +1014,7 @@ class ClaimCommandsMixin:
 
             if hierarchy_enabled:
                 from src.integration.ownership import BranchOwnership
+                from src.integration.repair import RepairService
 
                 origin, fence, owner_role = await self.orchestrator._hierarchy_origin_and_fence(
                     task, project, preparing_session_id=session.id, preparing_workspace_id=slot.id
@@ -1027,6 +1028,15 @@ class ClaimCommandsMixin:
                 )
                 base_sha = origin["base_sha"]
                 if owner_role == "repair":
+                    # A repair stage's clock runs from its activation, so a
+                    # delegate the pool could not staff in time is claimed with
+                    # its budget already spent -- and its close is then refused
+                    # for a repair attempt that never began. Queue time is not a
+                    # repair attempt, so the claim starts the budget. It runs in
+                    # its own transaction here (before any ownership exclusion,
+                    # on the canonical repair lock order) so the pool claim never
+                    # holds a row lock ahead of the repair rows it re-arms.
+                    await RepairService(self.db).start_claimed_stage_budget(task.id)
                     async with ownership.mutation_exclusion(
                         fence, expected_role=owner_role,
                         state="attached" if hierarchy_attached else "reserved",

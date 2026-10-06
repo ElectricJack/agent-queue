@@ -9,8 +9,8 @@ from migrations.versions.a00000000001_squashed_baseline import LEGACY_HEAD
 from src.database.engine import create_postgres_engine, run_schema_setup
 from src.database.schema_key import alembic_head_revisions
 from src.database.tables import metadata
-from src.records.schema import RECORD_TABLE_NAMES
 from src.knowledge.protection_schema import PROTECTION_TABLE_NAMES
+from src.records.schema import RECORD_TABLE_NAMES
 from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
 
 pytestmark = [pytest.mark.migration, pytest.mark.integration]
@@ -38,6 +38,8 @@ _POST_BASELINE_TRIGGERS: set[tuple[str, str]] = {
     ("trg_integration_git_batch_intent", "integration_batches"),
     # a00000000077_operator_decisions
     ("operator_decisions_immutable", "operator_decisions"),
+    # a00000000078_candidate_mutation_reclaim
+    ("trg_candidate_supersession_terminal", "integration_candidate_ref_mutations"),
 }
 
 

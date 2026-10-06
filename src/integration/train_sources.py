@@ -37,6 +37,7 @@ from src.integration.gitops import GitOperations, RetainedRepository, SubjectGit
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
 from src.integration.provenance import CompletionIdentity, GitProvenance
+from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.subjects import Subject
 from src.integration.train import (
     BatchSelection,
@@ -494,9 +495,12 @@ class DaemonLanes:
         if settings is not None:
             retained = await development_repository(primitives, repo_row, binding, settings)
         else:
+            # A non-development project still merges generated artifacts; the
+            # lane rebuilds them with the project's own regenerator.
             retained = RetainedRepository(
                 repository_id=target.repository_id, store=await primitives.store(repo_row),
                 binding=binding, default_branch=repo_row.default_branch,
+                regenerate=DEFAULT_REGENERATE_COMMAND,
             )
 
         async def repository(subject: Subject) -> RetainedRepository:
@@ -521,8 +525,28 @@ class DaemonLanes:
         checks = CandidateChecks(
             resolve, advisory=local and settings.validation == "advisory"
         )
+
+        async def attest(batch: Batch, candidate_sha: str) -> str:
+            from src.integration.ci_producers import HostedCIProducer, LocalCIProducer
+            from src.integration.main_promotion import RootAttestationSubject
+
+            attestation = getattr(self.orchestrator, "integration_attestation_service", None)
+            if attestation is None:
+                return "unavailable"
+            exact = await checks.for_candidate(batch, candidate_sha)
+            producer = None if exact is None else exact.provider.producer
+            if isinstance(producer, LocalCIProducer) or not isinstance(producer, HostedCIProducer):
+                return "unavailable"
+            subject = RootAttestationSubject(
+                repository_numeric_id=binding.repository_id, repository_full_name=binding.full_name,
+                operation_id=batch.id, batch_id=batch.id, revision=batch.repair_attempt_count,
+                candidate_sha=candidate_sha, required_check_version=exact.required.version,
+            )
+            return (await attestation.publish(subject, producer=producer)).outcome
+
         service = BatchService(self.store, gitops, publish=self.publish,
-                               eligible=self.batches.eligible, gate=checks.gate)
+                               eligible=self.batches.eligible, gate=checks.gate,
+                               attest=None if local else attest, require_attestation=not local)
 
         async def snapshot() -> GitTruthSnapshot:
             return await self.truth.snapshot(
@@ -593,9 +617,10 @@ class DaemonLanes:
             "operation_id": batch.id,
             "policy_snapshot": {boundary: {"required_checks": required}},
         }
-        trust, client = await self.orchestrator.integration_attestation_service._load_trust(
-            state, boundary=boundary
-        )
+        attestation = getattr(self.orchestrator, "integration_attestation_service", None)
+        if attestation is None:
+            return None
+        trust, client = await attestation._load_trust(state, boundary=boundary)
         return ExactChecks(self.db, HostedChecks(HostedCIProducer(client, trust)))
 
 

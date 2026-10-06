@@ -815,6 +815,7 @@
         "tests/test_migration_root_main_promotion.py",
         "tests/test_migration_session_hooks_provisioned.py",
         "tests/test_migration_single_head.py",
+        "tests/test_migration_source_ci_infrastructure.py",
         "tests/test_migration_string_defaults.py",
         "tests/test_migration_subagent_events.py",
         "tests/test_migration_supervisor_conversations.py",
@@ -1413,7 +1414,7 @@
       ]
     }
   },
-  "digest": "sha256:8b5f9d5ee45a7df36399dc2f73db5f2c8b50cb5a4abd915c1ca9e3659bb1e122",
+  "digest": "sha256:50ae25b71b4b241919096c781103c1aff0078cbeec08576931dcde5cc5b1a605",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7264,6 +7265,7 @@
         "src.git.github_contracts",
         "src.integration.attestation",
         "src.integration.ci",
+        "src.integration.ci_producers",
         "src.integration.main_promotion",
         "src.integration.repair",
         "src.models"
@@ -7281,11 +7283,17 @@
       "default_arm": true,
       "imports": [
         "src.database.tables",
+        "src.integration.attestation",
         "src.integration.batches",
+        "src.integration.ci",
+        "src.integration.ci_producers",
         "src.integration.delivery_truth",
         "src.integration.git_truth",
         "src.integration.gitops",
-        "src.integration.provenance"
+        "src.integration.main_promotion",
+        "src.integration.provenance",
+        "src.integration.train",
+        "src.integration.train_sources"
       ],
       "markers": [
         "parametrize"
@@ -8130,6 +8138,7 @@
         "src.commands.contracts.registry",
         "src.commands.integration_commands",
         "src.commands.principal",
+        "src.commands.task_commands",
         "src.config",
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
@@ -8180,6 +8189,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.task_commands",
         "src.database.tables",
         "src.git.manager",
         "src.integration.models",
@@ -8261,6 +8271,7 @@
         "src.integration.gates",
         "src.integration.models",
         "src.integration.observe",
+        "src.integration.reconciler",
         "src.integration.records",
         "src.integration.repair",
         "src.integration.root_adapters",
@@ -8383,6 +8394,7 @@
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.batches",
         "src.integration.development",
         "src.integration.engine",
         "src.integration.migration_heads",
@@ -8603,6 +8615,7 @@
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration.attestation",
         "src.integration.batches",
         "src.integration.ci",
         "src.integration.delivery_observer",
@@ -8613,13 +8626,16 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.provenance",
+        "src.integration.regeneration",
         "src.integration.repair",
         "src.integration.status",
         "src.integration.train",
         "src.integration.train_controls",
         "src.integration.train_sources",
         "src.models",
-        "src.profiles.capabilities"
+        "src.profiles.capabilities",
+        "src.test_selection",
+        "src.test_selection.catalogue"
       ],
       "markers": [
         "parametrize"
@@ -10142,7 +10158,8 @@
       ],
       "default_arm": false,
       "imports": [
-        "src.database"
+        "src.database",
+        "src.database.engine"
       ],
       "markers": [
         "migration"
@@ -10590,6 +10607,18 @@
         "filterwarnings"
       ],
       "summary": "The alembic revision chain must have exactly one head."
+    },
+    "tests/test_migration_source_ci_infrastructure.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "Revision a00000000079: source-CI infrastructure bookkeeping, additive."
     },
     "tests/test_migration_string_defaults.py": {
       "areas": [

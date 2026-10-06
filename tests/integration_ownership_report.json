@@ -3232,6 +3232,12 @@
         4401
       ]
     },
+    "src/commands/task_commands.py::TaskCommandsMixin._restart_repair_delegate": {
+      "reason": "Restart a stopped integration repair delegate through its operation's exact branch reservation."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._undo_refused_restart": {
+      "reason": "Restore the repair delegate's prior task state when its branch reservation refuses restart."
+    },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_task_recover": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [

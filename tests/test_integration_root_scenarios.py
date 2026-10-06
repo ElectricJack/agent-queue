@@ -36,6 +36,7 @@ from src.integration.ci import (
     IntegrationCITrust,
     TrustedCIObservation,
     TrustedFixtureObserver,
+    failed_run_verdict,
 )
 from src.integration.cleanup import IntegrationCleanupService
 from src.integration.engine import root_engine_guard
@@ -337,7 +338,14 @@ class CIProducer:
             required_checks={"version": REQUIRED["version"], "names": tuple(REQUIRED["names"])},
         )
 
-    def finish(self, sha: str, conclusion: str, run: int) -> None:
+    def finish(self, sha: str, conclusion: str, run: int, *, job_conclusions=None,
+               run_conclusion=None) -> None:
+        """Finish the exact head's run: ``conclusion`` for the first required
+        check and for the run, or the per-job and run conclusions of a real
+        shape (a runner outage cancels jobs and concludes the run ``failure``).
+        """
+        names = list(REQUIRED["names"])
+        jobs = list(job_conclusions or (conclusion, *("success",) * (len(names) - 1)))
         checks = [
             {
                 "name": name,
@@ -346,18 +354,18 @@ class CIProducer:
                 "producer_app_id": int(REQUIRED["producer_id"]),
                 "producer_id": REQUIRED["producer_id"],
                 "head_sha": sha,
-                "conclusion": conclusion if index == 0 else "success",
+                "conclusion": job,
             }
-            for index, name in enumerate(REQUIRED["names"])
+            for index, (name, job) in enumerate(zip(names, jobs))
         ]
         workflow = {
             "workflow_run_id": run,
             "run_attempt": 1,
             "check_suite_id": run,
             "head_sha": sha,
-            "conclusion": conclusion,
+            "conclusion": conclusion if run_conclusion is None else run_conclusion,
         }
-        if conclusion == "success":
+        if all(job == "success" for job in jobs) and workflow["conclusion"] == "success":
             receipt = CIReceiptPayload.model_validate(
                 {
                     "schema": "aq.integration-ci-receipt.v1",
@@ -373,11 +381,12 @@ class CIProducer:
             )
             self.runs[sha] = TrustedCIObservation(receipt, {run: run + 1000})
         else:
+            verdict = failed_run_verdict(checks, [workflow])
             self.runs[sha] = FailedCIObservation(
                 checks=tuple(checks),
                 workflow_runs=(workflow,),
                 workflow_ids={run: run + 1000},
-                conclusion="failure",
+                conclusion="cancelled" if verdict == "cancelled" else "failure",
             )
 
     @root_engine_guard("candidate", outcome="stale_subject")
@@ -1583,6 +1592,99 @@ async def test_main_moved_after_build_rebuilds_once_then_red_ci_routes_to_repair
     await train.run_until(
         lambda: train.phase(subject.id, SubjectPhase.REPAIRING), label="red routes to repair"
     )
+
+
+async def test_a_runner_outage_retries_while_a_failed_job_still_files_repair(train):
+    """Live 2026-10-05 batch 68d2f31e: run 37367576038, conclusion failure.
+
+    Twelve required jobs were cancelled because no hosted runner was acquired,
+    and the run still concluded ``failure``; only ``Tests (default-7/8)`` had
+    really failed. The cancellations must neither hide that failure nor, on a
+    run with no failure at all, open a repair stage and spend its budget.
+    """
+    from src.integration.subjects import CIState
+
+    async def repair_stages(batch_id):
+        async with train.db._engine.connect() as conn:
+            return (
+                (
+                    await conn.execute(
+                        select(t.integration_repair_stages)
+                        .join(
+                            t.integration_repair_operations,
+                            t.integration_repair_operations.c.id
+                            == t.integration_repair_stages.c.operation_id,
+                        )
+                        .where(t.integration_repair_operations.c.batch_id == batch_id)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+
+    await train.open()
+    train.source("alpha", {"alpha.txt": "alpha\n"})
+    await train.add_source("alpha", number=1)
+    subject = await train.cutover()
+    await train.run_until(lambda: train.phase(subject.id, SubjectPhase.TESTING), label="built")
+    built = await train.subject(subject.id)
+    batch = await train.db.get_integration_batch(subject.batch_id)
+    names = REQUIRED["names"]
+
+    # The outage's own shape: every cancelled job, no failed job, run failure.
+    train.ci.finish(
+        built.head_sha, "success", run=41,
+        job_conclusions=["success"] * 2 + ["cancelled"] * (len(names) - 2),
+        run_conclusion="failure",
+    )
+
+    async def observed_infra():
+        facts = await train.observer.observe(await train.subject(subject.id))
+        return facts.ci_state is CIState.INFRA
+
+    await train.run_until(observed_infra, label="cancelled jobs are infrastructure")
+
+    # Nothing to repair: the candidate is retried on its exact head, and the
+    # construction stage is never handed a writer or an attempt.
+    current = await train.subject(subject.id)
+    assert current.head_sha == built.head_sha
+    assert current.phase is SubjectPhase.TESTING
+    stages = await repair_stages(subject.batch_id)
+    assert [stage["repair_task_id"] for stage in stages] == [None]
+    assert [stage["attempts"] for stage in stages] == [0]
+    async with train.db._engine.connect() as conn:
+        evidence = (
+            (
+                await conn.execute(
+                    select(t.integration_check_evidence).where(
+                        t.integration_check_evidence.c.batch_id == subject.batch_id
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert {row["conclusion"] for row in evidence} == {"cancelled"}
+    assert batch["tested_candidate_sha"] is None
+
+    # The failed shard is conclusive: a real failure outranks its cancellations.
+    train.ci.finish(
+        built.head_sha, "success", run=42,
+        job_conclusions=["failure"] + ["success"] * 3 + ["cancelled"] * (len(names) - 4),
+        run_conclusion="failure",
+    )
+
+    async def repair_writer_filed():
+        current = await train.subject(subject.id)
+        return (
+            current.phase is SubjectPhase.REPAIRING
+            and current.writer.status is WriterStatus.FILED
+        )
+
+    await train.run_until(repair_writer_filed, label="failed job files repair")
+    filed = [stage for stage in await repair_stages(subject.batch_id) if stage["repair_task_id"]]
+    assert len(filed) == 1 and filed[0]["state"] == "active"
+    assert train.remote("refs/heads/main") == train.base
 
 
 async def delegate_after_its_own_promotion(train, lifecycle="pool"):

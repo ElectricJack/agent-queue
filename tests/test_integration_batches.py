@@ -1,6 +1,8 @@
 """Real Git retries of the shared root/child batch path; disposable PostgreSQL."""
 
 from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select, update
@@ -38,7 +40,8 @@ async def batch_env(setup):
         return await truth.snapshot(str(repo.store), project_id="p", repository_id="r",
                                     repository_url=str(ops.git.remote_path), target_ref=batch.target_ref)
 
-    service = BatchService(store, ops, publish=publish, eligible=eligible, gate=gate)
+    service = BatchService(store, ops, publish=publish, eligible=eligible, gate=gate,
+                           attest=AsyncMock(return_value="published"))
     return db, ops, repo, base, head, store, batch, members, green, approved, snapshot, service
 
 
@@ -72,7 +75,7 @@ async def test_restart_and_lost_success_response_use_refs_not_progress(batch_env
     assert result.state == "testing"
     green.add(result.candidate_sha)
     restarted = BatchService(store, ops, publish=service.publish, eligible=service.eligible,
-                             gate=service.gate)
+                             gate=service.gate, attest=service.attest)
     assert (await restarted.visit(batch, members, await snapshot())).state == "delivered"
     pushes = ops.git.pushes
     assert (await restarted.visit(batch, members, await snapshot())).state == "delivered"
@@ -248,3 +251,121 @@ def test_dependency_order_is_stable_and_cycles_fail():
     assert [member.task_id for member in ordered_members(members, {"a": ["c"]})] == ["b", "c", "a"]
     with pytest.raises(ValueError, match="cycle"):
         ordered_members(members, {"a": ["c"], "c": ["a"]})
+
+
+async def test_candidate_app_check_is_published_before_target_push(batch_env, tmp_path):
+    from src.integration.attestation import IntegrationAttestationService
+    from src.integration.ci import ATTESTATION_CHECK_NAME, IntegrationTrustManifest
+    from src.integration.ci_producers import HostedCIProducer
+    from src.integration.main_promotion import RootAttestationSubject
+    from tests.test_integration_train_sources import HostedGitHub
+
+    db, ops, _, base, _, _, batch, members, green, _, snapshot, service = batch_env
+    client = HostedGitHub()
+    attestation = IntegrationAttestationService(
+        db, data_dir=tmp_path, git_manager=ops.git, github_client_factory=None,
+    )
+    producer = HostedCIProducer(client, IntegrationTrustManifest(
+        schema="aq.integration-trust.v1", canonical_repository_id="r", repository_id=123,
+        full_name=client.full_name, ci_producer_app_id=15368, attestation_app_id=101,
+        attestation_name=ATTESTATION_CHECK_NAME, required_checks={"version": "v1", "names": ["unit"]},
+    ))
+
+    async def attest(batch, sha):
+        assert git(ops.git.remote_path, "rev-parse", batch.target_ref) == base
+        return (await attestation.publish(RootAttestationSubject(
+            repository_numeric_id=123, repository_full_name=client.full_name,
+            operation_id=batch.id, batch_id=batch.id, revision=batch.repair_attempt_count,
+            candidate_sha=sha, required_check_version="v1",
+        ), producer=producer)).outcome
+
+    transport = service.publish
+
+    async def publish(repo, ref, **kwargs):
+        if ref == batch.target_ref:
+            [record] = client.records
+            assert record["name"] == ATTESTATION_CHECK_NAME
+            assert record["head_sha"] == kwargs["new_oid"]
+            assert record["conclusion"] == "success"
+        await transport(repo, ref, **kwargs)
+
+    service.attest, service.publish = attest, publish
+    testing = await service.visit(batch, members, await snapshot())
+    assert client.records == []  # A pending gate cannot attest.
+    green.add(testing.candidate_sha)
+    client.runs[testing.candidate_sha] = "success"
+    result = await service.visit(batch, members, await snapshot())
+    assert result.state == "delivered"
+    assert git(ops.git.remote_path, "rev-parse", batch.target_ref) == testing.candidate_sha
+
+
+@pytest.mark.parametrize("outcome", [None, "not_green", "stale", "configuration_blocked", "error"])
+async def test_attestation_unavailable_leaves_green_target_unmoved(batch_env, outcome):
+    _, ops, _, base, _, _, batch, members, green, _, snapshot, service = batch_env
+    testing = await service.visit(batch, members, await snapshot())
+    green.add(testing.candidate_sha)
+    service.attest = None if outcome is None else AsyncMock(
+        return_value=outcome, side_effect=RuntimeError("provider unavailable") if outcome == "error"
+        else None,
+    )
+    pushes = ops.git.pushes
+    result = await service.visit(batch, members, await snapshot())
+    assert result.state == "held"
+    assert result.detail["outcome"] == "attestation_unavailable"
+    assert result.candidate_sha == testing.candidate_sha
+    assert git(ops.git.remote_path, "rev-parse", batch.target_ref) == base
+    assert ops.git.pushes == pushes
+    service.attest = AsyncMock(return_value="already_published")
+    assert (await service.visit(batch, members, await snapshot())).state == "delivered"
+
+
+async def test_local_lane_never_calls_attestation_publish(batch_env, monkeypatch):
+    from src.integration.train import TrainTarget
+    from src.integration.train_sources import DaemonLanes
+
+    db, ops, repo, _, _, _, batch, members, _, _, snapshot, _ = batch_env
+    monkeypatch.setattr(db, "get_repo", AsyncMock(return_value=SimpleNamespace(
+        url=str(ops.git.remote_path), default_branch="main",
+    )))
+    monkeypatch.setattr("src.integration.development_runtime.development_repository",
+                        AsyncMock(return_value=repo))
+    attestation = SimpleNamespace(publish=AsyncMock(), _load_trust=AsyncMock())
+    orchestrator = SimpleNamespace(
+        db=db, git=ops.git, integration_attestation_service=attestation,
+        github_repository_binding_resolver=AsyncMock(return_value=None),
+        development_integration=SimpleNamespace(),
+    )
+    lanes = DaemonLanes(orchestrator, batches=SimpleNamespace(eligible=AsyncMock(return_value=True)))
+    monkeypatch.setattr(lanes, "_policy", AsyncMock(return_value={}))
+    monkeypatch.setattr(lanes, "_settings", AsyncMock(return_value=(
+        SimpleNamespace(validation="none", commands=()), "v1",
+    )))
+    lane = await lanes(TrainTarget("p", "r", batch.target_ref, "development"))
+    # No validation is a passing local gate; the local lane publishes without an App check.
+    testing = await lane.service.visit(batch, members, await snapshot())
+    await lane.checks.for_candidate(batch, testing.candidate_sha)
+    delivered = await lane.service.visit(batch, members, await snapshot())
+    assert delivered.state == "delivered"
+    attestation.publish.assert_not_called()
+    attestation._load_trust.assert_not_called()
+    assert git(ops.git.remote_path, "rev-parse", batch.target_ref) == testing.candidate_sha
+
+
+@pytest.mark.parametrize("change", ["hold", "candidate"])
+async def test_attestation_io_cannot_override_final_authorization(batch_env, change):
+    _, ops, repo, base, _, _, batch, members, green, approved, snapshot, service = batch_env
+    testing = await service.visit(batch, members, await snapshot())
+    green.add(testing.candidate_sha)
+
+    async def attest(batch, sha):
+        if change == "hold":
+            approved["value"] = False
+        else:
+            repaired = commit(repo.store, {"repair.txt": "fixed"}, base=sha)
+            git(repo.store, "push", "origin", f"{repaired}:{candidate_ref(batch.id)}")
+        return "published"
+
+    service.attest = attest
+    refused = await service.visit(batch, members, await snapshot())
+    assert refused.state == "held"
+    assert git(ops.git.remote_path, "rev-parse", batch.target_ref) == base

@@ -35,6 +35,9 @@ from src.integration.subjects import (
     writer_values,
 )
 
+_MUTATION_REFUSAL_LIMIT = 3
+CANDIDATE_MUTATION_BLOCKER = "candidate_mutation_identity_blocked"
+
 
 class RootPrimitiveAdapters:
     def __init__(self, db, commands, observer, *, ci_adapters=None, clock=time.time):
@@ -143,6 +146,39 @@ class RootPrimitiveAdapters:
             result.get("reason")
             or result.get("error")
             or "primitive_outcome:" + str(result.get("outcome")),
+        )
+
+    async def _candidate_refusal(self, subject, args, result):
+        answer = self._unknown(args, result)
+        reason = answer.reason or ""
+        if not any(marker in reason for marker in (
+            "candidate mutation identity changed", "unresolved candidate ref mutation(s)"
+        )):
+            return answer
+        async with self.db._engine.connect() as conn:
+            previous = (await conn.execute(
+                select(t.integration_subject_journal.c.payload).where(
+                    t.integration_subject_journal.c.subject_id == subject.id,
+                    t.integration_subject_journal.c.generation == subject.generation,
+                    t.integration_subject_journal.c.entry_kind == "action",
+                    t.integration_subject_journal.c.mode == "active",
+                    t.integration_subject_journal.c.primitive == args.primitive.value,
+                ).order_by(t.integration_subject_journal.c.seq.desc())
+                .limit(_MUTATION_REFUSAL_LIMIT - 1)
+            )).scalars().all()
+        count = 1
+        for payload in previous:
+            prior = payload.get("result", {})
+            if prior.get("outcome") != "unknown" or (
+                prior.get("detail", {}).get("original_reason") or prior.get("reason")
+            ) != reason:
+                break
+            count += 1
+        if count < _MUTATION_REFUSAL_LIMIT:
+            return answer
+        return PrimitiveOutcome.unknown(
+            args.primitive, CANDIDATE_MUTATION_BLOCKER,
+            blocker=CANDIDATE_MUTATION_BLOCKER, original_reason=reason, refusals=count,
         )
 
     async def _rows(self, subject):
@@ -343,7 +379,7 @@ class RootPrimitiveAdapters:
                 return self._answer(args, "source_moved", member=member["task_id"])
         if code == "base_moved":
             return self._answer(args, "base_moved")
-        return self._unknown(args, result)
+        return await self._candidate_refusal(subject, args, result)
 
     async def publish(self, subject, args):
         batch, revision, _, _ = await self._rows(subject)

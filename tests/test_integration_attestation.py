@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -29,11 +30,65 @@ from src.integration.ci import (
     SubjectTrustError,
 )
 from src.integration.main_promotion import RootAttestationSubject
+from src.integration.ci_producers import HostedCIProducer, LocalCIProducer
 from src.integration.repair import RepairService
 from src.models import Project, RepoConfig, RepoSourceType
 
 SHA = "a" * 40
 BASE = "0" * 40
+
+
+async def test_train_publish_without_legacy_rows_reads_back_and_retries_idempotently(tmp_path):
+    client = ProviderClient()
+    service = IntegrationAttestationService(
+        None, data_dir=tmp_path, git_manager=None, github_client_factory=None,
+    )
+    producer = HostedCIProducer(client, IntegrationTrustManifest.model_validate_json(trust_document()))
+    target = subject(operation_id="train-batch", batch_id="train-batch", revision=3)
+    for _ in range(2):
+        result = await service.publish(target, producer=producer)
+        assert result.outcome in {"published", "already_published"}
+        assert result.proof.subject() == target
+        assert result.proof.check_run_id == client.records[0]["id"]
+    assert client.published == 1
+
+
+@pytest.mark.parametrize("failure", ["local", "login", "wrong_app", "version", "red", "write", "readback"])
+async def test_train_publish_refuses_invalid_identity_or_provider_failure(tmp_path, failure):
+    client = ProviderClient()
+    trust = IntegrationTrustManifest.model_validate_json(trust_document())
+    service = IntegrationAttestationService(
+        None, data_dir=tmp_path, git_manager=None, github_client_factory=None,
+    )
+    producer = HostedCIProducer(client, trust)
+    target = subject()
+    if failure == "local":
+        producer = object.__new__(LocalCIProducer)
+    elif failure == "login":
+        client.credential_identity = GitHubCredentialIdentity.existing_login()
+    elif failure == "wrong_app":
+        client.credential_identity = GitHubCredentialIdentity.app(999, 202)
+    elif failure == "version":
+        target = subject(required_check_version="wrong-version")
+    elif failure == "red":
+        client._required = lambda *args: {**ProviderClient._required(*args), "conclusion": "failure"}
+    elif failure == "write":
+        client.request_json = AsyncMock(side_effect=OSError("write unavailable"))
+    elif failure == "readback":
+        original = client.paged_items
+
+        async def unreadable(path, *, key):
+            if client.published and "check_name=Agent%20Queue" in path:
+                return []
+            return await original(path, key=key)
+
+        client.paged_items = unreadable
+    result = await service.publish(target, producer=producer)
+    assert result.outcome == {"version": "stale", "red": "not_green"}.get(
+        failure, "configuration_blocked",
+    )
+    assert result.proof is None
+    assert client.published == (1 if failure == "readback" else 0)
 
 
 def trust_document(**changes) -> bytes:

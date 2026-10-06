@@ -434,7 +434,9 @@ class IntegrationTrain:
         if observation.state == "conflict":
             return await self._repair(target, lane, batch, members, observation, None)
         if observation.state != "testing" or not observation.candidate_sha:
-            # held, moved, source_moved, unknown: the next visit observes again.
+            # held, moved, source_moved, unknown, no_regenerator: the next visit
+            # observes again. None of these is a member's content conflict, so
+            # none allocates a repair.
             return self._visit(target, observation.state, batch, observation)
         head = candidate_head(batch, observation.candidate_sha)
         _progress("resolve_checks")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
@@ -389,7 +390,8 @@ async def conflicting_batch_env(setup):
     return SimpleNamespace(
         db=db, ops=ops, repo=repo, base=base, store=store, batch=frozen, members=members,
         green=green, snapshot=snapshot,
-        service=BatchService(store, ops, publish=publish, eligible=eligible, gate=gate),
+        service=BatchService(store, ops, publish=publish, eligible=eligible, gate=gate,
+                             attest=AsyncMock(return_value="published")),
     )
 
 
