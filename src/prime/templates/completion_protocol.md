@@ -20,15 +20,19 @@ Settle task subtasks with `aq task subtask-done N` or
 Before the first passing feature close, squash implementation commits on your own leaf
 branch to one commit based on its recorded source base; preserve tree, attribution and
 checks. Never rewrite reviewed/delivered history, another worker's branch, or parent merge
-ancestry. Save the successful push's full OID. After a local squash of already-pushed work,
-use `aq git push --expected-remote-oid <pushed-oid>`; a moved remote requires escalation,
-never a guessed lease or unconditional force push. All-zero OID is only for an absent branch.
+ancestry. Use the guarded `aq git push` for a first publication of a new task branch or a
+later fast-forward update, and save its full OID. After a local squash or other rewrite
+of already-pushed work, use
+`aq git push --expected-remote-oid <your-last-observed-remote-oid>`: the lease must name
+the remote OID you last observed for your own branch, never another worker's commit. A
+moved remote requires escalation, never a guessed lease or unconditional force push.
 Review binds the final pushed SHA; later fixes require fresh review.
 
 ## Never close over unpushed commits
 
-Commit and publish your assigned task branch with `aq git push` before pass or fail close;
-record HEAD and checks. Slots reset after release. A failed close preserves unpushed work
+Commit and publish your assigned task branch with guarded `aq git push` before pass or fail
+close; use an exact `--expected-remote-oid` lease only for a rewrite after you observed your
+own branch's remote OID. Record HEAD and checks. Slots reset after release. A failed close preserves unpushed work
 on an AQ recovery branch; if its push fails, the task remains held. Fix publication before
 retrying. For a required PR use `aq git create-pr --title "..." --body "..."` after pushing.
 The daemon supplies credentials. Do not bypass capability denials; report them.

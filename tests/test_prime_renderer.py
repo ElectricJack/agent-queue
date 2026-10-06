@@ -550,8 +550,9 @@ class TestStaticSections:
             "`aq git commit` is a daemon-side command unavailable to worker scope",
             "`out of scope: git_commit` is expected",
             "A local `git commit` is authorized and is not a bypass",
-            "Publish only through `aq git push --expected-remote-oid <observed-remote-oid>`",
-            "all-zero OID is only for a branch confirmed absent",
+            "For a first publication of a new task branch or a later fast-forward update",
+            "`aq git push --expected-remote-oid <your-last-observed-remote-oid>`",
+            "must name the remote OID you last observed for your own branch, never another",
             "never guess a lease or use plain `git push`",
             "Never bypass any other AQ rejection",
             "The daemon injects",
@@ -679,7 +680,7 @@ class TestStaticSections:
             assert "--expected-remote-oid" not in body
         else:
             assert "## Prepare feature history before review" in body
-            assert "aq git push --expected-remote-oid <pushed-oid>" in body
+            assert "aq git push --expected-remote-oid <your-last-observed-remote-oid>" in body
 
     @pytest.mark.parametrize("lifecycle", [None, "pool"])
     async def test_completion_protocol_renders_emergent_work_guidance(
