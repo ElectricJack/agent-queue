@@ -722,9 +722,16 @@ async def epic_policy_on(conn, row, project) -> EpicPolicy:
     ci = integration_ci_policy(policy)
     if ci is not None and ci.source_for("epic") != "hosted":
         # The local runner produces the parent boundary's named checks.
-        from src.integration.checks import LOCAL_CHECKS_PRODUCER_ID
+        from src.integration.checks import hybrid_checks_producer_id, local_checks_producer_id
 
-        trust = LOCAL_CHECKS_PRODUCER_ID
+        names = tuple(required.get("names") or ())
+        trust = local_checks_producer_id(
+            scope="epic", names=names, version=str(required.get("version") or ""),
+            commands=tuple(ci.commands[name] for name in names),
+            queue_seconds=ci.queue_seconds, run_seconds=ci.run_seconds,
+        )
+        if ci.requires_hosted("epic"):
+            trust = hybrid_checks_producer_id(trust, str(required.get("producer_id") or ""))
     return EpicPolicy(tuple(required.get("names") or ()), trust,
                       ReviewRequirements(reviewed, frozenset(reviewers)),
                       str(required.get("version") or ""))
@@ -952,8 +959,12 @@ async def _exact_head_verdict(exact, head):
     head nobody requested would overwrite the evidence its own candidate run
     left there with ``not_requested``.
     """
-    from src.integration.checks import HostedChecks
+    from src.integration.checks import HostedChecks, HybridChecks
 
+    if isinstance(exact, HybridChecks):
+        if exact.hosted is not None:
+            await exact.hosted.refresh(head)
+        return await exact.read(head)
     if isinstance(exact.provider, HostedChecks):
         return await exact.refresh(head)
     return await exact.read(head)
@@ -1041,7 +1052,8 @@ class DaemonLanes:
                                          candidate_sha)
             if local_ci:
                 await retain_train_candidate(self.git, retained.store, batch, candidate_sha)
-                return self._local_checks(target, retained.store, ci, policy, batch)
+                return await self._policy_checks(target, retained, binding, ci, policy, batch,
+                                                 candidate_sha)
             return await self._hosted(policy, binding, target, batch, candidate_sha,
                                       retained=retained)
 
@@ -1057,6 +1069,10 @@ class DaemonLanes:
             if attestation is None:
                 return "unavailable"
             exact = await checks.for_candidate(batch, candidate_sha)
+            from src.integration.checks import HybridChecks
+
+            if isinstance(exact, HybridChecks):
+                exact = exact.hosted
             producer = None if exact is None else exact.provider.producer
             if isinstance(producer, LocalCIProducer) or not isinstance(producer, HostedCIProducer):
                 return "unavailable"
@@ -1078,8 +1094,7 @@ class DaemonLanes:
             return await self._promotion_lane(target, retained, binding, gitops, policy, snapshot,
                                               ci=ci)
 
-        # A locally gated candidate has no hosted checks to attest.
-        unattested = local or local_ci
+        unattested = local or (local_ci and not ci.requires_hosted(_ci_kind(target)))
         service = BatchService(self.store, gitops, publish=self.publish,
                                eligible=self.batches.eligible, gate=checks.gate,
                                attest=None if unattested else attest,
@@ -1161,7 +1176,7 @@ class DaemonLanes:
             if ci is not None and ci.source_for("root") != "hosted":
                 # The root candidate that became this head left its local
                 # evidence; reading it runs nothing.
-                exact = self._local_checks(root, retained.store, ci, policy, batch)
+                exact = await self._policy_checks(root, retained, binding, ci, policy, batch, sha)
             else:
                 exact = await self._hosted(policy, binding, root, batch, sha)
             if exact is None or not set(names) <= set(exact.required.names):
@@ -1187,10 +1202,15 @@ class DaemonLanes:
             provenance = "train_candidate"
             if not produced:
                 # Only a hosted head carries the App's attestation.
-                trust = getattr(exact.provider.producer, "trust", None)
+                from src.integration.checks import HybridChecks
+
+                hosted = exact.hosted if isinstance(exact, HybridChecks) else exact
+                if hosted is None:
+                    return None
+                trust = getattr(hosted.provider.producer, "trust", None)
                 if not isinstance(trust, IntegrationTrustManifest):
                     return None
-                producer = exact.provider.producer
+                producer = hosted.provider.producer
                 attestation = self.orchestrator.integration_attestation_service
                 records = await attestation._attestation_records(producer.client, trust, sha)
                 select_trusted_attestation(records, trust, expected_head_sha=sha)
@@ -1216,7 +1236,7 @@ class DaemonLanes:
             return None
 
     def _epic_completion(self, target, binding, retained):
-        from src.integration.checks import HostedChecks
+        from src.integration.checks import HostedChecks, HybridChecks
         from src.integration.subjects import HeadIdentity
 
         resolved = {}
@@ -1238,7 +1258,8 @@ class DaemonLanes:
                 try:
                     if local:
                         await retain_train_candidate(self.git, retained.store, batch, head)
-                        exact = self._local_checks(target, retained.store, ci, policy, batch)
+                        exact = await self._policy_checks(target, retained, binding, ci, policy,
+                                                         batch, head)
                     else:
                         exact = await self._hosted(policy, binding, target, batch, head)
                 except SubjectTrustError as exc:
@@ -1260,7 +1281,13 @@ class DaemonLanes:
                                             ref=node.branch_ref, sha=head, generation=0)
                     # A published epic head is usually the candidate its train
                     # already ran locally; green evidence there runs nothing.
-                    if (isinstance(exact.provider, HostedChecks)
+                    if isinstance(exact, HybridChecks):
+                        if exact.hosted is not None:
+                            await exact.hosted.refresh(identity)
+                        if not (await exact.local.read(identity)).green:
+                            await exact.local.request(identity)
+                            await exact.local.refresh(identity)
+                    elif (isinstance(exact.provider, HostedChecks)
                             or not (await exact.read(identity)).green):
                         await exact.request(identity)
                         await exact.refresh(identity)
@@ -1308,7 +1335,7 @@ class DaemonLanes:
         async def resolve_local(batch, sha, meta):
             # The step still selects its checks from the source tree's own
             # manifest; this box runs them, and no App proof is published.
-            manifest = await self._retained_manifest(retained, sha)
+            manifest = await self._retained_manifest(retained, sha, binding=binding, policy=policy)
             required = step_required_checks(manifest, meta["step"])
             if required.version != meta["checks_version"]:
                 raise PromotionIntentInvalid("promotion check version differs from request")
@@ -1411,10 +1438,14 @@ class DaemonLanes:
         )
         return pinned.settings, sha
 
-    async def _retained_manifest(self, retained, sha):
+    async def _retained_manifest(self, retained, sha, *, binding, policy):
         """The trust manifest in *sha*'s tree, read from the retained store."""
-        from src.integration.attestation import _parse_trust_manifest
+        from src.integration.attestation import _MAX_TRUST_BYTES, _parse_trust_manifest
         from src.integration.ci import TRUST_MANIFEST_PATH
+        from src.git.github_contracts import GitHubCredentialMode, credential_identity_from_client
+
+        if not is_valid_git_oid(sha):
+            raise SubjectTrustError("identity_mismatch", "subject head is not a Git OID")
 
         result = await self.git.arun_git_result(
             ["show", f"{sha}:{TRUST_MANIFEST_PATH}"], cwd=str(retained.store),
@@ -1422,7 +1453,43 @@ class DaemonLanes:
         )
         if result.returncode:
             raise SubjectTrustError("missing", f"subject tree has no {TRUST_MANIFEST_PATH}")
-        return _parse_trust_manifest(result.stdout.encode("utf-8"))
+        raw = result.stdout.encode("utf-8")
+        if len(raw) > _MAX_TRUST_BYTES:
+            raise SubjectTrustError(
+                "too_large", f"subject trust manifest exceeds {_MAX_TRUST_BYTES} bytes"
+            )
+        manifest = _parse_trust_manifest(raw)
+        identity = credential_identity_from_client(self.git._github_client(binding))
+        expected = {
+            "canonical_repository_id": retained.repository_id,
+            "repository_id": binding.repository_id,
+            "full_name": binding.full_name,
+            "ci_producer_app_id": str((policy.get("root") or {}).get("required_checks", {})
+                                      .get("producer_id") or ""),
+        }
+        if identity.mode is GitHubCredentialMode.APP:
+            expected["attestation_app_id"] = identity.app_id
+        mismatched = tuple(field for field, value in expected.items()
+                           if str(getattr(manifest, field)) != str(value))
+        if mismatched:
+            raise SubjectTrustError(
+                "identity_mismatch", "subject trust manifest names another identity: "
+                + ", ".join(mismatched), fields=mismatched,
+            )
+        return manifest
+
+    async def _policy_checks(self, target, retained, binding, ci, policy, batch, sha):
+        """Local gate, plus hosted evidence when this hybrid boundary requires it."""
+        from src.integration.checks import HybridChecks
+
+        local = self._local_checks(target, retained.store, ci, policy, batch)
+        if not ci.requires_hosted(_ci_kind(target)):
+            return local
+        hosted = await self._hosted(policy, binding, target, batch, sha, retained=retained)
+        boundary = "parent" if target.kind == "epic" else "root"
+        producer_id = str((policy.get(boundary) or {}).get("required_checks", {})
+                          .get("producer_id") or "")
+        return HybridChecks(local, hosted, hosted_producer_id=producer_id)
 
     def _local_checks(self, target, store, ci, policy, batch, *, requested=False,
                       names=None, version=None):
@@ -1457,7 +1524,10 @@ class DaemonLanes:
         )
         checks = RequestedChecks if requested else ExactChecks
         return checks(self.db, LocalChecks(producer, project_id=target.project_id,
-                                           names=names, version=version), clock=self.clock)
+                                           names=names, version=version,
+                                           scope=("promotion:" + str(target.step_id)
+                                                  if target.kind == "promotion"
+                                                  else _ci_kind(target))), clock=self.clock)
 
     async def _local(self, target, retained, settings, version, batch, candidate_sha):
         from src.integration.checks import ExactChecks, LocalChecks

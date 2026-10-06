@@ -353,7 +353,7 @@ async def test_local_ci_source_runs_the_boundarys_named_checks_on_this_box(world
     assert isinstance(exact.provider, LocalChecks) and hosted == []
     # The same named required checks a hosted runner reports, from this box.
     assert exact.required.names == ("lint",) and exact.required.version == "v7"
-    assert exact.required.producer_id == LOCAL_CHECKS_PRODUCER_ID
+    assert exact.required.producer_id.startswith(LOCAL_CHECKS_PRODUCER_ID + ":")
     assert exact.provider.producer.plan.commands == (COMMAND,)
     assert not lane.checks.advisory
     # No hosted proof exists to attest; GitHub is just the push remote.
@@ -396,7 +396,8 @@ async def test_ci_source_switch_takes_effect_on_the_next_visit(world, monkeypatc
     candidate, pr = await visit(await store_ci(None))
     assert (candidate, pr) == ("hosted", "hosted")
     assert hosted == [("root", "push"), ("root", "pull_request")]
-    candidate, pr = await visit(await store_ci({**LOCAL_CI, "source": "hybrid"}))
+    candidate, pr = await visit(await store_ci({**LOCAL_CI, "source": "hybrid",
+                                               "hosted_attestation": {"root": False}}))
     assert isinstance(candidate.provider, LocalChecks) and pr == "hosted"
     assert hosted[-1] == ("root", "pull_request") and len(hosted) == 3
 
@@ -469,6 +470,57 @@ async def test_root_pr_gate_reads_the_selected_runner(world, monkeypatch, source
     await finish(world.db, job, exit_code=0)
     assert (await exact.refresh(head)).green
     assert len(await job_rows(world.db)) == 1
+
+
+@pytest.mark.parametrize("condition,code", [
+    ("unapproved", "pr_review_missing"), ("old_approval", "pr_review_missing"),
+    ("changes", "pr_changes_requested"), ("draft", "pr_draft"),
+    ("closed", "awaiting_pr"), ("wrong_base", "awaiting_pr"),
+    ("approved", "awaiting_pr_checks"),
+])
+@pytest.mark.parametrize("admission", ["reviewed", "authorized"])
+async def test_local_pr_gate_checks_eligibility_and_approval_before_submitting_jobs(
+    world, monkeypatch, condition, code, admission,
+):
+    from unittest.mock import AsyncMock
+
+    from src.git.github_contracts import GitHubRepositoryBinding
+    from src.integration.github_review_poll import RootPullRequestGate
+    from src.models import Task, TaskStatus
+
+    lanes, policy, _ = await ci_lanes(world, monkeypatch, LOCAL_CI)
+    policy["root"]["admission"] = admission
+    await world.db.update_project("p", hierarchical_integration_policy=policy)
+    url = "https://github.com/test/repo/pull/1"
+    await world.db.create_task(Task(id="t1", project_id="p", title="member", description="",
+        status=TaskStatus.COMPLETED, branch_name="aq/member", pr_url=url))
+    pull = {"state": "open", "draft": condition == "draft",
+            "head": {"ref": "aq/member", "sha": world.candidate, "repo": {"id": 123}},
+            "base": {"ref": "other" if condition == "wrong_base" else "main",
+                     "repo": {"id": 123}}}
+    if condition == "closed":
+        pull["state"] = "closed"
+    reviews = [] if condition == "unapproved" else [{
+        "id": 1, "state": "CHANGES_REQUESTED" if condition == "changes" else "APPROVED",
+        "commit_id": "a" * 40 if condition == "old_approval" else world.candidate,
+        "user": {"login": "human", "type": "User"},
+    }]
+    binding = GitHubRepositoryBinding(123, "test/repo")
+    client = SimpleNamespace(pull_request=AsyncMock(return_value=pull),
+                             paged_list=AsyncMock(return_value=reviews))
+    resolver = AsyncMock(side_effect=lanes._pr_checks)
+    gate = RootPullRequestGate(world.db,
+        repository=AsyncMock(return_value=(binding, client)), checks=resolver)
+    member = SimpleNamespace(task_id="t1", source_sha=world.candidate)
+    result = await gate(TARGET, member)
+    assert result["code"] == code
+    rows = await job_rows(world.db)
+    if condition == "approved":
+        assert len(rows) == 1 and rows[0]["input_ref"] == world.candidate
+        assert rows[0]["priority_band"] == 0
+    else:
+        assert rows == []
+        resolver.assert_not_awaited()
 
 
 @pytest.mark.parametrize("hosted", [True, False])

@@ -819,6 +819,54 @@ async def test_local_ci_step_without_a_command_for_a_selected_check_is_refused(
         await lane.checks.for_candidate(e.batch, e.source)
 
 
+@pytest.mark.parametrize("field,value", [
+    ("canonical_repository_id", "elsewhere"), ("repository_id", 999),
+    ("full_name", "elsewhere/repo"), ("ci_producer_app_id", 999),
+    ("attestation_app_id", 999), ("attestation_name", "another check"),
+    (None, None),
+])
+async def test_local_promotion_manifest_enforces_repository_and_app_identity(
+    promotion, field, value,
+):
+    from src.integration.ci import SubjectTrustError, TRUST_MANIFEST_PATH
+    from src.integration.train_sources import DaemonLanes, DatabaseBatches
+
+    e = promotion
+    manifest = IntegrationTrustManifest(
+        schema="aq.integration-trust.v1", canonical_repository_id=e.repo.repository_id,
+        repository_id=123, full_name=e.github.full_name, ci_producer_app_id=15368,
+        attestation_app_id=101, attestation_name=ATTESTATION_CHECK_NAME,
+        required_checks={"version": "checks-v1", "names": ["unit"]},
+    ).model_dump(mode="json", by_alias=True)
+    if field:
+        manifest[field] = value
+    sha = commit(e.repo.store, {TRUST_MANIFEST_PATH: json.dumps(manifest)}, base=e.source)
+    e.ops.git._github_client = lambda binding: e.github
+    lanes = DaemonLanes(SimpleNamespace(db=e.db, git=e.ops.git), batches=DatabaseBatches(e.db))
+    policy = {"root": {"required_checks": {"producer_id": "15368"}}}
+    if field:
+        with pytest.raises(SubjectTrustError) as refused:
+            await lanes._retained_manifest(e.repo, sha, binding=e.repo.binding, policy=policy)
+        assert refused.value.cause == "identity_mismatch"
+        assert field in refused.value.fields
+    else:
+        result = await lanes._retained_manifest(e.repo, sha, binding=e.repo.binding, policy=policy)
+        assert result.repository_id == 123
+
+
+async def test_local_promotion_manifest_has_the_hosted_size_limit(promotion):
+    from src.integration.attestation import _MAX_TRUST_BYTES
+    from src.integration.ci import SubjectTrustError, TRUST_MANIFEST_PATH
+    from src.integration.train_sources import DaemonLanes, DatabaseBatches
+
+    e = promotion
+    sha = commit(e.repo.store, {TRUST_MANIFEST_PATH: " " * _MAX_TRUST_BYTES + "{}"}, base=e.source)
+    lanes = DaemonLanes(SimpleNamespace(db=e.db, git=e.ops.git), batches=DatabaseBatches(e.db))
+    with pytest.raises(SubjectTrustError) as refused:
+        await lanes._retained_manifest(e.repo, sha, binding=e.repo.binding, policy={})
+    assert refused.value.cause == "too_large"
+
+
 async def test_publish_command_refuses_worker_then_settles_via_service(promotion):
     from src.commands.integration_commands import IntegrationCommandsMixin
     from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context

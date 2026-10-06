@@ -209,6 +209,8 @@ async def test_ci_source_check_names_local_runners_and_invalid_blocks(reuse_data
     assert result.severity == Severity.ERROR
     assert result.data["invalid"][0]["project_id"] == "broken"
     assert "broken:" in result.detail and "requires ci.commands" in result.detail
+    assert "Rollback hazard" in result.detail and "unknown policy field" in result.detail
+    assert result.data["rollback_projects"] == ["broken", "local"]
     assert result.data["projects"] == [{
         "project_id": "local", "root": "local", "epic": "local", "promotion": "hosted",
         "origin": "policy"}]
@@ -220,3 +222,5 @@ async def test_ci_source_check_names_local_runners_and_invalid_blocks(reuse_data
     result = await check.run(ctx)
     assert result.severity == Severity.OK
     assert result.detail.startswith("1 project(s) run required checks locally")
+    assert "Before downgrading" in result.detail
+    assert result.data["rollback_projects"] == ["local"]

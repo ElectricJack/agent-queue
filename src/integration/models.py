@@ -227,9 +227,10 @@ class IntegrationCIPolicy(BaseModel):
     ``hosted`` reads the GitHub Actions checks the boundary requires.
     ``local`` runs them on this box through the local job runner, one command
     per required check name, and reads no GitHub CI: GitHub is just the push
-    remote.  ``hybrid`` gates candidates locally and still reads the hosted
-    checks GitHub itself enforces, a root PR's and a promotion step's; a
-    promotion step has no other gate, so ``promotion: hybrid`` is hosted.
+    remote. ``hybrid`` gates candidates locally, with hosted candidate checks
+    and App attestation where ``hosted_attestation`` requires them. Root
+    candidates require both by default. Root PR checks remain hosted, and
+    ``promotion: hybrid`` uses the hosted promotion gate.
 
     Whichever runner produced them, green means the boundary's same named
     required checks passed, so baselines, repairs and gate states read alike.
@@ -242,6 +243,11 @@ class IntegrationCIPolicy(BaseModel):
     root: CISource | None = None
     epic: CISource | None = None
     promotion: CISource | None = None
+    #: Hybrid candidate boundaries needing hosted checks and App attestation.
+    #: An explicit false opts a boundary out; hosted sources always require both.
+    hosted_attestation: dict[Literal["root", "epic"], bool] = Field(
+        default_factory=lambda: {"root": True, "epic": False}, strict=True,
+    )
     #: The local runner's command for each required check name, e.g.
     #: ``{"lint": "ruff check src", "unit": "aq test tests/test_x.py"}``.
     commands: dict[str, str] = Field(default_factory=dict)
@@ -269,6 +275,19 @@ class IntegrationCIPolicy(BaseModel):
 
     def source_for(self, kind: CITargetKind) -> CISource:
         return getattr(self, kind) or self.source
+
+    def requires_hosted(self, kind: CITargetKind) -> bool:
+        source = self.source_for(kind)
+        return source == "hosted" or (source == "hybrid" and (
+            kind == "promotion" or self.hosted_attestation.get(kind, kind == "root")
+        ))
+
+    @model_serializer(mode="wrap")
+    def _omit_default_hosted_attestation(self, handler: SerializerFunctionWrapHandler):
+        dumped = handler(self)
+        if self.hosted_attestation == {"root": True, "epic": False}:
+            dumped.pop("hosted_attestation", None)
+        return dumped
 
     def local_kinds(self) -> tuple[CITargetKind, ...]:
         """Kinds with a gate the local runner produces.
