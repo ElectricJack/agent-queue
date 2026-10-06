@@ -1337,6 +1337,48 @@ async def test_uncollected_epic_checkpoint_cannot_enter_root_batch(collected_epi
     assert git(case.origin.url, "rev-parse", "main") == case.base
 
 
+@pytest.mark.parametrize("notes", ["", '{"graph_sha256": "stale", "heads": []}'],
+                         ids=["legacy", "stale"])
+async def test_delivered_epic_with_stale_completion_does_not_block_root(collected_epic, notes):
+    from src.database.tables import task_completion_records
+    from src.integration.delivery_truth import load_delivery_requests
+
+    case = collected_epic
+    checkpoint = case.origin.work("epic", "checkpoint")
+    await close(case.db, "epic", [checkpoint], origin=case.origin)
+    async with case.db._engine.begin() as conn:
+        await conn.execute(update(task_completion_records).where(
+            task_completion_records.c.task_id == "epic",
+        ).values(notes=notes))
+    # The retained source reached main under another commit, without its ancestry.
+    git(case.origin.clone, "checkout", "-q", "-B", "main", "origin/main")
+    git(case.origin.clone, "merge", "--squash", "origin/aq/epic")
+    git(case.origin.clone, "commit", "-qm", "squashed epic delivery")
+    git(case.origin.clone, "push", "-q", "origin", "main")
+    observed = await snapshot(case.world)
+    request = (await load_delivery_requests(case.db, ["epic"], repository_id="r",
+                                           target_ref=MAIN.target_ref, reduced=True))["epic"]
+    evidence = await observed.is_delivered(request, source_base=case.base)
+    assert evidence.satisfied
+    assert evidence.reason in {"whole_source_patch", "full_tree", "merge_noop"}
+    blockers = []
+    batches = DatabaseBatches(case.db)
+    assert await batches.pending(MAIN, observed, blockers=blockers) is None
+    assert blockers == []
+    assert (await case.train.visit(MAIN)).state == "idle"
+
+    # Even a later epic head cannot invalidate its already delivered completion.
+    case.origin.work("epic", "later")
+    after = await completed(case.world, "after", needs=("epic",))
+    members, requests, dependencies = await batches.pending(
+        MAIN, await snapshot(case.world), blockers=blockers,
+    )
+    assert [(member.task_id, member.source_sha) for member in members] == [("after", after)]
+    assert set(requests) == {"after"}
+    assert dependencies == {"after": set()}
+    assert blockers == []
+
+
 async def test_closed_epic_retries_after_child_origins_retire(collected_epic):
     case = collected_epic
     await collect_epic(case)
