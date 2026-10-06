@@ -65,6 +65,76 @@ def git_repo(tmp_path):
 
 
 class TestGitManager:
+    async def test_qualified_tag_uses_isolated_push_and_exact_tag_fetch(self, git_repo, tmp_path):
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "tag", "-a", "v1.2.3",
+              "-m", "promotion", _head_sha(clone)], cwd=clone)
+        oid = _git(["rev-parse", "refs/tags/v1.2.3"], cwd=clone)
+        url = pathlib.Path(git_repo["remote"]).as_uri()
+        await mgr._apush_refs_with_app_auth_to_url(
+            clone, destination_url=url, token=None,
+            updates=((oid, "refs/tags/v1.2.3", ""),), _qualified_refs=True,
+        )
+        assert _git(["cat-file", "-t", "refs/tags/v1.2.3"], cwd=git_repo["remote"]) == "tag"
+        destination = tmp_path / "tag-recovery.git"
+        _git(["init", "--bare", str(destination)], cwd=str(tmp_path))
+        assert await mgr._afetch_exact_oid_with_app_auth_to_url(
+            str(destination), destination_url=url, token=None, oid=oid,
+            destination_ref="refs/aq/tag-recovery", _object_type="tag",
+        ) == oid
+        assert _git(["cat-file", "-t", oid], cwd=str(destination)) == "tag"
+        with pytest.raises(GitError, match="object type"):
+            await mgr._afetch_exact_oid_with_app_auth_to_url(
+                str(destination), destination_url=url, token=None, oid=oid,
+                destination_ref="refs/aq/commit-recovery",
+            )
+
+    async def test_qualified_annotated_tag_create_only_and_peeled_read(self, git_repo):
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        source = _head_sha(clone)
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "tag", "-a", "v1.2.3",
+              "-m", "promotion", source], cwd=clone)
+        oid = _git(["rev-parse", "refs/tags/v1.2.3"], cwd=clone)
+        assert await mgr.apush_qualified_ref(clone, ref="refs/tags/v1.2.3", tip_oid=oid,
+                                            expected_old_oid="") == oid
+        refs = await mgr.als_remote_qualified_refs(clone, ["refs/tags/v1.2.3", "refs/tags/v1.2.3^{}"])
+        assert refs["refs/tags/v1.2.3"].oid == oid
+        assert refs["refs/tags/v1.2.3^{}"].oid == source
+        with pytest.raises(GitError, match="absent ref"):
+            await mgr.apush_qualified_ref(clone, ref="refs/tags/v1.2.3", tip_oid=oid,
+                                         expected_old_oid=oid)
+
+    async def test_qualified_tag_cannot_replace_existing_or_use_lightweight_object(self, git_repo):
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        old = _head_sha(clone)
+        _git(["tag", "v1.2.3", old], cwd=clone)
+        _git(["push", "origin", "refs/tags/v1.2.3"], cwd=clone)
+        new = _commit_file(clone, "new", "change", "change")
+        _git(["-c", "user.name=Test", "-c", "user.email=t@t.com", "tag", "-a", "v2.0.0",
+              "-m", "promotion", new], cwd=clone)
+        oid = _git(["rev-parse", "refs/tags/v2.0.0"], cwd=clone)
+        with pytest.raises(GitError):
+            await mgr.apush_qualified_ref(clone, ref="refs/tags/v1.2.3", tip_oid=oid,
+                                         expected_old_oid="")
+        assert _git(["rev-parse", "refs/tags/v1.2.3"], cwd=git_repo["remote"]) == old
+        with pytest.raises(GitError, match="annotated object"):
+            await mgr.apush_qualified_ref(clone, ref="refs/tags/lightweight", tip_oid=new,
+                                         expected_old_oid="")
+
+    async def test_qualified_branch_fast_forward_and_no_rewind(self, git_repo):
+        mgr = GitManager()
+        clone = git_repo["clone"]
+        old = _head_sha(clone)
+        new = _commit_file(clone, "new", "change", "change")
+        assert await mgr.apush_qualified_ref(clone, ref="refs/heads/main", tip_oid=new,
+                                            expected_old_oid=old) == new
+        with pytest.raises(GitError, match="fast-forward"):
+            await mgr.apush_qualified_ref(clone, ref="refs/heads/main", tip_oid=old,
+                                         expected_old_oid=new)
+
     def test_create_checkout(self, git_repo, tmp_path):
         mgr = GitManager()
         checkout_path = str(tmp_path / "agent-1" / "repo")

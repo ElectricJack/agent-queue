@@ -67,6 +67,13 @@ describe("integrationHistoryRefusal", () => {
 });
 
 describe("integrationRemovalRefusal", () => {
+  it.each(["sealed", "delivery_target_fixed"])("explains %s so the UI can offer Remove", (code) => {
+    const error = Object.assign(new Error("API 422"), { payload: {
+      code: `hierarchy.${code}`, error: `hierarchy.${code}: This subtree belongs to a sealed batch.`,
+    } });
+    expect(integrationRemovalRefusal(error)).toBe("This subtree belongs to a sealed batch.");
+  });
+
   it("keeps the daemon's actionable remedy for archive and delete guards", () => {
     const error = Object.assign(new Error("API 422"), {
       payload: {

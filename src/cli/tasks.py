@@ -1173,3 +1173,30 @@ def _subtask_update_command(name: str, status: str | None, *, note_required: boo
 task_subtask_done = _subtask_update_command("subtask-done", "done")
 task_subtask_start = _subtask_update_command("subtask-start", "in_progress")
 task_subtask_skip = _subtask_update_command("subtask-skip", "skipped", note_required=True)
+
+
+@task.command("remove")
+@click.argument("task_id")
+@click.option("--reason", required=True, help="Why this task or epic is being removed.")
+@click.option("--yes", "confirmed", is_flag=True, help="Confirm removal without an interactive prompt.")
+@click.pass_context
+@_handle_errors
+def remove_task(ctx, task_id, reason, confirmed):
+    """Remove a task and its descendants, preserving branches and audit history."""
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+    if not reason.strip():
+        raise click.UsageError("--reason must not be blank")
+    if not confirmed:
+        click.confirm(
+            f"Remove {task_id} and all descendants? Sessions will stop, open batches will abort, "
+            "and audit history and branches will be kept",
+            abort=True,
+        )
+
+    async def _inner():
+        async with _get_client(api_url) as client:
+            result = await client.execute("remove_task", {
+                "task_id": task_id, "reason": reason, "confirmed": True,
+            })
+            emit(ctx, result)
+    _run(_inner())

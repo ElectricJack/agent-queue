@@ -536,7 +536,7 @@
       ]
     },
     "integration-promotion": {
-      "description": "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, explicit root authorization, parent CI publication and legacy deliveries.",
+      "description": "Promotion-flow validation, child-to-parent and root-to-main promotion, parent assembly and completion, root PRs and authorization, bounded repairs, trusted review evidence, parent CI publication, legacy deliveries and proven closure of delivered PRs.",
       "modules": [
         "tests/test_integration_cancelled_collection.py",
         "tests/test_integration_child_delivery.py",
@@ -556,6 +556,8 @@
         "tests/test_integration_root_pull_requests.py",
         "tests/test_integration_stranded_children.py",
         "tests/test_parent_ci_publication.py",
+        "tests/test_promotion_flow.py",
+        "tests/test_promotion_steps.py",
         "tests/test_repair_checkout_refs.py"
       ]
     },
@@ -1149,7 +1151,9 @@
       "description": "Task archiving: moving finished tasks and subtrees to the archive, archive sweeps, reads that span live and archived tasks, and refusals for undelivered work.",
       "modules": [
         "tests/test_archive.py",
-        "tests/test_hierarchy_archive_delete.py"
+        "tests/test_cli_task_remove.py",
+        "tests/test_hierarchy_archive_delete.py",
+        "tests/test_task_removal.py"
       ]
     },
     "task-comments": {
@@ -1417,7 +1421,7 @@
       ]
     }
   },
-  "digest": "sha256:56dec58696a60e8f104c864146fe8e9ad2525da18381938dd81171f99066ffd9",
+  "digest": "sha256:2dae8bbc2945b8a868992c4841aabca6c3102e133438b371f5e1b223c4851373",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3619,6 +3623,17 @@
         "parametrize"
       ],
       "summary": "``aq task create --requires-kind``: parsing, forwarding, persistence, parity."
+    },
+    "tests/test_cli_task_remove.py": {
+      "areas": [
+        "task-archive"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.app"
+      ],
+      "markers": [],
+      "summary": "The operator removes a subtree with one explicit confirmation."
     },
     "tests/test_cli_task_subtasks.py": {
       "areas": [
@@ -7660,7 +7675,8 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.source_trailer",
-        "src.integration.subjects"
+        "src.integration.subjects",
+        "src.models"
       ],
       "markers": [
         "parametrize"
@@ -12455,6 +12471,65 @@
       ],
       "summary": "Configuration and diagnostics for project onboarding roots."
     },
+    "tests/test_promotion_flow.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.cli.app",
+        "src.commands.contracts",
+        "src.commands.contracts.integration",
+        "src.commands.contracts.models",
+        "src.commands.principal",
+        "src.commands.project_commands",
+        "src.commands.promote_commands",
+        "src.database.tables",
+        "src.doctor",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.git.manager",
+        "src.integration.promotion_steps",
+        "src.integration.records",
+        "src.integration.status",
+        "src.integration.train_sources",
+        "src.models",
+        "src.orchestrator.core",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Dev-branch releases §3.1/§3.11: pure validation and its command surfaces."
+    },
+    "tests/test_promotion_steps.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.ci",
+        "src.integration.git_truth",
+        "src.integration.models",
+        "src.integration.promotion_steps",
+        "src.integration.provenance",
+        "src.integration.train",
+        "src.integration.train_sources",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real Git/PostgreSQL promotion crash matrix (dev-branch releases §3.3)."
+    },
     "tests/test_prompt_builder.py": {
       "areas": [
         "prompts"
@@ -15330,6 +15405,25 @@
       ],
       "markers": [],
       "summary": "task.ready — every entry into the frontier is recorded and emitted (spec §9)."
+    },
+    "tests/test_task_removal.py": {
+      "areas": [
+        "task-archive"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.database",
+        "src.database.tables",
+        "src.integration.parent_engine",
+        "src.integration.task_removal",
+        "src.models"
+      ],
+      "markers": [
+        "asyncio",
+        "parametrize"
+      ],
+      "summary": "Confirmed operator removal preserves audit, fences writers, and retires orphans."
     },
     "tests/test_task_requirements_queries.py": {
       "areas": [

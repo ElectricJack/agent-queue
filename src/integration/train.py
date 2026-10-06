@@ -35,6 +35,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
@@ -64,7 +65,7 @@ logger = logging.getLogger(__name__)
 RATE_LIMIT_BACKOFF_SECONDS = 60.0
 RATE_LIMIT_MAX_BACKOFF_SECONDS = 900.0
 
-TRAIN_KINDS = ("root", "epic", "development")
+TRAIN_KINDS = ("root", "epic", "development", "promotion")
 _PROGRESS: ContextVar[dict | None] = ContextVar("train_visit_progress", default=None)
 
 
@@ -85,6 +86,7 @@ class TrainTarget:
     repository_id: str
     target_ref: str
     kind: str = "root"
+    step: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not (self.project_id and self.repository_id and self.target_ref):
@@ -93,6 +95,12 @@ class TrainTarget:
             raise ValueError("train target must be a fully qualified branch ref")
         if self.kind not in TRAIN_KINDS:
             raise ValueError(f"unknown train target kind: {self.kind}")
+        if self.step is not None:
+            object.__setattr__(self, "step", deepcopy(self.step))
+
+    @property
+    def step_id(self) -> str | None:
+        return self.step.get("id") if self.step is not None else None
 
     @property
     def key(self) -> tuple[str, str, str]:
@@ -623,7 +631,8 @@ class IntegrationTrain:
             # observes again. None of these is a member's content conflict, so
             # none allocates a repair.
             return self._visit(target, observation.state, batch, observation)
-        head = candidate_head(batch, observation.candidate_sha)
+        head = (await lane.checks.head(batch, observation.candidate_sha)
+                if target.kind == "promotion" else candidate_head(batch, observation.candidate_sha))
         _progress("resolve_checks")
         checks = await lane.checks.for_candidate(batch, observation.candidate_sha)
         result = None if checks is None else await self._checks(checks, head)
@@ -636,6 +645,10 @@ class IntegrationTrain:
                 await self.batches.settle(batch, published)
             return self._visit(target, published.state, batch, published, result)
         if result.state == ChecksState.RED:
+            if target.kind == "promotion":
+                return self._visit(target, "held", batch, replace(observation, detail={
+                    "reason": "promotion_checks_failed",
+                }), result)
             return await self._red(
                 target, lane, batch, members, observation, result, head, checks, snapshot
             )
@@ -648,7 +661,8 @@ class IntegrationTrain:
                     **diagnostic.detail, "reason": diagnostic.reason,
                 },
             })
-            return await self._repair(target, lane, batch, members, observation, result)
+            if target.kind != "promotion":
+                return await self._repair(target, lane, batch, members, observation, result)
         return self._visit(target, "testing", batch, observation, result)
 
     async def _red(

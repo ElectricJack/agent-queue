@@ -6,6 +6,7 @@ import { TerminalLinkModeProvider } from "../terminalLinks";
 
 const mockNavigate = vi.fn();
 const mockDelete = vi.fn();
+const mockRemove = vi.fn();
 const mockSendChatMessage = vi.fn();
 /** The delete mutation's reported failure; a test that cares sets its own. */
 const GENERIC_FAILURE = new Error("A descendant still has a live session");
@@ -40,6 +41,7 @@ vi.mock("../../api/hooks", () => {
       isError: true,
       error: deleteFailure.current,
     }),
+    useRemoveTask: () => ({ mutateAsync: mockRemove, isPending: false }),
   };
 });
 
@@ -100,6 +102,15 @@ describe("TaskActions deletion", () => {
     ).toBeDisabled();
     // No branch question either.
     expect(within(dialog).queryByLabelText(/Delete the branch/)).not.toBeInTheDocument();
+    mockRemove.mockResolvedValue({ removed: "task/with space" });
+    await userEvent.click(within(dialog).getByRole("button", {
+      name: "Remove while keeping history and branches",
+    }));
+    expect(screen.getByRole("dialog")).toHaveTextContent(/Branches will stay/);
+    await userEvent.click(screen.getByRole("button", { name: "Remove task and descendants" }));
+    expect(mockRemove).toHaveBeenCalledWith({
+      task_id: "task/with space", confirmed: true, reason: "No longer needed",
+    });
   });
 
   it("shows the command that releases a task a running integration operation owns", async () => {

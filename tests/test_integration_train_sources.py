@@ -27,6 +27,7 @@ from src.database.tables import (
     integration_batches,
     integration_legacy_deliveries,
     projects,
+    repos,
     task_branch_origins,
     tasks,
 )
@@ -161,7 +162,7 @@ async def world(tmp_path):
 
 
 async def completed(world, tid, *, parent=None, needs=(), land=False, done=True,
-                    head=None) -> str:
+                    head=None, parent_ref=None) -> str:
     """A task with a branch origin and, when *done*, a retained completion."""
     db, origin = world.db, world.origin
     await db.create_task(Task(
@@ -176,7 +177,7 @@ async def completed(world, tid, *, parent=None, needs=(), land=False, done=True,
         await conn.execute(insert(task_branch_origins).values(
             id=f"{tid}-origin", task_id=tid, repository_id="r", branch_name=f"aq/{tid}",
             parent_task_id=parent, parent_repository_id="r" if parent else None,
-            parent_ref=f"aq/{parent}" if parent else None,
+            parent_ref=parent_ref if parent_ref is not None else f"aq/{parent}" if parent else None,
             base_sha=git(origin.clone, "rev-parse", f"{head}^"),
             creation_generation=0, reserved=True, materialized=True, created_at=time.time(),
         ))
@@ -237,6 +238,90 @@ async def test_targets_follow_mode_routing_and_open_batches(world):
     async with db._engine.begin() as conn:
         await conn.execute(update(projects).where(projects.c.id == "p").values(status="PAUSED"))
     assert await DatabaseTargets(db).targets(time.time()) == []
+
+
+async def promotion_flow(world, targets):
+    flow = []
+    source = "dev"
+    for i, target in enumerate(targets):
+        flow.append({
+            "id": f"step-{i}", "source": source, "target": target, "type": "request",
+            "gate": {"approval": "operator", "checks": "inherit",
+                     "attestation": f"Promotion {i}"},
+            "versioning": {"kind": "none"}, "notes": {"kind": "none"}, "after": {},
+        })
+        source = target
+    async with world.db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p")
+                           .values(promotion_flow=flow))
+        await conn.execute(update(repos).where(repos.c.id == "r").values(default_branch="dev"))
+    return flow
+
+
+@pytest.mark.parametrize("refs", [("main",), ("staging", "main")])
+async def test_flow_enumerates_promotion_targets_without_a_frontier(world, refs):
+    flow = await promotion_flow(world, refs)
+    await completed(world, "ordinary")
+    targets = await DatabaseTargets(world.db).targets(time.time())
+    assert {(t.target_ref, t.kind) for t in targets} == {
+        ("refs/heads/dev", "root"), *((f"refs/heads/{ref}", "promotion") for ref in refs),
+    }
+    promotions = [target for target in targets if target.kind == "promotion"]
+    assert {target.step_id for target in promotions} == {step["id"] for step in flow}
+    batches = DatabaseBatches(world.db)
+    service = SimpleNamespace(store=BatchStore(world.db), freeze=AsyncMock())
+    for target in promotions:
+        assert target.step == next(step for step in flow if step["target"] ==
+                                   target.target_ref.removeprefix("refs/heads/"))
+        observed = SimpleNamespace(error=None, target_oid="a" * 40)
+        assert await batches.pending(target, observed) is None
+        assert (await batches.open_batch(target, observed, service)).batch is None
+    service.freeze.assert_not_awaited()
+
+
+async def test_promotion_current_ignores_other_triggers_and_other_refs(world):
+    await promotion_flow(world, ("staging", "main"))
+    head = await completed(world, "source")
+    for bid, ref, trigger, created in (
+        ("old-root", "main", "manual", 1.0),
+        ("staging", "staging", "promotion", 2.0),
+        ("release", "main", "promotion", 3.0),
+    ):
+        async with world.db.immediate() as conn:
+            await conn.execute(insert(integration_batches).values(
+                id=bid, project_id="p", repository_id="r", target_ref=f"refs/heads/{ref}",
+                request_id=bid, trigger=trigger, source_manifest_digest="sha256:" + "1" * 64,
+                base_sha=head, integration_branch=candidate_ref(bid), lifecycle="sealed",
+                policy_snapshot={}, artifact_snapshot={}, cleanup_state="pending",
+                created_at=created, updated_at=created,
+            ))
+    targets = await DatabaseTargets(world.db).targets(time.time())
+    assert len(targets) == 3
+    batches = DatabaseBatches(world.db)
+    for target in targets:
+        current = await batches.current(target)
+        if target.kind == "promotion":
+            assert current.id == ("release" if target.step_id == "step-1" else "staging")
+        else:
+            assert current is None
+
+
+@pytest.mark.parametrize("identity", ["intent", "hotfix", "qualified-hotfix", "promotion-target"])
+async def test_ordinary_eligibility_and_frontier_refuse_promotion_routing(world, identity):
+    await promotion_flow(world, ("main",))
+    parent_ref = {"hotfix": "main", "qualified-hotfix": "refs/heads/main"}.get(identity)
+    head = await completed(world, "promotion-work", parent_ref=parent_ref)
+    async with world.db.immediate() as conn:
+        if identity == "intent":
+            await conn.execute(update(tasks).where(tasks.c.id == "promotion-work")
+                               .values(task_type="promotion"))
+    target = "main" if identity == "promotion-target" else "dev"
+    batches = DatabaseBatches(world.db)
+    batch = Batch("ordinary", "p", "r", f"refs/heads/{target}")
+    assert not await batches.eligible(batch, (BatchMember("promotion-work", head, head),))
+    if identity != "promotion-target":
+        async with world.db._engine.connect() as conn:
+            assert await _pending_tasks(conn, "p", "r", limit=None) == []
 
 
 async def test_pending_members_are_exact_undelivered_sources(world):

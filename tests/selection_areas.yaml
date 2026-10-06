@@ -38,7 +38,7 @@ areas:
       - tests/test_models.py
   - id: task-archive
     description: "Task archiving: moving finished tasks and subtrees to the archive, archive sweeps, reads that span live and archived tasks, and refusals for undelivered work."
-    match: [tests/test_archive.py, tests/test_hierarchy_archive_delete.py]
+    match: [tests/test_archive.py, tests/test_hierarchy_archive_delete.py, tests/test_task_removal.py, tests/test_cli_task_remove.py]
   - id: task-dependencies
     description: "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection."
     match:
@@ -421,9 +421,10 @@ areas:
       - tests/test_integration_eject.py
       - tests/test_doctor_stranded_fences_fix.py
   - id: integration-promotion
-    description: "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, parent CI publication, legacy deliveries and proven closure of delivered PRs."
-    description: "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, explicit root authorization, parent CI publication and legacy deliveries."
+    description: "Promotion-flow validation, child-to-parent and root-to-main promotion, parent assembly and completion, root PRs and authorization, bounded repairs, trusted review evidence, parent CI publication, legacy deliveries and proven closure of delivered PRs."
     match:
+      - tests/test_promotion_flow.py
+      - tests/test_promotion_steps.py
       - tests/test_integration_promotion.py
       - tests/test_integration_child_delivery.py
       - tests/test_integration_cancelled_collection.py

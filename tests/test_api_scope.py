@@ -95,6 +95,9 @@ EXPECTED_AGENT_COMMANDS = {
     # Mandatory routing §7: a worker re-routes a task it filed.
     "task_route",
     "integration_status",
+    # Promotion validation is read-only and pinned to the worker's project.
+    "promote_schema",
+    "promote_validate",
     "integration_resolve_candidate_member",
     "review_submit",
     "review_show",

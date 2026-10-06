@@ -56,6 +56,7 @@ from src.commands.routing_commands import RoutingCommandsMixin
 from src.commands.task_comment_commands import TaskCommentCommandsMixin
 from src.commands.task_subtask_commands import TaskSubtaskCommandsMixin
 from src.commands.phase_commands import PhaseCommandsMixin
+from src.commands.promote_commands import PromoteCommandsMixin
 from src.commands.agent_commands import AgentCommandsMixin
 from src.commands.profile_commands import ProfileCommandsMixin
 from src.commands.mcp_commands import McpCommandsMixin
@@ -360,6 +361,7 @@ class CommandHandler(
     TaskCommentCommandsMixin,
     TaskSubtaskCommandsMixin,
     PhaseCommandsMixin,
+    PromoteCommandsMixin,
     AgentCommandsMixin,
     ProfileCommandsMixin,
     McpCommandsMixin,

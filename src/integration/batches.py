@@ -129,7 +129,8 @@ class BatchStore:
         return tuple(BatchMember(row["task_id"], row["source_sha"],
                                  row["source_base_sha"], row["ordinal"]) for row in rows)
 
-    async def freeze(self, batch: Batch, members: Iterable[BatchMember], *, trees: Mapping[str, str]):
+    async def freeze(self, batch: Batch, members: Iterable[BatchMember], *, trees: Mapping[str, str],
+                     promotion: Mapping | None = None):
         """Atomic immutable membership; replay must name exactly the same inputs."""
         members = tuple(members)
         if tuple(member.order for member in members) != tuple(range(len(members))):
@@ -138,6 +139,11 @@ class BatchStore:
             raise ValueError("empty work needs no batch")
         if len({member.task_id for member in members}) != len(members):
             raise ValueError("duplicate batch member")
+        integration_branch = candidate_ref(batch.id)
+        if promotion is not None:
+            from src.integration.promotion_steps import promotion_ref
+
+            integration_branch = promotion_ref(promotion["step"], promotion)
         now = self.clock()
         async with self.db.immediate() as conn:
             # Serialize absent-id creation too. No Git or check work under this lock.
@@ -157,6 +163,13 @@ class BatchStore:
                                           r["source_base_sha"], r["ordinal"]) for r in frozen)
                 if identity != wanted or inputs != members:
                     raise ValueError("batch id already names different frozen inputs")
+                if promotion is not None and (
+                    existing["trigger"] != "promotion"
+                    or existing["request_id"] != promotion["request_id"]
+                    or existing["policy_snapshot"].get("promotion_step") != promotion["step"]
+                    or existing["policy_snapshot"].get("promotion_intent") != dict(promotion)
+                ):
+                    raise ValueError("batch id already names a different promotion request")
                 return Batch.from_row(existing)
             manifest = hashlib.sha256(repr(members).encode()).hexdigest()
             await conn.execute(insert(integration_batches).values(
@@ -165,9 +178,14 @@ class BatchStore:
                 repair_attempt_count=batch.repair_attempt_count,
                 created_at=batch.created_at or now, updated_at=now,
                 # Compatibility-only required fields, never read by this engine.
-                request_id=batch.id, source_manifest_digest=manifest,
-                base_sha=members[0].base_sha, integration_branch=candidate_ref(batch.id),
-                lifecycle="sealing", policy_snapshot={}, artifact_snapshot={}, cleanup_state="pending",
+                request_id=batch.id if promotion is None else promotion["request_id"],
+                trigger="manual" if promotion is None else "promotion",
+                source_manifest_digest=manifest,
+                base_sha=members[0].base_sha, integration_branch=integration_branch,
+                lifecycle="sealing", policy_snapshot={} if promotion is None else {
+                    "promotion_step": promotion["step"],
+                    "promotion_intent": dict(promotion),
+                }, artifact_snapshot={}, cleanup_state="pending",
             ))
             for member in members:
                 tree = trees[member.task_id]

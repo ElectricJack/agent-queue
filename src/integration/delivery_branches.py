@@ -22,8 +22,8 @@ anything still need this branch?" (:func:`live_branch_references`):
   FAILED or abandoned tasks 14 days after they went terminal
   (:func:`expired_task_branches`).
 
-Only ``aq/`` branches are ever deleted, never the default branch, ``main`` or
-``gh-pages`` (:func:`deletable`, enforced inside :func:`delete_branches`).
+Only ``aq/`` branches are ever deleted, never the default branch, a promotion
+target or ``gh-pages`` (:func:`deletable`, enforced inside :func:`delete_branches`).
 Every deletion is restorable: a tip the default branch cannot reach is
 bundled first, every branch is logged with its sha before the push, and each
 delete is a lease on the head that was observed, so a branch somebody pushed
@@ -54,6 +54,7 @@ from src.database.tables import (
     integration_repair_operations,
     integration_repair_stages,
     projects,
+    repos,
     sessions,
     task_branch_origins,
     task_completion_records,
@@ -69,8 +70,8 @@ logger = logging.getLogger(__name__)
 #: Only branches in the daemon's own namespace are ever deleted.  A person's
 #: ``fix/...`` branch is theirs to tidy, whatever its ancestry says.
 TASK_BRANCH_PREFIX = "aq/"
-#: Never deleted, whatever else is true (the default branch is added per repo).
-PROTECTED_BRANCHES = frozenset({"main", "gh-pages"})
+#: Always protected; the default and promotion targets are added per repository.
+PROTECTED_BRANCHES = frozenset({"gh-pages"})
 #: Publisher assemblies: candidate snapshots and parent aggregates.
 ASSEMBLY_PREFIX = "aq/development/"
 #: Legacy integration branches (``IntegrationScheduler._integration_branch``);
@@ -416,12 +417,37 @@ async def remote_heads(run_git, store) -> dict[str, str]:
     return heads
 
 
-def deletable(branch: str, default_branch: str) -> bool:
+def protected_branches(default_branch: str, promotion_flow=None) -> frozenset[str]:
+    """All flow targets stay protected, including ones in the ``aq/`` namespace."""
+    # The promotion lane builds on gitops -> development -> this module.
+    from src.integration.promotion_steps import flow_targets
+
+    return (PROTECTED_BRANCHES | {branch_of(default_branch)} | {
+        branch_of(target) for target in flow_targets(promotion_flow)
+    }) - {None}
+
+
+async def repository_protected_branches(
+    conn, repository_id: str, *, default_branch: str,
+) -> frozenset[str]:
+    row = (await conn.execute(
+        select(repos.c.default_branch, projects.c.promotion_flow)
+        .select_from(repos.join(projects, projects.c.id == repos.c.project_id))
+        .where(repos.c.id == repository_id)
+    )).one_or_none()
+    protected = protected_branches(default_branch)
+    if row is not None:
+        protected |= protected_branches(row.default_branch, row.promotion_flow)
+    return protected
+
+
+def deletable(branch: str, default_branch: str, *, protected: Iterable[str] = ()) -> bool:
     """The one rule no caller can override: ``aq/`` only, never a protected name."""
     return (
         branch.startswith(TASK_BRANCH_PREFIX)
         and branch != default_branch
         and branch not in PROTECTED_BRANCHES
+        and branch not in protected
     )
 
 
@@ -436,6 +462,7 @@ async def delete_branches(
     backup_dir: Path,
     repository_id: str,
     now: float | None = None,
+    protected: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Back up, record, then delete each ``branch -> {"head", "reason"}`` from ``origin``.
 
@@ -462,7 +489,8 @@ async def delete_branches(
     """
     if not targets:
         return {"outcomes": {}, "bundle": None, "bundled": [], "log": None}
-    refused = sorted(b for b in targets if not deletable(b, default_branch))
+    protected = frozenset(protected)
+    refused = sorted(b for b in targets if not deletable(b, default_branch, protected=protected))
     if refused:
         raise ValueError(f"refusing to delete protected or non-aq/ branches: {refused}")
     if not main_head:
@@ -738,6 +766,7 @@ async def find_stale_branches(
     holds: dict[str, str],
     released: dict[str, str] | None = None,
     expired: dict[str, str] | None = None,
+    protected: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Classify every branch of ``origin`` under the branch policy.
 
@@ -759,10 +788,11 @@ async def find_stale_branches(
     ``{"stale": [...], "held": [...], "kept": int, "out_of_scope": int,
     "main_head": sha}``; entries carry ``branch``, ``head`` (to lease the
     delete on), ``rule``, ``found_by`` and ``reason``.  Branches outside
-    ``aq/``, the default branch, ``main`` and ``gh-pages`` are only counted.
+    ``aq/``, the default branch, promotion targets and ``gh-pages`` are only counted.
     """
     released = released or {}
     expired = expired or {}
+    protected = frozenset(protected)
     heads = await remote_heads(run_git, store)
     main_head = heads.get(default_branch)
     if main_head is None:
@@ -808,7 +838,7 @@ async def find_stale_branches(
     stale, held = [], []
     kept = out_of_scope = 0
     for branch, head in sorted(heads.items()):
-        if not deletable(branch, default_branch):
+        if not deletable(branch, default_branch, protected=protected):
             if branch != default_branch:
                 out_of_scope += 1
             continue
@@ -875,6 +905,8 @@ __all__ = [
     "expired_task_branches",
     "find_stale_branches",
     "live_branch_references",
+    "protected_branches",
     "released_integration_refs",
     "remote_heads",
+    "repository_protected_branches",
 ]
