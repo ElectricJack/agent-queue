@@ -1,10 +1,11 @@
 """Operator host shell routes: open, list and close (attach is ``/ws/terminal/{name}``).
 
-Only the local operator may use them: a request with any bearer token (a
-worker, a supervisor) is refused, as is one the dashboard edge did not mark as
-the operator's, and every route answers 403 while ``dashboard.host_shell`` is
-off. Each open and close is audit-logged (daemon log and the ``events`` table)
-with the caller's identity. See :mod:`src.sessions.host_shell`.
+A request with any bearer token (a worker, a supervisor) is refused. The local
+operator may use them; so may a viewer the dashboard edge proxied from another
+machine when ``dashboard.host_shell.allow_remote`` is on. Every route answers
+403 while ``dashboard.host_shell`` is off. Each open and close is audit-logged
+(daemon log and the ``events`` table) with the caller's identity and real peer.
+See :mod:`src.sessions.host_shell`.
 """
 from __future__ import annotations
 
@@ -14,7 +15,6 @@ import logging
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from src.api.auth import request_operator_viewer
 from src.sessions.host_shell import HostShellError, is_host_shell_name
 
 logger = logging.getLogger("aq.audit.host_shell")
@@ -44,6 +44,8 @@ def _identity(request: Request) -> str:
     peer = request.client.host if request.client else "unknown"
     via = request.headers.get("x-aq-dashboard-viewer")
     real = request.headers.get("x-aq-dashboard-peer")
+    if via == "other":
+        return f"remote-dashboard-viewer (peer {real or 'unknown'})"
     if via:
         return f"local-operator via dashboard (peer {real or 'unknown'})"
     return f"local-operator ({peer})"
@@ -55,8 +57,9 @@ def _require_operator(request: Request, service, *, allow_disabled: bool = False
         scope is not None and getattr(scope, "kind", "local") != "local"
     ):
         raise HTTPException(403, "Host shells are for the local operator only")
-    if not request_operator_viewer(request):
-        raise HTTPException(403, "Host shells are for the local operator only")
+    if not service.host_shell_viewer(request):
+        raise HTTPException(403, "Host shells are for the local operator only "
+                                 "(dashboard.host_shell.allow_remote admits remote dashboards)")
     if not allow_disabled and not service.host_shell_enabled():
         raise HTTPException(403, "Host shells are disabled (dashboard.host_shell.enabled)")
 

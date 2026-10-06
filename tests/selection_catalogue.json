@@ -1420,7 +1420,7 @@
       ]
     }
   },
-  "digest": "sha256:af7c661c9d240f44526cc0d36c138c93f84cd42bbeb8d729b98653aae3a03ab1",
+  "digest": "sha256:099a05ffe54d6e17fa379b784817a15f9945e8a2f7e922414688c84f42cfb136",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -15554,7 +15554,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Operator host shells: config gate, operator-only auth, lifecycle, env scrub."
+      "summary": "Operator host shells: config gate, operator and remote-viewer auth, lifecycle, env scrub."
     },
     "tests/test_terminal_input.py": {
       "areas": [

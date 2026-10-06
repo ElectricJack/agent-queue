@@ -100,6 +100,19 @@ def request_operator_viewer(request) -> bool:
     return request.url.hostname in {"localhost", "127.0.0.1", "::1"}
 
 
+def request_remote_dashboard_viewer(request) -> bool:
+    """A browser the dashboard server proxied from another machine.
+
+    The edge reaches the daemon from loopback and replaces any client-supplied
+    ``x-aq-dashboard-viewer`` with its own real-peer verdict, which is
+    ``other`` for every peer it does not take for the operator.
+    """
+    client_host = request.client.host if request.client else None
+    if client_host not in {"127.0.0.1", "::1", "localhost"}:
+        return False
+    return request.headers.get("x-aq-dashboard-viewer") == "other"
+
+
 @contextmanager
 def operator_viewer_context(allowed: bool) -> Iterator[None]:
     token = _operator_viewer_allowed.set(allowed)
