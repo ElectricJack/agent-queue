@@ -434,7 +434,6 @@ class PromoteCommandsMixin:
                         description="Daemon-authored step intent.",
                         task_type="promotion",
                         status="IN_PROGRESS",
-                        profile_id=None,
                         pr_url=pr_url,
                         created_at=now,
                         updated_at=now,

@@ -8178,6 +8178,45 @@
     },
     "src/commands/promote_commands.py::import from src.integration.promotion_steps import FlowSchema": {
       "reason": "Promotion commands depend on the integration-owned flow schema."
+    },
+    "src/commands/contracts/promote.py::register_promote_contracts": {
+      "reason": "Registers the promotion intent request, approval, cancellation and cached-read contracts through the integration operational contract adapter."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_approve": {
+      "reason": "Posts a pinned human GitHub approval for an open promotion intent and caches its review evidence for the integration step gate."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_cancel": {
+      "reason": "Closes an unpublished promotion PR and aborts its intent under the integration branch lock; never touches the target or tag."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_request": {
+      "reason": "Admits an idempotent promotion intent: retains the exact source, pushes the private request head, opens the pinned PR and freezes the promotion batch."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_cached": {
+      "reason": "Reads promotion intents with cached check and PR review evidence from integration batch storage."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_inputs": {
+      "reason": "Authorizes the caller and resolves the project's validated promotion flow and bound integration repository."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_intent": {
+      "reason": "Loads a promotion batch and its immutable request identity from the integration policy snapshot."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_runtime": {
+      "reason": "Resolves the integration train lane, Git operations and GitHub client for a promotion step target."
+    },
+    "src/commands/promote_commands.py::_check_pull": {
+      "reason": "Verifies the GitHub PR still matches the pinned promotion source, private head, target and repository identity."
+    },
+    "src/commands/promote_commands.py::_intent_response": {
+      "reason": "Projects a promotion batch row and its request identity into the command response."
+    },
+    "src/commands/promote_commands.py::import from src.database.tables import projects, tasks, task_context, task_metadata, integration_batches, integration_batch_members, integration_check_evidence, integration_review_evidence": {
+      "reason": "Promotion intent commands read and write integration batch, member and evidence storage alongside the daemon-authored task."
+    },
+    "src/commands/promote_commands.py::import from src.integration.batches import Batch, BatchMember, BatchStore": {
+      "reason": "Promotion requests freeze an integration batch for the step's exact source."
+    },
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, promotion_ref": {
+      "reason": "Promotion intents use the integration-owned step identity, result and private request ref."
     }
   },
   "exclusions": {
