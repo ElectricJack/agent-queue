@@ -14188,7 +14188,7 @@
       "owner_fingerprint": "19001f37899a71985161848da0bcf4af2e8f152e77ace4a4b80f82d9d456f21d",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Operator audit of batch intent with principal and reason. Abort also projects terminal lifecycle and cleanup state in the existing batch row to release compatibility seals; the unchanged audit payload is never replayed and carries no ref-update lifecycle."
+      "reason": "Operator audit of batch intent with principal and reason; abort now projects terminal lifecycle and queues cleanup atomically. The audit payload and call are unchanged, never replayed and carry no ref-update lifecycle."
     },
     "src/integration/train_controls.py::TrainControls.retire_origin::0b56c6446d96c90b01889f9a0444c2e70ac5351db133ff1989c85a029ccd494a": {
       "line": 226,
