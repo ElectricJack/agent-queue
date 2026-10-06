@@ -214,6 +214,16 @@ expiry. Cache entries and secrets live only in daemon memory. Select a fresh
 credential immediately before each network operation, not once per task or
 worker session.
 
+After a binding has been verified, retain its immutable repository identity in
+the startup-owned access service. Repeated binding still verifies that identity
+through `gh`, selecting the current token from the same ready credential cache
+as other repository reads. It must not retain a token in the binding or mint a
+separate bootstrap candidate on every poll tick or push. An authentication
+rejection during initial candidate verification discards that candidate and
+retries the verification once with a new candidate, fenced to the same numeric
+repository identity. Identity mismatches and permission failures do not trigger
+that retry. Neither binding path consults the operator's login in App mode.
+
 Installation tokens expire after approximately one hour and support GitHub
 REST, GraphQL and HTTP Git access subject to permissions. See
 [GitHub installation authentication](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation).
