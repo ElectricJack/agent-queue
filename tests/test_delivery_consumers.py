@@ -542,3 +542,49 @@ def test_no_runtime_module_reads_or_writes_a_delivery_record():
         if usage.search(line)
     )
     assert offenders == []
+
+
+async def test_pool_demand_counts_ready_child_whose_sibling_is_git_delivered(world, tmp_path):
+    """Git-first promotion writes no receipt; pool demand must use the Git view."""
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+    from src.database.tables import task_branch_origins
+    from src.integration.delivery_observer import git_prerequisite_mode
+    from src.integration.git_truth import GitTruth
+    from src.models import AgentProfile
+
+    db, origin, _observer, _service = world
+    await db.create_profile(AgentProfile(id="worker", name="worker"))
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "demand",
+                                truth=GitTruth(transport))
+    await db.create_task(Task(id="dependent", project_id="p", repo_id="r", title="dependent",
+                              description="", branch_name="aq/dependent", status=TaskStatus.READY))
+    await db.add_dependency("dependent", "epic", "parent-child")
+    await db.add_dependency("dependent", "done")
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic")
+                           .values(branch_name="aq/epic", repo_id="r"))
+        await conn.execute(update(tasks).where(tasks.c.id == "dependent").values(
+            is_blocked=False, profile_id="worker", route_source="router",
+        ))
+        await conn.execute(insert(task_branch_origins).values(
+            id="dependent-origin", task_id="dependent", repository_id="r",
+            branch_name="aq/dependent", parent_task_id="epic", parent_repository_id="r",
+            parent_ref="aq/epic", base_sha=git(origin.clone, "rev-parse", "main"),
+            creation_generation=0, reserved=True, materialized=True, created_at=time.time(),
+        ))
+    await db.update_project("p", hierarchical_integration_mode="train")
+    project = await db.get_project("p")
+
+    legacy = ProjectIntegrationMode.of(project)
+    assert "worker" not in await db.count_ready_by_profile("p", hierarchy_mode=legacy)
+    assert any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
+               for r in await db.claim_frontier_exclusions("dependent", hierarchy_mode=legacy))
+
+    db.set_delivery_observer(observer)
+    mode = await git_prerequisite_mode(db, project)
+    assert mode.delivered_prerequisite_ids == frozenset({"done"})
+    assert (await db.count_ready_by_profile("p", hierarchy_mode=mode)).get("worker") == 1
+    assert not any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
+                   for r in await db.claim_frontier_exclusions("dependent", hierarchy_mode=mode))

@@ -425,10 +425,10 @@ def _claim_preparation_predicates():
     }
 
 
-def claim_frontier_predicates():
+def claim_frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
     """All profile-independent acceptance filters, including candidate preparation."""
     return {
-        **_frontier_predicates(),
+        **_frontier_predicates(hierarchy_mode),
         **_claim_preparation_predicates(),
         "hold_label": apply_label_filters(select(tasks.c.id), exclude_hold=True).whereclause,
     }
@@ -470,14 +470,17 @@ class ClaimQueryMixin:
     """
 
     async def claim_frontier_exclusions(
-        self, task_id: str, *, router_ready: bool | None = None
+        self, task_id: str, *, router_ready: bool | None = None,
+        hierarchy_mode: ProjectIntegrationMode | None = None,
     ) -> list[dict]:
         """Evaluate the real claim filters for one READY task, without scheduler guesses.
 
         *router_ready* adds the route filter (:func:`route_claimable`) for a
-        project whose router is (not) ready.
+        project whose router is (not) ready.  *hierarchy_mode* carries the
+        claim path's Git-view prerequisite evidence (see
+        :func:`src.integration.delivery_observer.git_prerequisite_mode`).
         """
-        predicates = claim_frontier_predicates()
+        predicates = claim_frontier_predicates(hierarchy_mode)
         if router_ready is not None:
             predicates["route_not_claimable"] = route_claimable(router_ready)
         async with self._engine.connect() as conn:
@@ -2113,17 +2116,20 @@ class ClaimQueryMixin:
         return res.rowcount == 1
 
     async def count_ready_by_profile(
-        self, project_id: str, *, allowed_task_ids=None, router_ready: bool | None = None
+        self, project_id: str, *, allowed_task_ids=None, router_ready: bool | None = None,
+        hierarchy_mode: ProjectIntegrationMode | None = None,
     ) -> dict[str | None, int]:
         """Count structural work, restricted to verified development admission when supplied.
 
         *router_ready* counts only claimable work (:func:`route_claimable`),
         which is what pool demand is (mandatory routing §9.1); ``None``
         counts every READY frontier row, unrouted ones under ``None``.
+        *hierarchy_mode* is the same Git-view prerequisite evidence the claim
+        path uses, so demand and claim agree on sibling delivery.
         """
         stmt = (
             select(tasks.c.profile_id, func.count())
-            .where(_frontier_where(project_id, router_ready=router_ready))
+            .where(_frontier_where(project_id, hierarchy_mode, router_ready=router_ready))
             .group_by(tasks.c.profile_id)
         )
         if allowed_task_ids is not None:

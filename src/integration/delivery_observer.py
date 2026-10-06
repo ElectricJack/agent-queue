@@ -464,3 +464,34 @@ class DeliveryObserver:
             if max_age > 0 or await view.fresh():
                 return view
         return view
+
+
+async def git_prerequisite_mode(db, project):
+    """The claim path's hierarchy mode, with Git-view sibling prerequisite evidence.
+
+    Pool demand and ``aq task explain`` must agree with the claim path on
+    which completed ``blocks`` siblings are delivered: git-first epic
+    promotion writes no ``task_delivery_receipts`` row, so the legacy receipt
+    predicate alone never sees those prerequisites.  The observation runs
+    here, before any transaction, so no git I/O happens under a DB lock.
+    A stale or failed view falls back to the legacy receipt predicate.
+    """
+    from dataclasses import replace
+
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+
+    mode = ProjectIntegrationMode.of(project)
+    observer = getattr(db, "_delivery_observer", None)
+    if (mode is None or not mode.hierarchical or observer is None
+            or getattr(observer, "truth", None) is None):
+        return mode
+    try:
+        view = await observer.prerequisite_view(project.id)
+        if not await view.fresh():
+            return mode
+    except Exception as exc:  # noqa: BLE001 - demand falls back to receipts
+        logger.warning("delivery observer: prerequisite view failed: %s", exc)
+        return mode
+    return replace(mode, delivered_prerequisite_ids=frozenset(
+        tid for tid, proof in view.evidence.items() if proof.satisfied
+    ))

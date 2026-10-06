@@ -979,7 +979,8 @@ class DatabaseBackend(Protocol):
         self, conn, task_id: str, *, max_filings: int, count: int = 1
     ) -> bool: ...
     async def count_ready_by_profile(
-        self, project_id: str, *, allowed_task_ids=None, router_ready: bool | None = None
+        self, project_id: str, *, allowed_task_ids=None, router_ready: bool | None = None,
+        hierarchy_mode: Any = None,
     ) -> dict[str | None, int]: ...
 
     # --- Router (mandatory-routing spec §6.4-§6.6) ---

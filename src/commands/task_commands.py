@@ -5368,9 +5368,14 @@ class TaskCommandsMixin:
         # route filter depends on the project's router readiness (§9.1).
         from src.routing.readiness import orchestrator_router_ready
 
+        from src.integration.delivery_observer import git_prerequisite_mode
+
         reasons.extend(await self.db.claim_frontier_exclusions(
             str(task_id),
             router_ready=await orchestrator_router_ready(self.orchestrator, task.project_id),
+            hierarchy_mode=await git_prerequisite_mode(
+                self.db, await self.db.get_project(task.project_id)
+            ),
         ))
 
         from src.integration.admission import observe_admission

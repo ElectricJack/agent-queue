@@ -288,10 +288,12 @@ class PoolsMixin:
             # Demand is claimable work only (mandatory routing §9.1): an
             # unrouted task is demand for no pool, and neither is a legacy
             # one once the project's router is ready.
+            from src.integration.delivery_observer import git_prerequisite_mode
             ready_by_profile = await self.db.count_ready_by_profile(
                 project.id,
                 allowed_task_ids=allowed,
                 router_ready=project.id in ready_projects,
+                hierarchy_mode=await git_prerequisite_mode(self.db, project),
             )
             workspace_capacity = await self.db.count_available_workspaces(
                 project.id,
