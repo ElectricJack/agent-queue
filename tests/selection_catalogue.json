@@ -1417,7 +1417,7 @@
       ]
     }
   },
-  "digest": "sha256:435aab5fb6069db39e6cbb84cac25dfed3fb601ac5ed7718e44e24aad76edaed",
+  "digest": "sha256:8a696ede0171b928100246f05c33d28c14ea87974ff4bafcc5ece15562840936",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3915,7 +3915,9 @@
         "command-dispatch"
       ],
       "default_arm": true,
-      "imports": [],
+      "imports": [
+        "src.git.github_cli"
+      ],
       "markers": [
         "parametrize"
       ],
@@ -6472,6 +6474,7 @@
         "src.git.github",
         "src.git.github_app",
         "src.git.github_auth",
+        "src.git.github_cli",
         "src.git.github_contracts",
         "src.integration.ci"
       ],
@@ -6548,7 +6551,8 @@
         "src.git.github_contracts"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": ""
     },
