@@ -4059,6 +4059,9 @@
         760
       ]
     },
+    "src/database/queries/task_queries.py::TaskQueryMixin._release_stopped_slot_reset_claim": {
+      "reason": "Row-local stopped-writer and retained branch-owner fence shared by slot-reset claim recovery; classifies ordinary claim ownership, never a ref or integration lifecycle transition."
+    },
     "src/database/queries/task_queries.py::TaskQueryMixin._resume_locked": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -12876,6 +12879,15 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
+    "src/database/queries/task_queries.py::TaskQueryMixin._release_stopped_slot_reset_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 973,
+      "owner": "TaskQueryMixin._release_stopped_slot_reset_claim",
+      "call": "delete",
+      "owner_fingerprint": "2390e3c6e9f20e2c63615dd8429e6148c0451a6e2f06388d9fabc263b91a524c",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary claim-ownership marker cleanup for a claim whose every holder session is proved stopped with matching claim epoch, instance token and desired state, and whose workspace and branch ownership are already released. Metadata key: 'claimed_by_session'; contains no remote OIDs, publication intent or ref replay authority."
+    },
     "src/database/queries/task_queries.py::TaskQueryMixin._resume_locked::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 1036,
       "owner": "TaskQueryMixin._resume_locked",
@@ -12895,13 +12907,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin.resume_task::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 878,
+      "line": 991,
       "owner": "TaskQueryMixin.resume_task",
       "call": "delete",
-      "owner_fingerprint": "4b4b788830311c178a780d686c97d9a1abb3c3af720421d71892bc00f1f68673",
+      "owner_fingerprint": "5c38788248a432e1f59e1cac3b2f4611f202c9dce5c9cda3fe7627dc9595aad9",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary preparation-backoff and attention cleanup when a slot-reset claim is retried; the shared stopped-writer fence is taken first and the status change goes through the ordinary transition. Metadata keys: 'claim_prepare_backoff_until', 'claim_prepare_backoff_attempts', 'needs_attention'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin.set_task_meta::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
       "line": 2177,
@@ -13604,6 +13616,15 @@
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/train_sources.py::EpicCompletions.settle::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "line": 638,
+      "owner": "EpicCompletions.settle",
+      "call": "insert",
+      "owner_fingerprint": "3bc2ed959ce273224a8e24202c625e895b4f93e1ec141f7574d72f9a16f58b9d",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Current-generation pointer written under the project hierarchy lock in the same transaction as the immutable collected-epic completion record it names, after readiness is re-verified under that lock. Metadata key: DEVELOPMENT_COMPLETION_ID_KEY; a completion identity only, with no ref, PR or publication intent."
     },
     "src/integration/writers.py::WriterPrimitives._journal_on::d6fd9757273da627a3f0f7f83b6e42a4964f4c99601f882c41267dd01981a676": {
       "line": 390,

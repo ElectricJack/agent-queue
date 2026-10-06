@@ -5130,6 +5130,9 @@
         760
       ]
     },
+    "src/database/queries/task_queries.py::TaskQueryMixin._release_stopped_slot_reset_claim": {
+      "reason": "Row-local stopped-writer and retained branch-owner fence shared by slot-reset claim recovery; classifies ordinary claim ownership, never a ref or integration lifecycle transition."
+    },
     "src/database/queries/task_queries.py::TaskQueryMixin._resume_locked": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
