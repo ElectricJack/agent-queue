@@ -8,8 +8,10 @@ import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call
 
+import asyncpg
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
+from sqlalchemy.exc import DBAPIError
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
@@ -17,9 +19,11 @@ from src.database import Database
 from src.database.tables import (
     integration_repair_stages,
     projects,
+    sessions,
     task_branch_origins,
     task_integration_checkpoints,
     task_metadata,
+    tasks,
 )
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
@@ -159,6 +163,206 @@ def scoped(handler, sid):
         "elevated": False,
     }
     return handler
+
+
+async def ordinary_pool_repair(handler, db, tmp_path):
+    from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
+    from src.integration.lock import BranchLock
+    from src.integration.repair import OrdinaryRepairService
+
+    await db.create_repo(RepoConfig(id="repo", project_id=PROJECT_ID,
+                                   source_type=RepoSourceType.LINK, source_path=str(tmp_path)))
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="train",
+                            integration_repository_id="repo")
+    store = BatchStore(db)
+    await store.freeze(Batch("repair-batch", PROJECT_ID, "repo", "refs/heads/main"),
+                       (BatchMember("source", "b" * 40, "a" * 40),),
+                       trees={"source": "c" * 40})
+    service = OrdinaryRepairService(db)
+    ref = candidate_ref("repair-batch")
+    allocated = await service.allocate("repair-batch", target_ref=ref, head_sha="b" * 40,
+                                       authorize=AsyncMock(return_value=True))
+    task_id = allocated["task_id"]
+    await db.update_task(task_id, status=TaskStatus.READY, profile_id="worker",
+                         intelligence_class="standard-medium", route_source=route_source_for("worker"))
+    sid, wd = await pool_session(db, tmp_path)
+    handler.orchestrator._hierarchy_repair_start = AsyncMock(return_value="b" * 40)
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.return_value = (
+        ref.removeprefix("refs/heads/")
+    )
+    locks = BranchLock(db)
+    target = BranchKey(repository_id="repo", branch=ref)
+    return SimpleNamespace(handler=scoped(handler, sid), sid=sid, wd=wd, task_id=task_id,
+                           service=service, locks=locks, target=target, store=store,
+                           lease=await locks.get(target))
+
+
+@pytest.mark.parametrize("error", [
+    asyncpg.DeadlockDetectedError("deadlock detected"),
+    asyncpg.SerializationError("could not serialize access"),
+    DBAPIError("activation", {}, asyncpg.DeadlockDetectedError("deadlock detected")),
+])
+async def test_repair_prepare_retries_rolled_back_database_conflict(
+    handler, db, tmp_path, monkeypatch, error,
+):
+    env = await ordinary_pool_repair(handler, db, tmp_path)
+    activate = db.activate_claim
+    calls = 0
+
+    async def activate_with_conflict(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        conn = kwargs["conn"]
+        if calls == 1:
+            # A real SQL write inside preparation must disappear before retry.
+            await conn.execute(task_metadata.insert().values(
+                task_id=env.task_id, key="rolled_back_prepare", value="true",
+            ))
+            raise error
+        assert await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == env.task_id,
+            task_metadata.c.key == "rolled_back_prepare",
+        )) is None
+        return await activate(*args, **kwargs)
+
+    monkeypatch.setattr(db, "activate_claim", activate_with_conflict)
+    result = await env.handler._cmd_task_claim({"next": True})
+
+    assert result["result"] == "claimed", result
+    assert calls == 2
+    assert result["claim_epoch"] == 1
+    lease = await env.locks.get(env.target)
+    assert (lease.holder, lease.fence) == (env.task_id, env.lease.fence)
+    assert (await env.store.get("repair-batch")).repair_attempt_count == 1
+    assert await db.get_task_meta(env.task_id, "needs_attention") is None
+    assert await db.get_task_meta(env.task_id, "slot_reset_failure") is None
+    assert "pool.prepare_failed" not in handler.orchestrator.bus.seen_event_types
+    assert json.loads((env.wd / ".aq" / "claim.json").read_text())["claim_epoch"] == 1
+
+
+async def test_repair_prepare_contention_is_bounded_and_resumes_same_claim(
+    handler, db, tmp_path, monkeypatch,
+):
+    env = await ordinary_pool_repair(handler, db, tmp_path)
+    activate = db.activate_claim
+    injected = AsyncMock(side_effect=[
+        asyncpg.DeadlockDetectedError("deadlock detected") for _ in range(3)
+    ])
+    monkeypatch.setattr(db, "activate_claim", injected)
+    result = await env.handler._cmd_task_claim({"next": True})
+    assert result["result"] == "no_ready_work", result
+    assert injected.await_count == 3
+    held = await db.get_session(env.sid)
+    assert (held.claim_phase, held.last_claim_epoch, held.claims) == ("preparing", 1, 0)
+    assert (await env.locks.get(env.target)).fence == env.lease.fence
+    assert await db.get_task_meta(env.task_id, "needs_attention") is None
+    assert not (env.wd / ".aq" / "claim.json").exists()
+
+    monkeypatch.setattr(db, "activate_claim", activate)
+    resumed = await env.handler._cmd_task_claim({"next": True})
+    assert (resumed["result"], resumed["claim_epoch"]) == ("claimed", 1)
+    assert (await env.locks.get(env.target)).fence == env.lease.fence
+    assert (await env.store.get("repair-batch")).repair_attempt_count == 1
+
+
+async def test_conflict_after_activation_does_not_retry_preparation(handler, db, tmp_path):
+    env = await ordinary_pool_repair(handler, db, tmp_path)
+    handler.orchestrator._emit_task_event = AsyncMock(
+        side_effect=asyncpg.DeadlockDetectedError("event write")
+    )
+    result = await env.handler._cmd_task_claim({"next": True})
+    assert (result["result"], result["claim_epoch"]) == ("claimed", 1)
+    assert (await db.get_session(env.sid)).claims == 1
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_awaited_once()
+    assert (await env.locks.get(env.target)).fence == env.lease.fence
+
+
+async def test_real_repair_prepare_error_keeps_attention_and_train_restores_lease(
+    handler, db, tmp_path,
+):
+    env = await ordinary_pool_repair(handler, db, tmp_path)
+    reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+    reset.side_effect = RuntimeError("checkout unavailable")
+    failed = await env.handler._cmd_task_claim({"next": True})
+    assert failed["result"] == "prepare_failed"
+    assert await db.get_task_meta(env.task_id, "needs_attention") == "integration_prepare_failed"
+    assert (await db.get_task(env.task_id)).status is TaskStatus.READY
+    assert (await env.locks.get(env.target)).holder is None
+    assert "frontier_origin_not_materialized" in {
+        item["code"] for item in await db.claim_frontier_exclusions(env.task_id)
+    }
+
+    restored = await env.service.allocate(
+        "repair-batch", target_ref=env.target.branch, head_sha="b" * 40,
+        authorize=AsyncMock(return_value=True),
+    )
+    assert (restored["outcome"], restored["task_id"], restored["attempt_count"]) == (
+        "exists", env.task_id, 1,
+    )
+    await db.set_task_meta(env.task_id, "claim_prepare_backoff_until", time.time() - 1)
+    assert await db.claim_frontier_exclusions(env.task_id) == []
+    reset.side_effect = None
+    resumed = await env.handler._cmd_task_claim({"next": True})
+    assert resumed["result"] == "claimed", resumed
+    assert await db.get_task_meta(env.task_id, "needs_attention") is None
+
+
+@pytest.mark.parametrize("held_row", ["session", "task"])
+async def test_managed_prepare_does_not_hold_ref_while_waiting_for_activation(
+    handler, db, tmp_path, monkeypatch, held_row,
+):
+    """Interleave heartbeat/recovery with the final activation transaction."""
+    env = await ordinary_pool_repair(handler, db, tmp_path)
+    attach = BranchOwnership.attach
+    task_locked, start_activation = asyncio.Event(), asyncio.Event()
+
+    async def pause_after_attachment(self, *args, **kwargs):
+        result = await attach(self, *args, **kwargs)
+        start_activation.set()
+        await task_locked.wait()
+        return result
+
+    monkeypatch.setattr(BranchOwnership, "attach", pause_after_attachment)
+
+    async def recover():
+        await start_activation.wait()
+        async with db.immediate() as conn:
+            table, row_id = (sessions, env.sid) if held_row == "session" else (tasks, env.task_id)
+            await conn.execute(select(table.c.id).where(
+                table.c.id == row_id,
+            ).with_for_update())
+            task_locked.set()
+            # Let preparation wait for the task. Recovery must still be able
+            # to acquire the ref, with no deadlock/retry necessary.
+            await asyncio.sleep(0.05)
+            await env.locks.lock_on(conn, env.target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr("src.commands.claim_commands._PREPARATION_RETRY_DELAYS", ())
+        async with asyncio.timeout(5):
+            claimed, _ = await asyncio.gather(
+                env.handler._cmd_task_claim({"next": True}), recover(),
+            )
+    assert claimed["result"] == "claimed", claimed
+
+
+async def test_managed_prepare_allows_reset_salvage_on_its_own_connection(handler, db, tmp_path):
+    env = await ordinary_pool_repair(handler, db, tmp_path)
+
+    async def reset_with_salvage(*args, **kwargs):
+        # The real reset archives dirty/unpushed work through independent DB
+        # transactions. Activation's task lock must allow their FK checks.
+        await db.add_task_context(env.task_id, type="worktree_salvage", label="dirty", content="patch")
+        await db.set_task_meta(env.task_id, "unmerged_branch", env.target.branch)
+        return env.target.branch.removeprefix("refs/heads/")
+
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.side_effect = (
+        reset_with_salvage
+    )
+    async with asyncio.timeout(5):
+        result = await env.handler._cmd_task_claim({"next": True})
+    assert result["result"] == "claimed", result
+    assert await db.get_task_meta(env.task_id, "unmerged_branch") == env.target.branch
 
 
 @pytest.mark.parametrize("delete_ref", [None, "reserved", "attached"])
