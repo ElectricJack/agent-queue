@@ -243,18 +243,29 @@ It is remote code execution by design, so it is **off by default**:
 dashboard:
   host_shell:
     enabled: true
-    max_shells: 4   # 1-32
+    max_shells: 4        # 1-32
+    allow_remote: false  # also admit dashboards opened from another machine
 ```
 
-The flag is read per request; no restart is needed.
+The flags are read per request; no restart is needed.
 
-- **Who may use it.** Only the local operator: a loopback peer with no bearer token, on a
-  loopback Host or through the dashboard server's operator verdict. Any bearer token is
-  refused, so workers and the supervisor can never open, attach to or type into a host
-  shell, and neither can a non-operator dashboard viewer or a DNS-rebound Host. A
-  daemon with `api_auth.require_session_token: true` refuses host shells too.
+- **Who may use it.** The local operator: a loopback peer with no bearer token, on a
+  loopback Host or through the dashboard server's operator verdict (a loopback browser,
+  or a tailnet browser on an `api_auth.trusted_dashboard_origins` origin). With
+  `allow_remote: true`, also any browser the dashboard server proxied from another
+  machine, such as a LAN browser on a trusted origin, which the server stamps as a
+  non-operator viewer. The dashboard server's Host and Origin gates still apply, and a
+  peer that reaches the daemon port directly is never a dashboard viewer.
+- **Never a bearer token.** Any bearer token is refused whatever `allow_remote` says, so
+  workers and the supervisor can never open, attach to or type into a host shell, and
+  the dashboard server refuses a bearer token from a non-loopback peer outright. A
+  DNS-rebound Host is refused, and a daemon with `api_auth.require_session_token: true`
+  refuses host shells too.
 - **Audit.** Every open and close is logged (`aq.audit.host_shell`) and recorded as a
-  `host_shell.opened` / `host_shell.closed` event with the caller's identity.
+  `host_shell.opened` / `host_shell.closed` event with the caller's identity:
+  `local-operator (…)`, `local-operator via dashboard (peer …)` or
+  `remote-dashboard-viewer (peer …)`, the peer being the browser's real address as the
+  dashboard server saw it.
 - **Environment.** The shell starts from `env -i` with only `HOME`, `USER`, `LOGNAME`,
   `PATH`, locale and `TZ`, so no `AQ_*` agent or session token, DSN or daemon secret
   reaches it; tmux global variables are also removed for the session's later windows.
