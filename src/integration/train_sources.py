@@ -33,8 +33,8 @@ from src.database.tables import (
     projects,
     repos,
     task_branch_origins,
-    task_dependencies,
     task_completion_records,
+    task_dependencies,
     task_metadata,
     tasks,
 )
