@@ -201,10 +201,14 @@ aq start
 ```
 
 Backup may run with the daemon live: PostgreSQL takes a consistent snapshot.
-Restore replaces the objects held in the archive and runs in one transaction,
-so a failed restore rolls back its cleanup and writes. It always takes a fresh
-recovery archive before invoking `pg_restore --clean --if-exists --no-owner
---no-acl --single-transaction --exit-on-error`. A recovery archive retains the
+Restore drops and recreates the `public` application schema, including tables
+and columns added after the input archive. It renders the custom archive with
+`pg_restore --no-owner --no-acl`, then runs schema replacement and the archived
+SQL together with `psql --single-transaction --set=ON_ERROR_STOP=1`. A failed
+restore rolls back both cleanup and writes. It always takes a fresh recovery
+archive before replacing the schema. Rendering uses private temporary files
+and requires disk space for two copies of the expanded SQL. Database clients
+have the same 1,800-second timeout as the updater's backup. A recovery archive retains the
 state immediately before the attempted restore, including rows newer than the
 input dump.
 
@@ -225,7 +229,18 @@ acknowledgement cursor and every other archived row return to the dump's state.
 
 Restore refuses a live daemon unless `--force` is explicit, and refuses agent
 sessions that survive the daemon stopping even with `--force`. Both the database
-session records and the configured tmux socket are checked. A daemon start lock
+session records and the configured tmux socket are checked, including task
+(`s-`), named (`n-`) and pool (`p-`) sessions. `aq stop` kills those tmux
+sessions after stopping the daemon; it can leave records with `ended_at=NULL`.
+Those stale rows are accepted only after a successful tmux probe proves no AQ
+session remains on the configured socket (a missing server also proves this).
+No database edits or restart are needed: run `aq stop`, verify
+`tmux -L <sessions.tmux_socket> list-sessions`, then rerun restore. Missing tmux
+with apparently live rows refuses as `restore_sessions_unverified`; install
+matching tmux tools and verify the socket. Probe failures and live sessions
+remain refusals even with `--force`. A missing target refuses as
+`restore_target_unavailable`; create/configure the intended recovery database
+before retrying. A daemon start lock
 is held through preflight, recovery backup and restore to keep `aq start` and
 the watchdog from racing the operation. Worker sessions and session tokens
 cannot invoke backup or restore. These commands are local, so recovery works
@@ -263,7 +278,14 @@ aq doctor --check db.alembic_orphan          # which branch and file define it
 aq doctor --check db.alembic_orphan --fix    # run that revision's own downgrade()
 ```
 
-The check searches every `refs/remotes` and `refs/heads` for the file declaring
+When `database.schema_ahead_migrations` is configured for rollback, this check
+uses the same retained-source proof and distance limit as startup. A proven
+additive ahead schema is healthy; refused or missing evidence stays an error.
+Neither case offers a fix, and even an explicit `--fix` with the stamp opt-in
+never downgrades or stamps that schema. Deploy matching code or repair the
+retained evidence instead. The direct plugin client uses this startup policy too.
+
+Without retained migrations, the check searches every `refs/remotes` and `refs/heads` for the file declaring
 the unknown revision, so the answer is a branch name and a path rather than a
 bare hex id. `--fix` borrows that file into a private temporary directory that
 Alembic reads alongside `migrations/versions/` for exactly one `alembic

@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -19,6 +20,8 @@ from pathlib import Path
 
 from sqlalchemy import text
 from sqlalchemy.engine import URL, make_url
+
+from src.install.update import BACKUP_TIMEOUT
 
 
 class BackupError(RuntimeError):
@@ -31,7 +34,7 @@ async def _run(
     env: dict[str, str] | None = None,
     source: Path | None = None,
     destination: Path | None = None,
-    timeout: float = 300,
+    timeout: float = BACKUP_TIMEOUT,
 ) -> bytes:
     with ExitStack() as stack:
         stdin = stack.enter_context(source.open("rb")) if source else asyncio.subprocess.DEVNULL
@@ -61,7 +64,7 @@ async def _run(
 
 @dataclass
 class PostgresClients:
-    """A matched pg_dump/pg_restore pair, local or on the serving container."""
+    """Matched pg_dump, pg_restore and psql clients, local or on the serving container."""
 
     prefix: tuple[str, ...]
     dump: str
@@ -70,7 +73,11 @@ class PostgresClients:
     env: dict[str, str]
 
     async def run(self, tool: str, *args: str, **kwargs) -> bytes:
-        executable = self.dump if tool == "pg_dump" else self.restore
+        executable = {
+            "pg_dump": self.dump,
+            "pg_restore": self.restore,
+            "psql": str(Path(self.restore).with_name("psql")),
+        }[tool]
         return await _run([*self.prefix, executable, *args], env=self.env, **kwargs)
 
 
@@ -104,7 +111,10 @@ async def postgres_clients(database_url: str) -> PostgresClients:
     restore = str(Path(dump).with_name("pg_restore")) if dump else None
     local = (
         PostgresClients((), dump, restore, ("--dbname", env["PGDATABASE"]), env)
-        if dump and restore and Path(restore).is_file()
+        if dump
+        and restore
+        and Path(restore).is_file()
+        and Path(restore).with_name("psql").is_file()
         else None
     )
 
@@ -257,22 +267,42 @@ async def backup_database(clients: PostgresClients, destination: Path) -> Archiv
 
 
 async def restore_database(clients: PostgresClients, source: Path) -> None:
-    await clients.run(
-        "pg_restore",
-        *clients.connection,
-        "--clean",
-        "--if-exists",
-        "--no-owner",
-        "--no-acl",
-        "--single-transaction",
-        "--exit-on-error",
-        source=source,
-    )
+    """Replace public, including objects absent from the older archive, atomically.
+
+    pg_restore --clean only removes archived objects. Render the archive first
+    and execute its SQL after schema replacement in the same psql transaction;
+    an archive or SQL error leaves the target untouched. SQL stays on disk with
+    private permissions rather than buffering a whole database in memory.
+    """
+    with tempfile.TemporaryDirectory(prefix="aq-restore-") as directory:
+        sql = Path(directory) / "archive.sql"
+        await clients.run(
+            "pg_restore", "--no-owner", "--no-acl", "--file=-", source=source, destination=sql
+        )
+        script = Path(directory) / "restore.sql"
+
+        def prepare() -> None:
+            with script.open("wb") as target, sql.open("rb") as archive:
+                target.write(b"DROP SCHEMA IF EXISTS public CASCADE;\nCREATE SCHEMA public;\n")
+                shutil.copyfileobj(archive, target)
+
+        await asyncio.to_thread(prepare)
+        await clients.run(
+            "psql",
+            *clients.connection,
+            "--no-psqlrc",
+            "--quiet",
+            "--single-transaction",
+            "--set=ON_ERROR_STOP=1",
+            "--file=-",
+            source=script,
+        )
 
 
 async def assert_sessions_ended(config, engine) -> None:
     """Stored status alone is insufficient: sessions survive daemon restarts."""
     socket = config.sessions.tmux_socket or "aq"
+    tmux_verified = False
     if shutil.which("tmux"):
         try:
             names = (
@@ -285,14 +315,18 @@ async def assert_sessions_ended(config, engine) -> None:
                 .splitlines()
             )
         except BackupError as exc:
-            if not any(s in str(exc) for s in ("no server running", "No such file or directory")):
+            detail = str(exc)
+            if detail.startswith("backup_client_unavailable:") or not any(
+                s in detail for s in ("no server running", "No such file or directory")
+            ):
                 raise
             names = []
-        live = [name for name in names if name.startswith(("s-", "n-"))]
+        live = [name for name in names if name.startswith(("s-", "n-", "p-"))]
         if live:
             raise BackupError(
                 f"restore_sessions_live: end every agent session first: {', '.join(live)}"
             )
+        tmux_verified = True
     async with engine.connect() as conn:
         exists = await conn.scalar(text("SELECT to_regclass('public.sessions')"))
         if exists:
@@ -307,10 +341,15 @@ async def assert_sessions_ended(config, engine) -> None:
                 .scalars()
                 .all()
             )
-            if live:
+            if live and not tmux_verified:
                 raise BackupError(
-                    f"restore_sessions_live: sessions have not ended: {', '.join(live)}"
+                    f"restore_sessions_unverified: sessions have not ended: {', '.join(live)}; "
+                    "install tmux and verify the configured socket after aq stop"
                 )
+            # aq stop kills tmux after the daemon exits, so its records can
+            # retain ended_at=NULL. Every agent is a tmux session; a successful
+            # socket probe proving no live agents is sufficient without editing
+            # those historical rows or restarting a daemon before recovery.
 
 
 # The names in the design map to these persisted tables. Include changes to

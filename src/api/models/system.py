@@ -188,6 +188,11 @@ class UpdateAndRestartResponse(BaseModel):
     message: str = ""
     pull_output: str = ""
     reason: str = ""
+    waited_for_tasks: bool = False
+    pid: int | None = None
+    log: str | None = None
+    selector: str | None = None
+    commit: str | None = None
 
 
 class RunCommandResponse(BaseModel):

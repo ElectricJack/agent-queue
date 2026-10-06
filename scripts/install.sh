@@ -251,16 +251,49 @@ from pathlib import Path
 
 state_dir, selector, tag_oid, commit = sys.argv[1:]
 path = Path(state_dir) / "deploy.json"
-# An existing install's updater already wrote its previous_commit and timestamp.
-if not path.exists():
+# Preserve an updater's matching receipt; a reinstall selecting different code
+# must replace a stale receipt so rollback points at the deployment it replaced.
+try:
+    previous = json.loads(path.read_text()) if path.exists() else None
+except (OSError, ValueError) as error:
+    raise SystemExit(f"Cannot read deployment receipt {path}: {error}")
+if (not isinstance(previous, dict) or previous.get("commit") != commit
+        or previous.get("selector") != selector or previous.get("tag_oid") != tag_oid):
     path.parent.mkdir(parents=True, exist_ok=True)
-    record = dict(selector=selector, tag=selector, tag_oid=tag_oid, commit=commit, previous_commit=None,
+    record = dict(selector=selector, tag=selector, tag_oid=tag_oid, commit=commit,
+                  previous_commit=previous.get("commit") if isinstance(previous, dict) else None,
                   installed_at=datetime.now(timezone.utc).isoformat(), kind="release")
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
 PY
         printf 'Installing release %s at %s.\n' "$selected_tag" "$commit"
+    else
+        state_dir="${AQ_INSTALL_STATE_DIR:-${AQ_HOME:-$HOME/.agent-queue}}"
+        if [[ -f "$state_dir/deploy.json" ]]; then
+            commit="$(git -C "$checkout_dir" rev-parse HEAD)"
+            selector="${selected_ref:-$(git -C "$checkout_dir" branch --show-current)}"
+            "$python_bin" - "$state_dir" "${selector:-$commit}" "$commit" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+state_dir, selector, commit = sys.argv[1:]
+path = Path(state_dir) / "deploy.json"
+try:
+    previous = json.loads(path.read_text())
+except (OSError, ValueError) as error:
+    raise SystemExit(f"Cannot read deployment receipt {path}: {error}")
+if not isinstance(previous, dict) or previous.get("commit") != commit:
+    record = dict(selector=selector, tag=None, tag_oid=None, commit=commit,
+                  previous_commit=previous.get("commit") if isinstance(previous, dict) else None,
+                  installed_at=datetime.now(timezone.utc).isoformat(), kind="unreleased")
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+PY
+        fi
     fi
 
     if [[ ! -x "$checkout_dir/.venv/bin/python" ]]; then

@@ -1,5 +1,6 @@
 """Unit tests for system command handlers."""
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -87,19 +88,17 @@ class TestUpdateAndRestart:
             planning.append((checkout, kwargs))
             return UpdatePlan(checkout, "", "v0.2.0", "a" * 40, "b" * 40, False)
 
-        launch = AsyncMock(return_value=MagicMock(pid=42))
+        launch = AsyncMock(return_value=MagicMock(pid=42, wait=AsyncMock(return_value=10)))
         monkeypatch.setattr(update, "plan_update", fake_plan)
         monkeypatch.setattr(system_commands.asyncio, "create_subprocess_exec", launch)
         handler.orchestrator._emit_text_notify = AsyncMock()
 
         result = await handler._cmd_update_and_restart({"reason": "test update"})
 
-        assert planning == [(repo_root, dict(
-            state_dir=tmp_path, tag_glob="v*", promotion_target="production"
-        ))]
-        assert launch.call_args.args == (
-            sys.executable, "-m", "src.cli.app", "update", "--yes"
-        )
+        assert planning == [
+            (repo_root, dict(state_dir=tmp_path, tag_glob="v*", promotion_target="production"))
+        ]
+        assert launch.call_args.args == (sys.executable, "-m", "src.cli.app", "update", "--yes")
         assert launch.call_args.kwargs["start_new_session"] is True
         assert launch.call_args.kwargs["cwd"] == str(repo_root)
         assert launch.call_args.kwargs["env"]["AQ_INSTALL_STATE_DIR"] == str(tmp_path)
@@ -114,6 +113,8 @@ class TestUpdateAndRestart:
         from src.commands import system_commands
         from src.install import update
         from src.install.update import UpdateRefused
+
+        handler.config.deploy.tag_glob = "v*"
 
         def refuse(*args, **kwargs):
             raise UpdateRefused("deploy_tag_invalid: lightweight tag", "Select an annotated tag.")
@@ -133,13 +134,168 @@ class TestUpdateAndRestart:
         from src.install import update
         from src.install.update import UpdatePlan
 
-        monkeypatch.setattr(update, "plan_update", lambda checkout, **kwargs:
-                            UpdatePlan(checkout, "", "v0.2.0", "a" * 40, "a" * 40, False))
+        handler.config.deploy.tag_glob = "v*"
+        monkeypatch.setattr(
+            update,
+            "plan_update",
+            lambda checkout, **kwargs: UpdatePlan(
+                checkout, "", "v0.2.0", "a" * 40, "a" * 40, False
+            ),
+        )
         launch = AsyncMock()
         monkeypatch.setattr(system_commands.asyncio, "create_subprocess_exec", launch)
         result = await handler._cmd_update_and_restart({})
         assert result["status"] == "up_to_date"
         launch.assert_not_awaited()
+
+    @pytest.mark.parametrize("pull_output", ["Already up to date.", "Local commits retained."])
+    async def test_without_selector_preserves_pull_and_restart(
+        self, handler, monkeypatch, pull_output
+    ):
+        from src.commands import system_commands
+        from src.install import update
+
+        monkeypatch.setattr(
+            update, "plan_update", lambda *a, **k: pytest.fail("selector is opt-in")
+        )
+        run = AsyncMock(side_effect=[(0, pull_output, ""), (0, "", ""), (0, "", "")])
+        monkeypatch.setattr(system_commands, "_run_subprocess", run)
+        kill = MagicMock()
+        monkeypatch.setattr(system_commands.os, "kill", kill)
+        handler.orchestrator._emit_text_notify = AsyncMock()
+        result = await handler._cmd_update_and_restart({})
+        assert result["status"] == "updating" and result["pull_output"] == pull_output
+        assert run.await_args_list[0].args == ("git", "pull", "--ff-only")
+        assert run.await_count == 3
+        assert handler.orchestrator._restart_requested
+        kill.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "stage,error", [(0, "git pull"), (1, "pip install"), (2, "TypeScript client")]
+    )
+    async def test_legacy_update_failures_do_not_restart_or_pause(
+        self, handler, monkeypatch, stage, error
+    ):
+        from src.commands import system_commands
+
+        run = AsyncMock(side_effect=[(0, "", "")] * stage + [(1, "", "fixture failure")])
+        monkeypatch.setattr(system_commands, "_run_subprocess", run)
+        kill = MagicMock()
+        monkeypatch.setattr(system_commands.os, "kill", kill)
+        result = await handler._cmd_update_and_restart({"wait_for_tasks": True})
+        assert error in result["error"]
+        assert not handler.orchestrator._paused
+        kill.assert_not_called()
+
+    @pytest.mark.parametrize("failure", ["wait", "cancel", "signal"])
+    @pytest.mark.parametrize("was_paused", [False, True])
+    async def test_interrupted_legacy_update_restores_prior_scheduling(
+        self, handler, monkeypatch, failure, was_paused
+    ):
+        from src.commands import system_commands
+
+        monkeypatch.setattr(system_commands, "_run_subprocess", AsyncMock(return_value=(0, "", "")))
+        orch = handler.orchestrator
+        orch._paused = was_paused
+        orch._running_tasks = {"fixture": object()}
+        orch._emit_text_notify = AsyncMock()
+        orch.wait_for_running_tasks = AsyncMock()
+        exception = asyncio.CancelledError if failure == "cancel" else RuntimeError
+        kill = MagicMock()
+        if failure == "signal":
+            kill.side_effect = exception("fixture signal failure")
+        else:
+            orch.wait_for_running_tasks.side_effect = exception("fixture wait failure")
+        monkeypatch.setattr(system_commands.os, "kill", kill)
+        with pytest.raises(exception):
+            await handler._cmd_update_and_restart({"wait_for_tasks": True})
+        assert orch._paused is was_paused
+        assert orch._restart_requested is False
+
+    @pytest.mark.parametrize("exit_code", [0, 10, 20, -15])
+    @pytest.mark.parametrize("was_paused", [False, True])
+    async def test_exited_release_updater_restores_prior_scheduling(
+        self, handler, monkeypatch, exit_code, was_paused
+    ):
+        from src.commands import system_commands
+        from src.install import update
+        from src.install.update import UpdatePlan
+
+        handler.config.deploy.tag_glob = "v*"
+        monkeypatch.setattr(
+            update,
+            "plan_update",
+            lambda checkout, **kwargs: UpdatePlan(
+                checkout, "", "v0.2.0", "a" * 40, "b" * 40, False
+            ),
+        )
+        finished = asyncio.get_running_loop().create_future()
+        process = MagicMock(pid=42, wait=AsyncMock(side_effect=lambda: None))
+
+        async def wait():
+            return await finished
+
+        process.wait = wait
+        monkeypatch.setattr(
+            system_commands.asyncio, "create_subprocess_exec", AsyncMock(return_value=process)
+        )
+        orch = handler.orchestrator
+        orch._paused = was_paused
+        orch._running_tasks = {"fixture": object()}
+        orch.wait_for_running_tasks = AsyncMock()
+        orch._emit_text_notify = AsyncMock()
+        result = await handler._cmd_update_and_restart({"wait_for_tasks": True})
+        assert result["status"] == "updating" and orch._paused
+        await asyncio.sleep(0)
+        finished.set_result(exit_code)
+        await asyncio.sleep(0)
+        assert orch._paused is was_paused
+
+    @pytest.mark.parametrize("failure", ["launch", "wait", "cancel"])
+    async def test_release_update_prelaunch_failure_restores_scheduling(
+        self, handler, monkeypatch, failure
+    ):
+        from src.commands import system_commands
+        from src.install import update
+        from src.install.update import UpdatePlan
+
+        handler.config.deploy.tag_glob = "v*"
+        monkeypatch.setattr(
+            update,
+            "plan_update",
+            lambda checkout, **kwargs: UpdatePlan(
+                checkout, "", "v0.2.0", "a" * 40, "b" * 40, False
+            ),
+        )
+        orch = handler.orchestrator
+        orch._running_tasks = {"fixture": object()}
+        orch._emit_text_notify = AsyncMock()
+        orch.wait_for_running_tasks = AsyncMock()
+        launch = AsyncMock(side_effect=OSError("fixture launch failure"))
+        monkeypatch.setattr(system_commands.asyncio, "create_subprocess_exec", launch)
+        if failure == "launch":
+            result = await handler._cmd_update_and_restart({"wait_for_tasks": True})
+            assert not result["success"]
+        else:
+            exception = RuntimeError if failure == "wait" else asyncio.CancelledError
+            orch.wait_for_running_tasks.side_effect = exception("fixture wait failure")
+            with pytest.raises(exception):
+                await handler._cmd_update_and_restart({"wait_for_tasks": True})
+            launch.assert_not_awaited()
+        assert not orch._paused
+
+    def test_typed_response_preserves_release_receipt(self):
+        from src.api.models.system import UpdateAndRestartResponse
+
+        receipt = dict(
+            pid=42,
+            log="/fixture/update.log",
+            selector="v0.2.0",
+            commit="b" * 40,
+            waited_for_tasks=True,
+        )
+        response = UpdateAndRestartResponse(**receipt).model_dump()
+        assert all(response[key] == value for key, value in receipt.items())
 
 
 class TestRunCommand:
