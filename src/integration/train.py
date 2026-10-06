@@ -155,6 +155,7 @@ class RepairAllocator(Protocol):
         green_sha: str | None = None, held: bool = False, review_rejected: bool = False,
         authorize: Callable[[], Awaitable[bool]] | None = None,
         brief: str = "",
+        completion_blocker: Callable[[str, str], Awaitable[dict | None]] | None = None,
     ) -> dict:
         """File (or find) the ordinary repair task for a batch's candidate ref.
 
@@ -554,7 +555,13 @@ class IntegrationTrain:
             await self.batches.settle(batch, observation)
             return self._visit(target, "delivered", batch, observation)
         if observation.state == "conflict":
-            return await self._repair(target, lane, batch, members, observation, None)
+            async def completion_blocker(task_id, starting_sha):
+                return await lane.service.repair_completion_blocker(
+                    batch, task_id, starting_sha, snapshot,
+                )
+
+            return await self._repair(target, lane, batch, members, observation, None,
+                                      completion_blocker=completion_blocker)
         if observation.state != "testing" or not observation.candidate_sha:
             # held, moved, source_moved, unknown, no_regenerator: the next visit
             # observes again. None of these is a member's content conflict, so
@@ -630,6 +637,7 @@ class IntegrationTrain:
         self, target: TrainTarget, lane: TrainLane, batch: Batch,
         members: tuple[BatchMember, ...], observation: BatchObservation,
         result: ChecksResult | None, brief: str = "",
+        completion_blocker: Callable[[str, str], Awaitable[dict | None]] | None = None,
     ) -> TrainVisit:
         # The repair works on the batch's candidate ref, never the target: the
         # train alone fast-forwards the target once the repaired head is green.
@@ -665,7 +673,12 @@ class IntegrationTrain:
         _progress("allocate_repair")
         repair = await self.repair.allocate(batch.id, target_ref=candidate_ref(batch.id),
                                             head_sha=head, held=batch.intent != "open",
-                                            authorize=authorize, brief=brief)
+                                            authorize=authorize, brief=brief,
+                                            completion_blocker=completion_blocker)
+        if repair.get("outcome") == "blocked":
+            return self._visit(target, "blocked", batch, replace(observation, detail={
+                **(observation.detail or {}), **repair,
+            }), result, repair=repair)
         state = "repair" if repair.get("outcome") in {"filed", "exists"} else "unknown"
         return self._visit(target, state, batch, observation, result, repair=repair)
 

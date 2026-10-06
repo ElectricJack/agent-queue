@@ -454,6 +454,158 @@ async def test_green_repaired_head_missing_a_member_never_settles_the_batch(conf
     assert git(env.ops.git.remote_path, "rev-parse", "main") == partial
 
 
+async def completed_repair_before_target_move(env, *, unchanged=False, retained=True,
+                                            moved_file="new.txt"):
+    """One ordinary repair publishes both members; main advances outside the train."""
+    from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
+    from src.integration.models import BranchKey
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+    from src.integration.repair import OrdinaryRepairService
+    from src.models import TaskStatus
+
+    left, right = env.members
+    repaired = git(env.repo.store, "commit-tree",
+                   git(env.repo.store, "rev-parse", f"{left.source_sha}^{{tree}}"),
+                   "-p", left.source_sha, "-p", right.source_sha, "-m", "Resolve both members")
+    starting = repaired if unchanged else left.source_sha
+    ref = candidate_ref(env.batch.id)
+    git(env.repo.store, "push", "origin", f"{starting}:{ref}")
+    repairs = OrdinaryRepairService(env.db)
+    first = await repairs.allocate(
+        env.batch.id, target_ref=ref, head_sha=starting,
+        authorize=lambda: env.service.repair_authorized(env.batch, env.members, starting),
+    )
+    assert first["outcome"] == "filed"
+    git(env.repo.store, "push", "origin", f"{repaired}:{ref}")
+    moved = commit(env.repo.store, {moved_file: "upstream\n"}, base=env.base)
+    if unchanged:
+        # Move before the close: an unchanged worker cannot call this head repaired.
+        git(env.repo.store, "push", "origin", f"{moved}:refs/heads/main")
+    if retained:
+        generation = "previous-repair-completion"
+        provenance = GitProvenance(env.ops.git, str(env.repo.store),
+                                   repository_url=str(env.ops.git.remote_path))
+        await provenance.write_completion(CompletedSource(
+            CompletionIdentity("p", "r", first["task_id"], generation), repaired,
+        ))
+        await env.db.set_task_meta(first["task_id"], DEVELOPMENT_COMPLETION_ID_KEY, generation)
+    await env.db.update_task(first["task_id"], status=TaskStatus.COMPLETED)
+    lease = await repairs.locks.get(BranchKey(repository_id="r", branch=ref))
+    await repairs.locks.release(lease.grant())
+    if not unchanged:
+        git(env.repo.store, "push", "origin", f"{moved}:refs/heads/main")
+    return repairs, first["task_id"], starting, repaired, moved
+
+
+@pytest.mark.parametrize("moved_file,merged_count", [("new.txt", 0), ("upstream.txt", 1)])
+async def test_conflict_after_target_move_publishes_and_briefs_the_real_partial_head(
+    conflicting_batch_env, moved_file, merged_count,
+):
+    from src.integration.train_sources import LeasedPublish
+
+    env = conflicting_batch_env
+    repairs, previous_task, _, repaired, moved = await completed_repair_before_target_move(
+        env, moved_file=moved_file,
+    )
+    env.service.publish = LeasedPublish(env.db, env.ops.git)
+    t = train(Targets(ROOT), Batches({ROOT.key: (env.batch, env.members)}), {
+        ROOT.key: TrainLane(snapshot=env.snapshot, service=env.service,
+                            checks=CandidateChecks.fixed(Checks())),
+    }, repairs)
+    visit = await t.visit(ROOT)
+    partial = visit.detail["head"]
+    assert visit.state == "repair" and visit.repair["outcome"] == "filed"
+    assert visit.repair["attempt_count"] == 2 and visit.repair["task_id"] != previous_task
+    assert visit.candidate_sha == partial != repaired
+    assert visit.detail["replaced_candidate_sha"] == repaired
+    assert len(visit.detail["members"]) == merged_count
+    assert await env.ops.is_ancestor(env.repo, moved, partial)
+    assert await env.ops.remote(env.repo, candidate_ref(env.batch.id)) == partial
+    assert await env.ops.remote(env.repo, "refs/heads/main") == moved
+    task = await env.db.get_task(visit.repair["task_id"])
+    assert f"starting head {partial}." in task.description
+    assert f"starting head {repaired}" not in task.description
+    if merged_count:
+        assert "Already merged into the starting head" in task.description
+        remaining = task.description.split("Still to merge onto the starting head")[1]
+        assert "task-a" not in remaining and "task-b" in remaining
+    else:
+        assert partial == moved
+        assert "Nothing is merged into the starting head yet." in task.description
+        assert "  1. task-a" in task.description and "  2. task-b" in task.description
+    assert (await repairs.input(task.id))["starting_sha"] == partial
+
+
+@pytest.mark.parametrize("retained,reason", [
+    (True, "repair_no_progress_missing_target"), (False, "repair_completion_unconfirmed"),
+])
+async def test_unchanged_repair_missing_target_blocks_without_spending_a_successor(
+    conflicting_batch_env, retained, reason,
+):
+    from src.integration.models import BranchKey
+    from src.integration.repair import OrdinaryRepairService
+
+    env = conflicting_batch_env
+    repairs, previous_task, starting, repaired, moved = await completed_repair_before_target_move(
+        env, unchanged=True, retained=retained,
+    )
+    for _ in range(3):
+        # A restart and the train resetting the candidate cannot erase the close's delta.
+        t = train(Targets(ROOT), Batches({ROOT.key: (env.batch, env.members)}), {
+            ROOT.key: TrainLane(snapshot=env.snapshot, service=env.service,
+                                checks=CandidateChecks.fixed(Checks())),
+        }, OrdinaryRepairService(env.db))
+        visit = await t.visit(ROOT)
+        assert visit.state == "blocked" and visit.repair["outcome"] == "blocked"
+        assert visit.detail["reason"] == reason
+        assert visit.repair["task_id"] == previous_task
+        assert visit.repair["starting_sha"] == starting == repaired
+        assert visit.repair["target_sha"] == moved
+        if retained:
+            assert visit.repair["completed_sha"] == repaired
+        assert (await env.store.get(env.batch.id)).repair_attempt_count == 1
+        assert await env.ops.remote(env.repo, candidate_ref(env.batch.id)) == moved
+        assert await env.ops.remote(env.repo, "refs/heads/main") == moved
+        lease = await repairs.locks.get(BranchKey(
+            repository_id="r", branch=candidate_ref(env.batch.id),
+        ))
+        assert lease.holder is None
+
+
+@pytest.mark.parametrize("refusal", ["busy", "transport", "moved"])
+async def test_stale_candidate_reset_never_files_over_live_writer_or_failed_transport(
+    conflicting_batch_env, refusal,
+):
+    from src.integration.models import BranchKey
+    from src.integration.train_sources import LeasedPublish
+
+    env = conflicting_batch_env
+    repairs, _, _, repaired, moved = await completed_repair_before_target_move(env)
+    env.service.publish = LeasedPublish(env.db, env.ops.git)
+    ref = candidate_ref(env.batch.id)
+    if refusal == "busy":
+        await repairs.locks.acquire(BranchKey(repository_id="r", branch=ref), "live-worker")
+    elif refusal == "transport":
+        env.ops.git.fail_push = True
+    else:
+        # Race the exact expected-old push with another candidate publication.
+        async def replace_ref():
+            git(env.ops.git.remote_path, "update-ref", ref, env.base)
+
+        env.ops.git.push_hook = replace_ref
+    t = train(Targets(ROOT), Batches({ROOT.key: (env.batch, env.members)}), {
+        ROOT.key: TrainLane(snapshot=env.snapshot, service=env.service,
+                            checks=CandidateChecks.fixed(Checks())),
+    }, repairs)
+    visit = await t.visit(ROOT)
+    assert visit.state == ("moved" if refusal == "moved" else "unknown")
+    assert visit.repair is None
+    assert visit.detail["repair_start_sha"] == moved
+    assert (await env.store.get(env.batch.id)).repair_attempt_count == 1
+    assert await env.ops.remote(env.repo, ref) == (env.base if refusal == "moved" else repaired)
+    assert await env.ops.remote(env.repo, "refs/heads/main") == moved
+
+
 @pytest.mark.parametrize("state", ["held", "moved", "source_moved", "unknown"])
 async def test_non_progress_observations_wait_for_the_next_visit(state):
     repair, checks = Repair(), Checks()
