@@ -12297,14 +12297,14 @@
     "ff91ab72b816695b830aae93767148b6cbc2fe8b2e22ef7edaef174f88011b1f"
   ],
   "storage_sinks": {
-    "src/api/host_shell.py::_audit::d71ee6e4a340780de2532bfca9177cd80d4b0ac848427deaa9ea807392a56034": {
-      "line": 71,
-      "owner": "_audit",
+    "src/api/host_shell.py::audit_host_shell::d71ee6e4a340780de2532bfca9177cd80d4b0ac848427deaa9ea807392a56034": {
+      "line": 81,
+      "owner": "audit_host_shell",
       "call": "log_event",
-      "owner_fingerprint": "50a37c834526eb2bd5ae51ba3117b2b671b17015cb2a9dd17ed937b041dc0366",
+      "owner_fingerprint": "67b996e1fb1d13cb6b10603a9f594d7f1ccff561b089d210606b3989f2dc7ad4",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Host-shell HTTP and WebSocket lifecycle audit records shell names and caller identities; no integration state or ref replay authority."
     },
     "src/api/streams.py::build_streams_router::6960e4f6e861b9d8097f655744686f73af90e871585f534dfb20d676d1881afb": {
       "line": 464,
