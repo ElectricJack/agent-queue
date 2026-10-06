@@ -1417,7 +1417,7 @@
       ]
     }
   },
-  "digest": "sha256:56dec58696a60e8f104c864146fe8e9ad2525da18381938dd81171f99066ffd9",
+  "digest": "sha256:84add67623e1caf6337cabef5baf267c0572bd96db1baaae5eb52d78de904bfb",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8703,6 +8703,7 @@
         "src.integration.reviews",
         "src.integration.root_pull_requests",
         "src.integration.status",
+        "src.integration.subjects",
         "src.integration.train",
         "src.integration.train_controls",
         "src.integration.train_sources",

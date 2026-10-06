@@ -14231,6 +14231,42 @@
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Operator audit of batch abort or delivered-origin retirement with principal and reason; never replayed and carries no ref-update lifecycle."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._admission_times::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 406,
+      "owner": "DatabaseBatches._admission_times",
+      "call": "delete",
+      "owner_fingerprint": "8ddac67e598852d5a29c9f7f1b50fd720127f9e8c76bd3c54f2036e8c52d5374",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Root settling timestamps for currently PR-admitted exact completions. Eligibility is recomputed from Git and PR proof on every visit; these hints preserve the bounded cadence across restarts and never authorize membership, replay a ref or prove delivery. Stale hints and frozen-batch hints are deleted."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._clear_admissions::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 437,
+      "owner": "DatabaseBatches._clear_admissions",
+      "call": "delete",
+      "owner_fingerprint": "f83d1b3aaae28d2e05ae26221544738c1a6363446fd9ce7594924e462f73b6c4",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Root settling timestamps for currently PR-admitted exact completions. Eligibility is recomputed from Git and PR proof on every visit; these hints preserve the bounded cadence across restarts and never authorize membership, replay a ref or prove delivery. Stale hints and frozen-batch hints are deleted."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._admission_times::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "line": 415,
+      "owner": "DatabaseBatches._admission_times",
+      "call": "insert",
+      "owner_fingerprint": "8ddac67e598852d5a29c9f7f1b50fd720127f9e8c76bd3c54f2036e8c52d5374",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Root settling timestamps for currently PR-admitted exact completions. Eligibility is recomputed from Git and PR proof on every visit; these hints preserve the bounded cadence across restarts and never authorize membership, replay a ref or prove delivery. Stale hints and frozen-batch hints are deleted."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._admission_times::51be9b5b9698cee60f963e966b52a7527686e8e5a5f266c953c9f4919f14106d": {
+      "line": 429,
+      "owner": "DatabaseBatches._admission_times",
+      "call": "update",
+      "owner_fingerprint": "8ddac67e598852d5a29c9f7f1b50fd720127f9e8c76bd3c54f2036e8c52d5374",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Root settling timestamps for currently PR-admitted exact completions. Eligibility is recomputed from Git and PR proof on every visit; these hints preserve the bounded cadence across restarts and never authorize membership, replay a ref or prove delivery. Stale hints and frozen-batch hints are deleted."
     }
   },
   "generic_dependencies": {

@@ -154,11 +154,13 @@ class World:
         scenarios = [p for p in PREREQUISITES.get(key, ()) if p not in self.completed] + [key]
         succeeded = False
         started = time.monotonic()
+        # S20 includes the production root settling cadence before publication.
+        timeout = max(270, self.smoke.train_delivery_timeout() + 60) if key == "S20" else 270
         try:
             result = subprocess.run(
                 [str(REPO_ROOT / "scripts/e2e-smoke.sh"), *scenarios],
                 cwd=REPO_ROOT, env=self.env, capture_output=True, text=True,
-                check=False, timeout=270,
+                check=False, timeout=timeout,
             )
             print(result.stdout, flush=True)
             for line in result.stdout.splitlines():
@@ -175,7 +177,7 @@ class World:
         except subprocess.TimeoutExpired as exc:
             for output in (exc.stdout, exc.stderr):
                 print(output.decode(errors="replace") if isinstance(output, bytes) else output or "")
-            raise AssertionError(f"scenario {key} exceeded its 270s budget") from None
+            raise AssertionError(f"scenario {key} exceeded its {timeout:g}s budget") from None
         finally:
             # Preserve only the explicitly declared S1-S3 chain, and only on
             # success. An assertion failure never carries state into another item.
