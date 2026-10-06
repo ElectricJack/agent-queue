@@ -832,26 +832,27 @@ async def check_request_scope(
         return error
     if scope.kind == "session" and not scope.elevated and command in _SPEC_INGEST_COMMANDS:
         held = await spec_ingest_task_for_session(db, scope)
-        if held is None:
-            return check_command_scope(command, args, scope)
-        if args.get("session_id") not in (None, scope.session_id):
-            return "out of scope: session_id mismatch"
-        if args.get("project_id") not in (None, scope.project_id):
-            return "out of scope: project_id mismatch"
-        args["project_id"] = scope.project_id
-        if command == "task_batch_commit":
-            from src.database.queries.proposal_queries import get_proposal
+        if held is not None:
+            if args.get("session_id") not in (None, scope.session_id):
+                return "out of scope: session_id mismatch"
+            if args.get("project_id") not in (None, scope.project_id):
+                return "out of scope: project_id mismatch"
+            args["project_id"] = scope.project_id
+            if command == "task_batch_commit":
+                from src.database.queries.proposal_queries import get_proposal
 
-            proposal = await get_proposal(db, args.get("proposal_id"))
-            if proposal is None or proposal["project_id"] != scope.project_id:
-                return "out of scope: proposal mismatch"
-            if (proposal["payload"].get("spec_ingest") or {}).get("task_id") != held.id:
-                return "out of scope: proposal does not belong to held ingestion task"
-        if command == "get_downstream_tasks":
-            task = await db.get_task(args.get("task_id"))
-            if task is None or task.project_id != scope.project_id:
-                return "out of scope: task_id mismatch"
-        return None
+                proposal = await get_proposal(db, args.get("proposal_id"))
+                if proposal is None or proposal["project_id"] != scope.project_id:
+                    return "out of scope: proposal mismatch"
+                if (proposal["payload"].get("spec_ingest") or {}).get("task_id") != held.id:
+                    return "out of scope: proposal does not belong to held ingestion task"
+            if command == "get_downstream_tasks":
+                task = await db.get_task(args.get("task_id"))
+                if task is None or task.project_id != scope.project_id:
+                    return "out of scope: task_id mismatch"
+            return None
+        # ``list_tasks`` is also a triage capability. A session without an
+        # ingestion assignment must still reach that independently checked grant.
     if (scope.kind == "session" and not scope.elevated and command in {
         "integration_resolve_conflict", "integration_push_conflict_resolution",
     }):
