@@ -68,11 +68,37 @@ while [ "$i" -lt "${#args[@]}" ]; do
   i=$((i + 1))
 done
 
-# The shared runner supplies an explicit host and JSON GraphQL body on stdin.
+# The shared runner supplies HTTP framing, an explicit host and JSON GraphQL
+# bodies on stdin. Locate the endpoint without depending on option positions.
 command_pair="${1:-} ${2:-}"
-if [ "${1:-}" = "api" ] && [ "${2:-}" = "--hostname" ]; then
-  command_pair="api ${4:-}"
+api_endpoint=""
+include_headers=false
+if [ "${1:-}" = "api" ]; then
+  i=1
+  while [ "$i" -lt "${#args[@]}" ]; do
+    case "${args[$i]}" in
+      --include|-i) include_headers=true ;;
+      --hostname|--method|-X|--input|--jq|-q|-f|-F)
+        i=$((i + 1))
+        ;;
+      -*) ;;
+      *)
+        if [ -z "$api_endpoint" ]; then
+          api_endpoint="${args[$i]}"
+        fi
+        ;;
+    esac
+    i=$((i + 1))
+  done
+  command_pair="api $api_endpoint"
 fi
+
+api_headers() {
+  if [ "$include_headers" = true ]; then
+    printf 'HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n\r\n'
+  fi
+}
+
 if [[ " $* " == *" --input - "* ]]; then
   payload="$(cat)"
   if [ -n "${FAKE_GH_STDIN_LOG:-}" ]; then
@@ -101,6 +127,7 @@ case "$command_pair" in
     ;;
   "api user")
     [ "$state" = "authed" ] || not_logged_in 4
+    api_headers
     printf '%s\n' "$login"
     exit 0
     ;;
@@ -108,6 +135,7 @@ case "$command_pair" in
     [ "$state" = "authed" ] || not_logged_in 4
     case "$field_query" in
       *organizations*)
+        api_headers
         cat <<JSON
 {"data":{"viewer":{"login":"${login}","organizations":{"nodes":[
   {"login":"acme-corp","viewerCanCreateRepositories":true},
@@ -118,6 +146,7 @@ JSON
         exit 0
         ;;
       *search\(*)
+        api_headers
         if [ -z "$field_after" ]; then
           cat <<JSON
 {"data":{"search":{"pageInfo":{"endCursor":"CURSOR-PAGE-2","hasNextPage":true},"nodes":[
@@ -147,9 +176,10 @@ JSON
     echo "unsupported graphql query" >&2
     exit 1
     ;;
-  "api --method")
+  "api repos/"*)
     [ "$state" = "authed" ] || not_logged_in 4
-    full="${6#repos/}"
+    api_headers
+    full="${api_endpoint#repos/}"
     printf '{"id":42,"full_name":"%s"}\n' "$full"
     exit 0
     ;;

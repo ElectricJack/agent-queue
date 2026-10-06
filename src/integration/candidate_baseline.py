@@ -317,33 +317,64 @@ class CandidateBaselineService:
                     "due_at": values.get("baseline_rerun_at", due_at)}
 
 
-def red_brief(baseline: Baseline, candidate_sha: str) -> str:
+def red_brief(
+    baseline: Baseline, candidate_sha: str, *, candidate: ChecksResult | None = None,
+) -> str:
     """Plain-English scope for a repair that owns only this batch's own failures.
 
-    Empty when no comparison was possible: a repair filed without a baseline
-    knows nothing about the target, so it must not claim it owns one check and
-    not another.
+    Even without a target baseline, the candidate's own failures are known.
+    Include the cached job URLs and failing test IDs when the producer has them.
+    An empty failing set cannot produce a repair brief.
     """
-    if baseline.unavailable:
+    rows = {check.name: check for check in candidate.checks} if candidate else {}
+    names = set(failing(candidate)) if candidate else {
+        *baseline.repairable, *baseline.pre_existing, *baseline.unproven,
+    }
+    if not names:
         return ""
-    lines = [
-        (f"Required checks are red on candidate {candidate_sha}, built on target "
-         f"{baseline.target_sha}."),
+
+    def describe(selected: tuple[str, ...]) -> list[str]:
+        lines = []
+        for name in selected:
+            if name not in names:
+                continue
+            lines.append(f"  - {name}")
+            row = rows.get(name)
+            if row:
+                if row.run_url:
+                    lines.append(f"    Job: {row.run_url}")
+                tests = row.detail.get("failing_test_ids")
+                if isinstance(tests, (list, tuple)):
+                    lines.extend(
+                        f"    Failing test: {test}" for test in tests if isinstance(test, str)
+                    )
+        return lines
+
+    lines = [f"Required checks are red on candidate {candidate_sha}."]
+    if baseline.unavailable:
+        lines += [
+            "The target baseline is unavailable; these failures are not attributed to the batch.",
+            "Repair these failing required checks on the candidate:",
+            *describe(tuple(sorted(names))),
+        ]
+        return "\n".join(lines)
+    lines += [
+        f"The candidate was built on target {baseline.target_sha}.",
         "Repair these failing required checks, which the target does not also fail:",
-        *(f"  - {name}" for name in baseline.repairable),
+        *describe(baseline.repairable),
     ]
     if baseline.pre_existing:
         lines += [
             ("These failing required checks also fail on the target commit above. They are "
              "pre-existing failures this repair does not own: no change in this batch can turn "
              "them green, so do not spend the repair on them."),
-            *(f"  - {name}" for name in baseline.pre_existing),
+            *describe(baseline.pre_existing),
         ]
     if baseline.unproven:
         lines += [
             ("These failing required checks have no final verdict on the target commit above, "
              "so nothing is attributed to this batch for them either:"),
-            *(f"  - {name}" for name in baseline.unproven),
+            *describe(baseline.unproven),
         ]
     return "\n".join(lines)
 

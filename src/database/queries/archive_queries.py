@@ -121,6 +121,14 @@ class ArchiveQueryMixin:
     #: needs proof is unverified and every archive of it is refused.
     _delivery_observer = None
 
+    #: Git-first sibling prerequisite evidence (a truth-bearing observer),
+    #: registered by the daemon when ``integration.git_first`` is active.
+    _prerequisite_observer = None
+
+    def set_prerequisite_observer(self, observer) -> None:
+        """Register the observer whose Git view proves sibling prerequisites."""
+        self._prerequisite_observer = observer
+
     def set_delivery_observer(self, observer) -> None:
         """Register the :class:`~src.integration.delivery_observer.DeliveryObserver`."""
         self._delivery_observer = observer

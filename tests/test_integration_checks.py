@@ -314,14 +314,42 @@ async def test_a_cancelled_job_is_not_a_run_failure(db, job_conclusions, state):
     ]
 
 
-async def test_a_run_failure_with_no_cancelled_job_still_fails_its_checks(db):
+async def test_a_failed_workflow_keeps_successful_checks_and_blocks_publication(db):
     client, trust = github(app=False, names=("unit", "lint"), run_conclusion="failure")
 
     result = await hosted(db, client, trust, Clock()).refresh(head())
 
-    # A required check passes only within a successful workflow attempt.
+    # The workflow still gates publication, without inventing failed jobs.
     assert result.state is ChecksState.RED
-    assert [check.conclusion for check in result.checks] == [Conclusion.FAILURE] * 2
+    assert [check.conclusion for check in result.checks] == [Conclusion.SUCCESS] * 2
+    assert all(check.detail["workflow_conclusion"] == "failure" for check in result.checks)
+
+
+async def test_mixed_hosted_workflow_caches_each_required_jobs_own_conclusion(db):
+    names = (
+        "Tests (migration-and-slow)",
+        *(f"Tests (default-{index}/8)" for index in range(1, 9)),
+        *(f"E2E CLI ({index})" for index in range(1, 5)),
+        "Lint", "CLI conformance",
+    )
+    failures = {"Tests (migration-and-slow)", "Tests (default-3/8)",
+                "Tests (default-4/8)", "Tests (default-6/8)"}
+    expected = {name: "failure" if name in failures else "success" for name in names}
+    client, trust = github(app=False, names=names, job_conclusions=tuple(expected.values()),
+                           run_conclusion="failure")
+    # A non-required failed job must not taint the required successes either.
+    client.checks.append({**client.checks[-1], "id": 999, "name": "optional",
+                          "conclusion": "failure"})
+
+    checks = hosted(db, client, trust, Clock())
+    result = await checks.refresh(head())
+
+    assert result.state is ChecksState.RED
+    assert {check.name: str(check.conclusion) for check in result.checks} == expected
+    assert {cached["check_name"]: cached["conclusion"] for cached in await stored(db)} == expected
+    assert (await checks.read(head())).checks == result.checks
+    listings = [call.kwargs["key"] for call in client.paged_items.await_args_list]
+    assert listings.count("check_runs") == 1
 
 
 @pytest.mark.parametrize(

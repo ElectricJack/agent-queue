@@ -355,6 +355,7 @@ class GitHubAccess:
             self._binding_verified_at[full_name] = self._binding_clock()
             return verified
 
+        self._check_backoff()
         return await self._bind_new_repository(full_name, expected_binding=expected_binding)
 
     async def _bind_new_repository(
@@ -490,6 +491,7 @@ class GitHubAccess:
         check_result: Callable[[GhResult], None] | None = None,
     ) -> GhResult:
         """Run a read and refresh one rejected App generation at most once."""
+        self._check_backoff()
         selected = await self.auth.credential_for(repository)
         try:
             return await self._run(
@@ -542,6 +544,7 @@ class GitHubAccess:
     ) -> GhResult:
         """Run a write once; an auth failure invalidates but never replays it."""
         try:
+            self._check_backoff()
             selected = await self.auth.credential_for(repository)
         except GitHubAccessError as exc:
             raise GitHubWriteNotStarted(
@@ -562,6 +565,11 @@ class GitHubAccess:
             if self.auth.mode is GitHubCredentialMode.APP and exc.category == "credentials":
                 await self.auth.invalidate(repository, generation=selected.generation)
             raise
+
+    def _check_backoff(self) -> None:
+        check_backoff = getattr(self.runner, "check_backoff", None)
+        if callable(check_backoff):
+            check_backoff()
 
     async def _run(
         self,
@@ -1125,7 +1133,7 @@ class GitHubClient:
                     raise _command_error(result.returncode, result.stderr) from None
                 raise
             if response.status not in allowed:
-                raise _http_error(response.status, response.headers, self.clock())
+                raise _http_error(response.status, response.headers, self.clock(), response.body)
             if result.returncode and response.status in allowed:
                 # gh exits nonzero for HTTP failures.  An explicitly expected
                 # status remains usable, but unrelated command failures do not.
@@ -1957,29 +1965,38 @@ def _next_link(value: str | None) -> str | None:
     return links[0] if links else None
 
 
-def _http_error(status: int, headers: Mapping[str, str], now: float) -> GitHubAccessError:
+def _http_error(
+    status: int, headers: Mapping[str, str], now: float, body: bytes = b""
+) -> GitHubAccessError:
     retry_after = headers.get("retry-after")
     remaining = headers.get("x-ratelimit-remaining")
     reset = headers.get("x-ratelimit-reset")
-    if status == 429 or (status == 403 and (retry_after is not None or remaining == "0")):
-        retry_at = now
+    secondary_limit = any(
+        text in body.lower() for text in (b"secondary rate limit", b"rate limit exceeded")
+    )
+    if status == 429 or (
+        status == 403 and (retry_after is not None or remaining == "0" or secondary_limit)
+    ):
+        retry_times: list[float] = []
         if retry_after:
             try:
-                retry_at = now + max(0, int(retry_after))
-            except ValueError:
+                retry_times.append(now + max(0, int(retry_after)))
+            except (ValueError, OverflowError):
                 try:
-                    retry_at = parsedate_to_datetime(retry_after).timestamp()
-                except (TypeError, ValueError):
+                    retry_times.append(parsedate_to_datetime(retry_after).timestamp())
+                except (TypeError, ValueError, OverflowError):
                     pass
-        elif reset:
+        # A secondary limit may leave the primary quota untouched. Its reset
+        # header does not govern that limit unless the primary quota is empty.
+        if reset and remaining == "0":
             try:
-                retry_at = max(now, float(reset))
-            except ValueError:
+                retry_times.append(float(int(reset)))
+            except (ValueError, OverflowError):
                 pass
         return GitHubAccessError(
             "rate_limited",
             f"GitHub request was rate limited (rate_limited, HTTP {status})",
-            retry_at=retry_at,
+            retry_at=max(now, *retry_times) if retry_times else now + 60.0,
             http_status=status,
         )
     category = {

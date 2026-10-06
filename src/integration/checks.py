@@ -152,12 +152,19 @@ def evaluate(
         for name in required.names
     )
     conclusions = {check.conclusion for check in checks}
+    workflow_conclusions = {check.detail.get("workflow_conclusion", "success") for check in checks}
     if conclusions & {Conclusion.FAILURE, Conclusion.MISSING}:
         state = ChecksState.RED
     elif conclusions & {Conclusion.UNAVAILABLE, Conclusion.CANCELLED}:
         state = ChecksState.UNKNOWN
     elif Conclusion.PENDING in conclusions:
         state = ChecksState.PENDING
+    elif "failure" in workflow_conclusions:
+        # Keep workflow-level publication gating without inventing failed jobs.
+        # The train blocks repair allocation when no required check actually failed.
+        state = ChecksState.RED
+    elif workflow_conclusions != {"success"}:
+        state = ChecksState.UNKNOWN
     else:
         state = ChecksState.GREEN
     due = [check.due_at for check in checks if check.conclusion not in FINAL and check.due_at]
@@ -274,21 +281,10 @@ class HostedChecks:
             )
         details = observed.details.get("receipt") or observed.details
         runs = {run["check_suite_id"]: run for run in details["workflow_runs"]}
-        # A cancelled sibling is the job's own account of what happened: the run
-        # conclusion GitHub derives from it says nothing about this check.
-        cancelled = any(check["conclusion"] == "cancelled" for check in details["checks"])
         rows = []
         for check in details["checks"]:
             run = runs.get(check["check_suite_id"])
             conclusion = check["conclusion"]
-            # A required check passes only within a successful workflow attempt.
-            if (
-                conclusion == "success"
-                and not cancelled
-                and run is not None
-                and run["conclusion"] != "success"
-            ):
-                conclusion = run["conclusion"]
             rows.append(
                 _check(
                     self.required, head, check["name"], now,
@@ -298,12 +294,12 @@ class HostedChecks:
                     run_id=str(run["workflow_run_id"]) if run else "",
                     workflow_id=f"suite:{check['check_suite_id']}",
                     attempt=run["run_attempt"] if run else 0,
-                    run_url=self._run_url(run) if run else None,
+                    run_url=check.get("job_url") or (self._run_url(run) if run else None),
                     detail={
                         key: check[key]
-                        for key in ("check_run_id", "check_suite_id")
+                        for key in ("check_run_id", "check_suite_id", "failing_test_ids")
                         if key in check
-                    },
+                    } | ({"workflow_conclusion": run["conclusion"]} if run else {}),
                 )
             )
         return tuple(rows)

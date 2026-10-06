@@ -49,6 +49,7 @@ from src.integration.batches import (
 from src.integration.candidate_baseline import (
     CandidateBaselineService,
     UnrecordedBaseline,
+    failing,
     red_brief,
 )
 from src.integration.checks import ChecksResult, ChecksState, ExactChecks
@@ -652,6 +653,14 @@ class IntegrationTrain:
         bounded merge of a verified default head; all other unrepairable reds
         re-request the candidate's own suites under bounded backoff.
         """
+        if not failing(result):
+            # A workflow can fail while every required job succeeds. Preserve
+            # its publication gate, but do not send a worker an empty repair.
+            return self._visit(target, "blocked", batch, replace(observation, detail={
+                **(observation.detail or {}),
+                "blocker": "candidate_failing_checks_unknown",
+                "reason": "red candidate has no identifiable failing required checks",
+            }), result)
         _progress("compare_target_baseline")
         baseline = await self.baseline.verdict(
             batch, candidate=result, target_sha=observation.target_sha, checks=checks,
@@ -659,7 +668,7 @@ class IntegrationTrain:
         if baseline.repair:
             visit = await self._repair(
                 target, lane, batch, members, observation, result,
-                brief=red_brief(baseline, head.sha),
+                brief=red_brief(baseline, head.sha, candidate=result),
             )
             return replace(visit, detail={**(visit.detail or {}), **baseline.detail()})
         sync = None
