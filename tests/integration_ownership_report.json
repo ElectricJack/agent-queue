@@ -9221,10 +9221,10 @@
       "reason": "Integration workspace preparation merges a proven parent head under the managed child writer fence; preserves local and published child history."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_remove_task": {
-      "reason": "Operator removal coordinates stopped subtree cleanup with integration batch aborts, orphan retirement and preserved branch/audit identity."
+      "reason": "Confirmed operator removal coordinates subtree holds, session cleanup and integration-locked removal while preserving branches and audit history."
     },
     "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_task_on": {
-      "reason": "Transaction-scoped subtree archive enforces integration removal guards, retains abandonment and delegate retirement evidence, and preserves branch identity."
+      "reason": "Transaction-local subtree archive enforces integration ownership and delivery guards, retires branch origins and preserves audit identity before deleting active rows."
     }
   },
   "shared_state": {

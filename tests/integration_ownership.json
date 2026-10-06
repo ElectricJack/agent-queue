@@ -8150,10 +8150,10 @@
       "reason": "Integration workspace preparation merges a proven parent head under the managed child writer fence; preserves local and published child history."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_remove_task": {
-      "reason": "Operator removal coordinates stopped subtree cleanup with integration batch aborts, orphan retirement and preserved branch/audit identity."
+      "reason": "Confirmed operator removal coordinates subtree holds, session cleanup and integration-locked removal while preserving branches and audit history."
     },
     "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_task_on": {
-      "reason": "Transaction-scoped subtree archive enforces integration removal guards, retains abandonment and delegate retirement evidence, and preserves branch identity."
+      "reason": "Transaction-local subtree archive enforces integration ownership and delivery guards, retires branch origins and preserves audit identity before deleting active rows."
     }
   },
   "exclusions": {
@@ -12625,7 +12625,7 @@
       "owner_fingerprint": "c2d080d6a41d1f4a83600a343c9ba005a50d4fc0e58f905870ba2584a2f45ee9",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Single/bulk archive and intentional delivery-abandonment audit calls are unchanged; reason-bearing archive now accepts DEFINED/READY/PAUSED tasks. Audit only, with no ref replay authority or duplicate delivery lifecycle."
+      "reason": "Bulk task_archived notification after successful guarded archive; records task identity only, with no ref replay authority."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_archive_task::9714980f10843aa262af671185695c727cd489e62a924f7532ca3efd80612ed7": {
       "line": 4946,
@@ -12634,7 +12634,7 @@
       "owner_fingerprint": "c2d080d6a41d1f4a83600a343c9ba005a50d4fc0e58f905870ba2584a2f45ee9",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Single/bulk archive and intentional delivery-abandonment audit calls are unchanged; reason-bearing archive now accepts DEFINED/READY/PAUSED tasks. Audit only, with no ref replay authority or duplicate delivery lifecycle."
+      "reason": "Operator task.delivery_abandoned audit after a reasoned archive; records the task identity, not ref mutation or replay state."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_archive_task::b611360d398cc725e9ada50f9112d9c7be31f747e1251e86de6d9f03c44ab5f7": {
       "line": 4940,
@@ -12643,7 +12643,7 @@
       "owner_fingerprint": "c2d080d6a41d1f4a83600a343c9ba005a50d4fc0e58f905870ba2584a2f45ee9",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Single/bulk archive and intentional delivery-abandonment audit calls are unchanged; reason-bearing archive now accepts DEFINED/READY/PAUSED tasks. Audit only, with no ref replay authority or duplicate delivery lifecycle."
+      "reason": "Single task_archived notification after successful guarded archive; records task identity only, with no ref replay authority."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_edit_task::b6009fee9d6fc35151315162ef7595d81bde3db54b069841732e5140523619ff": {
       "line": 4110,
@@ -14245,7 +14245,7 @@
       "owner_fingerprint": "dc7e8c21ee18224c68d8a13f1fab56a2d7d4c7bd8def89199b52501f66412a7f",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Audit of an orphan operation cancelled after proving its runtime and writers gone; records operation identity and reason, with no ref replay authority or duplicate lifecycle."
+      "reason": "integration.orphan_cancelled audit records operation identity and the reason after a locked no-runtime/no-writer proof; no ref OIDs, replay instructions or duplicate delivery state."
     },
     "src/integration/task_removal.py::remove_subtree::73697ddfc387c53175151dd95f9dbb7b91a34442e6e39a3e63343535ad8e310d": {
       "line": 247,
@@ -14254,7 +14254,7 @@
       "owner_fingerprint": "af23ad5f5ef990c77e5b05941b4f8c6e6216e16b666f6b07b250d30c0b3e5e98",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Operator audit of committed subtree removal, disposition, aborted batches and cancelled operations with actor/reason; branches remain intact and the event is never ref replay authority."
+      "reason": "task.removed audit records the confirmed operator decision, removed subtree, disposition and cancelled operations/batches; preserves history without asserting ref or delivery truth."
     }
   },
   "generic_dependencies": {
