@@ -13,10 +13,13 @@ memory_search. Use the convenient surface; both dispatch through CommandHandler.
 
 Commit with plain `git` in your own worktree. `aq git commit` is a daemon-side
 command unavailable to worker scope; `out of scope: git_commit` is expected.
-A local `git commit` is authorized and is not a bypass. Publish only through
-`aq git push --expected-remote-oid <observed-remote-oid>` with the observed lease;
-all-zero OID is only for a branch confirmed absent. If the remote moves, escalate;
-never guess a lease or use plain `git push`. Never bypass any other AQ rejection.
+A local `git commit` is authorized and is not a bypass. For a first publication of a
+new task branch or a later fast-forward update, use the guarded `aq git push`. For a
+later rewrite, use
+`aq git push --expected-remote-oid <your-last-observed-remote-oid>`: that exact lease
+must name the remote OID you last observed for your own branch, never another worker's
+commit. If the remote moves, escalate; never guess a lease or use plain `git push`.
+Never bypass any other AQ rejection.
 
 The daemon injects `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`
 and `GIT_COMMITTER_EMAIL` into task and pool worker sessions. New commits use the
