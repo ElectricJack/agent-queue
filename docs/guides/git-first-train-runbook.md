@@ -42,8 +42,15 @@ recorded stall's Git, check, tree-review and task-transition evidence.
   nobody's, so neither is repaired — the visit re-requests that candidate's own
   failing check suites under bounded backoff (`baseline_*` on the batch) and files
   no repair, naming `candidate_pre_existing_failure` for a human once three
-  consecutive observations have been unrepairable. Only the failures the target
-  does not fail reach the repair, named in its brief. A conflicting candidate then
+  consecutive observations have been unrepairable. Only an observed `FAILURE`
+  establishes a pre-existing failure. If any required target check is `MISSING`,
+  the target has no comparable baseline and candidate failures remain repairable:
+  a hand-pushed target may never have run the required workflow. Status reports
+  `baseline.state: unavailable`, `reason: target_required_checks_missing` and the
+  missing names in `missing_target_checks`. Candidate checks must still pass on
+  the exact candidate before publication. With a comparable baseline, only the
+  failures the target does not fail reach the repair, named in its brief.
+  A conflicting candidate then
   gets one ordinary repair task for the batch and target
   (`OrdinaryRepairService.allocate`); its counter rises when a task is filed, never
   per visit. A merge conflict first publishes the partial merge head to the

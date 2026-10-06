@@ -949,6 +949,12 @@ Environment variables set in the process environment before `load_config` is cal
 
 ### Output Modes
 
+Daemon exception rendering never captures or prints frame locals. Rich console
+tracebacks use at most 20 frames, a width of 100 characters and one context line
+around source locations. JSON tracebacks retain at most 20 innermost frames per
+exception. Expected, handled GitHub access and Git errors in the
+review poller produce a one-line warning with the repository and error message.
+
 **dev** (default) — Rich-colored console output with aligned columns. Best for local terminal use. Timestamps are shortened to `HH:MM:SS`, logger names strip the `src.` prefix.
 
 **json** — Single-line JSON objects (JSONL). Every log line is a valid JSON object with `timestamp`, `level`, `logger`, `event`, and any bound context fields. Ideal for piping to `jq`, or shipping to log aggregation systems.

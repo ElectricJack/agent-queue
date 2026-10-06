@@ -2394,6 +2394,13 @@ re-requests of that candidate's own suites and name
 `candidate_pre_existing_failure` for a human once three consecutive observations
 were unrepairable.
 
+Only an observed `FAILURE` on the exact target commit establishes a pre-existing
+failure. A `MISSING` required target check makes the baseline unavailable: the
+target may never have run the required workflow, as with a hand-pushed `main`.
+Without a comparable baseline, candidate failures remain repairable. This does
+not satisfy any candidate check or change the trusted evidence needed to publish.
+Train status retains the baseline decision on both repair and re-request visits.
+
 ### Table: `integration_batch_members`
 
 The sealed, ordered members of a batch.  Append-only: the

@@ -1793,7 +1793,8 @@ async def test_poller_refresh_reads_unchanged_reviews_without_reproving_stored_o
 
 
 @pytest.mark.parametrize("open_list", ["readable", "unavailable"])
-async def test_poller_skips_a_closed_pull_request_until_it_reopens(case, open_list):
+async def test_poller_skips_a_closed_pull_request_until_it_reopens(case, open_list, caplog):
+    caplog.set_level(logging.DEBUG, logger="src.integration.github_review_poll")
     client = _PollClient(case["first"], [_review(2, "APPROVED", case["first"])], state="closed")
     if open_list == "unavailable":
         client.open_error = GitHubAccessError("transient", "GitHub request failed (transient)")
@@ -1805,6 +1806,10 @@ async def test_poller_skips_a_closed_pull_request_until_it_reopens(case, open_li
         ["pull", "open"] if open_list == "readable" else ["pull", "open", "pull"]
     )
     assert await _rows(case["db"]) == []
+    if open_list == "unavailable":
+        assert "Open pull request list unavailable for o/r" in caplog.text
+        assert "GitHub request failed (transient)" in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
 
     # Reopening is observed on the next visit, and its reviews are read.
     client.state = "open"
@@ -1912,6 +1917,8 @@ async def test_poller_logs_each_root_condition_once_per_change(case, caplog):
         await poller.tick(now)
     assert caplog.text.count("Completed train root legacy has PR") == 1
     assert caplog.text.count("GitHub PR review poll failed for epic e1") == 1
+    assert "GitHub request failed (transient)" in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
 
     # Recovery, then a moved head, then a recurrence: each is a change.
     client.pull_error = None
@@ -1927,6 +1934,7 @@ async def test_poller_logs_each_root_condition_once_per_change(case, caplog):
 
 
 async def test_poller_binds_each_repository_once_per_tick(case, caplog):
+    caplog.set_level(logging.WARNING, logger="src.integration.github_review_poll")
     async with case["db"].immediate() as conn:
         await conn.execute(insert(tasks).values(
             id="e2", project_id="p", repo_id="repo", title="Leaf root", description="",
@@ -1950,7 +1958,58 @@ async def test_poller_binds_each_repository_once_per_tick(case, caplog):
     git.error = GitError("GitHub access service is not configured")
     await poller.tick(1031.0)
     assert git.binds == 2
-    assert caplog.text.count("GitHub PR review poll failed for epic") == 2
+    assert caplog.text.count("GitHub PR review repository bind failed") == 1
+    assert "GitHub access service is not configured" in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+    assert len(caplog.records) == 1
+
+    # The next page/cycle shares the failure; each repository logs only once
+    # in its retry window, even if many roots use it.
+    await poller.tick(1062.0)
+    assert git.binds == 2
+    assert len(caplog.records) == 1
+    await poller.tick(1093.0)
+    assert git.binds == 3
+    assert len(caplog.records) == 2
+    assert "retry in 120s" in caplog.records[-1].message
+    await poller.tick(1155.0)
+    assert git.binds == 3
+    assert len(caplog.records) == 2
+
+    # Success resumes both roots and resets backoff for the next failure.
+    git.error = None
+    await poller.tick(1214.0)
+    assert (git.binds, client.calls.count("pull")) == (4, 4)
+    git.error = GitHubAccessError("permission", "gh: forbidden (HTTP 403)")
+    await poller.tick(1245.0)
+    assert git.binds == 5
+    assert len(caplog.records) == 3
+    assert "retry in 60s" in caplog.records[-1].message
+
+
+async def test_poller_bind_backoff_is_capped_and_does_not_block_other_repositories(case, caplog):
+    caplog.set_level(logging.WARNING, logger="src.integration.github_review_poll")
+    client = _PollClient(case["first"], [])
+    git = _CountingGit(client)
+    git.error = GitError("bind failed")
+    poller = GitHubReviewPoller(
+        case["db"], case["producer"], git,
+        repository_retry_seconds=30.0, repository_retry_max_seconds=60.0,
+    )
+    for now, delay in ((1000.0, 30), (1031.0, 60), (1092.0, 60)):
+        await poller.tick(now)
+        assert f"retry in {delay}s" in caplog.records[-1].message
+    assert (git.binds, len(caplog.records)) == (3, 3)
+
+    # A different repository can bind while the first is backing off.
+    git.error = None
+    assert await poller._repository("https://github.com/other/repo", 1093.0) is not None
+    assert git.binds == 4
+    await poller.tick(1123.0)
+    assert git.binds == 4
+    await poller.tick(1154.0)
+    assert git.binds == 5
+    assert client.calls.count("pull") == 1
 
 
 async def test_new_github_review_id_can_supersede_an_earlier_rejection(case):

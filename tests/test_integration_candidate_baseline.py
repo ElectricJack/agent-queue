@@ -9,6 +9,7 @@ cache cannot read is not evidence.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select, update
@@ -30,9 +31,10 @@ from src.integration.checks import (
     CommitCheck,
     Conclusion,
     ExactChecks,
+    HostedChecks,
     RequiredChecks,
 )
-from src.integration.ci_producers import ProducerRequest
+from src.integration.ci_producers import HostedCIProducer, ProducerRequest
 from src.integration.subjects import HeadIdentity
 from src.integration.train import CandidateChecks, IntegrationTrain, TrainLane, TrainTarget
 
@@ -266,6 +268,120 @@ def test_a_mixed_candidate_repairs_only_what_the_target_passes():
 
 
 # ------------------------------------------------- the train never files that repair
+
+
+@pytest.mark.parametrize("candidate_conclusion", ["failure", "missing"])
+@pytest.mark.parametrize("target_verdict", [
+    {"unit": "missing", "lint": "missing"},
+    {"unit": "failure", "lint": "missing"},
+])
+async def test_missing_target_checks_leave_candidate_failures_repairable(
+    db, candidate_conclusion, target_verdict,
+):
+    """An incomplete required set cannot serve as the target's baseline."""
+    frozen_batch = await frozen(db, "batch-missing-baseline")
+    provider = Provider({
+        CANDIDATE: {"unit": candidate_conclusion, "lint": "failure"},
+        TARGET: target_verdict,
+    })
+    checks = ExactChecks(db, provider, clock=Clock())
+    # Exercise the cached RED path too: target_baseline does not refresh it.
+    target = await checks.refresh(target_head(frozen_batch, TARGET))
+    assert target.state is ChecksState.RED
+    repair = Repair()
+    t = train(checks, baseline=CandidateBaselineService(db, clock=Clock()), repair=repair,
+              frozen_batch=frozen_batch)
+
+    visit = await t.visit(ROOT)
+
+    assert visit.state == "repair" and visit.checks == "red"
+    assert len(repair.calls) == 1 and repair.calls[0][1]["brief"] == ""
+    assert visit.detail["baseline"] == {
+        "state": "unavailable", "target_sha": TARGET, "target_checks": "red",
+        "repairable_checks": ["lint", "unit"], "pre_existing_checks": [],
+        "unproven_checks": [], "reason": "target_required_checks_missing",
+        "missing_target_checks": sorted(
+            name for name, conclusion in target_verdict.items() if conclusion == "missing"
+        ),
+    }
+    assert provider.rerequests == []
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_batches.c.baseline_observations).where(
+            integration_batches.c.id == frozen_batch.id))).scalar_one() == 0
+
+
+@pytest.mark.parametrize("target_conclusion", ["missing", "failure"])
+async def test_hosted_target_baseline_distinguishes_absent_checks_from_real_failure(
+    db, target_conclusion,
+):
+    """An unrelated main push run cannot establish a pre-existing required-check failure."""
+    from src.integration.status import IntegrationStatusService
+    from tests.test_integration_ci_producers import github
+
+    candidate_client, trust = github(
+        app=False, names=("unit",), conclusion="failure",
+    )
+    for record in [*candidate_client.checks, *candidate_client.workflows, *candidate_client.jobs]:
+        record["head_sha"] = CANDIDATE
+    candidate_client.workflows[0]["id"] = 32
+    for job in candidate_client.jobs:
+        job["run_id"] = 32
+    target_client, _ = github(
+        app=False, names=("unit",),
+        conclusion="success" if target_conclusion == "missing" else "failure",
+    )
+    if target_conclusion == "missing":
+        target_client.workflows[0].update(name="Main attestation", workflow_id=302)
+        for record in [*target_client.checks, *target_client.jobs]:
+            record["name"] = "unattested-ci / " + record["name"]
+
+    async def paged_items(path, *, key):
+        client = candidate_client if CANDIDATE in path or "/runs/32/" in path else target_client
+        return await client.paged_items(path, key=key)
+
+    client = SimpleNamespace(
+        credential_identity=candidate_client.credential_identity,
+        paged_items=AsyncMock(side_effect=paged_items),
+        rerequest_check_suite=AsyncMock(),
+    )
+    trust = trust.model_copy(update={"canonical_repository_id": "r"})
+    checks = ExactChecks(db, HostedChecks(HostedCIProducer(client, trust)), clock=Clock())
+    frozen_batch = await frozen(db, "batch-hand-pushed-target")
+    repair = Repair()
+    t = train(checks, baseline=CandidateBaselineService(db, clock=Clock()), repair=repair,
+              frozen_batch=frozen_batch)
+
+    await t.tick()
+    await t.drain()
+    status = await IntegrationStatusService(db, git_first="active", train=t).train_status("p")
+
+    [visit] = status["targets"]
+    assert visit["checks"] == "red"
+    baseline = visit["detail"]["baseline"]
+    assert baseline["target_sha"] == TARGET and baseline["target_checks"] == "red"
+    if target_conclusion == "missing":
+        assert len(repair.calls) == 1 and visit["state"] == "repair"
+        assert baseline["state"] == "unavailable"
+        assert baseline["reason"] == "target_required_checks_missing"
+        assert baseline["missing_target_checks"] == ["unit"]
+        assert baseline["repairable_checks"] == ["unit"]
+        assert baseline["pre_existing_checks"] == []
+        client.rerequest_check_suite.assert_not_awaited()
+    else:
+        assert repair.calls == [] and visit["state"] == "preexisting"
+        assert baseline["state"] == "pre_existing"
+        assert baseline["repairable_checks"] == []
+        assert baseline["pre_existing_checks"] == ["unit"]
+        assert "reason" not in baseline
+        client.rerequest_check_suite.assert_awaited_once_with(21)
+    [stored_batch] = status["batches"]
+    assert stored_batch["detail"]["baseline"] == baseline
+    target_rows = await rows(db, TARGET)
+    assert len(target_rows) == 1
+    assert target_rows[0]["conclusion"] == target_conclusion and target_rows[0]["run_id"] == "31"
+    candidate_rows = await rows(db, CANDIDATE)
+    assert len(candidate_rows) == 1
+    assert candidate_rows[0]["conclusion"] == "failure" and candidate_rows[0]["run_id"] == "32"
 
 
 async def test_a_pre_existing_failure_files_no_repair_and_rerequests(db):

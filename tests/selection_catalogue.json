@@ -1417,7 +1417,7 @@
       ]
     }
   },
-  "digest": "sha256:eeb05bd1c6f9e0a1e5be020d1a17e103c4c6cfabcf0218cd22dbcf206a2c8c7f",
+  "digest": "sha256:569e73f96f3ee0bb79fe9a470595799db98db136eb2d90e5dc8f3f61c4c4b7b3",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -9688,7 +9688,9 @@
       "imports": [
         "src.logging_config"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Tests for structlog-powered logging and correlation context."
     },
     "tests/test_main_lifecycle.py": {
