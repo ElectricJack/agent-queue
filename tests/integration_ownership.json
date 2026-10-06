@@ -14215,10 +14215,10 @@
       "reason": "Clearing the exact holder from the task's own claimed_by_session record when the release takes that claim back; the claim itself, not a hold, ref replay or a duplicate lifecycle write."
     },
     "src/integration/batches.py::BatchStore.set_intent::6d729f7a8f24a4746d37ecea7871dfd209ea8cce995ce7499c8290475b86f660": {
-      "line": 370,
+      "line": 430,
       "owner": "BatchStore.set_intent",
       "call": "log_event",
-      "owner_fingerprint": "531d07b08c786b647369e74f5bf5fc56a2521629ad3d9fbc1be014cbdd70e244",
+      "owner_fingerprint": "8b5bef73d474523b3d932137a051929dd0533a05af059f6aa74118ed76c1a41d",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Operator audit of batch intent with principal and reason. Intent and terminal abort projection remain on the batch row; this event is never replayed and carries no ref-update lifecycle."
@@ -14269,7 +14269,7 @@
       "reason": "Root settling timestamps for currently PR-admitted exact completions. Eligibility is recomputed from Git and PR proof on every visit; these hints preserve the bounded cadence across restarts and never authorize membership, replay a ref or prove delivery. Stale hints and frozen-batch hints are deleted."
     },
     "src/integration/stacked_branches.py::StackedBranches.refresh::be3be394bad4eaa21aa8a28db135b02557490ddb64be7fdc9e1c1efef1d879ec": {
-      "line": 770,
+      "line": 772,
       "owner": "StackedBranches.refresh",
       "call": "pg_insert",
       "owner_fingerprint": "7a1bc3f333a758f54cc05eb78b7d12bff7e19157bae45de6e1daa3ec7687905b",
@@ -14278,7 +14278,7 @@
       "reason": "Current immutable completion locator after a fenced source merge; ordinary completion state, never delivery or ref replay authority."
     },
     "src/integration/stacked_branches.py::StackedBranches._file_repair::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
-      "line": 884,
+      "line": 886,
       "owner": "StackedBranches._file_repair",
       "call": "insert",
       "owner_fingerprint": "d98102eb3cec04f30ace549c0b5abe35e08f547d3246a79a9fe0267274af67c8",
@@ -14287,40 +14287,31 @@
       "reason": "Associates an isolated conflict repair with its preserved dependent for adoption; Git ancestry and current branch fences remain authoritative."
     },
     "src/integration/batches.py::BatchStore.eject::02dbb6e454b19e80a1f07be2b10de35299d826ab592437d231735f74ef0f522a": {
-      "line": 301,
+      "line": 341,
       "owner": "BatchStore.eject",
       "call": "log_event",
-      "owner_fingerprint": "a4283cebb3967e63bad1bbae2151667a3521e89ca099c9a287b6a0f1061fdf7c",
+      "owner_fingerprint": "c04a34ac34307bacf3d91e8d28b5009b7ddc7f78f22ab583939c619271347b25",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Audit of an explicit batch ejection with principal and reason. Admission reads the separate release instruction, not this event; no ref replay or duplicated delivery lifecycle."
     },
-    "src/integration/batches.py::BatchStore.eject::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
-      "line": 299,
-      "owner": "BatchStore.eject",
-      "call": "insert",
-      "owner_fingerprint": "a4283cebb3967e63bad1bbae2151667a3521e89ca099c9a287b6a0f1061fdf7c",
-      "integration_signal": true,
-      "disposition": "intent",
-      "reason": "Task-scoped instruction releases an aborted batch for future admission and names its replacement, principal and reason. It asserts no Git ref state, completion or delivery result; frozen membership stays immutable."
-    },
-    "src/integration/batches.py::BatchStore.supersede::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
-      "line": 327,
-      "owner": "BatchStore.supersede",
-      "call": "insert",
-      "owner_fingerprint": "c696df8bcc6f5f37e78eb1456e1714ddcb0d5936db2fde9b0d5ae11f8a5806a9",
-      "integration_signal": true,
-      "disposition": "intent",
-      "reason": "Task-scoped instruction releases obsolete frozen inputs after a prerequisite refresh. It records admission intent only, never a ref update or completion/delivery projection."
-    },
-    "src/integration/batches.py::BatchStore.supersede::630348974cf661c999a3632907180de6fc807c1c56504f1afcb76c733befe3b6": {
-      "line": 329,
+    "src/integration/batches.py::BatchStore.supersede::71ad4246d258b2576f1bae229c1e92b1ae60dbae8a616cd7a77cd72c8e6b53f0": {
+      "line": 385,
       "owner": "BatchStore.supersede",
       "call": "log_event",
-      "owner_fingerprint": "c696df8bcc6f5f37e78eb1456e1714ddcb0d5936db2fde9b0d5ae11f8a5806a9",
+      "owner_fingerprint": "3e6eef2f0a86d9b6b67b6eacd45cb87b4edb9948fa1e68227d26bc441b4f65a8",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Audit of an obsolete batch superseded after prerequisite refresh. The event is never replayed and is not authority for ref state, admission or delivery."
+      "reason": "Audit of an obsolete batch superseded after prerequisite refresh. The batch-owned ejection record authorizes input release; this event never replays refs or asserts delivery."
+    },
+    "src/integration/stacked_branches.py::EpicRefresh.refresh::85c997f17278e49c5a7a51cb1d2aaa7efb3367004ec68ae50f173b3772c77128": {
+      "line": 1015,
+      "owner": "EpicRefresh.refresh",
+      "call": "log_event",
+      "owner_fingerprint": "ad434e515d6ed61722f7ea7edbbdafb8b87b0b7e0fcf383e1e1c6afcd2c35a76",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Audit of a requested epic refresh with principal and observed train state. Frozen batch inputs and exact Git/check proofs remain authoritative; this event cannot replay refs or authorize delivery."
     }
   },
   "generic_dependencies": {

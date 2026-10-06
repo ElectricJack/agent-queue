@@ -14,16 +14,20 @@ import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal
+from urllib.parse import quote
 
 from sqlalchemy import func, insert, select
 
 from src.database.tables import archived_tasks, tasks
 from src.database.tables import integration_review_evidence as evidence
+from src.git.github_contracts import GitHubAccessError
 from src.git.manager import is_valid_git_oid
 from src.integration.git_truth import GitTruthSnapshot
 
 
-def pull_request_review_state(reviews: Iterable[dict], head_sha: str) -> str:
+def pull_request_review_state(
+    reviews: Iterable[dict], head_sha: str, *, trusted_reviewers: frozenset[str] = frozenset(),
+) -> str:
     """Reduce GitHub's latest decisive review per human, with exact-head approval.
 
     A request for changes remains outstanding across pushes until that reviewer
@@ -42,6 +46,8 @@ def pull_request_review_state(reviews: Iterable[dict], head_sha: str) -> str:
                 or type(identity) is not int or identity <= 0):
             raise ValueError("GitHub review identity is malformed")
         key = login.casefold()
+        if key not in trusted_reviewers:
+            continue
         if key not in latest or identity > latest[key]["id"]:
             latest[key] = review
     if any(review["state"] == "CHANGES_REQUESTED" for review in latest.values()):
@@ -50,6 +56,69 @@ def pull_request_review_state(reviews: Iterable[dict], head_sha: str) -> str:
            for review in latest.values()):
         return "approved"
     return "pr_review_missing"
+
+
+class ReviewerPermissionUnavailable(ValueError):
+    """Repository permissions could not be read reliably for a human reviewer."""
+
+
+async def trusted_pull_request_reviewers(
+    reviews: Iterable[dict], *, client, binding,
+    requirements: ReviewRequirements | None = None,
+) -> frozenset[str]:
+    """Verify repository write access; an optional allowlist can only narrow it.
+
+    Permissions are read once per decisive human in this observation. Missing
+    collaborators cannot approve; unreadable permissions fail the observation.
+    """
+    reviews = tuple(reviews)
+    logins = {
+        review["user"]["login"].casefold()
+        for review in reviews
+        if review.get("state") in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+        and isinstance(review.get("user"), dict)
+        and review["user"].get("type") == "User"
+        and isinstance(review["user"].get("login"), str)
+        and review["user"]["login"].strip()
+    }
+    allowed = {identity.removeprefix("github:").casefold()
+               for identity in requirements.reviewers} if requirements else set()
+    trusted = set()
+    for login in sorted(logins):
+        if allowed and login not in allowed:
+            continue
+        try:
+            permission = await client.request_json("GET",
+                f"/repos/{binding.full_name}/collaborators/{quote(login, safe='')}/permission")
+        except GitHubAccessError as exc:
+            if exc.category == "rate_limited":
+                raise
+            raise ReviewerPermissionUnavailable(
+                f"reviewer permission lookup failed: {exc.category} (HTTP {exc.http_status})"
+            ) from exc
+        except (OSError, ValueError) as exc:
+            raise ReviewerPermissionUnavailable("reviewer permission lookup failed") from exc
+        if not isinstance(permission, dict):
+            raise ReviewerPermissionUnavailable("GitHub reviewer permission is malformed")
+        user = permission.get("user")
+        if (not isinstance(user, dict) or not isinstance(user.get("login"), str)
+                or user["login"].casefold() != login
+                or permission.get("permission") not in {"admin", "write", "read", "none"}):
+            raise ReviewerPermissionUnavailable("GitHub reviewer permission is malformed")
+        if permission["permission"] in {"write", "admin"}:
+            trusted.add(login)
+    return frozenset(trusted)
+
+
+async def observe_pull_request_review_state(
+    reviews: Iterable[dict], head_sha: str, *, client, binding,
+    requirements: ReviewRequirements | None = None,
+) -> str:
+    """Reduce only decisions by currently trusted repository reviewers."""
+    reviews = tuple(reviews)
+    trusted = await trusted_pull_request_reviewers(
+        reviews, client=client, binding=binding, requirements=requirements)
+    return pull_request_review_state(reviews, head_sha, trusted_reviewers=trusted)
 
 
 @dataclass(frozen=True)

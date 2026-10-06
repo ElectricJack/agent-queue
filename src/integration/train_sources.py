@@ -1078,7 +1078,8 @@ class DaemonLanes:
     """
 
     def __init__(self, orchestrator, *, batches: DatabaseBatches,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 review_requirements: ReviewRequirements | None = None) -> None:
         self.orchestrator, self.batches, self.clock = orchestrator, batches, clock
         self.db, self.git = orchestrator.db, orchestrator.git
         self.truth = GitTruth(orchestrator.git)
@@ -1099,7 +1100,8 @@ class DaemonLanes:
                                           expected_event="pull_request")
 
             hosted_pr_gate = RootPullRequestGate(
-                self.db, repository=repository, checks=pr_checks, clock=clock)
+                self.db, repository=repository, checks=pr_checks, clock=clock,
+                review_requirements=review_requirements)
 
             async def pr_gate(target, member):
                 # Local candidate validation comes from a retained reviewed

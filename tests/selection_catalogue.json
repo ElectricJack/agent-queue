@@ -1418,7 +1418,7 @@
       ]
     }
   },
-  "digest": "sha256:8e4ba91357042c4b67b5d036d083acd12a840b39752de8f7529e99e207fc4fa6",
+  "digest": "sha256:63a3cde12b14942ce9df1c8a6a5220e38e5948faac7317e72b3c1640cfb346da",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5675,11 +5675,14 @@
       "imports": [
         "src.database",
         "src.database.tables",
+        "src.git.github_contracts",
         "src.integration.records",
         "src.integration.root_pull_requests",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "A finished train epic opens one pull request for its collected children."
     },
     "tests/test_epic_pr_review_evidence.py": {
@@ -5701,10 +5704,12 @@
         "src.integration.promotion",
         "src.integration.provenance",
         "src.integration.review_evidence",
+        "src.integration.reviews",
         "src.integration.scheduler",
         "src.integration.settling",
         "src.integration.source_ci",
         "src.integration.source_delivery",
+        "src.integration.train_sources",
         "src.models",
         "src.orchestrator",
         "src.vault"
@@ -7470,6 +7475,7 @@
         "src.integration.ci",
         "src.integration.ci_adapters",
         "src.integration.ci_producers",
+        "src.integration.development_runtime",
         "src.integration.main_promotion",
         "src.integration.subjects",
         "src.jobs.adapters",

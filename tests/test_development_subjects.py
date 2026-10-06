@@ -298,6 +298,33 @@ def adapter(db, pinned, frontier, *, shared=None):
     )
 
 
+async def test_hosted_rate_limit_in_development_observer_schedules_retry_without_attempt(db):
+    from src.git.github_contracts import GitHubAccessError
+    from src.integration.ci_producers import HostedCIProducer
+    from tests.test_integration_ci_producers import github
+
+    pinned = pinned_policy()
+    s = subject(pinned, SubjectPhase.TESTING)
+    await store_subject(db, s, pinned)
+    a = adapter(db, pinned, DevelopmentFrontier(()))
+    client, trust = github(app=False)
+    error = GitHubAccessError("rate_limited", "secondary limit", retry_at=1900, http_status=403)
+    client.paged_items.side_effect = error
+    a.producer_for = AsyncMock(return_value=HostedCIProducer(client, trust))
+
+    with pytest.raises(GitHubAccessError) as caught:
+        await a.observe(s)
+    assert caught.value is error
+    await a.reconciler(mode=JournalMode.ACTIVE).visit(s.id)
+    current = Subject.from_row(await db.get_integration_subject(s.id))
+    assert current.phase == s.phase and current.generation == s.generation
+    assert current.schedule.next_due_at > 100
+    assert current.budget == s.budget
+    rows = await db.list_integration_subject_journal(s.id)
+    assert rows and all(row["outcome"] not in {"green", "red"} for row in rows)
+    assert all(not row["payload"].get("is_attempt") for row in rows)
+
+
 async def test_seal_is_idempotent_frozen_and_shadow_never_files_or_merges(db):
     pinned = pinned_policy()
     s = subject(pinned)

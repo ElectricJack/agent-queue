@@ -196,6 +196,8 @@ class HostedCIProducer:
                 reason=str(exc),
             )
         except (GitHubAccessError, OSError) as exc:
+            if isinstance(exc, GitHubAccessError) and exc.category == "rate_limited":
+                raise
             return ProducerObservation(
                 **common,
                 state=CIState.INFRA,
