@@ -1961,6 +1961,12 @@ class Orchestrator(
         # runtimes are never built beside it.
         self.integration_train = train_for(self)
         train_active = self.integration_train is not None
+        from src.integration.task_removal import settle_orphaned_parent_operations
+
+        async def settle_orphaned_parents(now):
+            return await settle_orphaned_parent_operations(
+                self.db, now, legacy_engine_gone=train_active,
+            )
         self.parent_subject_runtime = (
             None if train_active else parent_runtime_for(self, parent_ci)
         )
@@ -1977,6 +1983,7 @@ class Orchestrator(
             train=TrainCommandDriver(self.integration_train, lambda: self._command_handler)
             if train_active else None,
             maintenance={
+                "orphaned parent operations": settle_orphaned_parents,
                 "aborted batch cleanup": self.integration_cleanup_service.reconcile_aborted,
                 "branch discard": self._drain_branch_discards,
                 "branch materialization": self._drain_branch_materializations,

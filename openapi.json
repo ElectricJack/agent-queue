@@ -18086,6 +18086,48 @@
         }
       }
     },
+    "/api/task/remove": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Remove a task or epic subtree. Operator/live supervisor only. With confirmed=false, preview without changing anything. One confirmed decision stops sessions, aborts open batches, cancels ownerless legacy operations and archives when audit history exists. Branches are kept. Requires a reason when confirmed.",
+        "description": "Remove a task or epic subtree. Operator/live supervisor only. With confirmed=false, preview without changing anything. One confirmed decision stops sessions, aborts open batches, cancels ownerless legacy operations and archives when audit history exists. Branches are kept. Requires a reason when confirmed.",
+        "operationId": "remove_task",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemoveTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoveTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HierarchyRefusalResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/reopen-with-feedback": {
       "post": {
         "tags": [
@@ -21893,7 +21935,7 @@
               }
             ],
             "title": "Task Id",
-            "description": "Archive a single task by ID (must be COMPLETED, FAILED, or BLOCKED)"
+            "description": "Archive a single task by ID; PAUSED, DEFINED and READY require reason"
           },
           "project_id": {
             "anyOf": [
@@ -21935,7 +21977,7 @@
               }
             ],
             "title": "Reason",
-            "description": "Required reason when abandon_undelivered is true."
+            "description": "Required to archive PAUSED/DEFINED/READY or abandon undelivered work."
           }
         },
         "type": "object",
@@ -58966,6 +59008,107 @@
           "task_title"
         ],
         "title": "RemoveDependencyResponse"
+      },
+      "RemoveTaskRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task or epic to remove"
+          },
+          "confirmed": {
+            "type": "boolean",
+            "title": "Confirmed",
+            "description": "",
+            "default": false
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Reason for removing this work"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "RemoveTaskRequest"
+      },
+      "RemoveTaskResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "removed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Removed"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Task Ids",
+            "default": []
+          },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "preview",
+              "deleted",
+              "archived"
+            ],
+            "title": "Disposition"
+          },
+          "branches": {
+            "type": "string",
+            "const": "keep",
+            "title": "Branches",
+            "default": "keep"
+          },
+          "aborted_batches": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Aborted Batches",
+            "default": []
+          },
+          "cancelled_operations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Cancelled Operations",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "disposition"
+        ],
+        "title": "RemoveTaskResponse"
       },
       "RemoveWorkspaceRequest": {
         "properties": {

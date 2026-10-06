@@ -1357,7 +1357,7 @@ class HierarchyQueryMixin:
                 )
             )
         delivered = (await conn.execute(delivered_stmt.limit(1))).first()
-        if delivered:
+        if delivered and mutation != "archive":
             raise HierarchyError(
                 "delivery_target_fixed", f"{mutation} would change delivered branch identity"
             )

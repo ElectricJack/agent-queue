@@ -106,6 +106,7 @@ start code work, tests or QA from a digest author turn.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "remove_task",
     "artifact_verify",
     "object_checkpoint_read",
     "job_retain",
