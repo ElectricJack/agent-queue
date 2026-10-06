@@ -83,6 +83,11 @@ _OPERATOR_ADOPTION_TOKEN = object()
 _INTEGRATION_WAKE_TOKEN = object()
 #: "Argument not passed" for nullable keyword arguments where ``None`` means clear.
 _UNSET = object()
+# The provider probe runs outside SQL; these fields must still match under locks.
+_SLOT_RESET_STOP_PROOF_FIELDS = (
+    "id", "name", "provider", "instance_token", "state", "desired_state",
+    "task_id", "agent_id", "last_claim_epoch", "claim_phase",
+)
 #: Rows hydrated into ``Task`` models between event-loop yields.  About 14 us a
 #: row, so a slice holds the loop for single-digit milliseconds where a 10k-row
 #: list held it for 150-300 ms in one span (wise-ember.16 profile).
@@ -871,7 +876,107 @@ class TaskQueryMixin:
             saved = {**snapshot, "cleanup_pending": False}
             await self._upsert_meta(task_id, "manual_pause", saved, conn=conn)
 
-    async def resume_task(self, task_id: str) -> Task:
+    async def _slot_reset_claim_sessions(self, conn, task_id: str, *, lock: bool) -> list[dict]:
+        record_query = select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id,
+            task_metadata.c.key == "claimed_by_session",
+        )
+        raw_holder = (await conn.execute(
+            record_query.with_for_update() if lock else record_query
+        )).scalar_one_or_none()
+        holder = json.loads(raw_holder) if raw_holder else None
+        query = select(sessions).where(or_(
+            sessions.c.task_id == task_id,
+            # An idle pool worker may have released a failed preparation while
+            # its historical claim record remains. It does not need to stop.
+            and_(sessions.c.id == holder, sessions.c.state.in_(("stopped", "quarantined"))),
+        )).order_by(sessions.c.id)
+        rows = (await conn.execute(
+            query.with_for_update() if lock else query
+        )).mappings().all()
+        return [dict(session) for session in rows]
+
+    async def slot_reset_recovery_sessions(self, task_id: str) -> list[dict]:
+        """Read exact candidate writers for an out-of-transaction provider probe."""
+        async with self._engine.connect() as conn:
+            return await self._slot_reset_claim_sessions(conn, task_id, lock=False)
+
+    async def _release_stopped_slot_reset_claim(
+        self, conn, row, stopped_sessions: Sequence[dict]
+    ) -> None:
+        task_id = row["id"]
+        holders = await self._slot_reset_claim_sessions(conn, task_id, lock=True)
+        proofs = {session["id"]: session for session in stopped_sessions}
+        refusal = "Slot reset recovery must wait for the old claim to release"
+        for holder in holders:
+            proof = proofs.get(holder["id"])
+            if (
+                holder["state"] not in {"stopped", "quarantined"}
+                or holder["desired_state"] != "stopped"
+                or not holder["instance_token"]
+                or holder["task_id"] not in (None, task_id)
+                or proof is None
+                or any(holder[key] != proof[key] for key in _SLOT_RESET_STOP_PROOF_FIELDS)
+            ):
+                raise ValueError(refusal)
+        assigned = row["assigned_agent_id"]
+        if assigned and not any(
+            holder["agent_id"] == assigned and holder["last_claim_epoch"] == row["claim_epoch"]
+            for holder in holders
+        ):
+            raise ValueError(refusal)
+        if not holders:
+            return
+        retained_workspace = (await conn.execute(select(workspaces.c.id).where(
+            workspaces.c.locked_by_task_id == task_id,
+        ).with_for_update())).first()
+        retained_owner = (await conn.execute(select(integration_branch_owners.c.id).where(
+            integration_branch_owners.c.session_id.in_([holder["id"] for holder in holders]),
+            integration_branch_owners.c.fence.is_(None),
+            integration_branch_owners.c.handoff_state.in_(("attached", "handoff_pending")),
+        ).with_for_update())).first()
+        if retained_workspace or retained_owner:
+            raise ValueError(refusal)
+        for agent_id in sorted({
+            holder["agent_id"] for holder in holders
+            if holder["agent_id"] and holder["last_claim_epoch"] == row["claim_epoch"]
+        }):
+            agent = (await conn.execute(select(agents).where(
+                agents.c.id == agent_id,
+            ).with_for_update())).mappings().one_or_none()
+            if agent and agent["current_task_id"] == task_id:
+                live = (await conn.execute(select(sessions.c.id).where(
+                    sessions.c.agent_id == agent_id,
+                    or_(sessions.c.state.not_in(("stopped", "quarantined")),
+                        sessions.c.desired_state != "stopped"),
+                ).with_for_update())).first()
+                if live:
+                    raise ValueError(refusal)
+                await conn.execute(update(agents).where(
+                    agents.c.id == agent_id, agents.c.current_task_id == task_id,
+                ).values(
+                    current_task_id=None,
+                    state=AgentState.IDLE.value if agent["state"] == AgentState.BUSY.value
+                    else agent["state"],
+                ))
+        for holder in holders:
+            if holder["lifecycle"] == "pool" and holder["task_id"] == task_id:
+                await conn.execute(update(sessions).where(sessions.c.id == holder["id"]).values(
+                    task_id=None, claim_phase=None, claim_phase_at=None,
+                    last_claim_result="slot_reset_retry",
+                ))
+                await self.finish_task_session_attempt(
+                    holder["id"], task_id=task_id,
+                    ended_at=holder["ended_at"] or time.time(),
+                    end_reason="slot_reset_retry", conn=conn,
+                )
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "claimed_by_session",
+                task_metadata.c.value == json.dumps(holder["id"]),
+            ))
+
+    async def resume_task(self, task_id: str, *, stopped_sessions: Sequence[dict] = ()) -> Task:
         """Remove only the explicit hold; keep approval and dependency state."""
         async with self.immediate() as conn:
             row = await self._lock_task_row(conn, task_id)
@@ -882,11 +987,7 @@ class TaskQueryMixin:
                 task_metadata.c.key == "slot_reset_failure",
             ))).scalar_one_or_none()
             if row["status"] in {"READY", "BLOCKED"} and failure:
-                holder = (await conn.execute(select(sessions.c.id).where(
-                    sessions.c.task_id == task_id,
-                ).limit(1))).scalar_one_or_none()
-                if row["assigned_agent_id"] or holder:
-                    raise ValueError("Slot reset recovery must wait for the old claim to release")
+                await self._release_stopped_slot_reset_claim(conn, row, stopped_sessions)
                 await conn.execute(delete(task_metadata).where(
                     task_metadata.c.task_id == task_id,
                     task_metadata.c.key.in_([
@@ -896,7 +997,7 @@ class TaskQueryMixin:
                 ))
                 result = await self._apply_transition(
                     conn, task_id, TaskStatus.READY, force=True,
-                    context="slot_reset_retry", returning=True,
+                    context="slot_reset_retry", returning=True, assigned_agent_id=None,
                 )
             else:
                 if row["status"] != TaskStatus.PAUSED.value:
