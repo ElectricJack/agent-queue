@@ -2504,3 +2504,167 @@ async def test_epic_branch_move_resettles_completion_and_existing_pr(collected_e
     assert old != new and (await case.github.pull_request(url))["head"]["sha"] == new
     case.train.lane_for.git.acreate_pr.assert_awaited_once()
     assert (await case.train.visit(MAIN)).state == "testing"
+
+
+async def local_ci_policy(world, *, source="local", overrides=None):
+    """Valid fixture policy; never change an operator project's policy."""
+    from tests.test_integration_service import _minimal_policy_values
+
+    policy = _minimal_policy_values()
+    required = {"version": "v1", "names": ["unit"], "producer_id": "15368"}
+    for boundary in ("root", "parent"):
+        policy[boundary] = {**policy[boundary], "required_checks": required,
+                            "admission": "authorized"}
+    policy["ci"] = {"source": source, "commands": {"unit": "ruff check ."}, **(overrides or {})}
+    await world.db.update_project("p", hierarchical_integration_policy=policy)
+    return policy
+
+
+@pytest.mark.parametrize("require_hosted", [True, False])
+async def test_hybrid_root_requires_hosted_candidate_checks_and_app_attestation_by_default(
+    world, tmp_path, require_hosted,
+):
+    from src.integration.checks import HybridChecks, LocalChecks
+
+    head = await completed(world, "leaf")
+    train, github, _ = await hosted_train(world)
+    base = git(world.origin.url, "rev-parse", "main")
+    await local_ci_policy(world, source="hybrid", overrides=(
+        {} if require_hosted else {"hosted_attestation": {"root": False}}))
+    orchestrator = train.lane_for.orchestrator
+    orchestrator._command_handler = jobs_handler(world.db, tmp_path)
+    unreviewed = await train.visit(MAIN)
+    assert unreviewed.batch_id is None
+    assert unreviewed.detail["blockers"][0]["code"] == "pr_review_missing"
+    assert await job_rows(world.db) == []
+    approve_pr(github, head)
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing", testing
+    [job] = await job_rows(world.db)
+    await finish(world.db, job, exit_code=0)
+    lane = await train.lane_for(MAIN)
+    batch = await BatchStore(world.db).get(testing.batch_id)
+    exact = await lane.checks.for_candidate(batch, testing.candidate_sha)
+    assert isinstance(exact, HybridChecks) if require_hosted else isinstance(exact.provider, LocalChecks)
+    assert lane.service.require_attestation is require_hosted
+    if require_hosted:
+        # A successful local check cannot supply hosted candidate checks.
+        assert (await train.visit(MAIN)).state != "delivered"
+        assert git(world.origin.url, "rev-parse", "main") == base
+        github.runs[testing.candidate_sha] = "success"
+        attestation = orchestrator.integration_attestation_service
+        orchestrator.integration_attestation_service = None
+        refused = await train.visit(MAIN)
+        assert refused.state != "delivered" and not github.records
+        assert git(world.origin.url, "rev-parse", "main") == base
+        orchestrator.integration_attestation_service = attestation
+    delivered = await train.visit(MAIN)
+    assert delivered.state == "delivered", delivered
+    assert git(world.origin.url, "rev-parse", "main") == testing.candidate_sha
+    assert len(github.records) == int(require_hosted)
+
+
+async def test_local_epic_completion_reads_plan_bound_green_and_invalidates_changed_commands(
+    collected_epic, tmp_path,
+):
+    case = collected_epic
+    policy = await local_ci_policy(case.world)
+    case.train.lane_for.orchestrator._command_handler = jobs_handler(case.db, tmp_path)
+    testing = await case.train.visit(case.target)
+    assert testing.state == "testing", testing
+    for job in await job_rows(case.db):
+        await finish(case.db, job, exit_code=0)
+    delivered = await case.train.visit(case.target)
+    assert delivered.state == "delivered", delivered
+    head = delivered.target_sha
+    await review_epic(case)
+    settled = await case.train.visit(case.target)
+    assert settled.state == "idle", settled
+    completion = await case.db.get_task_completion("epic")
+    assert completion and completion.commits == [head]
+    # The completion path must not trust the green row after a command edit.
+    before = len(await job_rows(case.db))
+    policy["ci"]["commands"]["unit"] = "ruff check src"
+    await case.db.update_project("p", hierarchical_integration_policy=policy)
+    pending = await case.train.visit(case.target)
+    assert pending.state != "delivered"
+    jobs_after = await job_rows(case.db)
+    assert len(jobs_after) > before
+    assert any(job["input_ref"] == head and job["state"] == "queued" for job in jobs_after)
+    # Policy projection uses the same command-bound producer as the reader.
+    from src.integration.train_sources import epic_policy_on
+    from src.integration.subjects import HeadIdentity
+    async with case.db._engine.connect() as conn:
+        row = (await conn.execute(select(tasks).where(tasks.c.id == "epic"))).mappings().one()
+        project = (await conn.execute(select(projects).where(projects.c.id == "p"))).mappings().one()
+        projected = await epic_policy_on(conn, row, project)
+    lane = await case.train.lane_for(case.target)
+    exact = await lane.checks.for_candidate(Batch("read", "p", "r", case.target.target_ref), head)
+    assert projected.check_trust == exact.required.producer_id
+    assert not (await exact.read(HeadIdentity(repository_id="r", ref=case.target.target_ref,
+                                            sha=head, generation=0))).green
+
+
+@pytest.mark.parametrize("train_produced", [True, False])
+async def test_local_default_branch_sync_requires_plan_bound_checks_and_train_provenance(
+    collected_epic, tmp_path, train_produced,
+):
+    from src.integration.models import integration_ci_policy
+    from src.integration.train import candidate_head
+
+    case = collected_epic
+    main, testing = await preexisting_epic_with_default_fix(case,
+        provenance="train_candidate" if train_produced else "none")
+    policy = await local_ci_policy(case.world)
+    lanes = case.train.lane_for
+    lanes.orchestrator._command_handler = jobs_handler(case.db, tmp_path)
+    batch = await BatchStore(case.db).get(testing.batch_id)
+    ci = integration_ci_policy(policy)
+    root = lanes._local_checks(MAIN, case.origin.clone, ci, policy, batch)
+    from src.integration.train_sources import retain_train_candidate
+
+    await retain_train_candidate(lanes.git, case.origin.clone, batch, main)
+    head = candidate_head(batch, main)
+    await root.request(head)
+    [job] = await job_rows(case.db)
+    await finish(case.db, job, exit_code=0)
+    assert (await root.refresh(head)).green
+    lane = await lanes(case.target)
+    observed = await lane.snapshot()
+    decision = await lane.sync_default_branch(batch, observed, testing.candidate_sha, ("unit",))
+    if train_produced:
+        assert decision == {"ref": MAIN.target_ref, "sha": main, "checks": ["unit"],
+                            "provenance": "train_candidate"}
+        policy["ci"]["commands"]["unit"] = "ruff check src"
+        await case.db.update_project("p", hierarchical_integration_policy=policy)
+        changed = await lanes(case.target)
+        assert await changed.sync_default_branch(batch, observed, testing.candidate_sha,
+                                                 ("unit",)) is None
+    else:
+        assert decision is None  # Local green alone cannot prove a non-train main head.
+
+
+async def test_hybrid_epic_hosted_requirement_changes_completion_trust(collected_epic):
+    from src.integration.checks import HybridChecks
+    from src.integration.train_sources import epic_policy_on
+
+    case = collected_epic
+    await local_ci_policy(case.world)
+
+    async def projected():
+        async with case.db._engine.connect() as conn:
+            row = (await conn.execute(select(tasks).where(tasks.c.id == "epic"))).mappings().one()
+            project = (await conn.execute(select(projects).where(projects.c.id == "p"))).mappings().one()
+            return await epic_policy_on(conn, row, project)
+
+    before = await projected()
+    await local_ci_policy(case.world, source="hybrid",
+                          overrides={"hosted_attestation": {"epic": True}})
+    after = await projected()
+    assert before.check_trust != after.check_trust
+    lane = await case.train.lane_for(case.target)
+    assert lane.service.require_attestation
+    batch = Batch("epic-trust", "p", "r", case.target.target_ref)
+    exact = await lane.checks.for_candidate(batch, case.base)
+    assert isinstance(exact, HybridChecks)
+    assert after.check_trust == exact.required.producer_id

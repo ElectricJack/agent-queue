@@ -112,6 +112,21 @@ class RootPullRequestGate:
             if mismatch:
                 self._deferred.pop(key, None)
                 return blocker("awaiting_pr", reason=mismatch)
+            if pull.get("draft"):
+                return blocker("pr_draft")
+            from src.integration.models import integration_ci_policy
+
+            ci = integration_ci_policy(policy)
+            # Local member validation uses the trusted integration job lane.
+            # Even automatic admission cannot execute unreviewed code there.
+            local = ci is not None and ci.source_for("root") != "hosted"
+            if local or (policy.get("root") or {}).get("admission", "reviewed") == "reviewed":
+                reviews = await client.paged_list(
+                    f"/repositories/{binding.repository_id}/pulls/{number}/reviews?per_page=100")
+                state = pull_request_review_state(reviews, member.source_sha)
+                if state != "approved":
+                    self._deferred.pop(key, None)
+                    return blocker(state)
             exact = await self.checks(target, member, policy, binding)
             if exact is None:
                 raise ValueError("PR required checks observer is unavailable")
@@ -123,13 +138,6 @@ class RootPullRequestGate:
                 self._deferred.pop(key, None)
                 return blocker("pr_checks_red" if result.state.value == "red"
                                else "awaiting_pr_checks")
-            if (policy.get("root") or {}).get("admission", "reviewed") == "reviewed":
-                reviews = await client.paged_list(
-                    f"/repositories/{binding.repository_id}/pulls/{number}/reviews?per_page=100")
-                state = pull_request_review_state(reviews, member.source_sha)
-                if state != "approved":
-                    self._deferred.pop(key, None)
-                    return blocker(state)
             self._deferred.pop(key, None)
             return None
         except (GitError, GitHubError, GitHubAccessError, OSError, ValueError, KeyError, TypeError) as exc:

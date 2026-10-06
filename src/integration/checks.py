@@ -38,9 +38,28 @@ from src.integration.subjects import CIState, HeadIdentity
 
 logger = logging.getLogger(__name__)
 
-#: The producer id every local job runner row carries, whichever boundary or
-#: development source named its checks.
+#: Prefix for local job evidence; the suffix binds its boundary and command plan.
 LOCAL_CHECKS_PRODUCER_ID = "local-jobs"
+
+
+def local_checks_producer_id(*, scope: str, names: tuple[str, ...], version: str,
+                             commands: tuple[str, ...], queue_seconds: float,
+                             run_seconds: float) -> str:
+    """Stable cache identity for one boundary's named command plan.
+
+    Attempts and refs change without invalidating a published head's evidence;
+    commands, check versions and execution bounds do invalidate it. Different
+    boundaries never overwrite each other's rows on the same commit.
+    """
+    return LOCAL_CHECKS_PRODUCER_ID + ":" + digest({
+        "scope": scope, "names": names, "version": version, "commands": commands,
+        "queue_seconds": float(queue_seconds), "run_seconds": float(run_seconds),
+    })
+
+
+def hybrid_checks_producer_id(local_id: str, hosted_id: str) -> str:
+    """Completion trust changes when a boundary requires a second producer."""
+    return "hybrid:" + digest([local_id, hosted_id])
 
 
 class Conclusion(StrEnum):
@@ -334,7 +353,7 @@ _LOCAL_CONCLUSIONS = {
 class LocalChecks:
     """Per-command rows from the detached-snapshot ``LocalCIProducer`` jobs.
 
-    The required check names are the plan's commands; every job is keyed by the
+    The required check names label the plan's commands; every job is keyed by the
     exact head and plan, and its result must name the same snapshot SHA. A
     development target's own validation jobs are never requested, so there is no
     target baseline to compare against and nothing to re-run for an unmoved head.
@@ -345,6 +364,7 @@ class LocalChecks:
     def __init__(
         self, producer: LocalCIProducer, *, project_id: str,
         names: tuple[str, ...] | None = None, version: str | None = None,
+        scope: str = "development",
     ) -> None:
         """*names* label the plan's commands, one per command, in order.
 
@@ -360,12 +380,17 @@ class LocalChecks:
         self.names = plan.commands if names is None else tuple(names)
         self.required = RequiredChecks(
             version=version or plan.version, names=self.names,
-            producer_id=LOCAL_CHECKS_PRODUCER_ID,
+            producer_id=local_checks_producer_id(
+                scope=scope, names=self.names, version=version or plan.version,
+                commands=plan.commands, queue_seconds=plan.queue_seconds,
+                run_seconds=plan.run_seconds,
+            ),
         )
 
     def _owner(self, head: HeadIdentity) -> _CommitOwner:
         return _CommitOwner(
-            id="checks:" + digest([head.repository_id, head.sha]), project_id=self.project_id
+            id="checks:" + digest([head.repository_id, head.sha, self.required.producer_id]),
+            project_id=self.project_id,
         )
 
     async def request(self, head: HeadIdentity) -> ProducerRequest:
@@ -563,6 +588,59 @@ class RequestedChecks(ExactChecks):
         return await super().refresh(head)
 
 
+class HybridChecks:
+    """Require both local and hosted exact-head evidence without merging caches.
+
+    The projected trust binds both producers. For each name the
+    worse verdict wins, so neither green runner masks the other's failure or
+    absence. Hosted workflow failures without a failed job still block.
+    """
+
+    compares_targets = False
+
+    def __init__(self, local: ExactChecks, hosted: ExactChecks | None, *,
+                 hosted_producer_id: str = "unavailable") -> None:
+        if hosted is not None and (local.required.names != hosted.required.names
+                or local.required.version != hosted.required.version):
+            raise ValueError("hybrid runners must require the same checks and version")
+        self.local, self.hosted = local, hosted
+        self.provider = local.provider
+        self.required = local.required.model_copy(update={
+            "producer_id": hybrid_checks_producer_id(local.required.producer_id,
+                hosted.required.producer_id if hosted is not None else hosted_producer_id),
+        })
+
+    async def request(self, head: HeadIdentity) -> ProducerRequest:
+        if self.hosted is not None:
+            await self.hosted.request(head)
+        return await self.local.request(head)
+
+    async def rerequest(self, head: HeadIdentity, names: Sequence[str]) -> tuple[int, ...]:
+        return await self.hosted.rerequest(head, names) if self.hosted is not None else ()
+
+    async def refresh(self, head: HeadIdentity) -> ChecksResult:
+        await self.local.refresh(head)
+        if self.hosted is not None:
+            await self.hosted.refresh(head)
+        return await self.read(head)
+
+    async def read(self, head: HeadIdentity) -> ChecksResult:
+        local = await self.local.read(head)
+        hosted = (await self.hosted.read(head) if self.hosted is not None
+                  else evaluate(self.required, head, (), now=self.local.clock()))
+        rank = {Conclusion.FAILURE: 0, Conclusion.MISSING: 0, Conclusion.UNAVAILABLE: 1,
+                Conclusion.CANCELLED: 1, Conclusion.PENDING: 2, Conclusion.SUCCESS: 3}
+        checks = tuple(min(pair, key=lambda check: rank[check.conclusion]).model_copy(
+            update={"producer_id": self.required.producer_id})
+            for pair in zip(local.checks, hosted.checks, strict=True))
+        states = (ChecksState.RED, ChecksState.UNKNOWN, ChecksState.PENDING, ChecksState.GREEN)
+        state = next(state for state in states if state in {local.state, hosted.state})
+        due = [result.due_at for result in (local, hosted) if result.due_at is not None]
+        return ChecksResult(repository_id=head.repository_id, sha=head.sha,
+                            required=self.required, state=state, checks=checks,
+                            due_at=None if state is ChecksState.RED or not due else min(due))
+
+
 def _upsert(check: CommitCheck):
     table = integration_check_evidence
     values = {
@@ -633,7 +711,10 @@ __all__ = [
     "Conclusion",
     "ExactChecks",
     "HostedChecks",
+    "HybridChecks",
     "LocalChecks",
     "RequiredChecks",
     "evaluate",
+    "hybrid_checks_producer_id",
+    "local_checks_producer_id",
 ]

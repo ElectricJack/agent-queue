@@ -296,6 +296,30 @@ def test_hybrid_promotion_reads_hosted_checks():
     # A promotion step has no candidate gate, only the PR checks GitHub enforces.
     assert ci.source_for("promotion") == "hybrid"
     assert ci.local_kinds() == ("root", "epic")
+    assert ci.requires_hosted("root") and ci.requires_hosted("promotion")
+    assert not ci.requires_hosted("epic")
+
+
+@pytest.mark.parametrize("requirements,root,epic", [
+    ({"root": False}, False, False), ({"epic": True}, True, True),
+    ({"root": False, "epic": True}, False, True),
+])
+def test_hybrid_hosted_requirements_are_explicit_per_boundary(requirements, root, epic):
+    policy = HierarchicalIntegrationPolicy.model_validate({
+        **_minimal_policy_values(), "ci": {"source": "hybrid", "commands": CI_COMMANDS,
+                                          "hosted_attestation": requirements},
+    })
+    assert policy.ci.requires_hosted("root") is root
+    assert policy.ci.requires_hosted("epic") is epic
+    assert policy.model_dump(mode="json")["ci"]["hosted_attestation"] == requirements
+
+
+def test_ci_hosted_requirement_defaults_preserve_existing_snapshot_shape():
+    values = {**_minimal_policy_values(), "ci": {
+        "source": "hybrid", "commands": CI_COMMANDS,
+    }}
+    policy = HierarchicalIntegrationPolicy.model_validate(values)
+    assert "hosted_attestation" not in policy.model_dump(mode="json")["ci"]
 
 
 @pytest.mark.parametrize("ci, error", [

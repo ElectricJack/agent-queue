@@ -53,7 +53,7 @@ from src.integration.candidate_baseline import (
     failing,
     red_brief,
 )
-from src.integration.checks import ChecksResult, ChecksState, ExactChecks
+from src.integration.checks import ChecksResult, ChecksState, ExactChecks, HybridChecks
 from src.integration.git_truth import GitTruthSnapshot
 from src.integration.subjects import HeadIdentity
 from src.logging_config import log_handled
@@ -278,7 +278,7 @@ def candidate_head(batch: Batch, candidate_sha: str) -> HeadIdentity:
     )
 
 
-def exact_gate(checks: ExactChecks) -> Callable[[Batch, str, str], Awaitable[bool]]:
+def exact_gate(checks: ExactChecks | HybridChecks) -> Callable[[Batch, str, str], Awaitable[bool]]:
     """A batch gate that reads cached exact-SHA checks; no job or network work.
 
     ``BatchService`` calls its gate inside the publisher's fence lock, so the
@@ -303,11 +303,11 @@ class CandidateChecks:
     """
 
     def __init__(
-        self, resolve: Callable[[Batch, str], Awaitable[ExactChecks | None]], *,
+        self, resolve: Callable[[Batch, str], Awaitable[ExactChecks | HybridChecks | None]], *,
         limit: int = 64, advisory: bool = False,
     ) -> None:
         self.resolve, self.limit, self.advisory = resolve, limit, advisory
-        self._resolved: dict[tuple[str, str], ExactChecks | None] = {}
+        self._resolved: dict[tuple[str, str], ExactChecks | HybridChecks | None] = {}
 
     @classmethod
     def fixed(cls, checks: ExactChecks) -> CandidateChecks:
@@ -316,7 +316,7 @@ class CandidateChecks:
 
         return cls(resolve)
 
-    async def for_candidate(self, batch: Batch, candidate_sha: str) -> ExactChecks | None:
+    async def for_candidate(self, batch: Batch, candidate_sha: str) -> ExactChecks | HybridChecks | None:
         checks = await self.resolve(batch, candidate_sha)
         self._resolved.pop((batch.id, candidate_sha), None)
         self._resolved[(batch.id, candidate_sha)] = checks

@@ -1421,7 +1421,7 @@
       ]
     }
   },
-  "digest": "sha256:26924ae70f5d400d6c205e97d74535d8bb975cb3b7cfef93fd16a22c09885a70",
+  "digest": "sha256:0a8bb1016a15eb4e8570d65f67b0e5bce018f9499d2b634cf1d4f9d7c6d432ce",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7416,7 +7416,8 @@
         "src.integration.ci",
         "src.integration.ci_producers",
         "src.integration.root_runtime",
-        "src.integration.subjects"
+        "src.integration.subjects",
+        "src.integration.train_sources"
       ],
       "markers": [
         "parametrize"
@@ -8705,6 +8706,7 @@
         "src.integration.attestation",
         "src.integration.batches",
         "src.integration.candidate_baseline",
+        "src.integration.checks",
         "src.integration.ci",
         "src.integration.cleanup",
         "src.integration.delivery_observer",
@@ -8720,6 +8722,7 @@
         "src.integration.reviews",
         "src.integration.root_pull_requests",
         "src.integration.status",
+        "src.integration.subjects",
         "src.integration.train",
         "src.integration.train_controls",
         "src.integration.train_sources",
@@ -8924,9 +8927,11 @@
         "src.config",
         "src.database",
         "src.database.tables",
+        "src.git.github_contracts",
         "src.git.manager",
         "src.integration.batches",
         "src.integration.checks",
+        "src.integration.github_review_poll",
         "src.integration.gitops",
         "src.integration.train",
         "src.integration.train_sources",
@@ -12516,6 +12521,7 @@
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration.attestation",
         "src.integration.batches",
         "src.integration.checks",
         "src.integration.ci",
