@@ -286,6 +286,7 @@ class TrainLane:
     snapshot: Callable[[], Awaitable[GitTruthSnapshot]]
     service: BatchService
     checks: CandidateChecks
+    complete_epic: Callable[[GitTruthSnapshot], Awaitable[tuple[dict[str, Any], ...]]] | None = None
 
 
 @dataclass(frozen=True)
@@ -413,9 +414,19 @@ class IntegrationTrain:
             visit = self._visit(target, state, snapshot=snapshot)
         else:
             visit = await self._visit_batch(target, lane, snapshot, opened.batch, opened.members)
-        if opened.blockers:
+        blockers = opened.blockers
+        if target.kind == "epic" and lane.complete_epic and visit.state in {"idle", "delivered"}:
+            _progress("settle_epic")
+            # Publication moved the ref; readiness must examine the collected
+            # head, rather than the snapshot from before the child batch landed.
+            if visit.state == "delivered":
+                snapshot = await lane.snapshot()
+            blockers += await lane.complete_epic(snapshot)
+            if blockers and visit.state == "idle":
+                visit = replace(visit, state="blocked")
+        if blockers:
             visit = replace(visit, detail={
-                **(visit.detail or {}), "blockers": list(opened.blockers),
+                **(visit.detail or {}), "blockers": list(blockers),
             })
         return visit
 

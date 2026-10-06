@@ -11,33 +11,43 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import asdict
 from typing import Any
 
 from sqlalchemy import and_, select, update
+from sqlalchemy.dialects.postgresql import insert
 
 from src.database.tables import (
+    archived_tasks,
     integration_batch_members,
     integration_batches,
+    integration_check_evidence,
     integration_legacy_deliveries,
+    integration_review_evidence,
     projects,
     repos,
     task_branch_origins,
     task_dependencies,
+    task_completion_records,
+    task_metadata,
     tasks,
 )
 from src.git.manager import GitError, is_valid_git_oid
 from src.integration.batches import Batch, BatchMember, BatchObservation, BatchService, BatchStore
 from src.integration.delivery_observer import DeliveryTarget, delivery_targets
 from src.integration.delivery_truth import DeliveryState, load_delivery_requests
+from src.integration.epics import EpicGraphReader, EpicPolicy, EpicReadinessEvaluator, HeadChecks
 from src.integration.git_truth import GitTruth, GitTruthSnapshot
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
-from src.integration.provenance import CompletionIdentity, GitProvenance
+from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
+from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
 from src.integration.subjects import Subject
 from src.integration.train import (
     BatchSelection,
@@ -90,6 +100,19 @@ async def _pending_tasks(conn, project_id: str, repository_id: str, *, limit: in
         .order_by(tasks.c.updated_at.desc(), tasks.c.id).limit(limit)
     )
     return list(newest.scalars().all())
+
+
+async def _epic_branches_on(conn, ids):
+    """Keep closed containers visitable even after their child origins retire."""
+    from src.database.queries.hierarchy_queries import container_flag_exists
+
+    child, archived = tasks.alias("epic_child"), archived_tasks.alias("epic_archived_child")
+    return dict((await conn.execute(select(tasks.c.id, tasks.c.branch_name).where(
+        tasks.c.id.in_(ids), tasks.c.branch_name.is_not(None),
+        container_flag_exists() | select(child.c.id).where(
+            child.c.parent_task_id == tasks.c.id).exists() | select(archived.c.id).where(
+            archived.c.parent_task_id == tasks.c.id).exists(),
+    ))).all())
 
 
 async def project_snapshot(db, target: TrainTarget) -> GitTruthSnapshot | None:
@@ -212,6 +235,7 @@ class DatabaseTargets:
         async with self.db._engine.connect() as conn:
             pending = await _pending_tasks(conn, project_id, repository_id, limit=None)
             routed = await delivery_targets(conn, pending, reduced=True)
+            epics = await _epic_branches_on(conn, pending)
             batches = (await conn.execute(
                 _open_batch_rows(project_id, repository_id))).mappings().all()
         delivered = set()
@@ -229,6 +253,7 @@ class DatabaseTargets:
         refs.update(target.target_ref for task_id, target in routed.items()
                     if task_id not in delivered and
                     (target.project_id, target.repository_id) == (project_id, repository_id))
+        refs.update(_branch(branch) for task_id, branch in epics.items() if task_id not in delivered)
         return [root if ref == default else TrainTarget(project_id, repository_id, ref, "epic")
                 for ref in sorted(refs)]
 
@@ -301,6 +326,7 @@ class DatabaseBatches:
                            .limit(self.limit))).scalars().all())
             if not ids:
                 return None
+            epics = await _epic_branches_on(conn, ids)
             withheld = set((await conn.execute(
                 select(integration_batch_members.c.task_id, integration_batch_members.c.source_sha)
                 .select_from(integration_batch_members.join(
@@ -339,7 +365,21 @@ class DatabaseBatches:
             request, base = requests.get(task_id), bases.get(task_id)
             if request is None or not is_valid_git_oid(base or ""):
                 continue
+            if task_id in epics:
+                async with self.db._engine.connect() as conn:
+                    current = await self._epic_current_on(conn, task_id, request.completion_id)
+                if not current:
+                    if blockers is not None:
+                        blockers.append({"code": "epic_completion_pending", "ref": task_id,
+                            "task_id": task_id, "detail": "epic needs a current collected completion"})
+                    continue
             evidence = await snapshot.is_delivered(request, source_base=base)
+            if task_id in epics and evidence.source_oid != snapshot.for_target(
+                    _branch(epics[task_id])).target_oid:
+                if blockers is not None:
+                    blockers.append({"code": "epic_source_changed", "ref": task_id,
+                        "task_id": task_id, "detail": "epic head changed after completion"})
+                continue
             if evidence.state is DeliveryState.UNKNOWN and blockers is not None:
                 detail = f"task {task_id} delivery is unknown ({evidence.reason})"
                 if evidence.error_detail:
@@ -411,6 +451,48 @@ class DatabaseBatches:
                     (target.repository_id, target.target_ref) !=
                     (batch.repository_id, batch.target_ref)):
                 return False
+        async with self.db._engine.connect() as conn:
+            sources = {member.task_id: member.source_sha for member in members}
+            for task_id in await _epic_branches_on(conn, ids):
+                if not await self._epic_current_on(conn, task_id, requests[task_id].completion_id,
+                                                   source=sources[task_id]):
+                    return False
+        return True
+
+    async def _epic_current_on(self, conn, task_id, generation, *, source=None) -> bool:
+        """Recheck ordinary inputs and cached head/review verdicts at admission."""
+        record = (await conn.execute(select(task_completion_records).where(
+            task_completion_records.c.task_id == task_id,
+            task_completion_records.c.id == generation,
+        ))).mappings().one_or_none()
+        if record is None or record["outcome"] != "pass":
+            return False
+        try:
+            notes = json.loads(record["notes"])
+            if source is not None and json.loads(record["commits"]) != [source]:
+                return False
+            graph = await EpicGraphReader(policy_on=epic_policy_on,
+                source_base_on=epic_source_base_on).read_on(conn, task_id)
+            if notes["graph_sha256"] != epic_graph_digest(graph):
+                return False
+            for subject_id, head, tree in notes["heads"]:
+                policy = graph.node(subject_id).policy
+                if policy.check_names:
+                    green = set((await conn.execute(select(
+                        integration_check_evidence.c.check_name,
+                    ).where(integration_check_evidence.c.repository_id == graph.repository_id,
+                        integration_check_evidence.c.sha == head,
+                        integration_check_evidence.c.producer_id == policy.check_trust,
+                        integration_check_evidence.c.required_check_version == policy.check_version,
+                        integration_check_evidence.c.conclusion == "success"))).scalars())
+                    if not set(policy.check_names) <= green:
+                        return False
+                review = await TreeReviews(self.db).verdict_on(conn, ReviewSubject(
+                    graph.project_id, graph.repository_id, subject_id, tree), policy.reviews)
+                if not review.satisfied:
+                    return False
+        except (ValueError, KeyError, TypeError):
+            return False
         return True
 
     async def settle(self, batch: Batch, observation: BatchObservation) -> None:
@@ -423,6 +505,141 @@ class DatabaseBatches:
                 .values(lifecycle="promoted", final_main_sha=observation.target_sha,
                         updated_at=self.clock())
             )
+
+
+async def epic_policy_on(conn, row, project) -> EpicPolicy:
+    """Use current checks and admission, reusing authenticated review producers.
+
+    The existing policy authorizes GitHub and live reviewer-task decisions,
+    rather than naming a reviewer allowlist. Only those producers' decisions
+    supply identities here; automatic admission never supplies a tree review.
+    """
+    policy = project["hierarchical_integration_policy"] or {}
+    required = (policy.get("parent") or {}).get("required_checks") or {}
+    boundary = "parent" if row["parent_task_id"] else "root"
+    reviewed = (policy.get(boundary) or {}).get("admission") == "reviewed"
+    reviewers = set()
+    if reviewed:
+        for identity, evidence in (await conn.execute(select(
+            integration_review_evidence.c.reviewer_identity,
+            integration_review_evidence.c.evidence,
+        ).where(integration_review_evidence.c.source_task_id == row["id"],
+                integration_review_evidence.c.repository_id == project["integration_repository_id"]
+        ))).all():
+            if evidence.get("decision_path") in {"github_pull_request", "review_task_close",
+                                                  "reopen_with_feedback", "tree_review"}:
+                reviewers.add(identity)
+    return EpicPolicy(tuple(required.get("names") or ()), str(required.get("producer_id") or ""),
+                      ReviewRequirements(reviewed, frozenset(reviewers)),
+                      str(required.get("version") or ""))
+
+
+async def epic_source_base_on(conn, row):
+    return await conn.scalar(select(task_branch_origins.c.base_sha).where(
+        task_branch_origins.c.task_id == row["id"],
+        task_branch_origins.c.retired_at.is_(None),
+    ).order_by(task_branch_origins.c.creation_generation.desc()).limit(1))
+
+
+def epic_graph_digest(graph) -> str:
+    """Fence the ordinary inputs a completion examined, excluding its own row."""
+    data = asdict(graph)
+    data["dependencies"] = [tuple(edge) for edge in graph.dependencies]
+    for node in data["nodes"]:
+        if node["request"]["task_id"] in {graph.epic_id, graph.node(graph.epic_id).parent_id}:
+            node["request"]["completion_id"] = None
+            node["request"]["completed_at"] = None
+    return hashlib.sha256(json.dumps(data, sort_keys=True, default=sorted).encode()).hexdigest()
+
+
+def epic_heads(readiness):
+    return [(readiness.task_id, readiness.head_sha, readiness.tree_sha),
+            *(head for nested in readiness.nested for head in epic_heads(nested))]
+
+
+class EpicCompletions:
+    """Retain a collected epic as an ordinary exact-source completion.
+
+    Invoked by the train command after child publication and on idle visits,
+    so delayed checks/reviews and a restart need no completion notification.
+    Provenance precedes the descriptive row; an interrupted write is replayed
+    with the same immutable identity. No branch tip alone completes an epic.
+    """
+
+    def __init__(self, db, evaluator: EpicReadinessEvaluator, *, refresh: Callable,
+                 clock: Callable[[], float] = time.time):
+        self.db, self.evaluator, self.refresh, self.clock = db, evaluator, refresh, clock
+
+    async def settle(self, target: TrainTarget, snapshot: GitTruthSnapshot) -> tuple[dict, ...]:
+        if target.kind != "epic":
+            return ()
+        async with self.db._engine.connect() as conn:
+            ids = (await conn.execute(select(tasks.c.id).where(
+                tasks.c.project_id == target.project_id,
+                tasks.c.branch_name.in_((target.target_ref, target.target_ref.removeprefix(
+                    "refs/heads/"))),
+                tasks.c.status == "COMPLETED",
+            ))).scalars().all()
+            if len(ids) != 1:
+                return ()
+            graph = await self.evaluator.graph_reader.read_on(conn, ids[0])
+        node = graph.node(graph.epic_id)
+        if not node.container or (graph.project_id, graph.repository_id) != target.key[:2]:
+            return ()
+        # Provider refreshes stay outside the hierarchy/action transaction.
+        await self.refresh(graph, snapshot)
+        readiness = await self.evaluator.evaluate(graph, snapshot)
+        if not readiness.ready:
+            return tuple({"code": reason, "task_id": task_id, "ref": task_id,
+                          "detail": f"epic {node.task_id} readiness: {reason}"}
+                         for task_id, reason in readiness.blockers)
+        # A generation never changes source. Reopening rotates legacy_generation;
+        # collecting a later aggregate produces another immutable head identity.
+        identity = (graph.project_id, graph.repository_id, node.task_id,
+                    node.request.legacy_generation, readiness.head_sha, epic_graph_digest(graph))
+        generation = "epic-" + hashlib.sha256(repr(identity).encode()).hexdigest()
+        provenance = GitProvenance(snapshot.truth.git, snapshot.observation.store,
+                                   repository_url=graph.repository_url)
+        await provenance.write_completion(CompletedSource(CompletionIdentity(
+            graph.project_id, graph.repository_id, node.task_id, generation,
+        ), readiness.head_sha), claim_epoch=node.request.claim_epoch)
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, graph.project_id)
+            if not await self.evaluator.current_on(conn, readiness, snapshot):
+                return ({"code": "epic_changed", "task_id": node.task_id, "ref": node.task_id,
+                         "detail": "epic readiness changed before completion was recorded"},)
+            # The source origin is also what admits this completion to its next
+            # lane. Never synthesize one from a branch that happens to exist.
+            origin = await conn.scalar(select(task_branch_origins.c.id).where(
+                task_branch_origins.c.task_id == node.task_id,
+                task_branch_origins.c.repository_id == graph.repository_id,
+                task_branch_origins.c.branch_name.in_((node.branch_ref,
+                    node.branch_ref.removeprefix("refs/heads/"))),
+                task_branch_origins.c.retired_at.is_(None),
+            ))
+            if not origin:
+                return ({"code": "epic_origin_missing", "task_id": node.task_id,
+                         "ref": node.task_id, "detail": "epic has no live branch origin"},)
+            latest = await conn.scalar(select(task_completion_records.c.completed_at).where(
+                task_completion_records.c.task_id == node.task_id,
+            ).order_by(task_completion_records.c.completed_at.desc()).limit(1))
+            await conn.execute(insert(task_completion_records).values(
+                id=generation, task_id=node.task_id, outcome="pass",
+                branch=node.branch_ref.removeprefix("refs/heads/"),
+                commits=json.dumps([readiness.head_sha]),
+                notes=json.dumps({"graph_sha256": epic_graph_digest(graph),
+                                  "heads": epic_heads(readiness)}),
+                summary="Collected epic: required children contained, head checks green, "
+                        "required tree review satisfied.",
+                completed_at=max(self.clock(), (latest or 0) + 0.000001),
+            ).on_conflict_do_nothing(index_elements=["id"]))
+            from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
+
+            marker = insert(task_metadata).values(task_id=node.task_id,
+                key=DEVELOPMENT_COMPLETION_ID_KEY, value=json.dumps(generation))
+            await conn.execute(marker.on_conflict_do_update(
+                index_elements=["task_id", "key"], set_={"value": marker.excluded.value}))
+        return ()
 
 
 class LeasedPublish:
@@ -555,7 +772,56 @@ class DaemonLanes:
                 target_ref=target.target_ref,
             )
 
-        return TrainLane(snapshot=snapshot, service=service, checks=checks)
+        complete_epic = None
+        if target.kind == "epic":
+            complete_epic = self._epic_completion(target, binding)
+        return TrainLane(snapshot=snapshot, service=service, checks=checks,
+                         complete_epic=complete_epic)
+
+    def _epic_completion(self, target, binding):
+        from src.integration.subjects import HeadIdentity
+
+        resolved = {}
+
+        async def refresh(graph, snapshot):
+            policy = await self._policy(target.project_id)
+            for node in graph.nodes:
+                head = snapshot.for_target(node.branch_ref).target_oid if node.branch_ref else None
+                if not node.container or not head:
+                    continue
+                if not node.policy.check_names:
+                    resolved[(head, node.policy)] = None
+                    continue
+                batch = Batch("epic-readiness-" + node.task_id, target.project_id,
+                              target.repository_id, node.branch_ref)
+                exact = await self._hosted(policy, binding, target, batch, head)
+                resolved[(head, node.policy)] = exact
+                if exact is not None:
+                    await exact.request(HeadIdentity(repository_id=graph.repository_id,
+                        ref=node.branch_ref, sha=head, generation=0))
+                    await exact.refresh(HeadIdentity(repository_id=graph.repository_id,
+                        ref=node.branch_ref, sha=head, generation=0))
+
+        async def head_checks(repository_id, head, policy):
+            exact = resolved.get((head, policy))
+            if exact is None:
+                return HeadChecks(repository_id, head, policy.check_names, policy.check_trust,
+                                  "unknown" if policy.check_names else "green")
+            result = await exact.read(HeadIdentity(repository_id=repository_id,
+                ref=target.target_ref, sha=head, generation=0))
+            state = result.state.value if exact.required.version == policy.check_version else "unknown"
+            return HeadChecks(repository_id, head, tuple(result.required.names),
+                              result.required.producer_id, state)
+
+        evaluator = EpicReadinessEvaluator(self.db, EpicGraphReader(
+            policy_on=epic_policy_on, source_base_on=epic_source_base_on,
+        ), TreeReviews(self.db), checks=head_checks)
+        completions = EpicCompletions(self.db, evaluator, refresh=refresh, clock=self.clock)
+
+        async def complete(snapshot):
+            return await completions.settle(target, snapshot)
+
+        return complete
 
     async def _policy(self, project_id: str) -> dict:
         async with self.db._engine.connect() as conn:
