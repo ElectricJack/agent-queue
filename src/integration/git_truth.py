@@ -218,7 +218,7 @@ class GitTruthSnapshot:
                 facts.equal_tree = await _equal_tree(observed, source_oid, observed.target_oid)
             if not facts.equal_tree:
                 if facts.merge_noop is None:
-                    facts.merge_noop = await _merge_noop(
+                    facts.merge_noop = await merge_noop(
                         observed, source_oid, observed.target_oid)
                 if facts.merge_noop:
                     return True
@@ -258,6 +258,41 @@ async def _run(snapshot: DeliverySnapshot, *args: str) -> str:
     return result.stdout
 
 
+async def _diff_paths(snapshot: DeliverySnapshot, base: str, head: str) -> list[str]:
+    return (await _run(snapshot, "diff", "--no-renames", "--name-only", "-z",
+                       base, head, "--")).split("\0")[:-1]
+
+
+@dataclass
+class _GeneratedPaths:
+    """Classify exact paths using attributes from the immutable target, once each."""
+
+    snapshot: DeliverySnapshot
+    known: dict[str, bool] = field(default_factory=dict)
+
+    async def select(self, paths: Sequence[str]) -> set[str]:
+        missing = sorted(set(paths) - self.known.keys())
+        if missing:
+            result = await self.snapshot.git.arun_git_result(
+                ["--no-replace-objects", "check-attr", f"--source={self.snapshot.target_oid}",
+                 "-z", "--stdin", "merge"],
+                cwd=self.snapshot.store, stdin="\0".join(missing) + "\0",
+            )
+            if result.returncode:
+                raise GitError(result.stderr or "generated attribute probe failed")
+            fields = result.stdout.split("\0")[:-1]
+            if len(fields) != 3 * len(missing) or any(
+                fields[i] != path or fields[i + 1] != "merge"
+                for i, path in zip(range(0, len(fields), 3), missing, strict=True)
+            ):
+                raise GitError("invalid generated attribute result")
+            self.known.update(
+                (fields[i], fields[i + 2] == "aq-generated")
+                for i in range(0, len(fields), 3)
+            )
+        return {path for path in paths if self.known[path]}
+
+
 async def _whole_patch(
     snapshot: DeliverySnapshot, source: str, base: str, target: str,
 ) -> bool:
@@ -272,17 +307,27 @@ async def _whole_patch(
     await provenance.exact(base)
     if not await provenance.ancestor(base, source):
         raise GitError("source base is not its ancestor")
-    patch = await snapshot.git.apatch_id(snapshot.store, base, source)
+    generated = _GeneratedPaths(snapshot)
+
+    async def patch_id(start: str, head: str, paths: list[str]) -> str | None:
+        excluded = await generated.select(paths)
+        if excluded:
+            return await snapshot.git.apatch_id(
+                snapshot.store, start, head, exclude_paths=sorted(excluded),
+            )
+        return await snapshot.git.apatch_id(snapshot.store, start, head)
+
+    paths = await _diff_paths(snapshot, base, source)
+    patch = await patch_id(base, source, paths)
     if patch is None:
         return False
+    paths = [path for path in paths if not generated.known[path]]
     common_base = await provenance.ancestor(base, target)
     # Restrict expensive diff probes to commits touching source paths. Read
     # actual object parents with %P; path-limited rev-list rewrites parents.
-    paths = (await _run(snapshot, "diff", "--no-renames", "--name-only", "-z",
-                        base, source, "--")).split("\0")
     history = await _run(snapshot, "log", "--full-history", "--topo-order", "--reverse",
                          "--format=%H %P", target, *(("^" + base,) if common_base else ()),
-                         "--", *(path for path in paths if path))
+                         "--", *paths)
     starts = {base} if common_base else set()
     first_error = None
     probes = 0
@@ -305,7 +350,7 @@ async def _whole_patch(
                     raise _HistoricalPatchFailure(first_error) from first_error
                 return False
             try:
-                candidate = await snapshot.git.apatch_id(snapshot.store, start, head)
+                candidate = await patch_id(start, head, await _diff_paths(snapshot, start, head))
             except (GitError, OSError) as exc:
                 # An optional historical probe cannot invalidate the retained
                 # source or prevent a later patch/tree from proving delivery.
@@ -333,21 +378,37 @@ async def _whole_patch(
 HISTORICAL_PATCH_PROBE_LIMIT = 150
 
 
-async def _merge_noop(snapshot: DeliverySnapshot, source: str, target: str) -> bool:
-    """Merging the exact source into the target changes nothing.
+async def merge_noop(
+    snapshot: DeliverySnapshot, source: str, target: str, *, target_tree: str | None = None,
+) -> bool:
+    """Merging the exact source changes only the target's generated artifacts.
 
     Every change the source makes relative to the merge base is already in the
     target, whatever commits carried it (squash, cherry-pick, re-delivery). A
-    conflict, or any difference, is no proof. One bounded merge-tree call.
+    non-generated conflict or difference is no proof. Read attributes from the
+    pinned target, so neither checkout state nor source edits can hide missing work.
     """
     result = await snapshot.git.arun_git_result(
-        ["--no-replace-objects", "merge-tree", "--write-tree", target, source],
+        ["--no-replace-objects", "merge-tree", "--write-tree", "--name-only", "-z",
+         target, source],
         cwd=snapshot.store,
     )
-    if result.returncode:
+    if result.returncode not in {0, 1}:
         return False
-    merged = (result.stdout or "").splitlines()[:1]
-    return merged == [await snapshot.git.atree_sha(snapshot.store, target)]
+    merged, _, _ = (result.stdout or "").partition("\0")
+    if not is_valid_git_oid(merged):
+        return False
+    generated = _GeneratedPaths(replace(snapshot, target_oid=target))
+    if result.returncode:
+        # NUL output begins with the tree, conflicted filenames, then an empty
+        # field before informational messages. Filenames may contain newlines.
+        conflicts = result.stdout.split("\0\0", 1)[0].split("\0")[1:]
+        if not conflicts or set(conflicts) - await generated.select(conflicts):
+            return False
+    if merged == (target_tree or await snapshot.git.atree_sha(snapshot.store, target)):
+        return True
+    paths = await _diff_paths(snapshot, target, merged)
+    return not (set(paths) - await generated.select(paths))
 
 
 async def _equal_tree(snapshot: DeliverySnapshot, source: str, target: str) -> bool:
@@ -439,7 +500,7 @@ async def is_delivered(
             return answer(DeliveryState.CONTAINED, "full_tree")
         step = "merge_noop"
         if facts.merge_noop is None:
-            facts.merge_noop = await _merge_noop(observed, source, observed.target_oid)
+            facts.merge_noop = await merge_noop(observed, source, observed.target_oid)
         if facts.merge_noop:
             return answer(DeliveryState.CONTAINED, "merge_noop")
         if patch_error is not None:

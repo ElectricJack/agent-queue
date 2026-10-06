@@ -20,8 +20,8 @@ completion record goes through four steps:
 3. **Contain**: a candidate that is an ancestor of the target tip proves
    delivery (``development_delivery``).
 4. **Equivalent**: otherwise, a candidate whose merge into the tip changes
-   nothing (``git merge-tree --write-tree``) proves the work arrived under
-   other commits (``content_equivalent``).
+   only generated artifacts (``merge=aq-generated`` in the target's attributes)
+   proves the work arrived under other commits (``content_equivalent``).
 
 Anything unproven is listed with what was tried and left alone. A dry run
 fetches but writes nothing; apply rechecks that the task and its completion
@@ -54,6 +54,7 @@ from src.database.tables import (
 )
 from src.git.manager import GitError, is_valid_git_oid
 from src.integration.delivery_truth import load_delivery_requests
+from src.integration.git_truth import merge_noop
 from src.integration.provenance import CompletionIdentity, GitProvenance
 from src.integration.train import TrainTarget
 from src.integration.train_sources import _pending_tasks, project_delivered, project_snapshot
@@ -155,8 +156,7 @@ async def _prove(observation, target_oid: str, target_tree: str, verdict: Verdic
             verdict.outcome, verdict.proof, verdict.via, verdict.delivered_sha = (
                 "proven", CONTAINED_PROOF, kind, sha)
             return
-        rc, tree = await _git(observation, "merge-tree", "--write-tree", target_oid, sha)
-        if rc == 0 and tree.splitlines()[:1] == [target_tree]:
+        if await merge_noop(observation, sha, target_oid, target_tree=target_tree):
             verdict.outcome, verdict.proof, verdict.via, verdict.delivered_sha = (
                 "proven", EQUIVALENT_PROOF, kind, sha)
             return

@@ -108,8 +108,11 @@ out of every batch. Record the ones git proves are already on the default branch
 For each such task it locates exact candidate sources (reported completion commits,
 origin branch tip, old batch members and delivery receipts, the pull request
 head), and writes an `integration_legacy_deliveries` row only when a candidate is
-an ancestor of the tip (`development_delivery`) or merging it changes nothing
-(`content_equivalent`). It never writes provenance, moves a ref or edits a task;
+an ancestor of the tip (`development_delivery`) or merging it changes only
+generated artifacts (`content_equivalent`). The latter ignores differences and
+conflicts only in paths marked `merge=aq-generated` by the pinned target's Git
+attributes; other differences or conflicts remain unproven.
+It never writes provenance, moves a ref or edits a task;
 anything unproven is listed and left alone for an explicit decision. A reopened
 task's new completion is not covered by the old row.
 

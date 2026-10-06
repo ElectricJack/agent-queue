@@ -109,6 +109,45 @@ async def test_backfill_proves_only_git_delivered_legacy_work(world):
     assert again["recorded"] == 0 and again["examined"] == 2
 
 
+@pytest.mark.parametrize("complete", [False, True])
+async def test_backfill_content_equivalent_ignores_only_generated_conflicts(world, complete):
+    db, origin = world.db, world.origin
+    clone = origin.clone
+    catalogue = clone / "tests" / "selection_catalogue.json"
+    catalogue.parent.mkdir(exist_ok=True)
+    (clone / ".gitattributes").write_text("tests/selection_catalogue.json merge=aq-generated\n")
+    catalogue.write_text("base\n")
+    git(clone, "add", ".")
+    git(clone, "commit", "-qm", "declare generated artifact")
+    git(clone, "push", "-q", "origin", "main")
+    await legacy(world, "rewritten", record_commits=False)
+    catalogue.write_text("source-generated\n")
+    git(clone, "commit", "-qam", "source-generated")
+    head = git(clone, "rev-parse", "HEAD")
+    git(clone, "push", "-q", "origin", "aq/rewritten")
+    git(clone, "checkout", "-q", "main")
+    if complete:
+        (clone / "rewritten-work.txt").write_text("work\n")
+    catalogue.write_text("target-generated\n")
+    git(clone, "add", ".")
+    git(clone, "commit", "-qm", "delivery with regenerated artifact")
+    git(clone, "push", "-q", "origin", "main")
+    preview = await backfill_legacy_deliveries(db, "p")
+    if complete:
+        [result] = preview["results"]
+        assert (result["task_id"], result["proof"], result["via"], result["delivered_sha"]) == (
+            "rewritten", EQUIVALENT_PROOF, "branch_tip", head)
+        applied = await backfill_legacy_deliveries(db, "p", dry_run=False,
+                                                 reason="generated equivalence regression")
+        assert applied["recorded"] == 1
+        async with db._engine.connect() as conn:
+            assert (await conn.scalar(select(integration_legacy_deliveries.c.proof))) == (
+                EQUIVALENT_PROOF)
+    else:
+        assert preview["results"] == []
+        assert [item["task_id"] for item in preview["unproven"]] == ["rewritten"]
+
+
 async def test_backfill_skips_reopened_generation(world):
     db = world.db
     await legacy(world, "merged", land=True)
