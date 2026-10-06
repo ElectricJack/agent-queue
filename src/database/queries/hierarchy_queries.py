@@ -334,10 +334,8 @@ class ProjectIntegrationMode:
     object.  A caller that has read the project row passes this in and the
     subqueries collapse to a constant.
 
-    Callers whose statement spans more than one project (see
-    :meth:`HierarchyQueryMixin.hierarchy_runnable_task_ids`) pass ``None``
-    and keep the correlated form, which is why both predicates still build
-    it.
+    Multi-project readers use request-scoped modes where available and keep
+    the correlated form for other projects.
     """
 
     hierarchical: bool
@@ -648,6 +646,19 @@ def delivered_same_parent_prerequisites_when_hierarchical(
 LIVE_SESSION_STATES = ("starting", "running", "draining")
 
 
+def delivered_prerequisites_for_projects(modes=None):
+    """Use each project's Git view, retaining legacy admission for other projects."""
+    legacy = delivered_same_parent_prerequisites_when_hierarchical()
+    if not modes:
+        return legacy
+    return case(
+        {pid: delivered_same_parent_prerequisites_when_hierarchical(mode)
+         for pid, mode in modes.items()},
+        value=tasks.c.project_id,
+        else_=legacy,
+    )
+
+
 class HierarchyError(Exception):
     """A rejected hierarchy mutation.  ``code`` is the stable machine string."""
 
@@ -715,10 +726,16 @@ class HierarchyQueryMixin:
             ),
         }
 
-    async def hierarchy_runnable_task_ids(self, task_ids: list[str]) -> set[str]:
+    async def hierarchy_runnable_task_ids(
+        self, task_ids: list[str], *, hierarchy_modes=None
+    ) -> set[str]:
         """Return tasks whose project mode/origin permits writer assignment."""
         if not task_ids:
             return set()
+        if hierarchy_modes is None:
+            from src.integration.delivery_observer import hierarchy_frontier_modes
+
+            hierarchy_modes = await hierarchy_frontier_modes(self)
         async with self._engine.connect() as conn:
             rows = (
                 (
@@ -728,7 +745,7 @@ class HierarchyQueryMixin:
                             # into thousands of parameters on each scheduler tick.
                             tasks.c.id == any_(bindparam("task_ids", task_ids, type_=ARRAY(Text))),
                             materialized_origin_when_hierarchical(),
-                            delivered_same_parent_prerequisites_when_hierarchical(),
+                            delivered_prerequisites_for_projects(hierarchy_modes),
                         )
                     )
                 )

@@ -2891,6 +2891,7 @@ class Orchestrator(
         """
         pools_attempted = False
         sessions_attempted = False
+        hierarchy_modes = None
         try:
             handler = getattr(self, "_command_handler", None)
             if getattr(type(handler), "_cmd_job_reconcile", None):
@@ -2991,8 +2992,11 @@ class Orchestrator(
                 logger.exception("Provider availability tick failed")
 
             # 5. Schedule READY tasks onto idle agents (skipped when paused).
+            from src.integration.delivery_observer import hierarchy_frontier_modes
+
+            hierarchy_modes = await hierarchy_frontier_modes(self.db)
             if not self._paused:
-                actions = await self._schedule()
+                actions = await self._schedule(hierarchy_modes=hierarchy_modes)
             else:
                 actions = []
 
@@ -3017,7 +3021,7 @@ class Orchestrator(
             #     (project, profile) pool against ready work and start/drain
             #     sessions to converge.  No-op unless swarm.enabled.
             pools_attempted = True
-            await self._reconcile_pools()
+            await self._reconcile_pools(hierarchy_modes=hierarchy_modes)
 
             # ── Phase 3: Housekeeping ───────────────────────────────────────
 
@@ -3160,7 +3164,7 @@ class Orchestrator(
             # order above and run only steps the cycle never reached.
             if not pools_attempted:
                 try:
-                    await self._reconcile_pools()
+                    await self._reconcile_pools(hierarchy_modes=hierarchy_modes)
                 except Exception:
                     logger.error("Pool reconciliation error", exc_info=True)
             if not sessions_attempted:
@@ -3730,7 +3734,7 @@ class Orchestrator(
 
         asyncio.get_running_loop().create_task(_send())
 
-    async def _schedule(self) -> list[AssignAction]:
+    async def _schedule(self, *, hierarchy_modes=None) -> list[AssignAction]:
         """Build scheduler state snapshot and compute task-to-agent assignments.
 
         Gathers the current state of all projects, tasks, agents, token
@@ -3780,7 +3784,8 @@ class Orchestrator(
             if task.status != TaskStatus.READY or task.id in delivery_admission.allowed
         ]
         hierarchy_runnable_task_ids = await self.db.hierarchy_runnable_task_ids(
-            [task.id for task in task_snapshot if task.status == TaskStatus.READY]
+            [task.id for task in task_snapshot if task.status == TaskStatus.READY],
+            hierarchy_modes=hierarchy_modes,
         )
         # A flagged container (spec §7) is settle-only work and never
         # dispatchable.  Promotion releases the ones it promotes; this catches

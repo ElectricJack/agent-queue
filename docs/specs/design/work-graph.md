@@ -100,6 +100,17 @@ request-scoped answer. Unknown git evidence withholds work; absent or misleading
 SQL delivery rows never establish containment. Branchless organizational tasks
 have no own artifact; a missing worker ref is unknown.
 
+In hierarchy/train mode with Git-first active, a completed `blocks` sibling
+must be proven on the shared parent's current branch before its dependent can
+run. One request-scoped, identity-revalidated Git prerequisite view per project
+is shared by scheduler/reconciler supply and pool demand within a tick, outside
+database locks. Direct readiness guards, explain and frontier diagnostics take
+fresh views through the same observer. A rewind, retarget, reopened generation
+or unknown proof withholds work; no receipt can override it. Claim selection
+retains its own fresh observation and revalidation under task locks. Shadow mode
+keeps the existing receipt fence, and non-hierarchy projects keep their existing
+admission policy.
+
 For a development worker close, the completion generation id becomes visible in
 the same database transaction as the `COMPLETED` transition. Git provenance is
 already retained before that transition. Delivery readers use this current id
@@ -277,13 +288,13 @@ Graph reasons come straight from the projection queries; scheduler reasons come 
 
 For READY tasks, explain also evaluates the profile-independent pool claim predicates
 directly. Failed predicates appear as `frontier_<predicate>` reasons, naming the
-origin/reservation fence, preserved parent and sibling delivery receipt fence,
+origin/reservation fence, preserved parent and sibling delivery fence,
 container flag, assignment, graph blockedness, plan-subtask flag, retired repair
 stage, hold label, workspace requirement, or preparation backoff that excludes the
 row. These predicates are shared with claiming and `tasks.ready_frontier_exclusions`;
 they do not infer eligibility from a cached scheduler snapshot. Receipt freshness
-is scoped to the prerequisite's own `integration_rework_at`, never another task's
-marker or ordinary `updated_at` bookkeeping.
+in shadow mode is scoped to the prerequisite's own `integration_rework_at`, never
+another task's marker or ordinary `updated_at` bookkeeping.
 
 ### 9.2 Ready frontier
 
