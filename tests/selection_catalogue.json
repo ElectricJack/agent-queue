@@ -1417,7 +1417,7 @@
       ]
     }
   },
-  "digest": "sha256:80727ccfcbe7162798d0492a9efb17fa64da87b085ff94f0cfb320b64397ff37",
+  "digest": "sha256:84612972a7c2686507b3235a2859ae03cf225df5551780a319f97eb7c9c1ad5e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -11864,6 +11864,8 @@
         "src.doctor.models",
         "src.doctor.task_checks",
         "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration",
         "src.integration.batches",
         "src.integration.delivery_observer",
         "src.integration.git_truth",
