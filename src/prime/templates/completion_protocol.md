@@ -31,10 +31,10 @@ Review binds the final pushed SHA; later fixes require fresh review.
 ## Never close over unpushed commits
 
 Commit and publish your assigned task branch with guarded `aq git push` before pass or fail
-close; use an exact `--expected-remote-oid` lease only for a rewrite after you observed your
-own branch's remote OID. Record HEAD and checks. Slots reset after release. A failed close preserves unpushed work
-on an AQ recovery branch; if its push fails, the task remains held. Fix publication before
-retrying. For a required PR use `aq git create-pr --title "..." --body "..."` after pushing.
+close; record HEAD and checks. Slots reset after release. A failed close preserves unpushed
+work on an AQ recovery branch; if its push fails, the task remains held. Fix publication
+before retrying. For a required PR use `aq git create-pr --title "..." --body "..."` after
+pushing.
 The daemon supplies credentials. Do not bypass capability denials; report them.
 Operator-only repair (`aq doctor --check profiles.system_drift` and
 `aq agent profile-reseed --profile-id <id> --grants-only`) is out of scope for workers.
