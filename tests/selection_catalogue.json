@@ -1420,7 +1420,7 @@
       ]
     }
   },
-  "digest": "sha256:68e30103f73c426f37ac21dc2468d5f22b20a437d11c668baf1b375dbf5768af",
+  "digest": "sha256:54514dfa0e514564df4851c6ce92bf7f1cb37bcc0d36b022482ba47c327c36fb",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -15618,10 +15618,12 @@
         "src.api",
         "src.api.auth",
         "src.api.terminal_stream",
+        "src.config",
         "src.dashboard_server.app",
         "src.dashboard_server.settings",
         "src.database",
         "src.models",
+        "src.sessions.host_shell",
         "src.sessions.terminal_input",
         "src.sessions.terminal_pty"
       ],
