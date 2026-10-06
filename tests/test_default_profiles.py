@@ -78,6 +78,40 @@ def test_seeded_worker_profiles_require_material_progress_notes(tmp_path):
         assert "while working" in prompt, profile_id
 
 
+def test_seeded_worker_profiles_authorize_local_commits_and_guard_publication(tmp_path):
+    """An expected git_commit scope refusal must not strand finished worker changes."""
+    from src.prime.sections import _extract_profile_prompt
+
+    ensure_default_profiles(str(tmp_path))
+    for profile_id in WORKER_PROFILE_IDS:
+        text = _vault_profile_path(tmp_path, profile_id).read_text(encoding="utf-8")
+        parsed = parse_profile(text)
+        assert parsed.is_valid, (profile_id, parsed.errors)
+        prompt = " ".join(_extract_profile_prompt(text).split())
+        for required in (
+            "Commit with plain `git` in your own worktree",
+            "`aq git commit` is a daemon-side command unavailable to worker scope",
+            "`out of scope: git_commit` is expected",
+            "A local `git commit` is authorized and is not a bypass",
+            "Publish only through `aq git push --expected-remote-oid <observed-remote-oid>`",
+            "all-zero OID is only for a branch confirmed absent",
+            "never guess a lease or use plain `git push`",
+            "Never bypass any other AQ rejection",
+            "project override, else installation default, else",
+            "`Agent Queue <agent-queue@localhost>` (`src/git/identity.py`)",
+            "do not set an identity yourself or change Git config",
+            "If they are absent, report the launch bug",
+            "Never pass `--no-verify` or amend a pushed commit",
+        ):
+            assert required in prompt, (profile_id, required)
+        for variable in (
+            "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"
+        ):
+            assert variable in prompt, (profile_id, variable)
+        for grants in (parsed.capabilities or {}).values():
+            assert "git_commit" not in grants, profile_id
+
+
 def test_seeded_worker_profiles_carry_test_scope_and_baseline_policy(tmp_path):
     """Every runnable worker inherits bounded checks and baseline handling."""
     ensure_default_profiles(str(tmp_path))

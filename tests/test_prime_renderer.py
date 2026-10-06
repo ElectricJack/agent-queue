@@ -540,6 +540,34 @@ class TestStaticSections:
         for name in ("task_show", "task_set", "memory_search"):
             assert name in body
 
+    async def test_tool_guidance_authorizes_local_commits_and_guards_publication(
+        self, db, config, task
+    ):
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = " ".join({s.key: s.body for s in doc.sections}["tool_guidance"].split())
+        for required in (
+            "Commit with plain `git` in your own worktree",
+            "`aq git commit` is a daemon-side command unavailable to worker scope",
+            "`out of scope: git_commit` is expected",
+            "A local `git commit` is authorized and is not a bypass",
+            "Publish only through `aq git push --expected-remote-oid <observed-remote-oid>`",
+            "all-zero OID is only for a branch confirmed absent",
+            "never guess a lease or use plain `git push`",
+            "Never bypass any other AQ rejection",
+            "The daemon injects",
+            "into task and pool worker sessions",
+            "project override, else installation default, else",
+            "`Agent Queue <agent-queue@localhost>` (`src/git/identity.py`)",
+            "do not set an identity yourself or change Git config",
+            "If they are absent, report the launch bug",
+            "Never pass `--no-verify` or amend a pushed commit",
+        ):
+            assert required in body, required
+        for variable in (
+            "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"
+        ):
+            assert variable in body, variable
+
     async def test_tool_guidance_carries_test_scope_and_baseline_policy(self, db, config, task):
         doc = await PrimeRenderer(db, config).render_for_task("task-1")
         body = " ".join({s.key: s.body for s in doc.sections}["tool_guidance"].lower().split())
@@ -997,6 +1025,7 @@ _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq test": None,
     # The ``[aq question answered]`` marker AQ itself types, not a command.
     "aq question answered": None,
+    "aq git commit": "git_commit",
     "aq git push": "git_push",
     "aq git create-pr": "git_create_pr",
     "aq agent profile-reseed": "profile_reseed",
@@ -1108,12 +1137,17 @@ class TestStaticGuidanceStaysOnTheAgentSurface:
         assert _CLI_TO_COMMAND["aq task list"] not in AGENT_COMMAND_SET
         assert "out of scope" not in stale
 
-    async def test_a_refused_command_named_with_its_refusal_is_allowed(self):
+    @pytest.mark.parametrize(
+        ("phrase", "command"), [("aq doctor", "doctor_run"), ("aq git commit", "git_commit")]
+    )
+    async def test_a_refused_command_named_with_its_refusal_is_allowed(self, phrase, command):
         """Naming an operator command as a counterexample stays legal."""
-        from src.api.scope import AGENT_COMMAND_SET
+        from src.api.scope import AGENT_COMMAND_SET, _WORKER_GIT_COMMANDS
 
-        marked = "Operator surfaces (`aq doctor`) answer `out of scope: <command>`."
-        assert _CLI_TO_COMMAND["aq doctor"] not in AGENT_COMMAND_SET
+        marked = f"Worker scope refuses `{phrase}` with `out of scope: {command}`."
+        assert _aq_phrases(marked) == {phrase}
+        assert _CLI_TO_COMMAND[phrase] == command
+        assert command not in AGENT_COMMAND_SET | _WORKER_GIT_COMMANDS
         assert "out of scope" in marked
 
 

@@ -202,11 +202,24 @@ somehow declares none.
   A pre-existing failure does not fail your task or justify weakening or skipping
   a test; name it in the close summary. When authoring a task, specify focused
   and area checks instead of "run the full suite before closing".
-- **Preserve work.** Push code changes to the assigned branch and record the
-  head SHA and checks. Open a PR only when the task/project requires one.
+- **Commit and preserve work.** Commit with plain `git` in your own worktree.
+  `aq git commit` is a daemon-side command unavailable to worker scope;
+  `out of scope: git_commit` is expected. A local `git commit` is authorized and
+  is not a bypass. Publish only through
+  `aq git push --expected-remote-oid <observed-remote-oid>` with the observed lease;
+  all-zero OID is only for a branch confirmed absent. If the remote moves,
+  escalate; never guess a lease or use plain `git push`. Record the head SHA and
+  checks. Open a PR only when the task/project requires one.
   A worker checkpoint is not proof that its changes reached the default branch.
+- **Keep the daemon's commit identity.** The daemon injects `GIT_AUTHOR_NAME`,
+  `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` into task and
+  pool worker sessions. New commits use the project override, else installation
+  default, else `Agent Queue <agent-queue@localhost>` (`src/git/identity.py`).
+  Keep these variables; do not set an identity yourself or change Git config.
+  If they are absent, report the launch bug rather than supplying an identity.
+  Never pass `--no-verify` or amend a pushed commit.
 - **No independent merges.** Leave publication to the configured integration
-  owner. Never use another CLI or edit state to bypass an AQ rejection.
+  owner. Never bypass any other AQ rejection with another CLI or state edit.
 - **Close truthfully.** Use `aq task close --outcome pass` only when required
   deliverables are satisfied; include verification evidence. For unresolved
   failure use the supported `--outcome fail` and work-outcome flags with a precise
