@@ -95,9 +95,11 @@ EXPECTED_AGENT_COMMANDS = {
     # Mandatory routing §7: a worker re-routes a task it filed.
     "task_route",
     "integration_status",
-    # Promotion validation is read-only and pinned to the worker's project.
+    # Promotion validation and cached history reads are pinned to the worker's project.
     "promote_schema",
     "promote_validate",
+    "promote_status",
+    "promote_list",
     "integration_resolve_candidate_member",
     "review_submit",
     "review_show",
@@ -208,6 +210,20 @@ class TestCheckCommandScope:
         assert "project_id mismatch" in check_command_scope(
             "integration_status", {"project_id": "p2"}, SESSION
         )
+
+    def test_promotion_history_reads_are_project_scoped_and_mutations_stay_refused(self):
+        for command in ("promote_status", "promote_list"):
+            args = {}
+            assert check_command_scope(command, args, SESSION) is None
+            assert args["project_id"] == "p1"
+            assert "project_id mismatch" in check_command_scope(
+                command, {"project_id": "p2"}, SESSION
+            )
+            assert "no assigned project" in check_command_scope(
+                command, {}, RequestScope(kind="session", session_id="idle")
+            )
+        for command in ("promote_request", "promote_approve", "promote_cancel"):
+            assert check_command_scope(command, {}, SESSION) == f"out of scope: {command}"
 
     def test_task_id_mismatch_blocked(self):
         msg = check_command_scope("task_show", {"task_id": "other"}, SESSION)
