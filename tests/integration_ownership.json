@@ -8109,6 +8109,9 @@
     },
     "src/api/target_scope.py::CONTEXT_TARGET_RESOLVERS[('decision_list', 'object_id')]": {
       "reason": "Registers tagged integration operator decision read ownership."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._release_stopped_slot_reset_claim": {
+      "reason": "Slot-reset claim recovery checks retained integration branch owners under row locks; it preserves ownership and releases only an exactly proven stopped task claim."
     }
   },
   "exclusions": {
@@ -12066,7 +12069,9 @@
     "fff14f8db26fe7d356fa54882f8b9fad11b3df0209c79521bd934fc3cd6e4962",
     "fff6baa3262ea5a823c2f7329ef4894641c975c9ed0d2a4b14fa4f38327f4193",
     "b2b8b1fca3f7fca3974df588fc0b252662f055e7618857df175a587c64f6d58b",
-    "1dbd1dc2e1c65b0f88735e32298e7c0f635409e30b7dcdc798b0cb77119d5a98"
+    "1dbd1dc2e1c65b0f88735e32298e7c0f635409e30b7dcdc798b0cb77119d5a98",
+    "2390e3c6e9f20e2c63615dd8429e6148c0451a6e2f06388d9fabc263b91a524c",
+    "5c38788248a432e1f59e1cac3b2f4611f202c9dce5c9cda3fe7627dc9595aad9"
   ],
   "owned_file_fingerprints": [
     "020e0abc4dae8c8c3a3671fab609db3a5b1308dba6bd380a94fccfb591c63c4d",
@@ -12895,13 +12900,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin.resume_task::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 878,
+      "line": 991,
       "owner": "TaskQueryMixin.resume_task",
       "call": "delete",
-      "owner_fingerprint": "4b4b788830311c178a780d686c97d9a1abb3c3af720421d71892bc00f1f68673",
+      "owner_fingerprint": "5c38788248a432e1f59e1cac3b2f4611f202c9dce5c9cda3fe7627dc9595aad9",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Clears slot-reset preparation backoff and its own needs_attention marker after proven stopped-claim cleanup; ordinary resume state with no ref replay or delivery authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin.set_task_meta::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
       "line": 2177,
@@ -14162,6 +14167,15 @@
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Operator audit of batch abort or delivered-origin retirement with principal and reason; never replayed and carries no ref-update lifecycle."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._release_stopped_slot_reset_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 973,
+      "owner": "TaskQueryMixin._release_stopped_slot_reset_claim",
+      "call": "delete",
+      "owner_fingerprint": "2390e3c6e9f20e2c63615dd8429e6148c0451a6e2f06388d9fabc263b91a524c",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Deletes only the exact stopped session claimed_by_session record after stop-proof, claim-epoch, workspace and retained-owner checks; ordinary claim cleanup with no ref replay or ownership release."
     }
   },
   "generic_dependencies": {

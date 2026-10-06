@@ -9180,6 +9180,9 @@
     },
     "src/api/target_scope.py::CONTEXT_TARGET_RESOLVERS[('decision_list', 'object_id')]": {
       "reason": "Registers tagged integration operator decision read ownership."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._release_stopped_slot_reset_claim": {
+      "reason": "Slot-reset claim recovery checks retained integration branch owners under row locks; it preserves ownership and releases only an exactly proven stopped task claim."
     }
   },
   "shared_state": {
