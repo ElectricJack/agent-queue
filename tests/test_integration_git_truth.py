@@ -74,6 +74,178 @@ async def source_work(repo):
     return first, final, request
 
 
+CATALOGUE = "tests/selection_catalogue.json"
+
+
+async def generated_base(repo, path=CATALOGUE, *, declared=True):
+    await repo.run("checkout", "main")
+    await repo.commit(".gitattributes", (
+        f"{CATALOGUE} merge=aq-generated\npackages/aq-client/** merge=aq-generated\n"
+        if declared else ""
+    ))
+    (repo.path / path).parent.mkdir(parents=True, exist_ok=True)
+    repo.base = await repo.commit(path, "base\n")
+    await repo.publish()
+    await repo.run("checkout", "-B", "source")
+
+
+@pytest.mark.parametrize("path", [CATALOGUE, "packages/aq-client/nested/odd :*\t\n.bin"])
+async def test_whole_source_patch_ignores_regenerated_artifacts(repository, path):
+    repo = repository
+    await generated_base(repo, path)
+    await repo.commit("one")
+    head = await repo.commit(path, "source-generated\n")
+    request = await repo.retain(head)
+    await repo.run("checkout", "main")
+    await repo.commit("one", message="delivered source under another commit")
+    await repo.commit(path, "target-generated\n")
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    assert await repo.git.apatch_id(str(repo.path), repo.base, head) != (
+        await repo.git.apatch_id(str(repo.path), repo.base, snapshot.target_oid)
+    )
+    # A checkout's attributes cannot change the immutable target's proof.
+    (repo.path / ".gitattributes").write_text("")
+    proof = await snapshot.is_delivered(request, source_base=repo.base)
+    assert (proof.state, proof.reason) == (DeliveryState.CONTAINED, "whole_source_patch")
+    assert await snapshot.contains_source("task", head, repo.base) is True
+
+
+@pytest.mark.parametrize("complete", [False, True])
+async def test_cherry_picked_multi_commit_source_ignores_generated_history(
+    repository, monkeypatch, complete,
+):
+    from src.integration import git_truth
+
+    repo = repository
+    await generated_base(repo)
+    first = await repo.commit("one")
+    await repo.commit(CATALOGUE, "source-generated\n")
+    head = await repo.commit("two")
+    request = await repo.retain(head)
+    await repo.run("checkout", "main")
+    await repo.commit("unrelated")
+    for index in range(8):
+        await repo.commit(CATALOGUE, f"target-generated {index}\n")
+    await repo.run("cherry-pick", first)
+    if complete:
+        await repo.run("cherry-pick", head)
+    await repo.publish()
+    # Generated-only history must not spend the bounded patch search budget.
+    monkeypatch.setattr(git_truth, "HISTORICAL_PATCH_PROBE_LIMIT", 5)
+    snapshot = await repo.snapshot()
+    proof = await snapshot.is_delivered(request, source_base=repo.base)
+    assert (proof.state, proof.reason) == (
+        (DeliveryState.CONTAINED, "whole_source_patch") if complete else
+        (DeliveryState.PENDING, "source_not_delivered")
+    )
+    assert await snapshot.contains_source("task", head, repo.base) is complete
+
+
+async def test_historical_patch_ignores_generated_paths_deleted_from_target(repository):
+    repo = repository
+    await generated_base(repo)
+    await repo.commit("one")
+    head = await repo.commit(CATALOGUE, "source-generated\n")
+    request = await repo.retain(head)
+    await repo.run("checkout", "main")
+    extra = "packages/aq-client/obsolete.py"
+    (repo.path / extra).parent.mkdir(parents=True)
+    (repo.path / extra).write_text("target-only generated output\n")
+    await repo.run("add", "--", extra)
+    await repo.commit("one", message="delivered source with other generated output")
+    await repo.run("rm", "--", "one", extra)
+    await repo.run("commit", "-m", "later revert and generated cleanup")
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    assert (await snapshot.is_delivered(request, source_base=repo.base)).reason == (
+        "whole_source_patch")
+    assert await snapshot.contains_source("task", head, repo.base) is True
+
+
+@pytest.mark.parametrize("declared", [False, True])
+@pytest.mark.parametrize("code", ["delivered", "missing", "conflict"])
+async def test_merge_noop_ignores_only_declared_generated_conflicts(repository, declared, code):
+    repo = repository
+    await generated_base(repo, declared=declared)
+    await repo.commit("one", "source\n")
+    head = await repo.commit(CATALOGUE, "source-generated\n")
+    request = await repo.retain(head)
+    await repo.run("checkout", "main")
+    if code != "missing":
+        await repo.commit("one", "source\n" if code == "delivered" else "conflict\n",
+                          message="independent delivery")
+    await repo.commit(CATALOGUE, "target-generated\n")
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    # No source base supplied: full-tree equality fails on the generated delta.
+    proof = await snapshot.is_delivered(request)
+    contained = declared and code == "delivered"
+    assert (proof.state, proof.reason) == (
+        (DeliveryState.CONTAINED, "merge_noop") if contained else
+        (DeliveryState.PENDING, "source_not_delivered")
+    )
+    assert await snapshot.contains_source("task", head, repo.base) is contained
+
+
+async def test_merge_noop_ignores_clean_generated_delta(repository):
+    repo = repository
+    await generated_base(repo)
+    await repo.commit("one")
+    head = await repo.commit(CATALOGUE, "source-generated\n")
+    request = await repo.retain(head)
+    await repo.run("checkout", "main")
+    await repo.commit("one", message="independent delivery")
+    await repo.publish()
+    assert (await (await repo.snapshot()).is_delivered(request)).reason == "merge_noop"
+
+
+async def test_nested_attribute_override_keeps_a_difference_owed(repository):
+    repo = repository
+    await generated_base(repo)
+    await repo.run("checkout", "main")
+    repo.base = await repo.commit("tests/.gitattributes", "selection_catalogue.json -merge\n")
+    await repo.publish()
+    await repo.run("checkout", "-B", "source")
+    await repo.commit("one")
+    head = await repo.commit(CATALOGUE, "source\n")
+    request = await repo.retain(head)
+    await repo.run("checkout", "main")
+    await repo.commit("one", message="independent delivery")
+    await repo.commit(CATALOGUE, "target\n")
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    for source_base in (None, repo.base):
+        assert (await snapshot.is_delivered(request, source_base=source_base)).state == (
+            DeliveryState.PENDING)
+    assert await snapshot.contains_source("task", head, repo.base) is False
+
+
+async def test_generated_attribute_lookup_failure_never_proves_delivery(repository, monkeypatch):
+    repo = repository
+    await generated_base(repo)
+    await repo.commit("one")
+    head = await repo.commit(CATALOGUE, "source-generated\n")
+    request = await repo.retain(head)
+    await repo.run("checkout", "main")
+    await repo.commit("one", message="independent delivery")
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    run = repo.git.arun_git_result
+
+    async def failing(args, **kwargs):
+        if "check-attr" in args:
+            raise GitError("attribute lookup failed")
+        return await run(args, **kwargs)
+
+    monkeypatch.setattr(repo.git, "arun_git_result", failing)
+    for source_base in (None, repo.base):
+        proof = await snapshot.is_delivered(request, source_base=source_base)
+        assert proof.state == DeliveryState.UNKNOWN
+        assert "GitError" in proof.error_detail
+    assert await snapshot.contains_source("task", head, repo.base) is None
+
+
 async def test_exact_ancestor_and_revert_remain_delivered(repository):
     repo = repository
     head = await repo.commit("one")
