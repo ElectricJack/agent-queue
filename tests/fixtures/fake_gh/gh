@@ -21,6 +21,27 @@ if [ -n "${FAKE_GH_ARGV_LOG:-}" ]; then
   printf '\036' >>"$FAKE_GH_ARGV_LOG"
 fi
 
+# Keep the raw invocation above, then normalize the runner's response flag
+# for the fixture's positional dispatch below.
+include_headers=false
+if [ "${1:-}" = "api" ]; then
+  command_args=(api)
+  shift
+  for argument in "$@"; do
+    case "$argument" in
+      --include|-i) include_headers=true ;;
+      *) command_args+=("$argument") ;;
+    esac
+  done
+  set -- "${command_args[@]}"
+fi
+
+api_headers() {
+  if [ "$include_headers" = true ]; then
+    printf 'HTTP/2.0 200 OK\r\ncontent-type: application/json\r\n\r\n'
+  fi
+}
+
 if [ -n "${FAKE_GH_SLEEP:-}" ]; then
   sleep "$FAKE_GH_SLEEP"
 fi
@@ -101,11 +122,13 @@ case "$command_pair" in
     ;;
   "api user")
     [ "$state" = "authed" ] || not_logged_in 4
+    api_headers
     printf '%s\n' "$login"
     exit 0
     ;;
   "api graphql")
     [ "$state" = "authed" ] || not_logged_in 4
+    api_headers
     case "$field_query" in
       *organizations*)
         cat <<JSON
@@ -149,6 +172,7 @@ JSON
     ;;
   "api --method")
     [ "$state" = "authed" ] || not_logged_in 4
+    api_headers
     full="${6#repos/}"
     printf '{"id":42,"full_name":"%s"}\n' "$full"
     exit 0
