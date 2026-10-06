@@ -29,6 +29,7 @@ class EpicPolicy:
     check_names: tuple[str, ...]
     check_trust: str
     reviews: ReviewRequirements = ReviewRequirements()
+    check_version: str = ""
 
 
 @dataclass(frozen=True)
