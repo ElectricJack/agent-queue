@@ -194,6 +194,12 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
             except (GitError, ValueError):
                 pass
             verdict = Verdict(task_id, "unproven")
+            if not _answered_by_row(request):
+                # A committed transition without its completion row: no
+                # legacy row can answer that generation, so prove nothing.
+                verdict.tried.append(("generation", "uncommitted_completion_row"))
+                verdicts.append(verdict)
+                continue
             async with db._engine.connect() as conn:
                 candidates = await _candidates(conn, task_id, request.branch_name,
                                                observation.source_heads)
@@ -225,21 +231,23 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
     }
 
 
+def _answered_by_row(request) -> bool:
+    """Whether :func:`project_delivered` would honour a row written now."""
+    return request.completed_at is not None or (
+        request.completion_id == request.legacy_generation)
+
+
 async def _record(db, request, target, target_oid, verdict, *, operator_id, reason, now) -> str:
     """Insert one row if the task and completion are still the proven ones."""
     async with db._engine.begin() as conn:
         row = (await conn.execute(
-            select(tasks.c.status, tasks.c.updated_at, tasks.c.parent_task_id)
-            .where(tasks.c.id == request.task_id).with_for_update()
+            select(tasks.c.parent_task_id).where(tasks.c.id == request.task_id).with_for_update()
         )).first()
-        latest = await conn.scalar(
-            select(task_completion_records.c.id)
-            .where(task_completion_records.c.task_id == request.task_id)
-            .order_by(task_completion_records.c.completed_at.desc(),
-                      task_completion_records.c.id).limit(1)
-        )
-        if (row is None or row.status != "COMPLETED" or row.updated_at != request.task_version
-                or latest != request.completion_id):
+        current = (await load_delivery_requests(
+            db, [request.task_id], repository_id=target.repository_id,
+            target_ref=target.target_ref, conn=conn, reduced=True,
+        )).get(request.task_id)
+        if row is None or current != request:
             return "changed"
         await conn.execute(pg_insert(integration_legacy_deliveries).values(
             task_id=request.task_id, project_id=target.project_id,
