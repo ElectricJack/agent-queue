@@ -36,12 +36,14 @@ from src.integration.attestation import IntegrationAttestationService
 from src.integration.batches import (
     Batch,
     BatchMember,
+    BatchObservation,
     BatchService,
     BatchStore,
     candidate_ref,
 )
 from src.integration.candidate_baseline import BASELINE_BLOCKER, CandidateBaselineService
 from src.integration.ci import ATTESTATION_CHECK_NAME, IntegrationTrustManifest
+from src.integration.cleanup import IntegrationCleanupService
 from src.integration.delivery_observer import DeliveryObserver
 from src.integration.git_truth import GitTruth
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
@@ -59,6 +61,7 @@ from src.integration.train_sources import (
     DatabaseBatches,
     DatabaseTargets,
     LeasedPublish,
+    RETAINED_CANDIDATE_PREFIX,
     _never_trusted,
     _pending_tasks,
     _push_branch_allowed,
@@ -673,6 +676,292 @@ async def test_abort_cleanup_recovers_old_seal_and_only_releases_its_detached_re
         ))).all())
     assert states["refs/heads/attached"] == "attached"
     assert states[candidate_ref("other-batch")] == "reserved"
+
+
+class TrainCleanupForge:
+    """Only the GitHub comment boundary is substituted; Git proof stays real."""
+
+    def __init__(self, heads=()):
+        self.prs = {number: dict(repository_numeric_id=123, repository_full_name="test/repo",
+                                head_sha=head, state="closed") for number, head in heads}
+        self.comments = []
+        self.markers = set()
+
+    async def exact_pull_request(self, *, number):
+        return self.prs.get(number)
+
+    async def has_comment_marker(self, *, number, marker):
+        return (number, marker) in self.markers
+
+    async def comment_pull_request(self, *, number, marker, body):
+        self.comments.append((number, body))
+        self.markers.add((number, marker))
+
+    async def close_pull_request(self, *, number):
+        raise AssertionError("GitHub owns the merged state of train PRs")
+
+
+def train_cleanup(world, tmp_path, *, forge=None, transport=None, clock=time.time):
+    return IntegrationCleanupService(
+        world.db, data_dir=tmp_path, git_manager=transport or LocalGit(Path(world.origin.url)),
+        forge_provider=forge,
+        binding_resolver=AsyncMock(return_value=GitHubRepositoryBinding(123, "test/repo")),
+        candidate_store=AsyncMock(return_value=world.origin.clone), clock=clock,
+    )
+
+
+async def freeze_cleanup_batch(world, batch_id, sources, *, target=MAIN.target_ref):
+    batch = Batch(batch_id, "p", "r", target)
+    members = tuple(BatchMember(tid, head, git(world.origin.clone, "rev-parse", f"{head}^"), n)
+                    for n, (tid, head) in enumerate(sources.items()))
+    await BatchStore(world.db).freeze(batch, members,
+                                    trees={m.task_id: tree(world, m.source_sha) for m in members})
+    return batch
+
+
+async def publish_cleanup_candidate(world, batch, head, *, cleanup=None):
+    git(world.origin.clone, "push", "origin", f"{head}:{candidate_ref(batch.id)}")
+    git(world.origin.clone, "update-ref", RETAINED_CANDIDATE_PREFIX + batch.id, head)
+    await DatabaseBatches(world.db, cleanup=cleanup).settle(
+        batch, BatchObservation("delivered", candidate_sha=head, target_sha=head),
+    )
+
+
+async def test_promoted_train_cleans_refs_and_comments_only_repair_commits(world, tmp_path):
+    """Fidelity §6 tests 9 and 3: exact promotion cleanup and a reviewer-visible fix."""
+    db, origin = world.db, world.origin
+    sources = {tid: await completed(world, tid) for tid in ("a", "b")}
+    for tid in sources:
+        origin.land(tid)
+    start = git(origin.clone, "rev-parse", "HEAD")
+    batch = await freeze_cleanup_batch(world, "train-clean", sources)
+    git(origin.clone, "push", "origin", f"{start}:{candidate_ref(batch.id)}")
+    repair = await OrdinaryRepairService(db).allocate(
+        batch.id, target_ref=candidate_ref(batch.id), head_sha=start, brief="fix the candidate",
+        authorize=AsyncMock(return_value=True),
+    )
+    fix = commit(origin.clone, {"fix.txt": "repair\n"})
+    git(origin.clone, "push", "origin", f"{fix}:refs/heads/main")
+    await close(db, repair["task_id"], [fix], origin=origin)
+    locks = BranchLock(db)
+    owner = await locks.get(BranchKey(repository_id="r", branch=candidate_ref(batch.id)))
+    await locks.release(owner.grant())
+    async with db.immediate() as conn:
+        for number, tid in enumerate(sources, 1):
+            await conn.execute(update(tasks).where(tasks.c.id == tid).values(
+                pr_url=f"https://github.com/test/repo/pull/{number}",
+            ))
+    forge = TrainCleanupForge(enumerate(sources.values(), 1))
+    cleanup = train_cleanup(world, tmp_path, forge=forge)
+    await publish_cleanup_candidate(world, batch, fix, cleanup=cleanup)
+    from src.database.tables import integration_cleanup_items
+
+    async with db._engine.connect() as conn:
+        assert len((await conn.execute(select(integration_cleanup_items))).all()) == 6
+    results = await cleanup.advance(batch.id)
+    async with db._engine.connect() as conn:
+        errors = (await conn.execute(select(integration_cleanup_items.c.identity,
+                                           integration_cleanup_items.c.last_error))).all()
+    assert {r.outcome for r in results} == {"complete"}, errors
+    assert (await db.get_integration_batch(batch.id))["cleanup_state"] == "complete"
+    for tid in sources:
+        assert not git(origin.url, "for-each-ref", "--format=%(refname)", f"refs/heads/aq/{tid}")
+    assert not git(origin.url, "for-each-ref", "--format=%(refname)", candidate_ref(batch.id))
+    assert not git(origin.clone, "for-each-ref", "--format=%(refname)",
+                   RETAINED_CANDIDATE_PREFIX + batch.id)
+    assert len(forge.comments) == 2
+    for _, body in forge.comments:
+        assert fix in body and "Integration repair commits" in body
+        repairs = body.split("Integration repair commits", 1)[1]
+        assert f"- `{fix}`" in repairs
+        assert all(head not in repairs for head in sources.values())
+    assert await cleanup.advance(batch.id) == []
+    assert len(forge.comments) == 2
+
+
+async def test_promoted_train_bundles_rewritten_member_without_deleting_it(world, tmp_path):
+    head = await completed(world, "a", land=True)
+    batch = await freeze_cleanup_batch(world, "train-rewritten", {"a": head})
+    promoted = git(world.origin.url, "rev-parse", "refs/heads/main")
+    await publish_cleanup_candidate(world, batch, promoted)
+    rewritten = world.origin.work("a", name="rewritten")
+    cleanup = train_cleanup(world, tmp_path)
+    results = await cleanup.advance(batch.id)
+    assert {r.outcome for r in results} == {"complete", "conflict"}
+    assert git(world.origin.url, "rev-parse", "refs/heads/aq/a") == rewritten
+    [bundle] = (tmp_path / "branch-backups").rglob("*.bundle")
+    assert rewritten in git(world.origin.clone, "bundle", "list-heads", str(bundle))
+    git(world.origin.clone, "bundle", "verify", str(bundle))
+    assert (await world.db.get_integration_batch(batch.id))["cleanup_state"] == "conflict"
+
+
+async def test_first_advance_backfills_all_pending_promoted_train_batches(world, tmp_path):
+    sources = {tid: await completed(world, tid, land=True) for tid in "abcdefghijklmnopqrs"}
+    promoted = git(world.origin.url, "rev-parse", "refs/heads/main")
+    for tid, head in sources.items():
+        # Before this change, freeze left both source identity fields null.
+        async with world.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == tid).values(branch_name=None))
+        batch = await freeze_cleanup_batch(world, "train-backfill-" + tid, {tid: head})
+        async with world.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == tid)
+                               .values(branch_name=f"aq/{tid}"))
+        await publish_cleanup_candidate(world, batch, promoted)
+    cleanup = train_cleanup(world, tmp_path)
+    await cleanup.advance("train-backfill-a")
+    from src.database.tables import integration_cleanup_items
+
+    async with world.db._engine.connect() as conn:
+        items = (await conn.execute(select(integration_cleanup_items))).mappings().all()
+    assert {row["batch_id"] for row in items} == {"train-backfill-" + tid for tid in sources}
+    assert len(items) == 57
+    assert git(world.origin.url, "rev-parse", "refs/heads/aq/b") == sources["b"]
+    await cleanup.reconcile(time.time())
+    batches = [await world.db.get_integration_batch("train-backfill-" + tid) for tid in sources]
+    assert all(batch["cleanup_state"] == "complete" for batch in batches)
+
+
+async def test_promoted_train_cleanup_honors_retention_and_live_epic_target(world, tmp_path):
+    head = await completed(world, "epic", done=False)
+    world.origin.land("epic")
+    batch = await freeze_cleanup_batch(world, "train-open-epic", {"epic": head})
+    promoted = git(world.origin.url, "rev-parse", "refs/heads/main")
+    await publish_cleanup_candidate(world, batch, promoted)
+    cleanup = train_cleanup(world, tmp_path)
+    results = await cleanup.advance(batch.id)
+    assert "retryable" in {r.outcome for r in results}
+    assert git(world.origin.url, "rev-parse", "refs/heads/aq/epic") == head
+    assert (await world.db.get_integration_batch(batch.id))["cleanup_state"] == "pending"
+
+    # A retained source is omitted, while private candidate refs still retire.
+    await world.db.transition_task("epic", TaskStatus.COMPLETED)
+    async with world.db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_policy={"cleanup": {"successful_source_refs": "retain"}},
+        ))
+    retained = await freeze_cleanup_batch(world, "train-retained", {"epic": head})
+    await publish_cleanup_candidate(world, retained, promoted, cleanup=cleanup)
+    assert {r.outcome for r in await cleanup.advance(retained.id)} == {"complete"}
+    assert git(world.origin.url, "rev-parse", "refs/heads/aq/epic") == head
+
+
+async def test_promoted_train_cleanup_protects_open_subject_target(world, tmp_path):
+    from src.database.tables import integration_subjects, playbook_artifacts
+    from src.integration.subjects import (
+        PolicyArtifactPin, Subject, SubjectKind, SubjectPhase, SubjectSchedule,
+    )
+
+    head = await completed(world, "epic", land=True)
+    batch = await freeze_cleanup_batch(world, "train-subject-target", {"epic": head})
+    promoted = git(world.origin.url, "rev-parse", "main")
+    await publish_cleanup_candidate(world, batch, promoted)
+    clock = [time.time()]
+    pin = PolicyArtifactPin(playbook_id="test", artifact_sha256="sha256:" + "1" * 64)
+    async with world.db.immediate() as conn:
+        await conn.execute(insert(playbook_artifacts).values(
+            artifact_sha256=pin.artifact_sha256, playbook_id=pin.playbook_id,
+            source_digest="sha256:" + "2" * 64, contract_fingerprint="sha256:" + "3" * 64,
+            compiler_build="test", path="/test/policy.json", created_at=clock[0],
+        ))
+    await world.db.ensure_integration_subject(Subject(
+        id="open-epic", project_id="p", repository_id="r", kind=SubjectKind.SOURCE,
+        subject_key="source:r:epic:0", task_id="epic", policy=pin,
+        phase=SubjectPhase.REPAIRING, target_ref="refs/heads/aq/epic", head_sha=head,
+        schedule=SubjectSchedule.progress(now=clock[0], max_wait_seconds=600),
+        created_at=clock[0], updated_at=clock[0],
+    ).to_row())
+    cleanup = train_cleanup(world, tmp_path, clock=lambda: clock[0])
+    assert "retryable" in {r.outcome for r in await cleanup.advance(batch.id, now=clock[0])}
+    assert git(world.origin.url, "rev-parse", "refs/heads/aq/epic") == head
+    async with world.db.immediate() as conn:
+        await conn.execute(update(integration_subjects).where(
+            integration_subjects.c.id == "open-epic",
+        ).values(phase="done", next_due_at=None, closed_reason="delivered"))
+    clock[0] += 30
+    assert {r.outcome for r in await cleanup.advance(batch.id, now=clock[0])} == {"complete"}
+    assert not git(world.origin.url, "for-each-ref", "--format=%(refname)", "refs/heads/aq/epic")
+
+
+async def test_abort_cleanup_removes_retained_candidate_but_keeps_local_member(world, tmp_path):
+    head = await completed(world, "a")
+    batch = await freeze_cleanup_batch(world, "train-abort-retained", {"a": head})
+    git(world.origin.clone, "push", "origin", f"{head}:{candidate_ref(batch.id)}")
+    retained = RETAINED_CANDIDATE_PREFIX + batch.id
+    git(world.origin.clone, "update-ref", retained, head)
+    await BatchStore(world.db).set_intent(batch.id, "aborted")
+    cleanup = train_cleanup(world, tmp_path)
+    await cleanup.reconcile_aborted(time.time())
+    assert (await world.db.get_integration_batch(batch.id))["cleanup_state"] == "complete"
+    assert not git(world.origin.clone, "for-each-ref", "--format=%(refname)", retained)
+    assert git(world.origin.clone, "rev-parse", "refs/heads/aq/a") == head
+    assert git(world.origin.url, "rev-parse", "refs/heads/aq/a") == head
+
+
+async def test_promoted_train_cleanup_uses_frozen_retry_policy(world, tmp_path):
+    from src.database.tables import integration_cleanup_items
+    from src.git.manager import GitError
+
+    head = await completed(world, "a", land=True)
+    async with world.db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_policy={"cleanup": {"max_attempts": 3,
+                "retry_base_seconds": 7, "retry_max_seconds": 10}},
+        ))
+    batch = await freeze_cleanup_batch(world, "train-retries", {"a": head})
+    promoted = git(world.origin.url, "rev-parse", "refs/heads/main")
+    await publish_cleanup_candidate(world, batch, promoted)
+    async with world.db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_policy={"cleanup": {"max_attempts": 1}},
+        ))
+    transport = LocalGit(Path(world.origin.url))
+    transport.adelete_repository_ref = AsyncMock(side_effect=GitError("transfer failed"))
+    clock = [time.time()]
+    cleanup = train_cleanup(world, tmp_path, transport=transport, clock=lambda: clock[0])
+    first = await cleanup.advance(batch.id, now=clock[0])
+    assert {r.outcome for r in first} == {"complete", "retryable"}
+    async with world.db._engine.connect() as conn:
+        pending = (await conn.execute(select(integration_cleanup_items).where(
+            integration_cleanup_items.c.state == "retryable",
+        ))).mappings().all()
+    assert len(pending) == 2
+    assert all(row["attempts"] == 1 and row["next_attempt_at"] == clock[0] + 7
+               for row in pending)
+    assert await cleanup.advance(batch.id, now=clock[0] + 6) == []
+    clock[0] += 7
+    assert {r.outcome for r in await cleanup.advance(batch.id, now=clock[0])} == {"retryable"}
+    assert await cleanup.advance(batch.id, now=clock[0] + 9) == []
+    clock[0] += 10
+    last = await cleanup.advance(batch.id, now=clock[0])
+    assert {r.outcome for r in last} == {"failed"}
+    assert all(r.attempts == 3 for r in last)
+    assert transport.adelete_repository_ref.await_count == 6
+    assert git(world.origin.url, "rev-parse", "refs/heads/aq/a") == head
+
+
+@pytest.mark.parametrize("ambiguous", [False, True])
+async def test_promoted_train_cleanup_defers_to_writer_and_settles_delete_response(
+    world, tmp_path, ambiguous,
+):
+    head = await completed(world, "a", land=True)
+    batch = await freeze_cleanup_batch(world, "train-writer", {"a": head})
+    promoted = git(world.origin.url, "rev-parse", "refs/heads/main")
+    await publish_cleanup_candidate(world, batch, promoted)
+    transport = LocalGit(Path(world.origin.url))
+    transport.ambiguous = ambiguous
+    clock = [time.time()]
+    locks = BranchLock(world.db, clock=lambda: clock[0])
+    ref = candidate_ref(batch.id)
+    writer = await locks.acquire(BranchKey(repository_id="r", branch=ref),
+                                 "repair-writer", role="repair", ttl_seconds=120)
+    cleanup = train_cleanup(world, tmp_path, transport=transport, clock=lambda: clock[0])
+    assert "retryable" in {r.outcome for r in await cleanup.advance(batch.id, now=clock[0])}
+    assert git(world.origin.url, "rev-parse", ref) == promoted
+    assert (await locks.get(writer.target)).holder == "repair-writer"
+    await locks.release(writer)
+    clock[0] += 30
+    assert {r.outcome for r in await cleanup.advance(batch.id, now=clock[0])} == {"complete"}
+    assert (await world.db.get_integration_batch(batch.id))["cleanup_state"] == "complete"
 
 
 async def test_abort_cannot_release_a_member_also_in_another_active_batch(world):

@@ -316,9 +316,10 @@ class DatabaseBatches:
     """The open batch of a target, frozen from exact undelivered completions."""
 
     def __init__(self, db, *, limit: int = MEMBER_LIMIT, clock: Callable[[], float] = time.time,
-                 pr_gate: Callable | None = None):
+                 pr_gate: Callable | None = None, cleanup=None):
         self.db, self.limit, self.clock = db, limit, clock
         self.pr_gate = pr_gate
+        self.cleanup = cleanup
 
     async def open_batch(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, service: BatchService, *,
@@ -724,8 +725,16 @@ class DatabaseBatches:
                        integration_batches.c.target_ref.is_not(None),
                        integration_batches.c.lifecycle != "promoted")
                 .values(lifecycle="promoted", final_main_sha=observation.target_sha,
+                        tested_candidate_sha=observation.candidate_sha,
                         updated_at=self.clock())
             )
+        if self.cleanup is not None:
+            # External identity resolution is outside the settlement transaction;
+            # maintenance recovers a failure between commit and materialization.
+            try:
+                await self.cleanup.materialize(batch.id, now=self.clock())
+            except Exception:
+                logger.warning("Could not materialize promoted batch %s", batch.id, exc_info=True)
 
 
 async def epic_policy_on(conn, row, project) -> EpicPolicy:
@@ -1382,7 +1391,8 @@ def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> Integr
         return None
     from src.integration.repair import OrdinaryRepairService
 
-    batches = DatabaseBatches(orchestrator.db, clock=clock)
+    batches = DatabaseBatches(orchestrator.db, clock=clock,
+                             cleanup=getattr(orchestrator, "integration_cleanup_service", None))
     return IntegrationTrain(
         targets=DatabaseTargets(orchestrator.db),
         batches=batches,
