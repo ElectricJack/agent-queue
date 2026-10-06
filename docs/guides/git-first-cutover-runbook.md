@@ -125,6 +125,10 @@ integration:
 aq restart --no-dashboard
 ```
 
+If this deploy changed dashboard sources, also rebuild and restart the dashboard:
+`python3 ~/.agent-queue/operator-checks/build-dashboard.py`, then `aq dashboard restart`.
+Restarting the daemon does not rebuild the dashboard.
+
 `aq restart --no-dashboard` preserves agent tmux sessions. Never `aq stop` then
 `aq start` for an update: `aq stop` kills every agent session.
 
