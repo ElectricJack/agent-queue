@@ -339,6 +339,24 @@ async def test_hosted_rate_limit_preserves_retry_after_for_train_pause():
     assert caught.value is error and caught.value.retry_at == 1900
 
 
+@pytest.mark.parametrize("caller", ["ci_adapter", "trusted_green"])
+async def test_hosted_rate_limit_callers_fail_closed_without_recording_attempt(caller):
+    from src.integration.development_runtime import DevelopmentTrustedGreen
+
+    client, trust = github(app=False)
+    error = GitHubAccessError("rate_limited", "secondary limit", retry_at=1900, http_status=403)
+    client.paged_items.side_effect = error
+    producer, s = HostedCIProducer(client, trust), subject()
+    db = SubjectDB(s)
+    with pytest.raises(GitHubAccessError) as caught:
+        if caller == "ci_adapter":
+            await CIAdapters(db, lambda _: producer).observe(s, CIObserveArgs(head=s.head))
+        else:
+            await DevelopmentTrustedGreen(AsyncMock(return_value=producer))(s, s.head_sha)
+    assert caught.value is error and caught.value.retry_at == 1900
+    assert not db.entries
+
+
 async def test_hosted_request_uses_existing_owner_without_running_git():
     client, trust = github(app=False)
     requested = ProducerRequest(

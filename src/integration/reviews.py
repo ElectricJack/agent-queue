@@ -58,10 +58,14 @@ def pull_request_review_state(
     return "pr_review_missing"
 
 
-async def observe_pull_request_review_state(
-    reviews: Iterable[dict], head_sha: str, *, client, binding,
+class ReviewerPermissionUnavailable(ValueError):
+    """Repository permissions could not be read reliably for a human reviewer."""
+
+
+async def trusted_pull_request_reviewers(
+    reviews: Iterable[dict], *, client, binding,
     requirements: ReviewRequirements | None = None,
-) -> str:
+) -> frozenset[str]:
     """Verify repository write access; an optional allowlist can only narrow it.
 
     Permissions are read once per decisive human in this observation. Missing
@@ -87,17 +91,34 @@ async def observe_pull_request_review_state(
             permission = await client.request_json("GET",
                 f"/repos/{binding.full_name}/collaborators/{quote(login, safe='')}/permission")
         except GitHubAccessError as exc:
-            if exc.http_status == 404:
-                continue
-            raise
+            if exc.category == "rate_limited":
+                raise
+            raise ReviewerPermissionUnavailable(
+                f"reviewer permission lookup failed: {exc.category} (HTTP {exc.http_status})"
+            ) from exc
+        except (OSError, ValueError) as exc:
+            raise ReviewerPermissionUnavailable("reviewer permission lookup failed") from exc
+        if not isinstance(permission, dict):
+            raise ReviewerPermissionUnavailable("GitHub reviewer permission is malformed")
         user = permission.get("user")
         if (not isinstance(user, dict) or not isinstance(user.get("login"), str)
                 or user["login"].casefold() != login
                 or permission.get("permission") not in {"admin", "write", "read", "none"}):
-            raise ValueError("GitHub reviewer permission is malformed")
+            raise ReviewerPermissionUnavailable("GitHub reviewer permission is malformed")
         if permission["permission"] in {"write", "admin"}:
             trusted.add(login)
-    return pull_request_review_state(reviews, head_sha, trusted_reviewers=frozenset(trusted))
+    return frozenset(trusted)
+
+
+async def observe_pull_request_review_state(
+    reviews: Iterable[dict], head_sha: str, *, client, binding,
+    requirements: ReviewRequirements | None = None,
+) -> str:
+    """Reduce only decisions by currently trusted repository reviewers."""
+    reviews = tuple(reviews)
+    trusted = await trusted_pull_request_reviewers(
+        reviews, client=client, binding=binding, requirements=requirements)
+    return pull_request_review_state(reviews, head_sha, trusted_reviewers=trusted)
 
 
 @dataclass(frozen=True)

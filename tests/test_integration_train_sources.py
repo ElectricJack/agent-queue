@@ -1626,7 +1626,8 @@ class HostedGitHub:
         return {"id": record["id"]}
 
 
-async def hosted_train(world, *, retained_store=None, clock=time.time, settling=False):
+async def hosted_train(world, *, retained_store=None, clock=time.time, settling=False,
+                       review_requirements=None):
     """The daemon's own lanes for a project with no development pin: hosted checks."""
     db, origin = world.db, world.origin
     async with db._engine.begin() as conn:
@@ -1689,7 +1690,8 @@ async def hosted_train(world, *, retained_store=None, clock=time.time, settling=
     batches = (DatabaseBatches if settling else SealedBatches)(db, clock=clock)
     train = IntegrationTrain(
         targets=DatabaseTargets(db), batches=batches,
-        lane_for=DaemonLanes(orchestrator, batches=batches, clock=clock),
+        lane_for=DaemonLanes(orchestrator, batches=batches, clock=clock,
+                            review_requirements=review_requirements),
         repair=OrdinaryRepairService(db, clock=clock), clock=clock,
     )
     return train, github, trusts
@@ -2950,6 +2952,60 @@ async def test_pr_reviewer_allowlist_only_narrows_repository_write_access(permis
     assert await observe_pull_request_review_state(reviews, "a" * 40, client=client,
         binding=GitHubRepositoryBinding(123, "o/r"),
         requirements=ReviewRequirements(True, allowlist)) == state
+
+
+@pytest.mark.parametrize("status,category", [(404, "not_found"), (403, "permission"),
+                                          (502, "transient")])
+async def test_root_pr_permission_lookup_failure_has_named_cached_blocker(world, status, category):
+    head = await completed(world, "leaf")
+    now = [1000.0]
+    train, github, _ = await hosted_train(world, clock=lambda: now[0])
+    project = await world.db.get_project("p")
+    policy = project.hierarchical_integration_policy
+    policy["root"]["admission"] = "reviewed"
+    await world.db.update_project("p", hierarchical_integration_policy=policy)
+    github.reviews = [{"id": 1, "state": "APPROVED", "commit_id": head,
+                       "user": {"login": "bob", "type": "User"}}]
+    original = github.request_json
+    lookup = AsyncMock(side_effect=GitHubAccessError(category, "lookup failed", http_status=status))
+    github.request_json = lookup
+
+    visit = await train.visit(MAIN)
+    assert visit.state == "blocked" and visit.batch_id is None
+    [blocker] = visit.detail["blockers"]
+    assert blocker["code"] == "pr_review_permission_unavailable"
+    assert str(status) in blocker["reason"]
+    now[0] = 1059
+    assert (await train.visit(MAIN)).detail["blockers"] == [blocker]
+    lookup.assert_awaited_once()
+    github.request_json = original
+    now[0] = 1060
+    assert (await train.visit(MAIN)).state == "testing"
+
+
+@pytest.mark.parametrize("permission,allowlist,admitted", [
+    ("write", frozenset({"github:alice"}), False),
+    ("read", frozenset({"github:bob"}), False),
+    ("admin", frozenset({"github:BOB"}), True),
+])
+async def test_daemon_lane_passes_narrow_review_allowlist_to_pr_gate(world, permission, allowlist,
+                                                                   admitted):
+    head = await completed(world, "leaf")
+    train, github, _ = await hosted_train(
+        world, review_requirements=ReviewRequirements(True, allowlist))
+    project = await world.db.get_project("p")
+    policy = project.hierarchical_integration_policy
+    policy["root"]["admission"] = "reviewed"
+    await world.db.update_project("p", hierarchical_integration_policy=policy)
+    github.permissions["bob"] = permission
+    github.reviews = [{"id": 1, "state": "APPROVED", "commit_id": head,
+                       "user": {"login": "bob", "type": "User"}}]
+
+    visit = await train.visit(MAIN)
+    assert visit.state == ("testing" if admitted else "blocked")
+    if not admitted:
+        assert visit.batch_id is None
+        assert visit.detail["blockers"][0]["code"] == "pr_review_missing"
 
 
 async def test_untrusted_changes_request_does_not_veto_trusted_approval():

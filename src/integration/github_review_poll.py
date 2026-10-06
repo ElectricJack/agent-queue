@@ -75,7 +75,10 @@ class RootPullRequestGate:
         self._deferred = {}
 
     async def __call__(self, target, member):
-        from src.integration.reviews import observe_pull_request_review_state
+        from src.integration.reviews import (
+            ReviewerPermissionUnavailable,
+            observe_pull_request_review_state,
+        )
         from src.integration.subjects import HeadIdentity
 
         async with self.db._engine.connect() as conn:
@@ -140,6 +143,8 @@ class RootPullRequestGate:
                     return defer(state)
             self._deferred.pop(key, None)
             return None
+        except ReviewerPermissionUnavailable as exc:
+            return defer("pr_review_permission_unavailable", reason=str(exc))
         except (GitError, GitHubError, GitHubAccessError, OSError, ValueError, KeyError, TypeError) as exc:
             from src.integration.train import _rate_limit
 
@@ -493,10 +498,14 @@ class GitHubReviewPoller:
         self, row: dict[str, Any], source: dict[str, Any], binding: Any, client: Any,
         number: int, seen: _Observation,
     ) -> bool:
-        """Store each new human verdict on the exact head; False if one was not stored."""
+        """Store only trusted human verdicts on the exact head."""
+        from src.integration.reviews import trusted_pull_request_reviewers
+
         reviews = await client.paged_list(
             f"/repositories/{binding.repository_id}/pulls/{number}/reviews?per_page=100"
         )
+        trusted = await trusted_pull_request_reviewers(
+            reviews, client=client, binding=binding)
         complete = True
         for review in sorted(reviews, key=lambda item: item.get("id", -1)):
             review_id = review.get("id")
@@ -511,6 +520,8 @@ class GitHubReviewPoller:
             login = user.get("login")
             if not isinstance(login, str) or not login.strip():
                 raise GitHubAccessError("conflict_or_invalid", "GitHub reviewer was malformed")
+            if login.casefold() not in trusted:
+                continue
             if review.get("commit_id") != source["head"]:
                 continue
             approved = state == "APPROVED"
