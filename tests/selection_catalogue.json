@@ -1418,7 +1418,7 @@
       ]
     }
   },
-  "digest": "sha256:bc0ad225fb37c943618b42427c709c7eea0d20ba10474fc8997cad2fb20e6bc8",
+  "digest": "sha256:6692430a5fa77be843a5ed2b84912e34028dd5bef0826913f82decf09da461ad",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3082,6 +3082,7 @@
         "src.integration.ownership",
         "src.integration.provenance",
         "src.integration.repair",
+        "src.integration.stacked_branches",
         "src.integration.status",
         "src.integration.train",
         "src.integration.train_sources",

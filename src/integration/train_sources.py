@@ -331,15 +331,16 @@ class DatabaseBatches:
         from src.integration.stacked_branches import StackedBranches
 
         stacks = StackedBranches(self.db, clock=self.clock)
+        candidates = (await self._candidate_ids(target, snapshot)
+                      if not snapshot.error and snapshot.target_oid else [])
         async with self.db._engine.connect() as conn:
-            stacked_ids = (await conn.execute(select(task_branch_origins.c.task_id).join(
-                tasks, tasks.c.id == task_branch_origins.c.task_id,
-            ).where(tasks.c.project_id == target.project_id, tasks.c.status == "COMPLETED",
+            stacked_ids = (await conn.execute(select(task_branch_origins.c.task_id).where(
+                    task_branch_origins.c.task_id.in_(candidates),
                     task_branch_origins.c.repository_id == target.repository_id,
                     task_branch_origins.c.retired_at.is_(None),
                     task_branch_origins.c.stack_snapshot.is_not(None)))).scalars().all()
         for task_id in stacked_ids:
-            outcome = await stacks.refresh(task_id, service.gitops)
+            outcome = await stacks.refresh(task_id, service.gitops, snapshot=snapshot)
             if outcome in {"refreshed", "changed", "repair_filed"}:
                 return BatchSelection(blockers=({"code": "stack_" + outcome, "task_id": task_id,
                     "ref": task_id, "detail": "Prerequisite stack changed; take a fresh Git view"},))
@@ -508,12 +509,8 @@ class DatabaseBatches:
         raw = (policy or {}).get("train")
         return IntegrationTrainPolicy.model_validate({} if raw is None else raw)
 
-    async def pending(
-        self, target: TrainTarget, snapshot: GitTruthSnapshot, *,
-        blockers: list[dict[str, Any]] | None = None,
-        gate_pr: bool = True,
-    ):
-        """Exact pending inputs; report unknown delivery that prevents batching."""
+    async def _candidate_ids(self, target: TrainTarget, snapshot: GitTruthSnapshot):
+        """Only undelivered completions routed to this target's member window."""
         async with self.db._engine.connect() as conn:
             ids = await _pending_tasks(conn, target.project_id, target.repository_id, limit=None)
         delivered_to_project = await self.delivered(target, snapshot, ids)
@@ -527,6 +524,16 @@ class DatabaseBatches:
                 ids = list((await conn.execute(select(tasks.c.id).where(tasks.c.id.in_(ids))
                            .order_by(tasks.c.updated_at.desc(), tasks.c.id)
                            .limit(self.limit))).scalars().all())
+        return ids
+
+    async def pending(
+        self, target: TrainTarget, snapshot: GitTruthSnapshot, *,
+        blockers: list[dict[str, Any]] | None = None,
+        gate_pr: bool = True,
+    ):
+        """Exact pending inputs; report unknown delivery that prevents batching."""
+        ids = await self._candidate_ids(target, snapshot)
+        async with self.db._engine.connect() as conn:
             if not ids:
                 return None
             epics = await _epic_branches_on(conn, ids)
@@ -573,13 +580,22 @@ class DatabaseBatches:
         stacks = StackedBranches(self.db)
         for task_id in ids:
             request, base = requests.get(task_id), bases.get(task_id)
-            if task_id in repairs or not await stacks.current(task_id):
+            if task_id in repairs:
                 continue
             if request is None or not is_valid_git_oid(base or ""):
                 continue
             evidence = await snapshot.is_delivered(request, source_base=base)
             if evidence.satisfied:
                 delivered.add(task_id)
+                continue
+            # Stack freshness gates new batching; it cannot undo proven delivery.
+            if not await stacks.current(task_id):
+                if blockers is not None:
+                    async with self.db._engine.connect() as conn:
+                        origin = await stacks._origin(task_id, conn)
+                    hold = (origin and origin["stack_snapshot"] or {}).get("hold", "changed")
+                    blockers.append({"code": "stack_" + hold, "task_id": task_id,
+                        "ref": task_id, "detail": "Prerequisite stack is withheld: " + hold})
                 continue
             # Epic readiness gates new batching; it cannot undo proven delivery.
             if task_id in epics:

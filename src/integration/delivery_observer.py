@@ -389,6 +389,7 @@ class DeliveryObserver:
         self.target_loader = partial(delivery_targets, reduced=truth is not None)
         self.data_dir = Path(data_dir) / "development-integration"
         self._recent: dict[DeliveryTarget, tuple[float, DeliverySnapshot]] = {}
+        self._stack_ref_cache: dict = {}
 
     def store_path(self, repository_id: str) -> Path:
         digest = hashlib.sha256(repository_id.encode()).hexdigest()[:20]
