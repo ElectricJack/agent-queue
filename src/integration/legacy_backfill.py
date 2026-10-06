@@ -35,13 +35,14 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
     integration_batch_members,
     integration_legacy_deliveries,
     repos,
+    task_branch_origins,
     task_completion_records,
     task_delivery_receipts,
     tasks,
@@ -180,10 +181,22 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
     )
     async with db._engine.connect() as conn:
         # An epic's delivery is its readiness (children collected, checks,
-        # review), never a row: its branch can sit on the tip before any child
-        # is collected. Abandoning an old epic is the explicit decision instead.
+        # review), never a row: its branch sits on the tip before any child is
+        # collected. Only an epic whose branch carries collected work (its tip
+        # moved past the origin base) can be proven by that tip; otherwise
+        # abandoning an old epic is the explicit decision instead.
         parents = set((await conn.execute(select(tasks.c.parent_task_id).where(
             tasks.c.parent_task_id.in_(ids)))).scalars().all())
+        for parent_id, branch, base in (await conn.execute(
+            select(tasks.c.id, tasks.c.branch_name, task_branch_origins.c.base_sha)
+            .select_from(tasks.join(task_branch_origins, and_(
+                task_branch_origins.c.task_id == tasks.c.id,
+                task_branch_origins.c.retired_at.is_(None))))
+            .where(tasks.c.id.in_(parents))
+        )).all():
+            tip = observation.source_heads.get("refs/remotes/origin/" + (branch or ""))
+            if tip and base and tip != base:
+                parents.discard(parent_id)
     requests = await load_delivery_requests(
         db, [task_id for task_id in ids if task_id not in delivered and task_id not in parents],
         repository_id=target.repository_id, target_ref=target.target_ref, reduced=True,
