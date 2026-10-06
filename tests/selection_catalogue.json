@@ -1417,7 +1417,7 @@
       ]
     }
   },
-  "digest": "sha256:f8cd35d085e3f75342b366e6172c1bb71dca2ccf3933e3b52ce6287d70c41c11",
+  "digest": "sha256:b50bf7c5a99789383e4e9d4bf23072b7616b02c2130e7ab61365d4372796f83b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -14901,6 +14901,8 @@
         "src.database",
         "src.event_bus",
         "src.git.manager",
+        "src.install",
+        "src.install.update",
         "src.orchestrator",
         "src.plugins.registry",
         "src.plugins.services"
@@ -15958,17 +15960,22 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.cli",
         "src.cli.app",
+        "src.cli.update",
         "src.config",
         "src.dashboard_server.app",
         "src.dashboard_server.settings",
         "src.install",
         "src.install.command",
         "src.install.dashboard",
+        "src.install.deploy",
         "src.install.update",
         "src.install.update_finish"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "`aq update`: fetch, stop, fast-forward, rebuild, restart -- or roll back."
     },
     "tests/test_update_playbook_source_v2.py": {

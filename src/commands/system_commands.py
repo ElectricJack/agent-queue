@@ -10,7 +10,7 @@ import signal
 import time
 from pathlib import Path
 
-from src.commands.helpers import _run_subprocess, _run_subprocess_shell
+from src.commands.helpers import _run_subprocess_shell
 from src.env_scrub import scrub_env_from_config
 
 logger = logging.getLogger(__name__)
@@ -893,77 +893,65 @@ class SystemCommandsMixin:
         }
 
     async def _cmd_update_and_restart(self, args: dict) -> dict:
-        """Pull the latest source from git and restart the daemon."""
+        """Use the operator updater; it must outlive the daemon it stops."""
+        import subprocess
+        import sys
+
+        from src.install.update import UpdateRefused, plan_update
+
         reason = args.get("reason", "No reason provided")
         wait_for_tasks = args.get("wait_for_tasks", False)
         orch = self.orchestrator
-        # Determine the repo root (where this source lives)
-        repo_dir = str(Path(__file__).resolve().parents[2])
-
-        # git pull
-        pull_rc, pull_stdout, pull_stderr = await _run_subprocess(
-            "git",
-            "pull",
-            "--ff-only",
-            cwd=repo_dir,
-            timeout=30,
-        )
-        if pull_rc != 0:
-            stderr = pull_stderr.strip() or pull_stdout.strip()
-            return {"error": f"git pull failed: {stderr}"}
-
-        pull_output = pull_stdout.strip()
-
-        # pip install -e . to pick up any dependency changes
-        pip_rc, pip_stdout, pip_stderr = await _run_subprocess(
-            "pip",
-            "install",
-            "-e",
-            ".",
-            cwd=repo_dir,
-            timeout=120,
-        )
-        if pip_rc != 0:
-            stderr = pip_stderr.strip() or pip_stdout.strip()
-            return {"error": f"pip install failed: {stderr}"}
-
-        # The TypeScript client is generated and gitignored, so a pull cannot
-        # update it when the committed OpenAPI contract changes.
-        client_rc, client_stdout, client_stderr = await _run_subprocess(
-            "npm",
-            "run",
-            "generate:ts-client",
-            "--",
-            "--from-file",
-            cwd=repo_dir,
-            timeout=120,
-        )
-        if client_rc != 0:
-            stderr = client_stderr.strip() or client_stdout.strip()
-            return {"error": f"TypeScript client generation failed: {stderr}"}
+        repo_dir = Path(__file__).resolve().parents[2]
+        state_dir = Path(self.config.data_dir)
+        try:
+            plan = await asyncio.to_thread(
+                plan_update, repo_dir, state_dir=state_dir,
+                tag_glob=self.config.deploy.tag_glob,
+                promotion_target=self.config.deploy.target,
+            )
+        except UpdateRefused as refused:
+            return {"success": False, "error": refused.reason, "remediation": refused.remediation}
+        if plan.up_to_date:
+            return {"success": True, "status": "up_to_date", "commit": plan.current}
 
         running_count = len(orch._running_tasks)
-
+        was_paused = orch._paused
         if wait_for_tasks and running_count > 0:
-            # Pause orchestrator so no new tasks are scheduled, then wait
             orch._paused = True
             await orch._emit_text_notify(
-                f"🔄 **Daemon update & restart pending** — waiting for {running_count} "
+                f"🔄 **Daemon update pending** — waiting for {running_count} "
                 f"running task(s) to complete\n**Reason:** {reason}"
             )
             await orch.wait_for_running_tasks(timeout=300)
 
-        # Log the update/restart reason to the notification channel
-        await orch._emit_text_notify(f"🔄 **Daemon update & restart initiated** — {reason}")
-        # Trigger restart
-        orch._restart_requested = True
-        os.kill(os.getpid(), signal.SIGTERM)
+        # A fresh aq update owns the lock, rechecks the checkout, backs up,
+        # stops with --keep-sessions and finishes on the selected new code.
+        # Waiting for it here would deadlock against its aq stop.
+        log = state_dir / "update.log"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        env = scrub_env_from_config(
+            self.config, explicit={"AQ_INSTALL_STATE_DIR": str(state_dir)}
+        ).env
+        try:
+            with log.open("ab") as output:
+                process = await asyncio.create_subprocess_exec(
+                    sys.executable, "-m", "src.cli.app", "update", "--yes",
+                    cwd=str(repo_dir), env=env, stdin=subprocess.DEVNULL,
+                    stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
+                )
+        except OSError as error:
+            orch._paused = was_paused
+            return {"success": False, "error": f"could not start aq update: {error}"}
+        await orch._emit_text_notify(
+            f"🔄 **Daemon update started** — {plan.upstream} at {plan.target[:9]}\n"
+            f"**Reason:** {reason}\n**Log:** {log}"
+        )
         return {
-            "status": "updating",
-            "message": "Update pulled and daemon restart initiated",
-            "pull_output": pull_output,
-            "reason": reason,
-            "waited_for_tasks": wait_for_tasks and running_count > 0,
+            "success": True, "status": "updating", "pid": process.pid,
+            "message": "Operator updater started; read update.log for the outcome",
+            "selector": plan.upstream, "commit": plan.target, "log": str(log),
+            "reason": reason, "waited_for_tasks": wait_for_tasks and running_count > 0,
         }
 
     # -----------------------------------------------------------------------

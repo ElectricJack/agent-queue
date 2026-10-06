@@ -123,6 +123,33 @@ Whether anything brings the daemon back after a reboot or a crash is `aq service
 
 ## Daemon updates
 
+`aq update --check` previews the selected code. With no deploy selection configured,
+updates keep following the installation's upstream branch. Set the operator configuration
+to select the newest stable semantic version in a tag family:
+
+```yaml
+deploy:
+  tag_glob: "v*"
+  target: main
+```
+
+`aq update --ref v0.2.0` selects one tag explicitly. Tags must exist on origin, be
+annotated, peel to a commit and be reachable from `origin/<deploy.target>`. An invalid
+selection refuses before stopping the daemon. A release install runs at a detached
+commit; `~/.agent-queue/deploy.json` records the tag, tag object, peeled commit, previous
+commit and installation time. Local edits and commits remain refusal conditions.
+`aq update --ref main` selects an unreleased branch explicitly. Older releases require
+`--allow-rollback`; this changes code while retaining the database. Schema compatibility
+is governed by the release's additive-migration checks.
+
+For a fresh bootstrap, `AQ_REF=v0.2.0` selects a tag and `AQ_TAG_GLOB='v*'` selects the
+newest matching stable version. `AQ_PROMOTION_TARGET` selects its reachability branch
+(default `main`). Without either selector the bootstrap installs `main`; an empty
+configured tag family falls back to `main` with an unreleased-install message.
+The daemon's `update_and_restart` command launches the same operator updater and reports
+its process and `~/.agent-queue/update.log`; that response indicates launch, and the log
+contains the eventual outcome.
+
 `aq start` and `aq restart` do more than replace a process, and each step is a postcondition — a failure is reported, not a reason to claim a clean start and lose it:
 
 - **Harness environment scrub.** Every `AQ_*` marker, session/DB key (`AQ_DB_SCOPE`, `AQ_DATABASE_URL`, `AGENT_QUEUE_DB`) and Claude/Code/Codex session variable is stripped from the daemon's environment before launch. This fixes the 2026-09-21 incident, where a worker's `AQ_DB_SCOPE=worker` / DB-isolation keys leaked into the daemon and made it read the wrong database and silently refuse to migrate. `aq start` warns if it detects an enclosing harness marker at call time.

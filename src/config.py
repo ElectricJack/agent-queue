@@ -3800,6 +3800,24 @@ class GitIdentityConfig:
 
 
 @dataclass
+class DeployConfig:
+    """Optional tag selection; unset preserves the installation's branch updater."""
+
+    tag_glob: str | None = None
+    target: str = "main"
+
+    def validate(self) -> list[ConfigError]:
+        errors = []
+        if self.tag_glob is not None and (
+            not isinstance(self.tag_glob, str) or not self.tag_glob.strip()
+        ):
+            errors.append(ConfigError("deploy", "tag_glob", "must be a non-empty string or null"))
+        if not isinstance(self.target, str) or not self.target.strip():
+            errors.append(ConfigError("deploy", "target", "must be a non-empty branch name"))
+        return errors
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration aggregating all subsystem configs.
 
@@ -3836,6 +3854,7 @@ class AppConfig:
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     docs: DocsConfig = field(default_factory=DocsConfig)
     git_identity: GitIdentityConfig = field(default_factory=GitIdentityConfig)
+    deploy: DeployConfig = field(default_factory=DeployConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
@@ -3943,6 +3962,7 @@ class AppConfig:
         errors: list[ConfigError] = []
 
         errors.extend(self._project_roots_errors)
+        errors.extend(self.deploy.validate())
         seen_root_ids: set[str] = set()
         seen_root_paths: set[str] = set()
         for index, root in enumerate(self.project_roots):
@@ -4276,6 +4296,7 @@ HOT_RELOADABLE_SECTIONS = {
     # an edit governs the next launch and retires stale pool sessions at
     # their next claim (docs/specs/git-identity.md).
     "git_identity",
+    "deploy",  # selectors are read per operator update
     # Read per use through lambda getters (``orchestrator.core`` knowledge
     # reads and ``records`` outbox/export), so an edit bites on the next
     # access without a restart.
@@ -4868,6 +4889,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.workspace_dir = raw["workspace_dir"]
     if "docs" in raw and isinstance(raw["docs"], dict):
         config.docs = DocsConfig(**_dataclass_kwargs(DocsConfig, raw["docs"]))
+    if "deploy" in raw and isinstance(raw["deploy"], dict):
+        config.deploy = DeployConfig(**_dataclass_kwargs(DeployConfig, raw["deploy"]))
     if "git_identity" in raw and isinstance(raw["git_identity"], dict):
         config.git_identity = GitIdentityConfig(
             **_dataclass_kwargs(GitIdentityConfig, raw["git_identity"])
