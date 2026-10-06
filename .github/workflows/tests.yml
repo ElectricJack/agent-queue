@@ -5,6 +5,8 @@ name: Tests
 # * `pull_request` into `main` tests the PR's merge with its base.
 # * A push to `aq/integration/**` tests the train's assembled candidate, and
 #   the train promotes that exact tested SHA to `main`.
+# * A push to `aq/batches/**` tests the git-first train's batch candidate
+#   the same way.
 # * A push to `aq/parent/**` tests an immutable parent snapshot ref that
 #   `src/integration/parent_ci.py` publishes and then reads the run from.
 #
@@ -25,6 +27,7 @@ on:
     branches:
       - 'aq/parent/**'
       - 'aq/integration/**'
+      - 'aq/batches/**'
   workflow_dispatch:
   workflow_call:
 

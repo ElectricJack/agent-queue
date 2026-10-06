@@ -20,6 +20,7 @@ from tests.test_e2e_cli_stateful import E2E_TEST_TIMEOUT_SECONDS, SCENARIO_GROUP
 
 WORKFLOWS = Path('.github/workflows')
 CANDIDATE_REF = 'aq/integration/p-' + '5' * 32 + '/r-' + '6' * 32
+BATCH_REF = 'aq/batches/' + '7' * 64
 
 
 def workflow(name='tests.yml'):
@@ -92,6 +93,7 @@ def _pull_request(head_ref, *, head_repository='acme/widgets', draft=False):
     ('main', False),
     ('aq/parent/example/0123/1/' + 'a' * 40, True),
     (CANDIDATE_REF, True),
+    (BATCH_REF, True),
     ('aq/sound-current', False),
     ('aq/feature/example', False),
     ('aq/example', False),
@@ -195,7 +197,9 @@ def test_manual_ci_is_available_without_unused_merge_queue_runs():
 def test_tests_keeps_its_triggers_and_job_names_and_can_be_called():
     tests = workflow()
     assert list(tests['on']) == ['pull_request', 'push', 'workflow_dispatch', 'workflow_call']
-    assert tests['on']['push']['branches'] == ['aq/parent/**', 'aq/integration/**']
+    assert tests['on']['push']['branches'] == [
+        'aq/parent/**', 'aq/integration/**', 'aq/batches/**',
+    ]
     assert tests['on']['workflow_call'] == ''  # No inputs or secrets: it runs as pushed.
     assert list(tests['jobs']) == ['test', 'e2e-cli']
     assert tests['jobs']['test']['name'] == 'Tests (${{ matrix.suite.name }})'
@@ -287,6 +291,28 @@ def test_unattested_ci_runs_only_for_a_configured_unattested_push(configured, at
 ])
 def test_test_job_runs_once_per_head(event_name, pull_request, expected):
     assert _runs(event_name, pull_request) is expected
+
+
+def test_a_batch_candidate_is_tested_and_marked_for_main():
+    # The candidate status must follow a successful Tests push run on the
+    # exact batch SHA, just as it does for the older integration ref namespace.
+    assert _pushed(workflow()['on'], BATCH_REF)
+    gate = workflow('train-candidate.yml')
+    trigger = gate['on']['workflow_run']
+    assert trigger['workflows'] == ['Tests']
+    assert any(fnmatchcase(BATCH_REF, pattern) for pattern in trigger['branches'])
+    mark = gate['jobs']['mark']
+    for event, conclusion, expected in (
+        ('push', 'success', True),
+        ('push', 'failure', False),
+        ('workflow_dispatch', 'success', False),
+    ):
+        assert _evaluate(mark['if'], github={
+            'event': {'workflow_run': {'event': event, 'conclusion': conclusion}},
+        }) is expected
+    step, = mark['steps']
+    assert step['env']['SHA'] == '${{ github.event.workflow_run.head_sha }}'
+    assert 'context=aq-train/candidate' in step['run']
 
 
 def test_skipped_integration_pr_heads_are_covered_by_the_push_trigger():
