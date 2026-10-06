@@ -91,6 +91,32 @@ class IntegrationStatusArgs(CommandArgs):
     project_id: str = Field(min_length=1)
 
 
+class PromoteSchemaArgs(CommandArgs):
+    pass
+
+
+class PromoteSchemaValue(CommandValue):
+    # Avoid shadowing BaseModel.schema while preserving the command wire field.
+    schema_document: dict[str, Any] = Field(default_factory=dict, alias="schema")
+
+
+class PromoteValidateArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    flow: Any = None
+    #: False when flow supplies a document, including explicit null.
+    use_stored: bool = True
+    remote: bool = False
+
+
+class PromoteValidateValue(CommandValue):
+    project_id: str | None = None
+    valid: bool = False
+    flow: list[dict[str, Any]] | None = None
+    layer: int | None = None
+    problems: tuple[dict[str, Any], ...] = ()
+    warnings: tuple[dict[str, Any], ...] = ()
+
+
 class IntegrationAbortBatchArgs(CommandArgs):
     batch_id: str = Field(min_length=1)
     reason: str = ""
@@ -1057,6 +1083,17 @@ def _operational_contract(
         ),
     )
 
+
+PROMOTE_SCHEMA = _operational_contract(
+    "promote_schema", PromoteSchemaArgs, ("schema",),
+    successes=frozenset({"schema"}), side_effect=SideEffectClass.READ,
+    result_model=PromoteSchemaValue,
+)
+PROMOTE_VALIDATE = _operational_contract(
+    "promote_validate", PromoteValidateArgs, ("valid", "invalid", "not_found"),
+    successes=frozenset({"valid"}), side_effect=SideEffectClass.READ,
+    result_model=PromoteValidateValue,
+)
 
 INTEGRATION_STATUS = _operational_contract(
     "integration_status",
@@ -2638,6 +2675,25 @@ async def _status_adapter(args: IntegrationStatusReadArgs, ctx: CommandContext |
     )
 
 
+async def _promote_schema_adapter(args: PromoteSchemaArgs, ctx: CommandContext | None):
+    from src.commands.contracts.builtin import _handler
+
+    if ctx is None:
+        raw = await _handler().execute("promote_schema", {})
+    else:
+        with principal_context(ctx):
+            raw = await _handler().execute("promote_schema", {})
+    return CommandResult(outcome=raw["outcome"], value=PromoteSchemaValue(
+        schema=raw.get("schema", {})
+    ), summary="Promotion-flow JSON schema")
+
+
+async def _promote_validate_adapter(args: PromoteValidateArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "promote_validate", args, ctx, PromoteValidateValue, {"valid", "invalid", "not_found"},
+    )
+
+
 async def _trust_manifest_adapter(
     args: IntegrationTrustManifestArgs, ctx: CommandContext | None
 ):
@@ -2904,6 +2960,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         )
     for contract, adapter in (
         (INTEGRATION_STATUS, _status_adapter),
+        (PROMOTE_SCHEMA, _promote_schema_adapter),
+        (PROMOTE_VALIDATE, _promote_validate_adapter),
         (INTEGRATION_TRUST_MANIFEST, _trust_manifest_adapter),
         (INTEGRATION_APP_VERIFY, _app_verify_adapter),
         (INTEGRATION_EJECT, _eject_adapter),

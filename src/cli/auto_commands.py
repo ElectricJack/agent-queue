@@ -33,6 +33,8 @@ _TOOL_CATEGORIES = _CATALOGUE["tool_categories"]
 # CommandHandler commands covered by hand-crafted CLI commands.
 # Auto-generation skips these to avoid duplicates.
 HANDCRAFTED_COVERAGE = {
+    "promote_schema",
+    "promote_validate",
     # pool_provider.py mounts schema-generated status/apply in a nested group
     # and translates preview's operator flags into structured arguments.
     "provider_allocation_status",
