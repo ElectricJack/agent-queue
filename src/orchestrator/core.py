@@ -1887,6 +1887,8 @@ class Orchestrator(
             data_dir=self.config.data_dir,
             git_manager=self.git,
             github_client_factory=self.github_client_factory,
+            binding_resolver=self.github_repository_binding_resolver,
+            candidate_store=lambda repo: self.development_integration.store(repo, fetch=False),
         )
         self.root_promotion_service = RootPromotionService(
             self.db,
@@ -1965,6 +1967,7 @@ class Orchestrator(
             train=TrainCommandDriver(self.integration_train, lambda: self._command_handler)
             if train_active else None,
             maintenance={
+                "aborted batch cleanup": self.integration_cleanup_service.reconcile_aborted,
                 "branch discard": self._drain_branch_discards,
                 "branch materialization": self._drain_branch_materializations,
                 "owner recovery": self._sweep_stranded_owners,

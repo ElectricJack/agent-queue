@@ -421,9 +421,14 @@ async def test_abort_batch_preview_apply_and_promoted_candidate_refusal(world):
     controls = TrainControls(db)
     preview = await controls.abort_batch(batch.id, dry_run=True, operator_id="operator", reason="")
     assert preview["outcome"] == "preview" and (await store.get(batch.id)).intent == "open"
+    assert (await db.get_integration_batch(batch.id))["lifecycle"] == "sealed"
     applied = await controls.abort_batch(batch.id, dry_run=False, operator_id="operator",
                                           reason="duplicate work")
     assert applied["outcome"] == "aborted" and (await store.get(batch.id)).intent == "aborted"
+    aborted = await db.get_integration_batch(batch.id)
+    assert aborted["lifecycle"] == "aborted"
+    assert aborted["human_abort_reason"] == "duplicate work"
+    assert aborted["cleanup_state"] == "pending"
     async with db._engine.connect() as conn:
         [audit] = (await conn.execute(select(events.c.payload).where(
             events.c.event_type == "integration.batch_intent"))).scalars().all()
@@ -439,6 +444,147 @@ async def test_abort_batch_preview_apply_and_promoted_candidate_refusal(world):
                            .values(lifecycle="promoted"))
     with pytest.raises(ValueError, match="promoted batch"):
         await store.set_intent(promoted.id, "aborted")
+
+
+@pytest.mark.parametrize("lifecycle", ["sealed", "testing"])
+@pytest.mark.parametrize("old_abort", [False, True])
+async def test_aborted_batch_visit_releases_reopen_but_other_batch_stays_sealed(
+    world, lifecycle, old_abort,
+):
+    from src.commands.task_commands import TaskCommandsMixin
+    from src.database.queries.hierarchy_queries import HierarchyError
+
+    db = world.db
+    source = await completed(world, "rework")
+    other_source = await completed(world, "other")
+    store = BatchStore(db)
+    for bid, tid, head in (("abort", "rework", source), ("active", "other", other_source)):
+        await store.freeze(Batch(bid, "p", "r", MAIN.target_ref),
+            (BatchMember(tid, head, git(world.origin.clone, "rev-parse", f"{head}^")),),
+            trees={tid: tree(world, head)})
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == "abort")
+            .values(lifecycle=lifecycle))
+    handler = TaskCommandsMixin()
+    handler.db, handler._current_scope = db, {}
+    with pytest.raises(HierarchyError, match="sealed subtree"):
+        await handler._cmd_reopen_with_feedback({"task_id": "rework", "feedback": "fix regression"})
+    if old_abort:
+        # The old daemon persisted intent but left the compatibility seal active.
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_batches).where(integration_batches.c.id == "abort")
+                .values(intent="aborted", human_abort_reason="fix regression"))
+    else:
+        await TrainControls(db).abort_batch("abort", dry_run=False,
+            operator_id="operator", reason="fix regression")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    await train.visit(MAIN)
+    assert (await db.get_integration_batch("abort"))["lifecycle"] == "aborted"
+    assert (await db.get_integration_batch("abort"))["human_abort_reason"] == "fix regression"
+    with pytest.raises(HierarchyError, match="sealed subtree"):
+        await handler._cmd_reopen_with_feedback({"task_id": "other", "feedback": "still active"})
+    assert (await handler._cmd_reopen_with_feedback({
+        "task_id": "rework", "feedback": "fix regression",
+    }))["status"] == "READY"
+
+
+@pytest.mark.parametrize("ambiguous", [False, True])
+async def test_aborted_candidate_cleanup_defers_to_repair_lease_and_preserves_sources(
+    world, tmp_path, ambiguous,
+):
+    from src.integration.cleanup import IntegrationCleanupService
+
+    db, origin = world.db, world.origin
+    source = await completed(world, "rework")
+    store = BatchStore(db)
+    batch = Batch("abort", "p", "r", MAIN.target_ref)
+    await store.freeze(batch, (BatchMember("rework", source,
+        git(origin.clone, "rev-parse", f"{source}^")),),
+        trees={"rework": tree(world, source)})
+    ref = candidate_ref(batch.id)
+    git(origin.clone, "push", "origin", f"{source}:{ref}")
+    await TrainControls(db).abort_batch(batch.id, dry_run=False,
+        operator_id="operator", reason="fix regression")
+    transport = LocalGit(Path(origin.url))
+    transport.ambiguous = ambiguous
+    cleanup = IntegrationCleanupService(db, data_dir=tmp_path, git_manager=transport,
+        binding_resolver=AsyncMock(return_value=GitHubRepositoryBinding(123, "test/repo")),
+        candidate_store=AsyncMock(return_value=origin.clone))
+    locks = BranchLock(db)
+    writer = await locks.acquire(BranchKey(repository_id="r", branch=ref), "repair",
+        ttl_seconds=120, role="repair")
+    await cleanup.reconcile_aborted(time.time())
+    assert transport.deletes == 0
+    assert (await db.get_integration_batch(batch.id))["cleanup_state"] == "pending"
+    assert (await locks.get(writer.target)).holder == "repair"
+    await locks.release(writer)
+    await cleanup.reconcile_aborted(time.time())
+    assert transport.deletes == 1
+    assert not git(Path(origin.url), "for-each-ref", "--format=%(refname)", ref)
+    assert git(Path(origin.url), "rev-parse", "refs/heads/aq/rework") == source
+    assert (await db.get_integration_batch(batch.id))["cleanup_state"] == "complete"
+    assert await DatabaseBatches(db).pending(MAIN, await snapshot(world)) is None
+    await cleanup.reconcile_aborted(time.time())
+    assert transport.deletes == 1
+
+
+async def test_abort_cleanup_recovers_old_seal_and_only_releases_its_detached_reservation(
+    world, tmp_path,
+):
+    from src.database.tables import integration_branch_owners
+    from src.integration.cleanup import IntegrationCleanupService
+
+    db, origin = world.db, world.origin
+    source = await completed(world, "rework")
+    batch = Batch("abort", "p", "r", MAIN.target_ref)
+    await BatchStore(db).freeze(batch, (BatchMember("rework", source, source),),
+        trees={"rework": tree(world, source)})
+    ref = candidate_ref(batch.id)
+    git(origin.clone, "push", "origin", f"{source}:{ref}")
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == batch.id)
+            .values(intent="aborted", lifecycle="testing", human_abort_reason="fix regression"))
+        for owner_id, branch, state in ((batch.id, ref, "reserved"),
+                ("other-batch", candidate_ref("other-batch"), "reserved"),
+                (batch.id, "refs/heads/attached", "attached")):
+            await conn.execute(insert(integration_branch_owners).values(
+                id=branch, repository_id="r", ref=branch, owner_id=owner_id,
+                owner_role="collector", fence_token=1, handoff_state=state,
+                workspace_id="writer" if state == "attached" else None,
+                expires_at=time.time() + 120, created_at=1, updated_at=1,
+            ))
+    transport = LocalGit(Path(origin.url))
+    cleanup = IntegrationCleanupService(db, data_dir=tmp_path, git_manager=transport,
+        binding_resolver=AsyncMock(return_value=GitHubRepositoryBinding(123, "test/repo")),
+        candidate_store=AsyncMock(return_value=origin.clone))
+    await cleanup.reconcile_aborted(time.time())
+    assert transport.deletes == 1
+    aborted = await db.get_integration_batch(batch.id)
+    assert (aborted["lifecycle"], aborted["cleanup_state"], aborted["human_abort_reason"]) == (
+        "aborted", "complete", "fix regression",
+    )
+    async with db._engine.connect() as conn:
+        states = dict((await conn.execute(select(
+            integration_branch_owners.c.ref, integration_branch_owners.c.handoff_state,
+        ))).all())
+    assert states["refs/heads/attached"] == "attached"
+    assert states[candidate_ref("other-batch")] == "reserved"
+
+
+async def test_abort_cannot_release_a_member_also_in_another_active_batch(world):
+    from src.database.queries.hierarchy_queries import HierarchyError
+
+    db = world.db
+    source = await completed(world, "rework")
+    store = BatchStore(db)
+    for bid in ("abort", "active"):
+        await store.freeze(Batch(bid, "p", "r", MAIN.target_ref),
+            (BatchMember("rework", source, source),), trees={"rework": tree(world, source)})
+    await store.set_intent("abort", "aborted", reason="fix regression")
+    with pytest.raises(HierarchyError, match="sealed subtree"):
+        await db.transition_task("rework", TaskStatus.READY, context="reopen_with_feedback")
+    await store.set_intent("active", "aborted", reason="fix regression")
+    await db.transition_task("rework", TaskStatus.READY, context="reopen_with_feedback")
 
 
 async def test_retire_origin_preview_apply_removes_pending_and_requires_delivery(world):

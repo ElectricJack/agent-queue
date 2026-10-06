@@ -164,6 +164,12 @@ aq integration abort-batch <batch-id> --apply --reason "inputs already delivered
 
 The control refuses a promoted candidate and rechecks the target and candidate
 under the batch's publication lock. It records the principal and reason.
+Applying it also sets the terminal `aborted` lifecycle, releasing the member
+and ancestor seals so a member can be reopened with feedback. The abort reason
+and exact source withholding remain. Target visits and terminal cleanup repair
+stale seals left by older aborts. Cleanup retires the private candidate under its
+ref lease and releases only the batch's detached collector reservation; a live
+repair lease defers cleanup without preventing member rework.
 
 The train excludes current completions whose exact retained source is an ancestor
 of the project's default/development ref. Scoped legacy delivery attestations also
