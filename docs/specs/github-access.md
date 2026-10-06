@@ -279,6 +279,12 @@ available; retry scheduling remains with the existing caller.
   token/header patterns. Do not log the full environment, request body or raw
   authenticated subprocess output.
 
+The GitHub review poller shares repository bind failures across roots and ticks.
+It retries after 60 seconds, doubling consecutive failure delays up to 600
+seconds, and emits one warning per failed bind attempt with the repository URL
+and error message. Cached failures emit no per-root traceback. A successful bind
+clears the delay; healthy repositories continue to be polled independently.
+
 For `gh api`, retain HTTP status and the headers needed for pagination and
 retry timing using `--include`. Enforce the caller's expected status set,
 including empty `204` responses; do not discard it as the current CLI client
