@@ -315,12 +315,23 @@ async def test_git_first_claim_refetches_after_cached_advisory_target_rewinds(
         assert result["result"] == "no_ready_work", result
         assert fetch.await_count == expected_fetches
         assert (await db.get_task("second")).status is TaskStatus.READY
+    prepare = orch._worktree_slots().reset_slot_for_task
+    prepare.assert_not_awaited()
     # Even the immediately preceding failed claim's observation is not reused.
     env.git(env.origin.clone, "push", "origin", f"{env.source}:aq/epic")
     result = await handler._cmd_task_claim({"next": True})
     assert result["result"] == "claimed", result
     assert result["task"]["id"] == "second"
-    assert fetch.await_count == 4
+    # Admission refetches once, then workspace preparation independently proves
+    # the current parent tip before preserving the child's existing branch.
+    assert fetch.await_count == 5
+    prepare.assert_awaited_once()
+    assert prepare.await_args.args[1].id == "second"
+    assert prepare.await_args.kwargs == {
+        "base_branch": env.source,
+        "target_branch": "aq/second",
+        "preserve_branch": True,
+    }
 
 
 @pytest.mark.parametrize("movement", ["rewind", "retarget", "generation", "unstable", "shadow"])
