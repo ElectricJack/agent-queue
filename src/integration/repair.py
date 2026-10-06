@@ -144,7 +144,7 @@ class OrdinaryRepairService:
                 for table in (tasks, archived_tasks):
                     current = (await conn.execute(select(
                         table.c.id, table.c.status, table.c.dedup_key,
-                        table.c.retry_count, table.c.max_retries,
+                        table.c.retry_count, table.c.max_retries, table.c.assigned_agent_id,
                     ).where(
                         table.c.id == current_id,
                     ))).mappings().one_or_none()
@@ -175,6 +175,17 @@ class OrdinaryRepairService:
                     # ordinary claim recovery owns requeue/retry and unsaved work.
                     if live_lease and owner["holder"] != current_id:
                         return answer("busy")
+                    if (not live_lease and current["status"] in {"DEFINED", "READY"}
+                            and current["assigned_agent_id"] is None):
+                        # A failed claim preparation releases the lease and
+                        # returns the task to READY; the claim frontier admits
+                        # an ordinary repair only on a live fence it holds, so
+                        # nothing would ever claim it. Unclaimed, there is no
+                        # writer to fence out: reserve it again.
+                        await self.locks.acquire_on(
+                            conn, target, current_id, ttl_seconds=ttl_seconds, role="repair",
+                        )
+                        return answer("exists", task_id=current_id, lease_restored=True)
                     return answer("exists", task_id=current_id,
                                   lease_expired=not live_lease)
             if live_lease:

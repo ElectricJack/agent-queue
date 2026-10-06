@@ -54,6 +54,9 @@ from src.integration.train_sources import _pending_tasks, project_delivered, pro
 
 CONTAINED_PROOF = "development_delivery"
 EQUIVALENT_PROOF = "content_equivalent"
+#: A child of a still-open epic whose exact source is on the epic branch: the
+#: epic's own readiness reads retained provenance, so that is what is written.
+EPIC_PROOF = "epic_branch_provenance"
 _PULL = re.compile(r"/pull/(\d+)(?:$|[/?#])")
 #: Private namespace for fetched pull-request heads; removed after each run.
 PULL_NAMESPACE = "refs/aq-legacy-backfill/pull/"
@@ -175,8 +178,14 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
         db, ids, project_id=project_id, repository_id=target.repository_id,
         target_ref=target.target_ref, snapshot=snap,
     )
+    async with db._engine.connect() as conn:
+        # An epic's delivery is its readiness (children collected, checks,
+        # review), never a row: its branch can sit on the tip before any child
+        # is collected. Abandoning an old epic is the explicit decision instead.
+        parents = set((await conn.execute(select(tasks.c.parent_task_id).where(
+            tasks.c.parent_task_id.in_(ids)))).scalars().all())
     requests = await load_delivery_requests(
-        db, [task_id for task_id in ids if task_id not in delivered],
+        db, [task_id for task_id in ids if task_id not in delivered and task_id not in parents],
         repository_id=target.repository_id, target_ref=target.target_ref, reduced=True,
     )
     provenance = GitProvenance(observation.git, observation.store,
@@ -204,7 +213,12 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
                 candidates = await _candidates(conn, task_id, request.branch_name,
                                                observation.source_heads)
             await _prove(observation, snap.target_oid, target_tree, verdict, candidates)
-            if verdict.outcome == "proven" and not dry_run:
+            if verdict.outcome != "proven":
+                await _prove_on_open_epic(db, observation, task_id, verdict, candidates)
+            if verdict.proof == EPIC_PROOF and not dry_run:
+                verdict.outcome = await _attest(db, provenance, request, target, identity,
+                                                verdict)
+            elif verdict.outcome == "proven" and not dry_run:
                 verdict.outcome = await _record(
                     db, request, target, snap.target_oid, verdict,
                     operator_id=operator_id, reason=reason, now=clock(),
@@ -229,6 +243,108 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
         "unproven": [v.as_dict() for v in verdicts if v.outcome == "unproven"],
         "results": [v.as_dict() for v in verdicts if v.outcome != "unproven"],
     }
+
+
+async def _prove_on_open_epic(db, observation, task_id, verdict, candidates) -> None:
+    """Prove an exact candidate is an ancestor of the open parent epic's branch."""
+    async with db._engine.connect() as conn:
+        parent_id = await conn.scalar(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
+        parent = (await conn.execute(select(tasks.c.status, tasks.c.branch_name)
+                                     .where(tasks.c.id == parent_id))).first() if parent_id else None
+    if parent is None or parent.status == "COMPLETED" or not parent.branch_name:
+        return
+    tip = observation.source_heads.get("refs/remotes/origin/" + parent.branch_name)
+    if not tip:
+        return
+    for kind, sha in candidates:
+        if kind == "pull_request" or not is_valid_git_oid(sha):
+            continue
+        if (await _git(observation, "merge-base", "--is-ancestor", sha, tip))[0] == 0:
+            verdict.outcome, verdict.proof, verdict.via, verdict.delivered_sha = (
+                "proven", EPIC_PROOF, kind, sha)
+            return
+
+
+async def _attest(db, provenance, request, target, identity, verdict) -> str:
+    """Retain the exact epic-branch source as the generation's provenance."""
+    current = (await load_delivery_requests(
+        db, [request.task_id], repository_id=target.repository_id,
+        target_ref=target.target_ref, reduced=True,
+    )).get(request.task_id)
+    if current != request:
+        return "changed"
+    from src.integration.provenance import CompletedSource
+
+    await provenance.write_completion(CompletedSource(identity, verdict.delivered_sha),
+                                      claim_epoch=request.claim_epoch)
+    return "recorded"
+
+
+async def abandon_epic(db, project_id: str, epic_id: str, *, dry_run: bool = True,
+                       operator_id: str = "operator", reason: str = "",
+                       snapshot=project_snapshot, clock=time.time) -> dict:
+    """Preview or record an explicit decision that a completed epic is superseded.
+
+    For an old completed epic whose branch never reached the default branch
+    and must not now (its work arrived by other means or was replaced), the
+    train would otherwise keep the epic target blocked or merge a stale branch.
+    This writes an ``abandoned`` row, an audited operator decision rather than
+    a proof, for the epic and each completed descendant with a live origin and
+    no row yet. Refused when the epic branch is already contained (then the
+    ordinary backfill proves it) or the epic is not completed. Nothing is deleted.
+    """
+    if not dry_run and not reason.strip():
+        raise ValueError("abandoning an epic requires a nonblank reason")
+    project = await db.get_project(project_id)
+    epic = await db.get_task(epic_id)
+    if project is None or epic is None or epic.project_id != project_id:
+        raise ValueError("epic is not a task of this project")
+    if getattr(epic.status, "value", epic.status) != "COMPLETED" or not epic.branch_name:
+        raise ValueError("only a completed epic with a branch can be abandoned")
+    async with db._engine.connect() as conn:
+        default = await conn.scalar(select(repos.c.default_branch).where(
+            repos.c.id == project.integration_repository_id))
+    target = TrainTarget(project_id, project.integration_repository_id,
+                         "refs/heads/" + default.removeprefix("refs/heads/"))
+    snap = await snapshot(db, target)
+    if snap is None or snap.observation.error or not snap.target_oid:
+        raise ValueError("root target cannot be observed")
+    tip = snap.observation.source_heads.get("refs/remotes/origin/" + epic.branch_name)
+    if tip and (await _git(snap.observation, "merge-base", "--is-ancestor", tip,
+                           snap.target_oid))[0] == 0:
+        raise ValueError("epic branch is on the default branch; use the ordinary backfill")
+    ids, frontier = [epic_id], [epic_id]
+    async with db._engine.connect() as conn:
+        while frontier:
+            children = list((await conn.execute(select(tasks.c.id).where(
+                tasks.c.parent_task_id.in_(frontier)))).scalars().all())
+            ids += children
+            frontier = children
+        if len(ids) == 1:
+            raise ValueError("only a completed epic with a branch can be abandoned")
+        pending = set(await _pending_tasks(conn, project_id, target.repository_id, limit=None))
+        recorded = set((await conn.execute(select(integration_legacy_deliveries.c.task_id).where(
+            integration_legacy_deliveries.c.task_id.in_(ids)))).scalars().all())
+    delivered = await project_delivered(
+        db, ids, project_id=project_id, repository_id=target.repository_id,
+        target_ref=target.target_ref, snapshot=snap)
+    chosen = sorted(i for i in ids if i in pending and i not in recorded and i not in delivered)
+    requests = await load_delivery_requests(db, chosen, repository_id=target.repository_id,
+                                            target_ref=target.target_ref, reduced=True)
+    results = []
+    for task_id in chosen:
+        request = requests.get(task_id)
+        verdict = Verdict(task_id, "proven", "abandoned", "operator_decision", None)
+        if request is None or not _answered_by_row(request):
+            verdict.outcome = "unproven"
+        elif not dry_run:
+            verdict.outcome = await _record(
+                db, request, target, snap.target_oid, verdict, operator_id=operator_id,
+                reason=f"abandon epic {epic_id}: {reason}", now=clock())
+        results.append(verdict.as_dict())
+    return {"outcome": "preview" if dry_run else "recorded", "epic_id": epic_id,
+            "epic_tip": tip, "target_sha": snap.target_oid, "dry_run": dry_run,
+            "results": results}
 
 
 def _answered_by_row(request) -> bool:
@@ -261,4 +377,5 @@ async def _record(db, request, target, target_oid, verdict, *, operator_id, reas
     return "recorded"
 
 
-__all__ = ["CONTAINED_PROOF", "EQUIVALENT_PROOF", "backfill_legacy_deliveries"]
+__all__ = ["CONTAINED_PROOF", "EPIC_PROOF", "EQUIVALENT_PROOF", "abandon_epic",
+           "backfill_legacy_deliveries"]

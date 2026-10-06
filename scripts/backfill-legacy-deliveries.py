@@ -30,6 +30,10 @@ async def main(argv=None) -> int:
     parser.add_argument("--operator", default=os.environ.get("USER", "operator"))
     parser.add_argument("--config", default=os.path.expanduser("~/.agent-queue/config.yaml"))
     parser.add_argument("--output", help="write the full JSON report here")
+    parser.add_argument("--abandon-epic", action="append", default=[], metavar="EPIC_ID",
+                        help="record an operator decision that this completed epic (and its "
+                             "undelivered descendants) is superseded and must not be "
+                             "delivered; repeatable, instead of the backfill")
     args = parser.parse_args(argv)
     if args.apply and not args.reason.strip():
         parser.error("--apply needs a nonblank --reason")
@@ -39,7 +43,7 @@ async def main(argv=None) -> int:
     from src.git.manager import GitManager
     from src.integration.delivery_observer import DeliveryObserver
     from src.integration.git_truth import GitTruth
-    from src.integration.legacy_backfill import backfill_legacy_deliveries
+    from src.integration.legacy_backfill import abandon_epic, backfill_legacy_deliveries
 
     config = load_config(args.config)
     db = create_database(config)
@@ -50,6 +54,12 @@ async def main(argv=None) -> int:
         data_dir = Path(config.data_dir) / "legacy-backfill"
         db.set_delivery_observer(DeliveryObserver(db, git=truth.git, data_dir=data_dir,
                                                   truth=truth))
+        if args.abandon_epic:
+            report = {"epics": [await abandon_epic(
+                db, args.project_id, epic, dry_run=not args.apply, operator_id=args.operator,
+                reason=args.reason) for epic in args.abandon_epic]}
+            print(json.dumps(report, indent=1))
+            return 0
         report = await backfill_legacy_deliveries(
             db, args.project_id, dry_run=not args.apply, operator_id=args.operator,
             reason=args.reason,
