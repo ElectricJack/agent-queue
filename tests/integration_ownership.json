@@ -14281,10 +14281,10 @@
       "reason": "task.removed audit records the confirmed operator decision, removed subtree, disposition and cancelled operations/batches; preserves history without asserting ref or delivery truth."
     },
     "src/commands/proposal_commands.py::TaskProposalCommandsMixin._cmd_task_batch_commit::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
-      "line": 340,
+      "line": 467,
       "owner": "TaskProposalCommandsMixin._cmd_task_batch_commit",
       "call": "insert",
-      "owner_fingerprint": "fd36e4cf244b34121b2749d8c8c5c04d2c46a1dd73224a418afb856dd1533a7f",
+      "owner_fingerprint": "644f415c55b56fbf76e4fa10449bf8805acb3eae65860283681c17672329e28d",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Immutable task change-set audit containing actor, source, reviewed diff and receipt in the proposal transaction; no ref replay or authoritative delivery lifecycle state."
@@ -14566,6 +14566,7 @@
     "src/database/queries/plugin_queries.py::PluginQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/profile_queries.py::ProfileQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/project_queries.py::ProjectQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/proposal_queries.py::get_proposal": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/provider_availability_queries.py::ProviderAvailabilityQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/provider_usage_queries.py::ProviderUsageQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/pull_request_queries.py::mark_pull_request_approved": "Generic dependency; integration-specific definitions in this file are charged independently.",
