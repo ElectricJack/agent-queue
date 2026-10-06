@@ -1061,6 +1061,39 @@ async def test_epic_completion_revalidates_after_provenance_and_replays(collecte
     assert (await case.db.get_task_completion("epic")).commits == [head]
 
 
+async def test_epic_branch_without_trust_manifest_is_a_named_blocker(collected_epic):
+    """An epic branch cut before the repository carried a trust manifest is
+    refused by name on every visit: never a failed visit, never a completion."""
+    case = collected_epic
+    head = await collect_epic(case)
+    await review_epic(case)
+    attestation = case.train.lane_for.orchestrator.integration_attestation_service
+    # The real trust load reads the exact epic head's tree from a retained store.
+    del attestation._load_trust
+    case.github.repository = GitHubRepositoryBinding(123, HostedGitHub.full_name)
+    attestation.github_client_factory = lambda binding: case.github
+
+    async def fetch(destination_git_dir, *, repository, oid, destination_ref):
+        git(case.origin.clone, "init", "-q", "--bare", destination_git_dir)
+        git(destination_git_dir, "fetch", "-q", case.origin.url,
+            f"+{case.target.target_ref}:{destination_ref}")
+        return git(destination_git_dir, "rev-parse", destination_ref)
+
+    attestation.git.afetch_repository_oid = fetch
+    for _ in range(2):
+        visit = await case.train.visit(case.target)
+        assert visit.state == "blocked", visit
+        refused = [b for b in visit.detail["blockers"] if b["code"] == "subject_trust_missing"]
+        assert [(b["task_id"], b["ref"], b["head_sha"]) for b in refused] == [
+            ("epic", "refs/heads/aq/epic", head)]
+        assert ".github/agent-queue-integration.json" in refused[0]["detail"]
+    assert await case.db.get_task_completion("epic") is None
+    assert attestation._subject_trust["epic-readiness-epic"]["cause"] == "missing"
+    root = await case.train.visit(MAIN)
+    assert root.batch_id is None
+    assert git(case.origin.url, "rev-parse", "main") == case.base
+
+
 async def test_uncollected_epic_checkpoint_cannot_enter_root_batch(collected_epic):
     case = collected_epic
     checkpoint = case.origin.work("epic", "checkpoint")
