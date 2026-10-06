@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
@@ -192,10 +193,20 @@ async def test_forged_eject_event_without_project_lock_cannot_edit_members(seale
 
 
 
-def test_cli_has_no_operator_ejection_command():
-    result = CliRunner().invoke(integration_cli, ["eject", "--help"])
-    assert result.exit_code == 2
-    assert "No such command" in result.output
+@pytest.mark.parametrize("argv,message", [
+    (["--task", "task"], "Missing option '--batch'"),
+    (["--batch", "batch"], "Missing option '--task'"),
+    (["--batch", "batch", "--task", "task", "--apply"],
+     "--apply needs a nonblank --reason"),
+    (["--batch", "batch", "--task", "task", "--apply", "--reason", "   "],
+     "--apply needs a nonblank --reason"),
+])
+def test_cli_ejection_requires_identity_and_apply_reason_before_transport(argv, message):
+    with patch("src.cli.integration._get_client") as get_client:
+        result = CliRunner().invoke(integration_cli, ["eject", *argv])
+    assert result.exit_code == 2, result.output
+    assert message in result.output
+    get_client.assert_not_called()
 
 
 @pytest.fixture(autouse=True)
