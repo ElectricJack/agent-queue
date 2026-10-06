@@ -305,6 +305,12 @@ def _create_task_graph(
     ),
 )
 @click.option(
+    "--blocked-by",
+    multiple=True,
+    metavar="TASK_ID",
+    help="Prerequisite task; repeatable. Creates blocks edges atomically with the task.",
+)
+@click.option(
     "--reason",
     default=None,
     help=(
@@ -354,6 +360,7 @@ def task_create(
     after_review: str | None,
     root: bool,
     container: bool,
+    blocked_by: tuple[str, ...],
     reason: str | None,
     deliverables: tuple[str, ...],
     requires_kinds: tuple[str, ...],
@@ -404,6 +411,11 @@ def task_create(
         raise click.UsageError(
             "--container applies to single-task creation; a graph declares its new "
             "container with a document-level 'parent:' block"
+        )
+    if blocked_by and (graph_file or from_spec):
+        raise click.UsageError(
+            "--blocked-by is not supported with --graph/--from-spec; declare "
+            "dependencies in the graph document"
         )
     # Parse before the graph branch so a malformed value is reported even on a
     # path that would go on to reject the option outright.
@@ -502,6 +514,8 @@ def task_create(
         params["root"] = True
     if container:
         params["container"] = True
+    if blocked_by:
+        params["depends_on"] = list(dict.fromkeys(blocked_by))
     if reason and "reason" not in params:
         params["reason"] = reason
     if parsed_requires_kinds:

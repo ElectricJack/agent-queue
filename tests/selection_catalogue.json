@@ -1419,7 +1419,7 @@
       ]
     }
   },
-  "digest": "sha256:d979e915fcec8ab304911f6d0fe23b0c11a129720412e8fde18d5bc7257a9b06",
+  "digest": "sha256:6aeef7d6de9caeec5400e150cd6dcc83cbc20f455b6b10a7121b36f09ad758a2",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4895,7 +4895,9 @@
         "src.database",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Dependency query mixin: idempotent ``add_dependency`` (follow-up to"
     },
     "tests/test_development_integration.py": {

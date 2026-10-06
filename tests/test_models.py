@@ -30,6 +30,7 @@ class TestTaskEvent:
     def test_all_events_exist(self):
         expected = {
             "DEPS_MET",
+            "DEPS_UNMET",
             "ASSIGNED",
             # Pool-worker claim of a READY task (swarm-work-model §10)
             "CLAIMED",

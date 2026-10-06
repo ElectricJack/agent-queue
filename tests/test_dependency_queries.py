@@ -81,6 +81,84 @@ class TestAddDependencyIdempotent:
         )
 
 
+@pytest.mark.parametrize("caller_transaction", [False, True])
+async def test_new_blocker_demotes_ready_parent_and_withholds_its_child(db, caller_transaction):
+    await _mktask(db, "up")
+    for tid in ("parent", "child"):
+        await db.create_task(Task(
+            id=tid, project_id=PROJECT, title=tid, description=tid, status=TaskStatus.READY,
+        ))
+    await db.add_dependency("child", "parent", DepType.PARENT_CHILD.value)
+    assert (await db.get_task("child")).is_blocked is False
+    db._sm_enforce = True
+
+    if caller_transaction:
+        async with db._engine.begin() as conn:
+            flipped = await db.add_dependency("parent", "up", conn=conn)
+        assert flipped == {"parent", "child"}
+    else:
+        await db.add_dependency("parent", "up")
+
+    assert (await db.get_task("parent")).status == TaskStatus.DEFINED
+    assert (await db.get_task("child")).is_blocked is True
+    assert await db.get_ready_frontier(PROJECT) == []
+
+
+@pytest.mark.parametrize("dep_type,dep_status", [
+    (DepType.BLOCKS, TaskStatus.COMPLETED),
+    (DepType.RELATED, TaskStatus.DEFINED),
+    (DepType.DISCOVERED_FROM, TaskStatus.DEFINED),
+    (DepType.WAITS_FOR, TaskStatus.DEFINED),  # no children: vacuously satisfied
+    (DepType.CONDITIONAL_BLOCKS, TaskStatus.BLOCKED),
+])
+async def test_satisfied_and_provenance_edges_preserve_ready_status(db, dep_type, dep_status):
+    await db.create_task(Task(
+        id="up", project_id=PROJECT, title="up", description="", status=dep_status,
+    ))
+    await db.create_task(Task(
+        id="ready", project_id=PROJECT, title="ready", description="", status=TaskStatus.READY,
+    ))
+
+    await db.add_dependency("ready", "up", dep_type.value)
+
+    task = await db.get_task("ready")
+    assert task.status == TaskStatus.READY
+    assert task.is_blocked is False
+
+
+@pytest.mark.parametrize("status", [TaskStatus.READY, TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED])
+async def test_new_blocker_preserves_claim_holder_status(db, status):
+    await _mktask(db, "up")
+    await db.create_task(Task(
+        id="held", project_id=PROJECT, title="held", description="", status=status,
+    ))
+    async with db._engine.begin() as conn:
+        await db._upsert_meta("held", "claimed_by_session", {"session_id": "holder"}, conn=conn)
+
+    await db.add_dependency("held", "up")
+
+    task = await db.get_task("held")
+    assert task.status == status
+    assert task.is_blocked is True
+
+
+async def test_demoting_edge_and_status_roll_back_together(db):
+    await _mktask(db, "up")
+    await db.create_task(Task(
+        id="ready", project_id=PROJECT, title="ready", description="", status=TaskStatus.READY,
+    ))
+
+    with pytest.raises(RuntimeError, match="abort"):
+        async with db._engine.begin() as conn:
+            await db.add_dependency("ready", "up", conn=conn)
+            raise RuntimeError("abort")
+
+    task = await db.get_task("ready")
+    assert task.status == TaskStatus.READY
+    assert task.is_blocked is False
+    assert await db.get_typed_dependencies("ready") == []
+
+
 async def test_has_waiting_dependents_counts_unfinished_blocking_edges(db):
     for tid in ("fix", "waiter", "done-waiter", "child", "note", "free"):
         await _mktask(db, tid)
@@ -215,5 +293,6 @@ async def test_get_stuck_defined_tasks_reads_tasks_that_carry_a_route(db):
 
     stuck = await db.get_stuck_defined_tasks(0)
 
-    assert sorted(task.id for task in stuck) == ["second", "stuck"]  # one row per task
+    # Adding the undelivered blocker demotes "ready" to DEFINED too.
+    assert sorted(task.id for task in stuck) == ["ready", "second", "stuck"]  # one row per task
     assert all(task.route == route for task in stuck)

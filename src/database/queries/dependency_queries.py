@@ -12,8 +12,8 @@ from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.blocked_state import unmet_dependency_predicate
-from src.database.tables import task_dependencies, tasks
-from src.models import BLOCKING_DEP_TYPES, DepType, Task, TaskStatus
+from src.database.tables import task_dependencies, task_metadata, tasks
+from src.models import BLOCKING_DEP_TYPES, DepType, Task, TaskEvent, TaskStatus
 
 
 def _dep_type_filter(dep_types: frozenset[str] | set[str] | None):
@@ -61,6 +61,8 @@ class DependencyQueryMixin:
         """Add a typed dependency edge between two tasks.
 
         Insert + blocked-state recompute in one transaction (design §4.2).
+        A new unsatisfied edge demotes READY work to DEFINED only while it
+        remains unassigned and unclaimed, in this same transaction.
         Idempotent: adding an edge that already exists (same
         ``(task_id, depends_on_task_id, dep_type)`` — the composite PK on
         ``task_dependencies``) is a no-op that does not raise.  Callers
@@ -95,10 +97,9 @@ class DependencyQueryMixin:
             await self._notify_ready(result.ready)
             return None
 
-        _insert = pg_insert
-        if conn is not None:
-            await conn.execute(
-                _insert(task_dependencies)
+        async def write(connection):
+            inserted = await connection.scalar(
+                pg_insert(task_dependencies)
                 .values(
                     task_id=task_id,
                     depends_on_task_id=depends_on,
@@ -106,23 +107,54 @@ class DependencyQueryMixin:
                     description=description,
                 )
                 .on_conflict_do_nothing()
+                .returning(task_dependencies.c.task_id)
             )
-            await self._mark_dependency_dirty((task_id, depends_on), conn=conn)
-            return await self.recompute_blocked({task_id, depends_on}, conn=conn)
+            await self._mark_dependency_dirty((task_id, depends_on), conn=connection)
+            flipped = await self.recompute_blocked({task_id, depends_on}, conn=connection)
+            if inserted is not None and dep_type in BLOCKING_DEP_TYPES:
+                dependency = tasks.alias()
+                unmet = (
+                    select(task_dependencies.c.task_id)
+                    .join(dependency, dependency.c.id == task_dependencies.c.depends_on_task_id)
+                    .where(
+                        task_dependencies.c.task_id == task_id,
+                        task_dependencies.c.depends_on_task_id == depends_on,
+                        task_dependencies.c.dep_type == dep_type,
+                        unmet_dependency_predicate(task_dependencies, dependency),
+                    )
+                    .exists()
+                )
+                holder = select(task_metadata.c.task_id).where(
+                    task_metadata.c.task_id == task_id,
+                    task_metadata.c.key == "claimed_by_session",
+                ).exists()
+                eligible = and_(
+                    tasks.c.id == task_id,
+                    tasks.c.status == TaskStatus.READY.value,
+                    tasks.c.assigned_agent_id.is_(None),
+                    ~holder,
+                    unmet,
+                )
+                # recompute_blocked has already locked the affected task
+                # rows. Recheck holder/status under those locks, and keep
+                # the same guard on the sanctioned status write.
+                if await connection.scalar(select(tasks.c.id).where(eligible)) is not None:
+                    transition = await self._apply_transition(
+                        connection,
+                        task_id,
+                        TaskStatus.DEFINED,
+                        event=TaskEvent.DEPS_UNMET,
+                        context="dependency_added",
+                        extra_where=eligible,
+                    )
+                    flipped |= transition.flipped
+            return flipped
+
+        if conn is not None:
+            return await write(conn)
 
         async with self._engine.begin() as owned_conn:
-            await owned_conn.execute(
-                _insert(task_dependencies)
-                .values(
-                    task_id=task_id,
-                    depends_on_task_id=depends_on,
-                    dep_type=dep_type,
-                    description=description,
-                )
-                .on_conflict_do_nothing()
-            )
-            await self._mark_dependency_dirty((task_id, depends_on), conn=owned_conn)
-            flipped = await self.recompute_blocked({task_id, depends_on}, conn=owned_conn)
+            flipped = await write(owned_conn)
             ready_ids = await self._note_frontier_entry(
                 owned_conn, set(flipped), reason="unblocked"
             )

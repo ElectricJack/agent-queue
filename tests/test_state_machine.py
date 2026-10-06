@@ -18,6 +18,7 @@ class TestValidTransitions:
         "state,event,expected",
         [
             (TaskStatus.DEFINED, TaskEvent.DEPS_MET, TaskStatus.READY),
+            (TaskStatus.READY, TaskEvent.DEPS_UNMET, TaskStatus.DEFINED),
             (TaskStatus.READY, TaskEvent.ASSIGNED, TaskStatus.ASSIGNED),
             (TaskStatus.ASSIGNED, TaskEvent.AGENT_STARTED, TaskStatus.IN_PROGRESS),
             (TaskStatus.IN_PROGRESS, TaskEvent.AGENT_COMPLETED, TaskStatus.COMPLETED),

@@ -1155,6 +1155,38 @@ class TestCLICommands:
         assert result.exit_code == 0, result.output
         assert captured_args["parent_id"] == "epic"
 
+    def test_task_create_blocked_by_is_repeatable(self, runner):
+        from src.cli.app import cli
+
+        mock = self._mock_client({"create_task": {"created": "epic.1", "title": "T"}})
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(cli, [
+                "task", "create", "--project", "proj", "--title", "T", "--description", "D",
+                "--parent", "epic", "--blocked-by", "epic.2", "--blocked-by", "epic.3",
+                "--blocked-by", "epic.2",
+            ])
+
+        assert result.exit_code == 0, result.output
+        args = mock.execute.call_args.args[1]
+        assert args["depends_on"] == ["epic.2", "epic.3"]
+        assert args["parent_id"] == "epic"
+
+    @pytest.mark.parametrize("graph_option", ["--graph", "--from-spec"])
+    def test_task_create_blocked_by_refuses_graph_options(self, runner, tmp_path, graph_option):
+        from src.cli.app import cli
+
+        graph = tmp_path / "graph.yaml"
+        graph.write_text("nodes: []")
+        with patch("src.cli.tasks._get_client") as client:
+            result = runner.invoke(cli, [
+                "task", "create", "--project", "proj", graph_option, str(graph),
+                "--blocked-by", "up",
+            ])
+
+        assert result.exit_code != 0
+        assert "--blocked-by is not supported" in result.output
+        client.assert_not_called()
+
     def test_task_create_graph_with_parent_flag(self, runner):
         """--parent with --graph is passed through as parent_id to create_task_graph."""
         from src.cli.app import cli

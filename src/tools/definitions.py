@@ -1524,7 +1524,11 @@ _ALL_TOOL_DEFINITIONS = [
                             },
                         ],
                     },
-                    "description": "Task IDs or described dependency edges (optional).",
+                    "description": (
+                        "Task IDs or described dependency edges (optional), committed "
+                        "atomically with the task. Bare IDs create blocks edges; CLI "
+                        "--blocked-by is repeatable. Blocking edges start the task DEFINED."
+                    ),
                 },
                 "discovered_from": {
                     "type": "string",

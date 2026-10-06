@@ -61,6 +61,19 @@ async def mktask(db, tid, status=TaskStatus.DEFINED, **kw):
 
 
 class TestAddDependency:
+    async def test_new_blocker_demotes_ready_work(self, handler, db):
+        await mktask(db, "up")
+        await mktask(db, "ready", status=TaskStatus.READY)
+        db._sm_enforce = True
+
+        res = await handler._cmd_add_dependency({"task_id": "ready", "depends_on": "up"})
+
+        assert res["ok"] is True
+        task = await db.get_task("ready")
+        assert task.status == TaskStatus.DEFINED
+        assert task.is_blocked is True
+        assert "ready" not in {t.id for t in await db.get_ready_frontier(PROJECT_ID)}
+
     async def test_defaults_to_blocks(self, handler, db):
         await mktask(db, "a")
         await mktask(db, "b")
@@ -185,6 +198,73 @@ class TestRemoveDependency:
 
 
 class TestCreateTaskGraph:
+    @pytest.mark.parametrize("parent_id", [None, "container"])
+    async def test_task_is_invisible_until_all_blockers_commit(
+        self, handler, db, monkeypatch, parent_id
+    ):
+        await mktask(db, "up-one")
+        await mktask(db, "up-two")
+        if parent_id:
+            await mktask(db, parent_id, status=TaskStatus.READY)
+        add_dependency = db.add_dependency
+        observed = []
+
+        async def observe(task_id, *args, **kwargs):
+            # A concurrent readiness pass must never see the new row before
+            # its blockers. This read uses a separate transaction.
+            assert kwargs.get("conn") is not None
+            assert await db.get_task(task_id) is None
+            observed.append(task_id)
+            return await add_dependency(task_id, *args, **kwargs)
+
+        monkeypatch.setattr(db, "add_dependency", observe)
+        args = {"project_id": PROJECT_ID, "title": "t", "depends_on": ["up-one", "up-two"]}
+        if parent_id:
+            args["parent_id"] = parent_id
+        res = await handler._cmd_create_task(args)
+
+        task = await db.get_task(res["created"])
+        assert observed == [task.id, task.id]
+        assert task.status == TaskStatus.DEFINED
+        assert task.is_blocked is True
+        assert {("up-one", "blocks"), ("up-two", "blocks")} <= set(
+            await db.get_typed_dependencies(task.id)
+        )
+
+    @pytest.mark.parametrize("parent_id", [None, "container"])
+    async def test_creation_failure_rolls_back_task_and_edges(self, handler, db, parent_id):
+        await mktask(db, "up")
+        if parent_id:
+            await mktask(db, parent_id, status=TaskStatus.READY)
+        created_ids = []
+
+        async def fail_after_create(conn, task_id, _parent_id):
+            created_ids.append(task_id)
+            raise RuntimeError("creation interrupted")
+
+        args = {
+            "project_id": PROJECT_ID, "title": "t", "depends_on": ["up"],
+            "_after_create_on": fail_after_create,
+        }
+        if parent_id:
+            args["parent_id"] = parent_id
+        with pytest.raises(RuntimeError, match="creation interrupted"):
+            await handler._cmd_create_task(args)
+
+        assert len(created_ids) == 1
+        assert await db.get_task(created_ids[0]) is None
+        assert await db.get_typed_dependencies(created_ids[0]) == []
+
+    async def test_container_flag_and_blockers_commit_together(self, handler, db):
+        await mktask(db, "up")
+        res = await handler._cmd_create_task({
+            "project_id": PROJECT_ID, "title": "epic", "container": True, "depends_on": ["up"],
+        })
+
+        async with db._engine.begin() as conn:
+            assert await db.is_container(res["created"], conn=conn)
+        assert (await db.get_task(res["created"])).is_blocked is True
+
     async def test_labels_are_attached(self, handler, db):
         res = await handler._cmd_create_task(
             {"project_id": PROJECT_ID, "title": "t", "labels": ["hold:me", "area:api"]}

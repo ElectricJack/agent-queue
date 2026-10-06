@@ -55,6 +55,7 @@ class TaskEvent(Enum):
     """
 
     DEPS_MET = "DEPS_MET"
+    DEPS_UNMET = "DEPS_UNMET"
     ASSIGNED = "ASSIGNED"
     # A pool-worker claim of a READY task (swarm-work-model §10): goes
     # straight to IN_PROGRESS, no ASSIGNED hop for pulled work.

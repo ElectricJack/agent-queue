@@ -61,6 +61,7 @@ Events are the inputs to the state machine. Each event, combined with the curren
 | Value | Meaning |
 |---|---|
 | `DEPS_MET` | All upstream dependencies have reached COMPLETED. Signals that a DEFINED task may now become READY. |
+| `DEPS_UNMET` | An unsatisfied blocking edge was added to a READY, unclaimed task. Returns it to DEFINED. |
 | `ASSIGNED` | The scheduler has chosen an idle agent for this task. |
 | `AGENT_STARTED` | The agent process confirmed it has begun executing the task. |
 | `AGENT_COMPLETED` | The agent finished its work without error. |
@@ -518,6 +519,7 @@ These transitions represent the normal, happy-path progression of a task.
 | From | Event | To | Notes |
 |---|---|---|---|
 | DEFINED | DEPS_MET | READY | All upstream dependencies completed. |
+| READY | DEPS_UNMET | DEFINED | A new blocking edge is unsatisfied; the task is unassigned and has no claim holder. |
 | READY | ASSIGNED | ASSIGNED | Scheduler selected an agent. |
 | ASSIGNED | AGENT_STARTED | IN_PROGRESS | Agent process confirmed it started. |
 | IN_PROGRESS | AGENT_COMPLETED | COMPLETED | Agent finished work successfully. In `pull_request` integration mode the task completes unmerged (`pr_url` recorded); in `direct` mode the completion pipeline merges the branch first. |

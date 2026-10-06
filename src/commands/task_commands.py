@@ -2783,6 +2783,23 @@ class TaskCommandsMixin:
         discovered_from_origin: str | None = None
         depth_cap_fallback = False
         hierarchy_created = False
+        # Worker and hierarchy/train filing already persist supplied edges
+        # inside their creation transactions. Ordinary root/child creation
+        # uses the same hook as phases so its row can never commit before
+        # its blockers, even if the readiness cascade runs during filing.
+        edges_written_on_create = bool(edges) and filing_session is None and not hierarchy_enabled
+        creation_flipped: set[str] = set()
+        if edges_written_on_create:
+            edges_after_create_on = after_create_on
+
+            async def after_create_on(conn, task_id, parent_id):
+                for dep_id, dep_type, dep_reason in edges:
+                    creation_flipped.update(await self.db.add_dependency(
+                        task_id, dep_id, dep_type, description=dep_reason, conn=conn
+                    ))
+                if edges_after_create_on is not None:
+                    await edges_after_create_on(conn, task_id, parent_id)
+
         if hierarchy_enabled and filing_session is None:
             try:
                 async with self.db.immediate() as conn:
@@ -2944,6 +2961,8 @@ class TaskCommandsMixin:
                     )
                     await after_create_on(conn, task_id, None)
 
+        await self.db.log_blocked_flips(creation_flipped)
+
         # Persist requires_kinds rows now that the FK target exists.
         if normalized_requirements and not hierarchy_created:
             await self.db.add_task_workspace_requirements(task_id, normalized_requirements)
@@ -2969,28 +2988,9 @@ class TaskCommandsMixin:
         if provider_intent != CLASS_ONLY:
             await self._record_provider_intent_audit(task_id, provider_intent, previous=None)
 
-        # Graph edges and labels, now that the FK target exists.  Each
-        # ``add_dependency`` recomputes the blocked-state projection, so the
-        # task's ``is_blocked`` is correct before anything can schedule it.
-        # Worker-filed edges were already written inside
-        # ``_create_worker_filed_task``'s transaction above — only log them
-        # here so the audit trail is identical either way.
+        # Edges were written in the creation transaction; log their audit
+        # events after commit, along with labels.
         for dep_id, dep_type, dep_reason in edges:
-            if filing_session is None and not hierarchy_created:
-                try:
-                    await self.db.add_dependency(
-                        task_id, dep_id, dep_type, description=dep_reason
-                    )
-                except HierarchyError as exc:
-                    return {
-                        "error": (
-                            f"hierarchy.{exc.code}: {exc.detail} "
-                            f"(task '{task_id}' was already created; fix the edge with "
-                            f"'aq task deps')"
-                        ),
-                        "code": f"hierarchy.{exc.code}",
-                        "task_created": task_id,
-                    }
             await self.db.log_event(
                 "dependency.added",
                 project_id=project_id,
@@ -3901,6 +3901,7 @@ class TaskCommandsMixin:
             )
         except HierarchyError as exc:
             return {"error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
+        task = await self.db.get_task(task_id) or task
         await self.db.log_event(
             "dependency.added",
             project_id=task.project_id,

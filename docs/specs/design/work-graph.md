@@ -133,6 +133,21 @@ migration; it is not part of `tasks.is_blocked` or development admission.
 
 ### 4.2 Recompute triggers
 
+Single-task creation accepts dependencies through `depends_on`; the CLI's
+repeatable `aq task create --blocked-by TASK_ID` supplies `blocks` edges.
+The task, its parent link and all supplied dependencies commit together. A
+task with blocking edges starts DEFINED, so no readiness pass can see it
+without its prerequisites. Graph creation declares dependencies in its document
+and rejects `--blocked-by` rather than dropping the option.
+
+Adding an unsatisfied blocking edge to a READY, unassigned task with no claim
+holder demotes it to DEFINED in the edge's transaction (`DEPS_UNMET`). The
+shared edge satisfaction rules decide whether the new edge is unsatisfied;
+satisfied edges and provenance edges do not demote work. Active claims and
+other statuses retain their status. Demotion recomputes affected children,
+since a DEFINED parent withholds them. Git delivery remains the separate
+dynamic admission condition described above.
+
 Recomputed **in the same transaction** as the mutation, Beads-style (`issueops/blocked_state.py` semantics):
 
 - dependency edge add / remove (including bulk delete when a task is deleted),

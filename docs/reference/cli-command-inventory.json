@@ -15854,6 +15854,7 @@
           "--after-review",
           "--root",
           "--container",
+          "--blocked-by",
           "--reason",
           "--deliverable",
           "--requires-kind",

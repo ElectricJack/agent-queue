@@ -79,7 +79,9 @@ class CreateTaskRequest:
             it afterwards). It is flagged in the creation transaction, so no worker ever claims it, and it stays open until
             its children finish. Refused for worker sessions, which file an epic with its children through create_task_graph
             and a document-level parent block. Default: False.
-        depends_on (list[Any] | None | Unset): Task IDs or described dependency edges (optional).
+        depends_on (list[Any] | None | Unset): Task IDs or described dependency edges (optional), committed atomically
+            with the task. Bare IDs create blocks edges; CLI --blocked-by is repeatable. Blocking edges start the task
+            DEFINED.
         discovered_from (None | str | Unset): Task ID this work was discovered from (provenance, swarm-work-model §9; a
             worker-filed caller is restricted to the held task's subtree).
         reason (None | str | Unset): WHY this task exists: the reason it was spawned, not just what it does. REQUIRED
