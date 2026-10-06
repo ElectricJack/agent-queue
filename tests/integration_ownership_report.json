@@ -9183,6 +9183,9 @@
     },
     "src/api/target_scope.py::CONTEXT_TARGET_RESOLVERS[('decision_list', 'object_id')]": {
       "reason": "Registers tagged integration operator decision read ownership."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed": {
+      "reason": "Branch-fence refusal branch of the hierarchical integration claim ladder: it records the fence evidence and releases the claim to READY with the ordinary preparation backoff for the owner-recovery sweep. Owned claim-preparation surface, never a remote ref or lifecycle transition."
     }
   },
   "shared_state": {
