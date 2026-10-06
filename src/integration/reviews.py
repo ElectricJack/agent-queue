@@ -11,15 +11,45 @@ import hashlib
 import json
 import math
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal
 
 from sqlalchemy import func, insert, select
 
-from src.database.tables import archived_tasks, integration_review_evidence as evidence, tasks
+from src.database.tables import archived_tasks, tasks
+from src.database.tables import integration_review_evidence as evidence
 from src.git.manager import is_valid_git_oid
 from src.integration.git_truth import GitTruthSnapshot
+
+
+def pull_request_review_state(reviews: Iterable[dict], head_sha: str) -> str:
+    """Reduce GitHub's latest decisive review per human, with exact-head approval.
+
+    A request for changes remains outstanding across pushes until that reviewer
+    approves or dismisses it. Comments do not erase a decision; dismissed reviews
+    do not count as either approval or rejection.
+    """
+    latest = {}
+    for review in reviews:
+        state, user = review.get("state"), review.get("user")
+        if state not in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
+            continue
+        if not isinstance(user, dict) or user.get("type") != "User":
+            continue
+        login, identity = user.get("login"), review.get("id")
+        if (not isinstance(login, str) or not login.strip()
+                or type(identity) is not int or identity <= 0):
+            raise ValueError("GitHub review identity is malformed")
+        key = login.casefold()
+        if key not in latest or identity > latest[key]["id"]:
+            latest[key] = review
+    if any(review["state"] == "CHANGES_REQUESTED" for review in latest.values()):
+        return "pr_changes_requested"
+    if any(review["state"] == "APPROVED" and review.get("commit_id") == head_sha
+           for review in latest.values()):
+        return "approved"
+    return "pr_review_missing"
 
 
 @dataclass(frozen=True)
@@ -146,14 +176,14 @@ class TreeReviews:
             raise ValueError("review subject repository/project changed")
         identity = json.dumps((subject.repository_id, subject.task_id, reviewer, decision_id))
         row_id = "tree-verdict-" + hashlib.sha256(identity.encode()).hexdigest()
-        row = dict(
-            id=row_id, source_task_id=subject.task_id, repository_id=subject.repository_id,
-            source_base=source_base, reviewed_head_sha=reviewed_head_sha,
-            reviewed_tree_sha=subject.tree_sha, reviewer_identity=reviewer,
-            reviewer_task_id=reviewer_task_id, reviewer_session_attempt_id=reviewer_session_attempt_id,
-            review_kind=review_kind, generation=0, verdict=verdict,
-            evidence={**provenance, "decision_path": "tree_review", "decision_id": decision_id},
-        )
+        row = {
+            "id": row_id, "source_task_id": subject.task_id, "repository_id": subject.repository_id,
+            "source_base": source_base, "reviewed_head_sha": reviewed_head_sha,
+            "reviewed_tree_sha": subject.tree_sha, "reviewer_identity": reviewer,
+            "reviewer_task_id": reviewer_task_id, "reviewer_session_attempt_id": reviewer_session_attempt_id,
+            "review_kind": review_kind, "generation": 0, "verdict": verdict,
+            "evidence": {**provenance, "decision_path": "tree_review", "decision_id": decision_id},
+        }
         existing = (await conn.execute(select(evidence).where(
             evidence.c.id == row_id,
         ))).mappings().one_or_none()

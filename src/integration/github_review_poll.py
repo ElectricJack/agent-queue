@@ -21,7 +21,9 @@ without keeping exceptions or rendering their tracebacks for each root.
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -33,10 +35,109 @@ from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError
 from src.integration.source_ancestry import SourceAncestryInvalid, SourceAncestryObservation
 from src.models import TaskStatus
+from src.projects.github import GitHubError
 
 logger = logging.getLogger(__name__)
 
 _UNREAD = object()
+
+
+def pull_request_mismatch(pull, binding, *, branch, base_ref, head_sha):
+    """The PR must propose this repository's exact source to this boundary."""
+    head, base = pull.get("head"), pull.get("base")
+    head_repo = head.get("repo") if isinstance(head, dict) else None
+    base_repo = base.get("repo") if isinstance(base, dict) else None
+    if pull.get("state") not in {"open", "closed"}:
+        raise ValueError("GitHub pull request state is malformed")
+    if pull.get("state") != "open":
+        return "closed"
+    if not all(isinstance(item, dict) for item in (head, base, head_repo, base_repo)):
+        raise ValueError("GitHub pull request identity is malformed")
+    if head.get("ref") != branch or head_repo.get("id") != binding.repository_id:
+        return "head branch changed"
+    if base.get("ref") != base_ref or base_repo.get("id") != binding.repository_id:
+        return "base changed"
+    if head.get("sha") != head_sha:
+        return "head moved"
+    return None
+
+
+class RootPullRequestGate:
+    """Read the PR at freeze time; unavailable observations back off, never admit.
+
+    Git alone has already decided this source is pending. These observations
+    authorize admission, and have no bearing on delivery or a frozen batch.
+    """
+
+    def __init__(self, db, *, repository, checks, clock=time.time):
+        self.db, self.repository, self.checks, self.clock = db, repository, checks, clock
+        self._deferred = {}
+
+    async def __call__(self, target, member):
+        from src.integration.reviews import pull_request_review_state
+        from src.integration.subjects import HeadIdentity
+
+        async with self.db._engine.connect() as conn:
+            row = (await conn.execute(select(
+                tasks.c.pr_url, tasks.c.branch_name, projects.c.hierarchical_integration_policy,
+            ).join(projects, projects.c.id == tasks.c.project_id).where(
+                tasks.c.id == member.task_id,
+            ))).mappings().one()
+        policy = row["hierarchical_integration_policy"] or {}
+        url = row["pr_url"]
+
+        def blocker(code, **detail):
+            return {"code": code, "task_id": member.task_id, "ref": member.task_id,
+                    "source_sha": member.source_sha, "pr_url": url,
+                    "detail": f"root {member.task_id} PR admission: {code}", **detail}
+
+        if not isinstance(url, str) or not url.strip():
+            return blocker("awaiting_pr")
+        key = (target.key, member.task_id, member.source_sha, url, row["branch_name"],
+               json.dumps(policy, sort_keys=True))
+        for stale in list(self._deferred):
+            if stale[:2] == key[:2] and stale != key:
+                del self._deferred[stale]
+        previous = self._deferred.get(key)
+        now = self.clock()
+        if previous and now < previous["retry_at"]:
+            return previous
+        try:
+            binding, client = await self.repository(target)
+            number = GitHubAccess.validate_pr_url(binding, url)
+            pull = await client.pull_request(url)
+            mismatch = pull_request_mismatch(pull, binding,
+                branch=str(row["branch_name"]).removeprefix("refs/heads/"),
+                base_ref=target.target_ref.removeprefix("refs/heads/"), head_sha=member.source_sha)
+            if mismatch:
+                self._deferred.pop(key, None)
+                return blocker("awaiting_pr", reason=mismatch)
+            exact = await self.checks(target, member, policy, binding)
+            if exact is None:
+                raise ValueError("PR required checks observer is unavailable")
+            result = await exact.refresh(HeadIdentity(repository_id=target.repository_id,
+                ref="refs/heads/" + pull["head"]["ref"], sha=member.source_sha, generation=0))
+            if result.state.value == "unknown":
+                raise ValueError("PR checks unavailable")
+            if not result.green:
+                self._deferred.pop(key, None)
+                return blocker("pr_checks_red" if result.state.value == "red"
+                               else "awaiting_pr_checks")
+            if (policy.get("root") or {}).get("admission", "reviewed") == "reviewed":
+                reviews = await client.paged_list(
+                    f"/repositories/{binding.repository_id}/pulls/{number}/reviews?per_page=100")
+                state = pull_request_review_state(reviews, member.source_sha)
+                if state != "approved":
+                    self._deferred.pop(key, None)
+                    return blocker(state)
+            self._deferred.pop(key, None)
+            return None
+        except (GitError, GitHubError, GitHubAccessError, OSError, ValueError, KeyError, TypeError) as exc:
+            delay = min((previous or {}).get("retry_seconds", 30) * 2, 600)
+            result = blocker("unknown", reason=str(exc), retry_at=now + delay,
+                             retry_seconds=delay)
+            self._deferred[key] = result
+            return result
 
 
 @dataclass
@@ -241,7 +342,7 @@ class GitHubReviewPoller:
         try:
             binding = await self.git.bind_github_repository(url)
             found = _Repository(binding, self.git._github_client(binding))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - repository adapter failures back off
             delay = min(
                 failure.delay * 2 if failure else self.repository_retry_seconds,
                 self.repository_retry_max_seconds,
