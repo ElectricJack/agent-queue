@@ -45,6 +45,15 @@ class Batch:
     repair_attempt_count: int = 0
     created_at: float = 0
 
+    @property
+    def epic_sync(self) -> bool:
+        """A closed epic's sync batch still owes a tested candidate publication.
+
+        Its deterministic identity freezes the collected head and exact child
+        sources, rather than another delivery of already-contained children.
+        """
+        return self.id.startswith("train-epic-sync-")
+
     def __post_init__(self):
         branch(self.target_ref)
         if self.intent not in {"open", "paused", "aborted"} or self.repair_attempt_count < 0:
@@ -443,7 +452,7 @@ class BatchService:
             # partial merge. Candidate inclusion alone cannot settle members.
             proofs = [await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha)
                       for m in members]
-            if members and all(proof is True for proof in proofs):
+            if members and all(proof is True for proof in proofs) and not batch.epic_sync:
                 return BatchObservation("delivered", candidate, target)
             if any(proof is None for proof in proofs):
                 return BatchObservation("unknown", candidate, target)
