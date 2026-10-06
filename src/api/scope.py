@@ -188,6 +188,7 @@ PROJECT_ONBOARDING_SCOPE_ERROR = "out of scope: project onboarding requires glob
 OPERATOR_INTEGRATION_CONTROLS = frozenset(
     {
         "integration_abort_batch",
+        "integration_refresh_epic",
         "integration_retire_origin",
         "integration_reevaluate_repair",
         "integration_recover_candidate_member",

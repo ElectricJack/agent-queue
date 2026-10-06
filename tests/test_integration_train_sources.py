@@ -774,19 +774,19 @@ class GreenWhen:
         return self._result(head)
 
 
-def lane(world, transport, *, regenerate=DEFAULT_REGENERATE_COMMAND):
+def lane(world, transport, *, regenerate=DEFAULT_REGENERATE_COMMAND, target=MAIN):
     """A train lane over the origin clone. *regenerate* may be a callable, read
     per visit, so a test can change the repository's configuration."""
     db, origin = world.db, world.origin
     binding = GitHubRepositoryBinding(123, "test/repo")
 
     def retained(command=None):
-        return RetainedRepository("r", origin.clone, binding, "main", regenerate=command)
+        return RetainedRepository(target.repository_id, origin.clone, binding, "main", regenerate=command)
 
     command = regenerate if callable(regenerate) else lambda: regenerate
 
     async def repository(batch):
-        assert batch.repository_id == "r"
+        assert batch.repository_id == target.repository_id
         return retained(command())
 
     batches = DatabaseBatches(db)
@@ -803,12 +803,12 @@ def lane(world, transport, *, regenerate=DEFAULT_REGENERATE_COMMAND):
 
     async def lane_snapshot():
         return await GitTruth(transport).snapshot(
-            str(origin.clone), project_id="p", repository_id="r",
-            repository_url=origin.url, target_ref=MAIN.target_ref,
+            str(origin.clone), project_id=target.project_id, repository_id=target.repository_id,
+            repository_url=origin.url, target_ref=target.target_ref,
         )
 
-    async def lane_for(target):
-        assert target == MAIN
+    async def lane_for(requested):
+        assert requested == target
         return TrainLane(snapshot=lane_snapshot, service=service, checks=candidates)
 
     train = IntegrationTrain(targets=DatabaseTargets(db), batches=batches, lane_for=lane_for,
@@ -843,6 +843,170 @@ async def test_visit_freezes_gates_and_fast_forwards_through_the_lease(world):
     lease = await BranchLock(db).get(BranchKey(repository_id="r", branch="refs/heads/main"))
     assert lease is None or lease.holder is None
     assert (await train.visit(MAIN)).state == "idle"
+
+
+async def cross_epic_world(world):
+    """Two epics whose child dependency spans different branch histories."""
+    epic = await completed(world, "epic", done=False)
+    await completed(world, "other", done=False)
+    prerequisite = await completed(world, "prerequisite", parent="other")
+    await completed(world, "child", parent="epic", needs=("prerequisite",), done=False)
+    await world.db.transition_task("child", TaskStatus.READY)
+    return epic, prerequisite, TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+
+
+@pytest.mark.parametrize("delivery", ["ancestry", "trailer", "patch"])
+async def test_cross_epic_frontier_requires_exact_default_proof(world, delivery):
+    db, origin = world.db, world.origin
+    _, source, _ = await cross_epic_world(world)
+    # Delivery to the source's own epic releases none of its cross-epic consumers.
+    git(origin.clone, "checkout", "-B", "aq/other", "origin/aq/other")
+    git(origin.clone, "merge", "--no-ff", "-m", "source epic", source)
+    git(origin.clone, "push", "origin", "aq/other")
+    exclusions = await db.claim_frontier_exclusions("child")
+    assert [(item["ref"], item["epic_id"]) for item in exclusions
+            if item["code"] == "prerequisite_not_on_default_branch"] == [("prerequisite", "other")]
+    assert not await db.is_hierarchy_task_runnable("child")
+    git(origin.clone, "checkout", "-B", "main", "origin/main")
+    if delivery == "ancestry":
+        git(origin.clone, "merge", "--no-ff", "-m", "default delivery", source)
+    else:
+        git(origin.clone, "cherry-pick", "--no-commit", source)
+        message = (f"squash\n\nAQ-Source: prerequisite@{source}" if delivery == "trailer"
+                   else "equivalent whole source")
+        git(origin.clone, "commit", "-m", message)
+    git(origin.clone, "push", "origin", "main")
+    await db._delivery_observer.prerequisite_view("p", task_id="child")
+    assert not [item for item in await db.claim_frontier_exclusions("child")
+                if "prerequisite" in item["code"]]
+    assert await db.is_hierarchy_task_runnable("child")
+
+
+async def test_cross_epic_completed_policy_is_explicit_legacy_admission(world):
+    db = world.db
+    await cross_epic_world(world)
+    policy = {"cross_epic_prerequisites": "completed"}
+    await db.update_project("p", hierarchical_integration_policy=policy)
+    assert not [item for item in await db.claim_frontier_exclusions("child")
+                if "prerequisite" in item["code"]]
+
+
+async def test_epic_refresh_preview_apply_attestation_lease_and_origin(world):
+    from src.integration.stacked_branches import EpicRefresh
+
+    db, origin = world.db, world.origin
+    epic, prerequisite, target = await cross_epic_world(world)
+    origin.land("prerequisite")
+    default = git(origin.url, "rev-parse", "main")
+    train, checks, _ = lane(world, LocalGit(Path(origin.url)), target=target)
+    controls = TrainControls(db, train=train)
+    preview = await controls.refresh_epic("epic", dry_run=True, operator_id="operator")
+    assert preview["outcome"] == "preview" and preview["behind"] == 2
+    assert git(origin.url, "rev-parse", "aq/epic") == epic
+    assert await DatabaseBatches(db).current(target) is None
+    status = await IntegrationStatusService(db, git_first="active").train_status("p")
+    assert next(item for item in status["epics"] if item["task_id"] == "epic")["behind"] == 2
+
+    pending = await controls.refresh_epic("epic", dry_run=False, operator_id="operator")
+    assert pending["outcome"] == "pending" and pending["state"] == "testing"
+    assert git(origin.url, "rev-parse", "aq/epic") == epic
+    reasons = await db.claim_frontier_exclusions("child")
+    assert "frontier_prerequisite_not_on_default_branch" in {item["code"] for item in reasons}
+    checks.green.add(pending["candidate_sha"])
+    # Checks alone cannot bypass attestation or another writer's epic lease.
+    train_lane = await train.lane_for(target)
+    train_lane.service.attest.return_value = "unavailable"
+    refused = await controls.refresh_epic("epic", dry_run=False, operator_id="operator")
+    assert refused["state"] == "held"
+    assert git(origin.url, "rev-parse", "aq/epic") == epic
+    train_lane.service.attest.return_value = "published"
+    lock = BranchLock(db)
+    key = BranchKey(repository_id="r", branch=target.target_ref)
+    fence = await lock.acquire(key, "another-writer", role="integration", ttl_seconds=120)
+    busy = await controls.refresh_epic("epic", dry_run=False, operator_id="operator")
+    assert busy["state"] == "unknown"
+    assert git(origin.url, "rev-parse", "aq/epic") == epic
+    await lock.release(fence)
+    refreshed = await controls.refresh_epic("epic", dry_run=False, operator_id="operator")
+    assert refreshed["outcome"] == "refreshed"
+    head = git(origin.url, "rev-parse", "aq/epic")
+    assert refreshed["target_sha"] == head
+    for source in (epic, default, prerequisite):
+        git(origin.url, "merge-base", "--is-ancestor", source, head)
+    task = await db.get_task("child")
+    filing = await db.get_task_branch_origin_for_promotion("child", "r")
+    assert await EpicRefresh(db, train).child_base(task, filing) == head
+    recorded = await db.get_task_branch_origin_for_promotion("child", "r")
+    assert recorded["base_sha"] == filing["base_sha"]
+    assert recorded["base_refresh"]["head_sha"] == head
+    assert recorded["base_refresh"]["default_sha"] == default
+
+
+async def test_epic_refresh_conflict_files_ordinary_repair_on_epic(world):
+    from src.integration.stacked_branches import EpicRefresh
+
+    db, origin = world.db, world.origin
+    _, _, target = await cross_epic_world(world)
+    git(origin.clone, "checkout", "-B", "aq/epic", "origin/aq/epic")
+    (origin.clone / "base.txt").write_text("epic edit\n")
+    git(origin.clone, "commit", "-am", "epic edit")
+    git(origin.clone, "push", "origin", "aq/epic")
+    origin.land("prerequisite")
+    (origin.clone / "base.txt").write_text("default edit\n")
+    git(origin.clone, "commit", "-am", "default edit")
+    git(origin.clone, "push", "origin", "main")
+    transport = LocalGit(Path(origin.url))
+    train, checks, _ = lane(world, transport, target=target)
+    pending = await EpicRefresh(db, train).refresh("epic", dry_run=False)
+    assert pending["state"] == "repair", pending
+    repairs = [task for task in await db.list_tasks("p") if task.dedup_key
+               and task.dedup_key.startswith(f"repair:{pending['batch_id']}:")]
+    [repair] = repairs
+    assert repair.branch_name == target.target_ref.removeprefix("refs/heads/")
+    owner = await BranchLock(db).get(BranchKey(repository_id="r", branch=target.target_ref))
+    assert owner.holder == repair.id
+    assert "frontier_prerequisite_not_on_default_branch" in {
+        item["code"] for item in await db.claim_frontier_exclusions("child")}
+
+    # An ordinary repair publishes its resolved merge on the epic under its
+    # allocated lease. The refresh still owes checks and attestation afterward.
+    git(origin.clone, "checkout", "-B", "aq/epic", "origin/aq/epic")
+    conflict = subprocess.run(["git", "merge", "--no-commit", "origin/main"],
+                              cwd=origin.clone, capture_output=True)
+    assert conflict.returncode == 1
+    (origin.clone / "base.txt").write_text("resolved epic and default edit\n")
+    git(origin.clone, "add", "base.txt")
+    git(origin.clone, "commit", "-m", "resolve default refresh")
+    repaired = git(origin.clone, "rev-parse", "HEAD")
+    locks = BranchLock(db)
+    await locks.fenced_push(owner.grant(), git=transport, checkout_path=str(origin.clone),
+        repository=GitHubRepositoryBinding(123, "test/repo"), tip_oid=repaired,
+        expected_old_oid=pending["target_sha"])
+    await db.update_task(repair.id, status=TaskStatus.COMPLETED)
+    await locks.release(owner.grant())
+    checking = await EpicRefresh(db, train).refresh("epic", dry_run=False)
+    assert checking["state"] == "testing"
+    assert not await db.is_hierarchy_task_runnable("child")
+    checks.green.add(checking["candidate_sha"])
+    delivered = await EpicRefresh(db, train).refresh("epic", dry_run=False)
+    assert delivered["outcome"] == "refreshed"
+    assert await db.is_hierarchy_task_runnable("child")
+    git(origin.url, "merge-base", "--is-ancestor", repaired, "aq/epic")
+
+
+async def test_epic_refresh_serializes_with_open_collection(world):
+    from src.integration.stacked_branches import EpicRefresh
+
+    _, _, target = await cross_epic_world(world)
+    world.origin.land("prerequisite")
+    store = BatchStore(world.db)
+    source = git(world.origin.url, "rev-parse", "aq/child")
+    base = git(world.origin.clone, "rev-parse", source + "^")
+    collection = Batch("train-existing", "p", "r", target.target_ref, created_at=time.time())
+    await store.freeze(collection, (BatchMember("child", source, base),),
+                       trees={"child": tree(world, source)})
+    pending = await EpicRefresh(world.db).refresh("epic", dry_run=False)
+    assert pending["outcome"] == "pending" and pending["batch_id"] == collection.id
 
 
 async def test_two_generated_catalogue_members_merge_by_regeneration(world):

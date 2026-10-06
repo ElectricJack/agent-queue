@@ -164,7 +164,9 @@ async def _epic_branches_on(conn, ids):
 
 async def project_snapshot(db, target: TrainTarget) -> GitTruthSnapshot | None:
     """Observe the project root through the daemon's isolated delivery store."""
-    observer = getattr(db, "_delivery_observer", None)
+    from src.integration.delivery_observer import prerequisite_observer
+
+    observer = prerequisite_observer(db) or getattr(db, "_delivery_observer", None)
     if observer is None:
         return None
     repo = await db.get_repo(target.repository_id)
@@ -323,7 +325,7 @@ class DatabaseBatches:
         if current is not None:
             members = await service.store.members(current.id)
             # Old frozen inputs also stay out of duplicate epic publication.
-            if target.kind == "epic" and not current.epic_sync:
+            if target.kind == "epic" and not (current.epic_sync or current.epic_refresh):
                 delivered = await self.delivered(target, snapshot, [m.task_id for m in members])
                 if delivered:
                     blockers.append({
@@ -475,6 +477,28 @@ class DatabaseBatches:
 
     async def eligible(self, batch: Batch, members: tuple[BatchMember, ...]) -> bool:
         """Ordinary identity is still current: completed, routed to this target."""
+        if batch.epic_refresh:
+            from src.integration.stacked_branches import EpicRefresh
+
+            if len(members) != 1:
+                return False
+            async with self.db._engine.connect() as conn:
+                row = await EpicRefresh(self.db).identity(members[0].task_id, conn=conn)
+                active = await conn.scalar(select(projects.c.status).where(
+                    projects.c.id == batch.project_id))
+            if not (row and active == "ACTIVE" and row["project_id"] == batch.project_id
+                    and row["repo_id"] == batch.repository_id
+                    and _branch(row["branch_name"]) == batch.target_ref):
+                return False
+            default = TrainTarget(batch.project_id, batch.repository_id,
+                                  _branch(row["default_branch"]))
+            observed = await project_snapshot(self.db, default)
+            if observed is None or observed.error or not observed.target_oid:
+                return False
+            result = await observed.observation.git.arun_git_result(
+                ["merge-base", "--is-ancestor", members[0].source_sha, observed.target_oid],
+                cwd=observed.observation.store)
+            return result.returncode == 0 and await observed.is_fresh()
         ids = [member.task_id for member in members]
         async with self.db._engine.connect() as conn:
             mode = (await conn.execute(

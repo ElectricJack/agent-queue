@@ -175,6 +175,7 @@ start code work, tests or QA from a digest author turn.
     "integration_recover_unwritten_resolution",
     "integration_redrive_child",
     "integration_abort_batch",
+    "integration_refresh_epic",
     "integration_retire_origin",
     "integration_reopen_collection",
     "integration_redrive_root",

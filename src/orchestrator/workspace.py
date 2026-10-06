@@ -657,6 +657,15 @@ class WorkspaceMixin:
             # Existing child commits must survive this update, including retries.
             origin = dict(origin) | {"base_sha": prerequisite_head,
                                      "prerequisite_head": prerequisite_head}
+        if operation is None:
+            from src.integration.stacked_branches import EpicRefresh
+
+            refreshed_head = await EpicRefresh(
+                self.db, getattr(self, "integration_train", None),
+            ).child_base(task, dict(origin) | {"base_sha": canonical_base_sha})
+            if refreshed_head is not None:
+                origin = dict(origin) | {"base_sha": refreshed_head,
+                                         "prerequisite_head": refreshed_head}
         branch = subject.branch_name or ""
         checkpoint = await self.db.get_integration_checkpoint(subject_id)
         if (

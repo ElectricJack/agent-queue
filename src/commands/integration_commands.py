@@ -57,6 +57,24 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_refresh_epic(self, args: dict) -> dict:
+        """Preview or refresh an epic from the default branch through the train."""
+        from src.commands.contracts.integration import IntegrationRefreshEpicArgs
+        from src.integration.train_controls import TrainControls
+
+        request = IntegrationRefreshEpicArgs.model_validate(args)
+        task = await self.db.get_task(request.task_id)
+        operator, refusal = await integration_operator(self.db, task.project_id if task else None)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await TrainControls(self.db, train=getattr(
+                self.orchestrator, "integration_train", None)).refresh_epic(
+                request.task_id, dry_run=request.dry_run, operator_id=operator)
+        except (ValueError, GitError, OSError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def _cmd_integration_abort_batch(self, args: dict) -> dict:
         """Preview or abort an unpromoted Git-first batch."""
         from src.commands.contracts.integration import IntegrationAbortBatchArgs

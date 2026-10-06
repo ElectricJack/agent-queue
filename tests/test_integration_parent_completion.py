@@ -4418,7 +4418,8 @@ def test_hierarchical_policy_freezes_full_parent_and_root_inputs():
         policy.parent.required_checks.names = ("changed",)
 
 
-@pytest.mark.parametrize("field,value", [("branchless_parent", "guess"), ("on_failed_child", "ignore")])
+@pytest.mark.parametrize("field,value", [("branchless_parent", "guess"), ("on_failed_child", "ignore"),
+                                        ("cross_epic_prerequisites", "receipt")])
 def test_hierarchical_policy_rejects_unruled_choices(field, value):
     values = {
         "version": 1,

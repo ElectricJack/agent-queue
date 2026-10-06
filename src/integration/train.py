@@ -710,15 +710,19 @@ class IntegrationTrain:
         completion_blocker: Callable[[str, str], Awaitable[dict | None]] | None = None,
         sync_default_branch: dict[str, Any] | None = None,
     ) -> TrainVisit:
-        # The repair works on the batch's candidate ref, never the target: the
-        # train alone fast-forwards the target once the repaired head is green.
-        head = observation.candidate_sha
+        # A default refresh repairs the epic itself. Collection repairs retain
+        # their candidate ref until the train publishes its attested head.
+        head = observation.target_sha if batch.epic_refresh else observation.candidate_sha
         if not head:
             return self._visit(target, "unknown", batch, replace(observation, detail={
                 **(observation.detail or {}), "repair_publication": "unpublished",
             }), result)
 
         async def authorize():
+            if batch.epic_refresh:
+                repo = await lane.service.gitops.repository(batch)
+                return (await lane.service._authorized(batch, members) and
+                        await lane.service.gitops.remote(repo, batch.target_ref) == head)
             return await lane.service.repair_authorized(batch, members, head)
 
         # Keep the publication fence and the complete member instructions, and the
@@ -742,7 +746,8 @@ class IntegrationTrain:
                 "push credentials or GitHub availability before changing workflow content."
             )
         _progress("allocate_repair")
-        repair = await self.repair.allocate(batch.id, target_ref=candidate_ref(batch.id),
+        repair = await self.repair.allocate(batch.id, target_ref=(
+            batch.target_ref if batch.epic_refresh else candidate_ref(batch.id)),
                                             head_sha=head, held=batch.intent != "open",
                                             authorize=authorize, brief=brief,
                                             completion_blocker=completion_blocker,

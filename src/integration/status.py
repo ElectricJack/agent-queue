@@ -637,6 +637,33 @@ class IntegrationStatusService:
         for batch in batches:
             blockers.extend(self._train_batch_blockers(batch, visits))
         blockers.extend(self._train_source_blockers(visits))
+        from src.integration.stacked_branches import EpicRefresh
+        from src.git.manager import GitError
+        from src.integration.train_sources import project_snapshot
+        from src.integration.train import TrainTarget
+
+        epics = []
+        repository = await self.db.get_repo(project["integration_repository_id"]) if project[
+            "integration_repository_id"] else None
+        if repository is not None:
+            default = "refs/heads/" + repository.default_branch.removeprefix("refs/heads/")
+            observed = await project_snapshot(self.db, TrainTarget(
+                project_id, repository.id, default))
+            async with self.db._engine.connect() as conn:
+                child = tasks.alias("status_epic_child")
+                ids = (await conn.execute(select(tasks.c.id).where(
+                    tasks.c.project_id == project_id, tasks.c.repo_id == repository.id,
+                    tasks.c.branch_name.is_not(None),
+                    select(child.c.id).where(child.c.parent_task_id == tasks.c.id).exists(),
+                ).order_by(tasks.c.id))).scalars().all()
+            for task_id in ids:
+                try:
+                    if observed is None:
+                        raise ValueError("default branch cannot be observed")
+                    _, _, _, distance = await EpicRefresh(self.db).inspect(task_id, snapshot=observed)
+                    epics.append(distance)
+                except (ValueError, GitError, OSError):
+                    epics.append({"task_id": task_id, "behind": None, "state": "unknown"})
         return {
             "projection_kind": "train",
             "project_id": project_id,
@@ -650,6 +677,7 @@ class IntegrationStatusService:
             "operator_decisions": decisions,
             "targets": [{**visit, **evidence.get(key, {})} for key, visit in visits.items()],
             "batches": batches,
+            "epics": epics,
             "blockers": _sorted_blockers(blockers),
         }
 

@@ -52,6 +52,36 @@ This uses the parent branch, even when the default branch has newer unrelated
 commits. Unknown or stale delivery evidence leaves the child unclaimable. A
 merge conflict fails preparation and preserves the child's committed work.
 
+A completed prerequisite in another epic, or a root prerequisite, must reach
+the project's default branch before its dependent becomes claimable. Git proves
+the exact completion source by ancestry, an `AQ-Source` trailer or whole-source
+patch equivalence. `aq task explain` names an unproven prerequisite and its epic
+with `prerequisite_not_on_default_branch`. Pool demand and claims use the same
+proof. The project integration policy defaults to
+`cross_epic_prerequisites: default_branch`; an explicit `completed` value restores
+the legacy rule that completion alone releases cross-epic dependencies.
+
+Before starting a cross-epic dependent, preparation refreshes its epic from the
+default branch through a frozen train batch. Publication needs the epic's lease,
+checks on the exact candidate and attestation. Checks or an occupied lease keep
+the refresh pending; a content conflict files ordinary repair work on the epic
+branch and withholds its children. Preparation preserves the child's existing
+commits and records its actual refreshed parent head and default head in the
+filing origin's `base_refresh` annotation. The original `base_sha` stays fixed.
+Status includes each epic's `ahead` and `behind` commit counts against the default
+branch, or an unknown distance when Git cannot observe it.
+
+Supervisors can preview and start a refresh before resuming paused dependents:
+
+```bash
+aq integration refresh-epic --task EPIC_ID
+aq integration refresh-epic --task EPIC_ID --apply
+```
+
+An apply reports `pending` while the train checks or repairs its candidate.
+Subsequent train visits finish publication; repeating apply also advances the
+same frozen refresh. A refresh serializes with an epic's open collection batch.
+
 For an existing historical subject, `engine-transfer` and
 `development-engine-transfer` offer a forward-only audited transfer to
 `reconciler`. Preview first, then supply every exact subject version, the reason

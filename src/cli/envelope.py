@@ -181,6 +181,10 @@ def _project_item(item: Any, fields: tuple[str, ...], entity: str) -> Any:
             projected["operator_decisions"] = item["operator_decisions"]
         if entity == "integration" and "github" in item:
             projected["github"] = item["github"]
+        if entity == "integration":
+            for name in ("epics", "task_id", "ahead", "behind", "target_sha", "default_sha"):
+                if name in item:
+                    projected[name] = item[name]
     return projected
 
 

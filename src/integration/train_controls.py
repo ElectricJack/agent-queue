@@ -25,8 +25,14 @@ from src.integration.train_sources import project_delivered, project_snapshot
 
 
 class TrainControls:
-    def __init__(self, db, *, snapshot=project_snapshot, clock=time.time):
-        self.db, self.snapshot, self.clock = db, snapshot, clock
+    def __init__(self, db, *, snapshot=project_snapshot, clock=time.time, train=None):
+        self.db, self.snapshot, self.clock, self.train = db, snapshot, clock, train
+
+    async def refresh_epic(self, task_id, *, dry_run, operator_id):
+        from src.integration.stacked_branches import EpicRefresh
+
+        return await EpicRefresh(self.db, self.train, clock=self.clock).refresh(
+            task_id, dry_run=dry_run, operator_id=operator_id)
 
     async def abort_batch(self, batch_id, *, dry_run, operator_id, reason):
         if not dry_run and not reason.strip():
