@@ -355,6 +355,15 @@ class GhRunner:
 
         safe_stderr = _scrub_diagnostic(stderr, secrets=diagnostic_secrets)
         result = GhResult(process.returncode or 0, stdout, safe_stderr)
+        if result.returncode != 0 and (
+            _command_error(result.returncode, safe_stderr).category == "rate_limited"
+        ):
+            # Diagnose real secondary limits vs mislabelled refusals; secrets scrubbed.
+            logger.warning(
+                "gh rate_limited; repository=%s stderr=%r",
+                repository.full_name if repository is not None else "github.com (account)",
+                safe_stderr[:2000],
+            )
         if check and result.returncode != 0:
             error = _cli_error(result.returncode, stderr)
             self.warn_failure(error, repository=repository)
