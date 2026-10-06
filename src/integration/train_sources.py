@@ -306,6 +306,7 @@ class DatabaseBatches:
     async def open_batch(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, service: BatchService
     ) -> BatchSelection:
+        await service.store.reconcile_aborted(target=target)
         current = await self.current(target)
         blockers: list[dict[str, Any]] = []
         pending = None
