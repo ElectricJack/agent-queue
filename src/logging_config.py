@@ -31,11 +31,14 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import traceback
 from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
 from typing import Any
 
 import structlog
+
+_MAX_TRACEBACK_FRAMES = 20
 
 
 # ── Correlation context (structlog contextvars) ────────────────────────
@@ -268,17 +271,38 @@ def _get_console_processors(
         processors.append(_shorten_timestamp)
         processors.append(_shorten_logger_name)
     if fmt == "json":
+        processors.append(_bounded_exc_info)
         processors.append(structlog.processors.JSONRenderer())
     elif console_format:
         # User-defined format template — overrides default renderer
         colors = fmt != "plain"
         processors.append(_TemplateRenderer(console_format, colors=colors))
     elif fmt == "plain":
-        processors.append(structlog.dev.ConsoleRenderer(colors=False))
+        processors.append(structlog.dev.ConsoleRenderer(
+            colors=False, exception_formatter=_console_exception_formatter(colors=False),
+        ))
     else:
         # "dev" (or "text" backward compat)
-        processors.append(structlog.dev.ConsoleRenderer(colors=True))
+        processors.append(structlog.dev.ConsoleRenderer(
+            colors=True, exception_formatter=_console_exception_formatter(colors=True),
+        ))
     return processors
+
+
+def _console_exception_formatter(*, colors: bool) -> Any:
+    """Keep daemon tracebacks bounded and never inspect frame locals."""
+    return structlog.dev.RichTracebackFormatter(
+        show_locals=False, max_frames=_MAX_TRACEBACK_FRAMES, width=100, extra_lines=1,
+        color_system="truecolor" if colors else None,
+    )
+
+
+def _format_bounded_exception(exc_info: Any) -> str:
+    """Keep the innermost frames in JSON output without capturing locals."""
+    return "".join(traceback.format_exception(*exc_info, limit=-_MAX_TRACEBACK_FRAMES)).rstrip()
+
+
+_bounded_exc_info = structlog.processors.ExceptionRenderer(_format_bounded_exception)
 
 
 # ── Auto-attach traceback to error logs inside except blocks ───────────
@@ -396,7 +420,7 @@ def setup_logging(
                     # Render the exc_info tuple into an "exception" string —
                     # JSONRenderer alone would serialize a useless
                     # "<traceback object at 0x...>" repr.
-                    structlog.processors.format_exc_info,
+                    _bounded_exc_info,
                     structlog.processors.JSONRenderer(),
                 ],
                 foreign_pre_chain=shared_processors,
