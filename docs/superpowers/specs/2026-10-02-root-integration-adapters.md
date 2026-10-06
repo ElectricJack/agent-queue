@@ -206,6 +206,22 @@ Unavailable hosted observations remain unknown and cannot admit a source. This
 gate runs before freezing a new batch; subsequent observations cannot undo its
 immutable membership or Git-proven delivery.
 
+PR admission refusals retain their named blocker and retry time. Repeated visits
+reuse that observation with exponential backoff from 60 seconds up to 600 seconds;
+a changed source, PR, branch or policy invalidates it. Unfinished exact-head check
+evidence is read from the database until its `due_at`. Final check observations
+refresh at the gate's retry boundary to detect reruns. GitHub rate-limit errors,
+including those from required-check observation, propagate to the repository-wide
+train pause, which honors GitHub's retry time.
+
+A GitHub approval counts only from a human with current repository `write` or
+`admin` permission. An explicitly supplied `ReviewRequirements.reviewers` set
+can further restrict those identities; it cannot authorize a repository outsider.
+Permissions use GitHub's [repository permission endpoint](https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user).
+A retained URL for a closed PR produces `pr_closed` in admission and PR opening
+instead of `awaiting_pr` or `already_open`. Reopening that PR is the recovery;
+the gate re-observes it after the retry window without creating a duplicate.
+
 Development targets and roots using a retained, reviewed development policy for
 local validation keep their existing Git-based admission. The daemon must load
 and validate that pinned artifact before selecting local admission; a missing or

@@ -167,6 +167,35 @@ async def test_hosted_success_is_cached_per_check_with_its_attempt(db):
     client.paged_items.assert_not_awaited()
 
 
+@pytest.mark.parametrize("conclusion,delay", [("pending", 60), ("unavailable", 300)])
+async def test_unfinished_checks_reuse_durable_cache_until_due(db, conclusion, delay):
+    clock = Clock()
+    provider = SimpleNamespace(required=REQUIRED, observe=AsyncMock(return_value=(
+        row("unit", conclusion), row("lint", conclusion),
+    )))
+    first = await ExactChecks(db, provider, clock=clock).refresh_if_due(head())
+    assert first.due_at == clock.now + delay
+    clock.now += delay - 1
+    # A reconstructed observer uses database evidence, not process-local state.
+    cached = await ExactChecks(db, provider, clock=clock).refresh_if_due(head())
+    assert cached == first
+    provider.observe.assert_awaited_once()
+    clock.now += 1
+    await ExactChecks(db, provider, clock=clock).refresh_if_due(head())
+    assert provider.observe.await_count == 2
+
+
+async def test_final_pr_checks_refresh_to_detect_same_head_rerun(db):
+    provider = SimpleNamespace(required=REQUIRED, observe=AsyncMock(side_effect=[
+        (row("unit", "success"), row("lint", "success")),
+        (row("unit", "failure"), row("lint", "success")),
+    ]))
+    checks = ExactChecks(db, provider, clock=Clock())
+    assert (await checks.refresh_if_due(head())).green
+    assert (await checks.refresh_if_due(head())).state is ChecksState.RED
+    assert provider.observe.await_count == 2
+
+
 async def test_current_rerun_supersedes_cached_success(db):
     client, trust = github(app=False)
     clock = Clock()

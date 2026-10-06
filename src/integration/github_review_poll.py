@@ -69,12 +69,13 @@ class RootPullRequestGate:
     authorize admission, and have no bearing on delivery or a frozen batch.
     """
 
-    def __init__(self, db, *, repository, checks, clock=time.time):
+    def __init__(self, db, *, repository, checks, clock=time.time, review_requirements=None):
         self.db, self.repository, self.checks, self.clock = db, repository, checks, clock
+        self.review_requirements = review_requirements
         self._deferred = {}
 
     async def __call__(self, target, member):
-        from src.integration.reviews import pull_request_review_state
+        from src.integration.reviews import observe_pull_request_review_state
         from src.integration.subjects import HeadIdentity
 
         async with self.db._engine.connect() as conn:
@@ -102,6 +103,14 @@ class RootPullRequestGate:
         now = self.clock()
         if previous and now < previous["retry_at"]:
             return previous
+
+        def defer(code, *, due_at=None, **detail):
+            delay = min((previous or {}).get("retry_seconds", 30) * 2, 600)
+            result = blocker(code, retry_at=max(now + delay, due_at or 0),
+                             retry_seconds=delay, **detail)
+            self._deferred[key] = result
+            return result
+
         try:
             binding, client = await self.repository(target)
             number = GitHubAccess.validate_pr_url(binding, url)
@@ -110,34 +119,33 @@ class RootPullRequestGate:
                 branch=str(row["branch_name"]).removeprefix("refs/heads/"),
                 base_ref=target.target_ref.removeprefix("refs/heads/"), head_sha=member.source_sha)
             if mismatch:
-                self._deferred.pop(key, None)
-                return blocker("awaiting_pr", reason=mismatch)
+                return defer("pr_closed" if mismatch == "closed" else "awaiting_pr",
+                             reason=mismatch)
             exact = await self.checks(target, member, policy, binding)
             if exact is None:
                 raise ValueError("PR required checks observer is unavailable")
-            result = await exact.refresh(HeadIdentity(repository_id=target.repository_id,
+            result = await exact.refresh_if_due(HeadIdentity(repository_id=target.repository_id,
                 ref="refs/heads/" + pull["head"]["ref"], sha=member.source_sha, generation=0))
             if result.state.value == "unknown":
-                raise ValueError("PR checks unavailable")
+                return defer("unknown", due_at=result.due_at, reason="PR checks unavailable")
             if not result.green:
-                self._deferred.pop(key, None)
-                return blocker("pr_checks_red" if result.state.value == "red"
-                               else "awaiting_pr_checks")
+                return defer("pr_checks_red" if result.state.value == "red"
+                             else "awaiting_pr_checks", due_at=result.due_at)
             if (policy.get("root") or {}).get("admission", "reviewed") == "reviewed":
                 reviews = await client.paged_list(
                     f"/repositories/{binding.repository_id}/pulls/{number}/reviews?per_page=100")
-                state = pull_request_review_state(reviews, member.source_sha)
+                state = await observe_pull_request_review_state(reviews, member.source_sha,
+                    client=client, binding=binding, requirements=self.review_requirements)
                 if state != "approved":
-                    self._deferred.pop(key, None)
-                    return blocker(state)
+                    return defer(state)
             self._deferred.pop(key, None)
             return None
         except (GitError, GitHubError, GitHubAccessError, OSError, ValueError, KeyError, TypeError) as exc:
-            delay = min((previous or {}).get("retry_seconds", 30) * 2, 600)
-            result = blocker("unknown", reason=str(exc), retry_at=now + delay,
-                             retry_seconds=delay)
-            self._deferred[key] = result
-            return result
+            from src.integration.train import _rate_limit
+
+            if _rate_limit(exc) is not None:
+                raise
+            return defer("unknown", reason=str(exc))
 
 
 @dataclass
