@@ -14474,7 +14474,6 @@
     "src/database/queries/chat_queries.py::ChatQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/claim_queries.py::ClaimQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/claim_queries.py::FRONTIER_PREDICATE_DETAILS": "Generic dependency; integration-specific definitions in this file are charged independently.",
-    "src/database/queries/claim_queries.py::claim_frontier_predicates": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/claim_queries.py::numeric_meta_value": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/claim_queries.py::route_claimable_in": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/collaboration_lifecycle_queries.py::CollaborationLifecycleQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
