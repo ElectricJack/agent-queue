@@ -212,6 +212,27 @@ async def test_cached_source_checks_publish_exact_source_and_annotated_tag(promo
     assert e.ops.git.pushes == pushes
 
 
+async def test_second_settlement_with_another_tag_is_refused_and_first_kept(promotion):
+    e = promotion
+    result = await visit(e)
+    assert result.state == "delivered", result
+    await settle_promotion(e.db, e.batch, result)
+    await settle_promotion(e.db, e.batch, result)  # the same settlement again is a no-op
+
+    async def recorded():
+        async with e.db._engine.connect() as conn:
+            return (await conn.execute(select(task_metadata.c.value).where(
+                task_metadata.c.key == "promotion_result"))).scalars().all()
+
+    [first] = await recorded()
+    forged = SimpleNamespace(state="delivered", candidate_sha=result.candidate_sha,
+                             detail={**result.detail, "tag_oid": "f" * 40})
+    with pytest.raises(PromotionIntentInvalid, match="differs from its recorded result"):
+        await settle_promotion(e.db, e.batch, forged)
+    assert await recorded() == [first]
+    assert json.loads(first)["tag_oid"] == result.detail["tag_oid"] != "f" * 40
+
+
 async def test_pinned_pr_waits_for_source_checks_then_resumes(promotion):
     e = promotion
     e.gate.green = False
