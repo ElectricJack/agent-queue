@@ -17,6 +17,7 @@ interface FlowNode {
 }
 
 interface FlowProps {
+  colorMode?: "light" | "dark" | "system";
   nodes: FlowNode[];
   edges: Edge[];
   children: ReactNode;
@@ -203,6 +204,7 @@ const base = {
 };
 
 beforeEach(() => {
+  delete document.documentElement.dataset.theme;
   tiles.store = mergeTiles(emptyStore(), ["0:0"], {
     nodes: [n("e", "collapsed", 0, 0), n("z", "card", 2, 0)],
     edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
@@ -232,9 +234,28 @@ beforeEach(() => {
   dashboardStateFake.docs.clear();
   dashboardStateFake.puts.length = 0;
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  delete document.documentElement.dataset.theme;
+});
 
 describe("LayoutCanvas", () => {
+  it("uses the dark default when the shell has not published a theme", () => {
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    expect(flow.current?.colorMode).toBe("dark");
+  });
+
+  it("reads the shell theme and updates an already-mounted canvas", async () => {
+    document.documentElement.dataset.theme = "light";
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    expect(flow.current?.colorMode).toBe("light");
+
+    await act(async () => { document.documentElement.dataset.theme = "dark"; });
+    expect(flow.current?.colorMode).toBe("dark");
+    await act(async () => { document.documentElement.dataset.theme = "light"; });
+    expect(flow.current?.colorMode).toBe("light");
+  });
+
   it("keeps task cards at their server-owned positions without drag pinning", () => {
     render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
     const serverPosition = toPx(2, 0, "comfortable");
