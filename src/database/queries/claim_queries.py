@@ -369,6 +369,10 @@ CLAIM_PREPARATION_METADATA_KEYS = (
     PREPARE_BACKOFF_UNTIL_KEY,
     PREPARE_BACKOFF_ATTEMPTS_KEY,
     "slot_reset_failure",
+    # The last fence that refused a preparation (``BRANCH_FENCED``). Evidence
+    # for the wait, so it goes stale at exactly the same boundary as the
+    # ladder it throttles.
+    "branch_fenced",
 )
 
 #: Matches exactly what PostgreSQL's ``double precision`` input accepts here:
