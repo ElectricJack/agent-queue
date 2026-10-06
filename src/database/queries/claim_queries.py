@@ -425,7 +425,7 @@ def _claim_preparation_predicates():
     }
 
 
-def claim_frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
+def claim_frontier_predicates(hierarchy_mode=None):
     """All profile-independent acceptance filters, including candidate preparation."""
     return {
         **_frontier_predicates(hierarchy_mode),
@@ -471,14 +471,13 @@ class ClaimQueryMixin:
 
     async def claim_frontier_exclusions(
         self, task_id: str, *, router_ready: bool | None = None,
-        hierarchy_mode: ProjectIntegrationMode | None = None,
+        hierarchy_mode=None,
     ) -> list[dict]:
         """Evaluate the real claim filters for one READY task, without scheduler guesses.
 
         *router_ready* adds the route filter (:func:`route_claimable`) for a
         project whose router is (not) ready.  *hierarchy_mode* carries the
-        claim path's Git-view prerequisite evidence (see
-        :func:`src.integration.delivery_observer.git_prerequisite_mode`).
+        claim path's Git-view prerequisite evidence (``git_prerequisite_mode``).
         """
         predicates = claim_frontier_predicates(hierarchy_mode)
         if router_ready is not None:
@@ -2117,7 +2116,7 @@ class ClaimQueryMixin:
 
     async def count_ready_by_profile(
         self, project_id: str, *, allowed_task_ids=None, router_ready: bool | None = None,
-        hierarchy_mode: ProjectIntegrationMode | None = None,
+        hierarchy_mode=None,
     ) -> dict[str | None, int]:
         """Count structural work, restricted to verified development admission when supplied.
 
