@@ -149,7 +149,21 @@ async def _deliver_first_by_train(db, env):
     assert visit["state"] == "delivered", visit
 
 
-async def test_git_first_delivery_releases_scheduler_pool_and_claim(orch, db, git_first_frontier):
+@pytest.fixture
+def frontier_clock(monkeypatch):
+    from types import SimpleNamespace
+
+    from src.integration import delivery_observer
+
+    clock = MagicMock(return_value=100.0)
+    # Keep asyncio's real monotonic clock unchanged.
+    monkeypatch.setattr(delivery_observer, "time", SimpleNamespace(monotonic=clock))
+    return clock
+
+
+async def test_git_first_delivery_releases_scheduler_pool_and_claim(
+    orch, db, git_first_frontier, frontier_clock,
+):
     from src.commands.handler import CommandHandler
     from src.database.tables import task_delivery_receipts
     from src.doctor.models import DoctorContext
@@ -187,6 +201,9 @@ async def test_git_first_delivery_releases_scheduler_pool_and_claim(orch, db, gi
     assert await db.list_sessions(lifecycle="pool") == []
 
     await _deliver_first_by_train(db, env)
+    # The old advisory observation may withhold newly delivered work until expiry.
+    await frontier(False)
+    frontier_clock.return_value += env.observer.READ_MAX_AGE + 0.01
     modes = await frontier(True)
     async with db._engine.connect() as conn:
         assert not (await conn.execute(select(task_delivery_receipts))).first()
@@ -199,6 +216,111 @@ async def test_git_first_delivery_releases_scheduler_pool_and_claim(orch, db, gi
     result = await handler._cmd_task_claim({"next": True})
     assert result["result"] == "claimed", result
     assert result["task"]["id"] == "second"
+
+
+async def test_git_first_advisory_cycles_reuse_fetch_until_bound(
+    orch, db, git_first_frontier, frontier_clock, monkeypatch,
+):
+    from src.commands.handler import CommandHandler
+    from src.doctor.models import DoctorContext
+    from src.doctor.task_checks import _check_ready_frontier_exclusions
+    from src.scheduler import PoolKey
+
+    env = git_first_frontier
+    await _deliver_first_by_train(db, env)
+    fetch = AsyncMock(wraps=env.observer.git.afetch_origin)
+    monkeypatch.setattr(env.observer.git, "afetch_origin", fetch)
+    handler = CommandHandler(orch, orch.config)
+
+    async def advisory_cycle():
+        await orch._schedule()
+        assert "second" in orch._last_scheduler_state.hierarchy_runnable_task_ids
+        assert (await orch._measure_pools()).demand[PoolKey("worker")] == 1
+        assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 1}
+        assert await db.is_hierarchy_task_runnable("second")
+        explained = await handler._cmd_explain_task({"task_id": "second"})
+        assert not any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
+                       for r in explained["reasons"])
+        diagnosis = await _check_ready_frontier_exclusions(DoctorContext(config=orch.config, db=db))
+        assert not any(row["task_id"] == "second" for row in diagnosis.data.get("tasks", []))
+
+    await advisory_cycle()
+    assert fetch.await_count == 1
+    for age in (5.0, 15.0, env.observer.READ_MAX_AGE):
+        frontier_clock.return_value = 100.0 + age
+        await advisory_cycle()
+        assert fetch.await_count == 1
+    frontier_clock.return_value += 0.01
+    await advisory_cycle()
+    assert fetch.await_count == 2
+    await advisory_cycle()
+    assert fetch.await_count == 2
+
+
+async def test_git_first_expired_advisory_snapshot_fails_closed_on_fetch_error(
+    orch, db, git_first_frontier, frontier_clock, monkeypatch,
+):
+    from src.git.manager import GitError
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+    from src.scheduler import PoolKey
+
+    env = git_first_frontier
+    await _deliver_first_by_train(db, env)
+    assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 1}
+    fetch = AsyncMock(side_effect=GitError("remote unavailable"))
+    monkeypatch.setattr(env.observer.git, "afetch_origin", fetch)
+    # A successful observation can be reused only inside the bound.
+    frontier_clock.return_value += env.observer.READ_MAX_AGE
+    assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 1}
+    fetch.assert_not_awaited()
+    frontier_clock.return_value += 0.01
+    modes = await hierarchy_frontier_modes(db)
+    assert modes[PROJECT_ID].delivered_prerequisite_ids == frozenset()
+    fetch.assert_awaited_once()
+    await orch._schedule(hierarchy_modes=modes)
+    assert "second" not in orch._last_scheduler_state.hierarchy_runnable_task_ids
+    assert (await orch._measure_pools(hierarchy_modes=modes)).demand[PoolKey("worker")] == 0
+
+
+async def test_git_first_claim_refetches_after_cached_advisory_target_rewinds(
+    orch, db, git_first_frontier, frontier_clock, monkeypatch,
+):
+    from src.commands.handler import CommandHandler
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+
+    env = git_first_frontier
+    await _deliver_first_by_train(db, env)
+    fetch = AsyncMock(wraps=env.observer.git.afetch_origin)
+    monkeypatch.setattr(env.observer.git, "afetch_origin", fetch)
+    modes = await hierarchy_frontier_modes(db)
+    assert modes[PROJECT_ID].delivered_prerequisite_ids == {"first"}
+    await orch._reconcile_pools(hierarchy_modes=modes)
+    await orch.wait_for_pool_launches()
+    [session] = await db.list_sessions(lifecycle="pool")
+    fetch.assert_awaited_once()
+    handler = CommandHandler(orch, orch.config)
+    handler._current_scope = {"kind": "session", "session_id": session.id,
+                              "project_id": PROJECT_ID, "task_id": None, "elevated": False}
+
+    env.git(env.origin.clone, "push", "--force", "origin", f"{env.base}:aq/epic")
+    # A tick already holding its advisory view can still see runnable work.
+    await orch._schedule(hierarchy_modes=modes)
+    assert "second" in orch._last_scheduler_state.hierarchy_runnable_task_ids
+    assert fetch.await_count == 1
+    # A new advisory read detects the rewind without fetching again.
+    assert not await db.is_hierarchy_task_runnable("second")
+    assert fetch.await_count == 1
+    for expected_fetches in (2, 3):
+        result = await handler._cmd_task_claim({"next": True})
+        assert result["result"] == "no_ready_work", result
+        assert fetch.await_count == expected_fetches
+        assert (await db.get_task("second")).status is TaskStatus.READY
+    # Even the immediately preceding failed claim's observation is not reused.
+    env.git(env.origin.clone, "push", "origin", f"{env.source}:aq/epic")
+    result = await handler._cmd_task_claim({"next": True})
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "second"
+    assert fetch.await_count == 4
 
 
 @pytest.mark.parametrize("movement", ["rewind", "retarget", "generation", "unstable", "shadow"])
