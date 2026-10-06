@@ -69,7 +69,16 @@ def test_reevaluate_repair_apply_requires_exact_preview():
 
 
 
-def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail():
+@pytest.mark.parametrize(
+    "ci_source",
+    [
+        None,
+        {"root": "hosted", "epic": "hosted", "promotion": "hosted", "origin": "default"},
+        {"root": "local", "epic": "local", "promotion": "hosted", "origin": "policy"},
+    ],
+    ids=["absent", "default-hosted", "policy-local"],
+)
+def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail(ci_source):
     from src.cli.app import cli
 
     response = {
@@ -92,6 +101,8 @@ def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail():
             "gh_commands_per_minute": {},
         },
     }
+    if ci_source is not None:
+        response["ci_source"] = ci_source
     client = _client(response)
     with patch("src.cli.integration._get_client", return_value=client):
         result = CliRunner().invoke(
@@ -118,6 +129,8 @@ def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail():
         "github": response["github"],
         # The promotion chain and its misconfigured marking stay visible too.
         "promotion_flow": response["promotion_flow"],
+        # The chosen CI runner and its origin remain visible when reported.
+        "ci_source": ci_source,
         "state": None,
         "stage": None,
         "count": None,
