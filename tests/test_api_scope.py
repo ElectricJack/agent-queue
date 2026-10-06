@@ -62,6 +62,11 @@ EXPECTED_AGENT_COMMANDS = {
     "knowledge_update",
     "knowledge_history",
     "knowledge_diff",
+    # K05 proposals remain worker-safe; decisions and lifecycle changes do not.
+    "knowledge_propose",
+    "knowledge_proposal_show",
+    # K10 files work from readable knowledge using the held-task filing policy.
+    "knowledge_create_task",
     # K04: a project-pinned authorized read that returns bytes; the operator's
     # record_repair stays out of the agent set.
     "knowledge_export",
