@@ -3043,6 +3043,9 @@ task_branch_origins = Table(
     Column("parent_repository_id", Text, nullable=True),
     Column("parent_ref", Text, nullable=True),
     Column("base_sha", Text, nullable=False),
+    # The filing base stays immutable. Record the refreshed parent/default
+    # heads used at worker start separately from that provenance.
+    Column("base_refresh", JSONB, nullable=True),
     # Exact prerequisite heads used by a child, separate from its filing origin.
     Column("stack_snapshot", JSONB, nullable=True),
     Column("creation_generation", Integer, nullable=False),

@@ -242,6 +242,7 @@ class HierarchicalIntegrationPolicy(BaseModel):
     branchless_parent: Literal["skip", "declared", "verifier"]
     on_failed_child: Literal["block", "ask"]
     on_main_moved: Literal["rebuild", "wait"] = "rebuild"
+    cross_epic_prerequisites: Literal["default_branch", "completed"] = "default_branch"
     prerequisite_branches: Literal["stacked", "wait-for-parent"] | None = None
     cleanup: IntegrationCleanupPolicy = Field(default_factory=IntegrationCleanupPolicy)
     train: IntegrationTrainPolicy | None = None
@@ -255,6 +256,8 @@ class HierarchicalIntegrationPolicy(BaseModel):
         # equality. Older snapshots lack optional policy additions, so omit
         # their defaults rather than invalidating in-flight work on upgrade.
         dumped = handler(self)
+        if self.cross_epic_prerequisites == "default_branch":
+            dumped.pop("cross_epic_prerequisites", None)
         if self.prerequisite_branches is None:
             dumped.pop("prerequisite_branches", None)
         if self.max_wait_seconds == DEFAULT_INTEGRATION_MAX_WAIT_SECONDS:

@@ -173,7 +173,9 @@ async def _epic_branches_on(conn, ids):
 
 async def project_snapshot(db, target: TrainTarget) -> GitTruthSnapshot | None:
     """Observe the project root through the daemon's isolated delivery store."""
-    observer = getattr(db, "_delivery_observer", None)
+    from src.integration.delivery_observer import prerequisite_observer
+
+    observer = prerequisite_observer(db) or getattr(db, "_delivery_observer", None)
     if observer is None:
         return None
     repo = await db.get_repo(target.repository_id)
@@ -322,12 +324,16 @@ class DatabaseBatches:
         self.db, self.limit, self.clock = db, limit, clock
         self.pr_gate = pr_gate
         self.cleanup = cleanup
+        self._refresh_snapshots = {}
 
     async def open_batch(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, service: BatchService, *,
         seal_now: bool = False,
     ) -> BatchSelection:
         await service.store.reconcile_aborted(target=target)
+        # One fetched observation per serialized visit. Eligibility is called
+        # again inside publication locks and must only read these local facts.
+        self._refresh_snapshots[target.key] = snapshot
         from src.integration.stacked_branches import StackedBranches
 
         stacks = StackedBranches(self.db, clock=self.clock)
@@ -357,7 +363,7 @@ class DatabaseBatches:
                 await self._clear_admissions(target)
             members = await service.store.members(current.id)
             # Old frozen inputs also stay out of duplicate epic publication.
-            if target.kind == "epic" and not current.epic_sync:
+            if target.kind == "epic" and not (current.epic_sync or current.epic_refresh):
                 delivered = await self.delivered(target, snapshot, [m.task_id for m in members])
                 if delivered:
                     blockers.append({
@@ -685,6 +691,29 @@ class DatabaseBatches:
 
     async def eligible(self, batch: Batch, members: tuple[BatchMember, ...]) -> bool:
         """Ordinary identity is still current: completed, routed to this target."""
+        if batch.epic_refresh:
+            from src.integration.stacked_branches import EpicRefresh
+
+            if len(members) != 1:
+                return False
+            async with self.db._engine.connect() as conn:
+                row = await EpicRefresh(self.db).identity(members[0].task_id, conn=conn)
+                active = await conn.scalar(select(projects.c.status).where(
+                    projects.c.id == batch.project_id))
+            if not (row and active == "ACTIVE" and row["project_id"] == batch.project_id
+                    and row["repo_id"] == batch.repository_id
+                    and _branch(row["branch_name"]) == batch.target_ref):
+                return False
+            key = (batch.project_id, batch.repository_id, batch.target_ref)
+            observed = self._refresh_snapshots.get(key)
+            if observed is not None:
+                observed = observed.for_target(_branch(row["default_branch"]))
+            if observed is None or observed.error or not observed.target_oid:
+                return False
+            result = await observed.observation.git.arun_git_result(
+                ["merge-base", "--is-ancestor", members[0].source_sha, observed.target_oid],
+                cwd=observed.observation.store)
+            return result.returncode == 0
         ids = [member.task_id for member in members]
         async with self.db._engine.connect() as conn:
             mode = (await conn.execute(

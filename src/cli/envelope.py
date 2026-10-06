@@ -191,6 +191,9 @@ def _project_item(item: Any, fields: tuple[str, ...], entity: str) -> Any:
                      if key in batch}
                     for batch in item["batches"]
                 ]
+            for name in ("epics", "task_id", "ahead", "behind", "target_sha", "default_sha"):
+                if name in item:
+                    projected[name] = item[name]
     return projected
 
 

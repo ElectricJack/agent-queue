@@ -78,6 +78,10 @@ class Batch:
         """
         return self.id.startswith("train-epic-sync-")
 
+    @property
+    def epic_refresh(self) -> bool:
+        return self.id.startswith("train-epic-refresh-")
+
     def __post_init__(self):
         branch(self.target_ref)
         if self.intent not in {"open", "paused", "aborted"} or self.repair_attempt_count < 0:
@@ -191,6 +195,18 @@ class BatchStore:
         if len({member.task_id for member in members}) != len(members):
             raise ValueError("duplicate batch member")
         now = self.clock()
+        active = (await conn.execute(select(integration_batches.c.id).where(
+            integration_batches.c.project_id == batch.project_id,
+            integration_batches.c.repository_id == batch.repository_id,
+            integration_batches.c.target_ref == batch.target_ref,
+            integration_batches.c.id != batch.id,
+            integration_batches.c.intent != "aborted",
+            integration_batches.c.lifecycle != "promoted",
+        ))).scalars().all()
+        if active and (batch.epic_refresh or any(
+            id_.startswith("train-epic-refresh-") for id_ in active
+        )):
+            raise ValueError("epic refresh must serialize with its open collection batch")
         # Serialize absent-id creation too. No Git or check work under this lock.
         await conn.execute(select(func.pg_advisory_xact_lock(
             func.hashtextextended("git-batch:" + batch.id, 0),
@@ -638,7 +654,9 @@ class BatchService:
             # partial merge. Candidate inclusion alone cannot settle members.
             proofs = [await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha)
                       for m in members]
-            if members and all(proof is True for proof in proofs) and not batch.epic_sync:
+            if members and all(proof is True for proof in proofs) and not (
+                batch.epic_sync or batch.epic_refresh
+            ):
                 return BatchObservation("delivered", candidate, target)
             if any(proof is None for proof in proofs):
                 return BatchObservation("unknown", candidate, target)
@@ -694,7 +712,8 @@ class BatchService:
 
             async def authorize():
                 return (await self._authorized(batch, members) and
-                        await self.gitops.remote(repo, ref) == candidate and
+                        (batch.epic_refresh or
+                         await self.gitops.remote(repo, ref) == candidate) and
                         await self.gate(batch, candidate, tree))
 
             # Explicit expected-old CAS and ancestry enforce the exact final FF.

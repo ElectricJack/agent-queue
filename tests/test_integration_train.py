@@ -1071,6 +1071,43 @@ async def test_visit_timeout_frees_the_target_for_the_next_tick():
     await t.stop()
 
 
+async def test_requested_visit_shares_running_lane_and_respects_rate_limit_pause():
+    gate, entered = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def limited():
+        calls.append(True)
+        entered.set()
+        await gate.wait()
+        raise _rate_limited()
+
+    t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service(), fetch=limited)})
+    await t.tick()
+    await entered.wait()
+    requested = asyncio.create_task(t.request_visit(ROOT))
+    await asyncio.sleep(0)
+    assert calls == [True]
+    gate.set()
+    visit = await requested
+    assert visit.detail["reason"] == "rate_limited"
+    assert await t.request_visit(ROOT) is None
+    assert calls == [True]
+
+
+async def test_requested_visit_uses_timeout_and_never_returns_stale_tick_result():
+    t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service())})
+    assert (await t.request_visit(ROOT)).state == "idle"
+    async with t._tick_lock:
+        assert await t.request_visit(ROOT) is None
+
+    async def hang():
+        await asyncio.Event().wait()
+
+    t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service(), fetch=hang)},
+              visit_timeout_seconds=0.01)
+    assert (await t.request_visit(ROOT)).detail["reason"] == "visit_timeout"
+
+
 async def test_restart_resumes_from_git_without_any_notification():
     """A fresh train over the same refs settles a candidate a crash left behind."""
     batches = Batches({ROOT.key: (batch(), MEMBERS)})

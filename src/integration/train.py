@@ -444,7 +444,9 @@ class IntegrationTrain:
         self._starts = 0
         self._tick_lock = asyncio.Lock()
 
-    async def tick(self, now: float | None = None) -> dict[str, list[str]]:
+    async def tick(
+        self, now: float | None = None, *, target: TrainTarget | None = None,
+    ) -> dict[str, list[str]]:
         """Start one visit per idle target; never wait on a running one."""
         now = self.clock() if now is None else now
         if self._tick_lock.locked():
@@ -452,7 +454,8 @@ class IntegrationTrain:
                     "deferred": []}
         async with self._tick_lock:
             started, running, deferred = [], [], []
-            for target in await self.targets.targets(now):
+            targets = [target] if target is not None else await self.targets.targets(now)
+            for target in targets:
                 lane = self._lanes.setdefault(target.key, _Lane())
                 label = "/".join(target.key)
                 if lane.task is not None and not lane.task.done():
@@ -469,6 +472,21 @@ class IntegrationTrain:
                 started.append(label)
             return {"started": started, "running": running, "skipped": [],
                     "deferred": deferred}
+
+    async def request_visit(self, target: TrainTarget) -> TrainVisit | None:
+        """Request a bounded visit through the same admission as the daemon tick."""
+        scheduled = await self.tick(target=target)
+        label = "/".join(target.key)
+        lane = self._lanes.get(target.key)
+        if label in scheduled["deferred"] or lane is None or lane.task is None:
+            return None
+        if (label not in scheduled["started"] and label not in scheduled["running"]
+                and lane.task.done()):
+            return None
+        # Concurrent requests join this target's existing visit. Shield it so
+        # cancellation of a claim or CLI request cannot stop train delivery.
+        await asyncio.shield(lane.task)
+        return lane.last
 
     async def drain(self) -> None:
         """Wait for every running visit; for tests and orderly shutdown."""
@@ -755,8 +773,8 @@ class IntegrationTrain:
         completion_blocker: Callable[[str, str], Awaitable[dict | None]] | None = None,
         sync_default_branch: dict[str, Any] | None = None,
     ) -> TrainVisit:
-        # The repair works on the batch's candidate ref, never the target: the
-        # train alone fast-forwards the target once the repaired head is green.
+        # Refresh repairs own the epic lease, but must retain the tested merged
+        # candidate. A conflict's candidate is the retained partial merge.
         head = observation.candidate_sha
         if not head:
             return self._visit(target, "unknown", batch, replace(observation, detail={
@@ -764,6 +782,12 @@ class IntegrationTrain:
             }), result)
 
         async def authorize():
+            if batch.epic_refresh:
+                repo = await lane.service.gitops.repository(batch)
+                return (await lane.service._authorized(batch, members) and
+                        await lane.service.gitops.remote(repo, candidate_ref(batch.id)) == head and
+                        await lane.service.gitops.remote(repo, batch.target_ref)
+                        == observation.target_sha)
             return await lane.service.repair_authorized(batch, members, head)
 
         # Keep the publication fence and the complete member instructions, and the
@@ -790,7 +814,8 @@ class IntegrationTrain:
                 "push credentials or GitHub availability before changing workflow content."
             )
         _progress("allocate_repair")
-        repair = await self.repair.allocate(batch.id, target_ref=candidate_ref(batch.id),
+        repair = await self.repair.allocate(batch.id, target_ref=(
+            batch.target_ref if batch.epic_refresh else candidate_ref(batch.id)),
                                             head_sha=head, held=batch.intent != "open",
                                             authorize=authorize, brief=brief,
                                             policy=lane.repair_policy,

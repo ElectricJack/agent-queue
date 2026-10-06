@@ -1418,7 +1418,7 @@
       ]
     }
   },
-  "digest": "sha256:cc7f0a1624251c8c094d53f2494046170feaf58f64383cb56f5c9632283b1d44",
+  "digest": "sha256:8e4ba91357042c4b67b5d036d083acd12a840b39752de8f7529e99e207fc4fa6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8716,6 +8716,7 @@
         "src.integration.attestation",
         "src.integration.batches",
         "src.integration.candidate_baseline",
+        "src.integration.checks",
         "src.integration.ci",
         "src.integration.cleanup",
         "src.integration.delivery_observer",
@@ -8730,12 +8731,14 @@
         "src.integration.repair",
         "src.integration.reviews",
         "src.integration.root_pull_requests",
+        "src.integration.stacked_branches",
         "src.integration.status",
         "src.integration.subjects",
         "src.integration.train",
         "src.integration.train_controls",
         "src.integration.train_sources",
         "src.models",
+        "src.orchestrator.workspace",
         "src.profiles.capabilities",
         "src.test_selection",
         "src.test_selection.catalogue"

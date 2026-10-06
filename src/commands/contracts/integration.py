@@ -63,6 +63,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_resume_batch",
         "integration_seal_now",
         "integration_retire_origin",
+        "integration_refresh_epic",
         "integration_trust_manifest",
         "integration_app_verify",
         "integration_eject",
@@ -107,6 +108,11 @@ class IntegrationRetireOriginArgs(CommandArgs):
     dry_run: bool = True
 
 
+class IntegrationRefreshEpicArgs(CommandArgs):
+    task_id: str = Field(min_length=1)
+    dry_run: bool = True
+
+
 class IntegrationSealNowArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     dry_run: bool = True
@@ -125,6 +131,15 @@ class IntegrationTrainControlValue(CommandValue):
     replacement_batch_id: str | None = None
     members: tuple[str, ...] = ()
     blockers: tuple[dict[str, Any], ...] = ()
+
+
+class IntegrationRefreshEpicValue(IntegrationTrainControlValue):
+    default_ref: str | None = None
+    default_sha: str | None = None
+    ahead: int | None = None
+    behind: int | None = None
+    state: str | None = None
+    detail: dict[str, Any] | None = None
 
 
 class IntegrationStatusReadArgs(IntegrationStatusArgs):
@@ -2844,12 +2859,13 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     declaration together.  Unavailable security-sensitive mutations remain
     outside the allowlist.
     """
-    for name, args_model, applied in (
-        ("integration_abort_batch", IntegrationAbortBatchArgs, "aborted"),
-        ("integration_pause_batch", IntegrationAbortBatchArgs, "paused"),
-        ("integration_resume_batch", IntegrationAbortBatchArgs, "resumed"),
-        ("integration_seal_now", IntegrationSealNowArgs, "sealed"),
-        ("integration_retire_origin", IntegrationRetireOriginArgs, "retired"),
+    for name, args_model, applied, value_model in (
+        ("integration_abort_batch", IntegrationAbortBatchArgs, "aborted", IntegrationTrainControlValue),
+        ("integration_pause_batch", IntegrationAbortBatchArgs, "paused", IntegrationTrainControlValue),
+        ("integration_resume_batch", IntegrationAbortBatchArgs, "resumed", IntegrationTrainControlValue),
+        ("integration_seal_now", IntegrationSealNowArgs, "sealed", IntegrationTrainControlValue),
+        ("integration_retire_origin", IntegrationRetireOriginArgs, "retired", IntegrationTrainControlValue),
+        ("integration_refresh_epic", IntegrationRefreshEpicArgs, "refreshed", IntegrationRefreshEpicValue),
     ):
         if registry.get(name) is not None:
             continue
@@ -2858,15 +2874,18 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         if name == "integration_seal_now":
             outcomes += ("no_ready_work", "existing_batch")
             successes.update({"no_ready_work", "existing_batch"})
+        elif name == "integration_refresh_epic":
+            outcomes += ("pending", "current")
+            successes.update({"pending", "current"})
         contract = _operational_contract(
             name, args_model, outcomes, successes=frozenset(successes),
-            side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationTrainControlValue,
+            side_effect=SideEffectClass.COMPOSITE, result_model=value_model,
             supports_preview=True,
         )
 
-        async def train_control(args, ctx, command=name, outcomes=outcomes):
+        async def train_control(args, ctx, command=name, outcomes=outcomes, value_model=value_model):
             return await _hierarchy_adapter(
-                command, args, ctx, IntegrationTrainControlValue, set(outcomes),
+                command, args, ctx, value_model, set(outcomes),
             )
 
         async def train_control_preview(args, ctx, invoke=train_control):

@@ -564,7 +564,9 @@ class WorkspaceMixin:
             target = BranchKey(repository_id=repository_id, branch=ordinary["target_ref"])
             fence = await BranchLock(self.db).acquire(target, task.id, role="repair")
             return ({"base_sha": ordinary["starting_sha"], "reserved": True,
-                     "materialized": True, "ordinary_repair": True}, fence, "repair")
+                     "materialized": True, "ordinary_repair": True,
+                     "epic_refresh": ordinary["batch_id"].startswith("train-epic-refresh-")},
+                    fence, "repair")
         repair = await self.db.get_active_integration_repair_for_task(task.id)
         if repair is not None:
             if repair.get("writer_kind") != "repair_delegate":
@@ -651,10 +653,18 @@ class WorkspaceMixin:
         if origin is None or not origin.get("reserved") or not origin.get("materialized"):
             raise ValueError("exact branch origin is not materialized")
         canonical_base_sha = origin["base_sha"]
-        from src.integration.stacked_branches import StackedBranches
+        from src.integration.stacked_branches import EpicRefresh, StackedBranches
 
-        stack = await StackedBranches(self.db).prepare(task.id) if operation is None else None
+        refreshed_head = None
+        if operation is None:
+            refreshed_head = await EpicRefresh(
+                self.db, getattr(self, "integration_train", None),
+            ).child_base(task, origin)
+        stack = await StackedBranches(self.db).prepare(
+            task.id, parent_base=refreshed_head,
+        ) if operation is None else None
         prerequisite_head = (stack["base_sha"] if stack else
+                             refreshed_head or
                              await self.db.hierarchy_prerequisite_delivery_head(task.id))
         if stack:
             origin = dict(origin) | stack
@@ -779,6 +789,17 @@ class WorkspaceMixin:
         if origin.get("ordinary_repair"):
             if not is_valid_git_oid(head):
                 raise GitError("ordinary repair target is missing")
+            if origin.get("epic_refresh"):
+                from src.integration.stacked_branches import merge_heads
+
+                start = origin["base_sha"]
+                if await self.git.ais_ancestor(workspace, start, head, strict=True):
+                    return head
+                if await self.git.ais_ancestor(workspace, head, start, strict=True):
+                    return start
+                # Preserve epic progress and the failed refresh candidate;
+                # checkout only, publication still belongs to the repair lease.
+                return await merge_heads(self.git, workspace, head, [start], stamp=0)
             # Remote movement is progress, including a rebuilt candidate.
             # Never reset it to an obsolete allocation input or recreate a ref.
             return head

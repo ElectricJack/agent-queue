@@ -98,6 +98,16 @@ def integration_abort_batch(ctx, batch_id, reason, apply):
     })
 
 
+@integration.command("refresh-epic")
+@click.option("--task", "task_id", required=True, help="Epic whose branch needs the default branch.")
+@click.option("--apply", is_flag=True, help="Start or advance the attested refresh; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_refresh_epic(ctx, task_id, apply):
+    """Preview or refresh an epic; pending checks/repairs continue through the train."""
+    _execute(ctx, "integration_refresh_epic", {"task_id": task_id, "dry_run": not apply})
+
+
 @integration.command("retire-origin")
 @click.argument("task_id")
 @click.option("--origin-id", default=None, help="Exact origin id returned by the preview.")

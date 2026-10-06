@@ -3123,6 +3123,119 @@ async def test_conflicting_multiple_stacked_prerequisites_cannot_activate_claim(
     assert git(env.remote, "rev-parse", "refs/heads/second-prerequisite") == second
 
 
+@pytest.mark.parametrize("source_parent", [None, "other-epic"])
+async def test_cross_epic_demand_explain_claim_and_refreshed_child_base(
+    handler, db, tmp_path, development_admission, source_parent
+):
+    from pathlib import Path
+
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.integration.git_truth import GitTruth
+    from src.integration.stacked_branches import EpicRefresh
+    from src.integration.train import TrainTarget
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+    from src.scheduler import PoolKey
+    from tests.test_integration_gitops import LocalGit
+    from tests.test_integration_train_sources import lane
+
+    env, git = development_admission, development_admission.git
+    await mktask(db, "epic", status=TaskStatus.IN_PROGRESS, repo_id="repo", branch_name="aq/epic")
+    await db.add_dependency("dependent", "epic", "parent-child")
+    if source_parent:
+        await mktask(db, source_parent, status=TaskStatus.IN_PROGRESS, repo_id="repo",
+                     branch_name="aq/other-epic")
+        await db.add_dependency("prerequisite", source_parent, "parent-child")
+        git(env.source, "push", "origin", f"{env.head}:refs/heads/aq/other-epic")
+    await db.update_task("dependent", branch_name="aq/dependent", is_blocked=False)
+    git(env.source, "push", "origin", f"{env.base}:refs/heads/aq/epic",
+        f"{env.base}:refs/heads/aq/dependent")
+    sid, work_dir = await pool_session(db, tmp_path)
+    git(tmp_path, "clone", str(env.remote), str(work_dir))
+    async with db.immediate() as conn:
+        await conn.execute(task_branch_origins.insert().values(
+            id="origin-dependent", task_id="dependent", repository_id="repo",
+            branch_name="aq/dependent", parent_task_id="epic", parent_repository_id="repo",
+            parent_ref="aq/epic", base_sha=env.base, creation_generation=1,
+            reserved=True, materialized=True, created_at=time.time(),
+        ))
+        await conn.execute(task_integration_checkpoints.insert().values(
+            task_id="dependent", repository_id="repo", branch="aq/dependent",
+            checkpoint_sha=env.base, updated_at=time.time(),
+        ))
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="train", repo_url=str(env.remote))
+    await BranchOwnership(db).acquire(BranchKey(repository_id="repo", branch="aq/dependent"),
+                                      "dependent", "worker")
+    transport = handler.orchestrator.git
+    observer = DeliveryObserver(db, git=transport, truth=GitTruth(transport),
+                                data_dir=tmp_path / "prerequisites")
+    db.set_prerequisite_observer(observer)
+    manager = WorktreeSlotManager(db=db, git=transport, bus=handler.orchestrator.bus,
+        config=handler.config.worktrees, git_mutex=handler.orchestrator._git_mutex)
+    handler.orchestrator._worktree_slots = MagicMock(return_value=manager)
+    target = TrainTarget(PROJECT_ID, "repo", "refs/heads/aq/epic", "epic")
+    train, checks, _ = lane(SimpleNamespace(db=db, origin=SimpleNamespace(
+        clone=env.source, url=str(env.remote))), LocalGit(Path(env.remote)), target=target)
+    handler.orchestrator.integration_train = train
+
+    assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == 0
+    explanation = await handler._cmd_explain_task({"task_id": "dependent"})
+    [reason] = [item for item in explanation["reasons"]
+                if item["code"] == "prerequisite_not_on_default_branch"]
+    assert reason["ref"] == "prerequisite"
+    assert source_parent or "prerequisite" in reason["detail"]
+    assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "no_ready_work"
+    git(env.source, "push", "origin", f"{env.head}:refs/heads/main")
+    await observer.prerequisite_view(PROJECT_ID, task_id="dependent")
+    assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == 1
+    explanation = await handler._cmd_explain_task({"task_id": "dependent"})
+    assert not [item for item in explanation["reasons"] if "prerequisite" in item["code"]]
+
+    # An ordinary collection on this epic must stop admission before workspace
+    # preparation or claim epochs churn, even though main contains the source.
+    from src.integration.batches import Batch, BatchMember, BatchStore
+
+    store = BatchStore(db)
+    collection = Batch("train-existing-collection", PROJECT_ID, "repo", target.target_ref)
+    await store.freeze(collection, (BatchMember("dependent", env.base, env.base),),
+                       trees={"dependent": git(env.remote, "rev-parse", f"{env.base}^{{tree}}")})
+    before = (await db.get_task("dependent")).claim_epoch
+    with patch.object(handler, "_prepare_and_activate", AsyncMock(side_effect=AssertionError(
+        "an open collection must withhold workspace preparation",
+    ))):
+        assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == 0
+        for _ in range(2):
+            assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == (
+                "no_ready_work"
+            )
+    assert (await db.get_task("dependent")).claim_epoch == before
+    await store.set_intent(collection.id, "aborted")
+
+    # First preparation creates the refresh, then leaves the child unclaimed
+    # while hosted checks run. Every frontier reader now sees that pending batch.
+    waiting = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert waiting["result"] == "no_ready_work", waiting
+    assert "epic refresh pending" in waiting["reason"]
+    assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == 0
+    assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "no_ready_work"
+    pending = await EpicRefresh(db, train).refresh("epic", dry_run=False)
+    checks.green.add(pending["candidate_sha"])
+    applied = await handler.execute("integration_refresh_epic", {
+        "task_id": "epic", "dry_run": False,
+    })
+    assert applied["success"] and applied["outcome"] == "refreshed", applied
+    claimed = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert claimed["result"] == "claimed", claimed
+    assert claimed["task"]["id"] == "dependent"
+    epic_tip = git(env.remote, "rev-parse", "aq/epic")
+    git(work_dir, "merge-base", "--is-ancestor", env.head, "HEAD")
+    git(work_dir, "merge-base", "--is-ancestor", epic_tip, "HEAD")
+    assert (work_dir / "work").read_text() == "complete source"
+    origin = await db.get_task_branch_origin_for_promotion("dependent", "repo")
+    assert origin["base_sha"] == env.base
+    assert origin["base_refresh"]["head_sha"] == epic_tip
+    assert origin["base_refresh"]["default_sha"] == env.head
+
+
 @pytest.mark.parametrize("misleading_history", [False, True])
 async def test_development_readiness_pool_and_claim_follow_git(
     handler, db, tmp_path, development_admission, misleading_history

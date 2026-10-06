@@ -56,6 +56,19 @@ def test_train_controls_require_apply_arguments_before_transport(argv):
     client.execute.assert_not_awaited()
 
 
+@pytest.mark.parametrize("apply", [False, True])
+def test_refresh_epic_control_preview_and_apply(apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "preview" if not apply else "pending"})
+    argv = ["integration", "refresh-epic", "--task", "epic"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv + (["--apply"] if apply else []))
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == (
+        "integration_refresh_epic", {"task_id": "epic", "dry_run": not apply})
+
+
 def test_reevaluate_repair_apply_requires_exact_preview():
     from src.cli.app import cli
 

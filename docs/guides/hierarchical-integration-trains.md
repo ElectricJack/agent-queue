@@ -164,6 +164,43 @@ shared parent first. Preparation merges that exact parent head into the child.
 Both modes preserve the filing origin and exclude unrelated default-branch
 commits. Unknown or stale evidence leaves the child unclaimable.
 
+A completed prerequisite in another epic, or a root prerequisite, must reach
+the project's default branch before its dependent becomes claimable. Git proves
+the exact completion source by ancestry, an `AQ-Source` trailer or whole-source
+patch equivalence. `aq task explain` names an unproven prerequisite and its epic
+with `prerequisite_not_on_default_branch`. Pool demand and claims use the same
+proof. The project integration policy defaults to
+`cross_epic_prerequisites: default_branch`; an explicit `completed` value restores
+the legacy rule that completion alone releases cross-epic dependencies.
+
+Before starting a cross-epic dependent, preparation refreshes its epic from the
+default branch through a frozen train batch. Publication needs the epic's lease,
+checks on the exact candidate and attestation. Checks or an occupied lease keep
+the refresh pending; a content conflict files ordinary repair work on the epic
+branch and withholds its children. Preparation preserves the child's existing
+commits and records its actual refreshed parent head and default head in the
+filing origin's `base_refresh` annotation. The original `base_sha` stays fixed.
+Preparation requires the epic to contain each proven cross-epic source; unrelated
+default-branch commits arriving during CI do not force another refresh. It refreshes
+before constructing a sibling prerequisite stack, so both inputs reach the child.
+Status includes each epic's `ahead` and `behind` commit counts against the default
+branch, or an unknown distance when Git cannot observe it.
+
+Supervisors can preview and start a refresh before resuming paused dependents:
+
+```bash
+aq integration refresh-epic --task EPIC_ID
+aq integration refresh-epic --task EPIC_ID --apply
+```
+
+An apply reports `pending` while the train checks or repairs its candidate.
+Subsequent train visits finish publication; repeating apply also advances the
+same frozen refresh. Apply and child preparation request bounded, serialized train
+visits and respect repository rate-limit pauses. Any open collection or refresh
+batch on the epic withholds its cross-epic dependents until that batch settles.
+Repairs for failed or missing CI start from the tested refresh candidate; conflict
+repairs start from the partial candidate containing the successful merges.
+
 For an existing historical subject, `engine-transfer` and
 `development-engine-transfer` offer a forward-only audited transfer to
 `reconciler`. Preview first, then supply every exact subject version, the reason

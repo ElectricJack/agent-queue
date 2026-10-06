@@ -11591,6 +11591,30 @@
         "type": "object"
       }
     },
+    "integration_refresh_epic": {
+      "name": "integration_refresh_epic",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "IntegrationRefreshEpicArgs",
+        "type": "object"
+      }
+    },
     "integration_release": {
       "name": "integration_release",
       "description": "Release terminal root train",
