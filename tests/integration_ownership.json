@@ -1564,6 +1564,9 @@
         19
       ]
     },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed": {
+      "reason": "Branch-fence refusal classified as a wait rather than a workspace fault: releases the claim to READY under the ordinary preparation backoff while the owner-recovery sweep frees the retained owner row, and never BLOCKS or writes the slot_reset_failure record whose resume recovery would be the wrong repair. Claim preparation policy only; no ref, publication or integration lifecycle write."
+    },
     "src/commands/contracts/__init__.py::register_builtin_contracts": {
       "reason": "Imports or references an explicitly owned integration primitive.",
       "baseline_span": [
@@ -12071,7 +12074,8 @@
     "b2b8b1fca3f7fca3974df588fc0b252662f055e7618857df175a587c64f6d58b",
     "1dbd1dc2e1c65b0f88735e32298e7c0f635409e30b7dcdc798b0cb77119d5a98",
     "2390e3c6e9f20e2c63615dd8429e6148c0451a6e2f06388d9fabc263b91a524c",
-    "5c38788248a432e1f59e1cac3b2f4611f202c9dce5c9cda3fe7627dc9595aad9"
+    "5c38788248a432e1f59e1cac3b2f4611f202c9dce5c9cda3fe7627dc9595aad9",
+    "6dc53e72699f31ce9c89c26eb979120a8729c29f5bbffaa2564b2727e3337b27"
   ],
   "owned_file_fingerprints": [
     "020e0abc4dae8c8c3a3671fab609db3a5b1308dba6bd380a94fccfb591c63c4d",
@@ -12279,28 +12283,28 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: REPAIR_RECORD_META"
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::2142606549fbb7fc55f12062ec13ac7e0c300036166e68b70a945ed44a752050": {
-      "line": 1204,
+      "line": 1284,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "27c7480617aa6aa2658becc1ca09bfc874f0db379086a3c1b7ad85b981174fa5",
+      "owner_fingerprint": "7b9da01b6e79df8ebeb98b7d290280318ab113da2cb76e61e60657c9953c4b2f",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary slot-reset failure diagnostics after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: 'slot_reset_failure'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
-      "line": 1194,
+      "line": 1270,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "27c7480617aa6aa2658becc1ca09bfc874f0db379086a3c1b7ad85b981174fa5",
+      "owner_fingerprint": "7b9da01b6e79df8ebeb98b7d290280318ab113da2cb76e61e60657c9953c4b2f",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary attention marker when permanent preparation failure cannot safely detach an attached writer; PostgreSQL contention bypasses this write. Metadata key: 'needs_attention'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
-      "line": 1147,
+      "line": 1223,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "27c7480617aa6aa2658becc1ca09bfc874f0db379086a3c1b7ad85b981174fa5",
+      "owner_fingerprint": "7b9da01b6e79df8ebeb98b7d290280318ab113da2cb76e61e60657c9953c4b2f",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary claim-preparation attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: 'needs_attention'; records repair_target_unpublished without remote OIDs, publication intent or ref replay authority."
@@ -12313,6 +12317,15 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::064f8fcc1a52d145e4f7ee9a86a696a94b43a48b4533d10ca7ad822f1aac750d": {
+      "line": 1017,
+      "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
+      "call": "set_task_meta",
+      "owner_fingerprint": "6dc53e72699f31ce9c89c26eb979120a8729c29f5bbffaa2564b2727e3337b27",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Branch-fence refusal diagnostics (reason, branch, repository, workspace, session, failed_at) written in the same command as the release_claim to READY that follows; cleared by the next successful activation. Metadata key: branch_fenced_prepare_failed; a claim preparation marker with no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/dashboard_state_commands.py::DashboardStateCommandsMixin._dashboard_mutate::7082de1161d61e4a5bb9e39c7bafb5ade15fe812419227082e188dc17f7e77ae": {
       "line": 225,
