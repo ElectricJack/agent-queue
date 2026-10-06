@@ -764,14 +764,69 @@ class HierarchyQueryMixin:
         workspace-start overlay: a delivered parent head is a descendant of
         that base and lets the child's normal branch preparation fast-forward
         from the preserved origin without copying files or merging siblings.
-        ``None`` means either no sibling prerequisite exists or the task is
-        not currently receipt-eligible (the caller has already fail-closed via
-        :meth:`is_hierarchy_task_runnable`).
+        In Git-first mode this uses the same current Git proof as admission,
+        including its exact parent tip, rather than historical receipt rows.
+        Active mode refuses stale or unknown proof. ``None`` means no sibling
+        prerequisite needs a head; shadow mode retains the receipt overlay
+        after the caller's :meth:`is_hierarchy_task_runnable` guard.
         """
         dependency = task_dependencies.alias("delivery_head_dependency")
         prerequisite = tasks.alias("delivery_head_prerequisite")
         checkpoint = task_integration_checkpoints.alias("delivery_head_checkpoint")
         receipt = task_delivery_receipts.alias("delivery_head_receipt")
+        from src.integration.delivery_observer import prerequisite_observer
+
+        observer = prerequisite_observer(self)
+        if observer is not None:
+            task = await self.get_task(task_id)
+            if task is None or task.parent_task_id is None:
+                return None
+            view = await observer.prerequisite_view(task.project_id, task_id=task_id)
+            if not await view.fresh():
+                raise ValueError("hierarchy prerequisite target moved during preparation")
+            async with self._engine.connect() as conn:
+                current = (await conn.execute(select(tasks).where(
+                    tasks.c.id == task_id,
+                ))).mappings().one_or_none()
+                if current is None or current["parent_task_id"] != task.parent_task_id:
+                    raise ValueError("hierarchy prerequisite parent changed during preparation")
+                ids = set((await conn.execute(select(prerequisite.c.id).select_from(
+                    dependency.join(prerequisite,
+                                    prerequisite.c.id == dependency.c.depends_on_task_id),
+                ).where(
+                    dependency.c.task_id == task_id,
+                    dependency.c.dep_type == DepType.BLOCKS.value,
+                    prerequisite.c.parent_task_id == current["parent_task_id"],
+                ))).scalars())
+                if not ids:
+                    return None
+                verified = await view.verified_on(conn, ids)
+                origin = (await conn.execute(select(task_branch_origins).where(
+                    task_branch_origins.c.task_id == task_id,
+                    task_branch_origins.c.reserved.is_(True),
+                    task_branch_origins.c.retired_at.is_(None),
+                ))).mappings().one_or_none()
+                parent_branch = (await conn.execute(select(tasks.c.branch_name).where(
+                    tasks.c.id == current["parent_task_id"],
+                ))).scalar_one_or_none()
+                if (origin is None or not parent_branch or not origin["parent_ref"]
+                    or origin["parent_task_id"] != current["parent_task_id"]
+                    or origin["parent_repository_id"] != current["repo_id"]
+                    or origin["parent_ref"].removeprefix("refs/heads/")
+                    != parent_branch.removeprefix("refs/heads/")):
+                    raise ValueError("hierarchy prerequisite origin changed during preparation")
+                for tid in ids:
+                    proof = verified.get(tid)
+                    target = view.targets.get(tid)
+                    if (proof is None or not proof.satisfied or target is None
+                        or target.repository_id != current["repo_id"]
+                        or target.target_ref != "refs/heads/" + parent_branch.removeprefix(
+                            "refs/heads/")):
+                        raise ValueError("hierarchy prerequisite delivery is not current")
+                heads = {proof.target_oid for proof in verified.values()}
+            if not await view.fresh() or len(heads) != 1:
+                raise ValueError("hierarchy prerequisite target moved during preparation")
+            return heads.pop()
         async with self._engine.connect() as conn:
             task = (
                 await conn.execute(select(tasks).where(tasks.c.id == task_id))

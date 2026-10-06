@@ -536,12 +536,15 @@ class WorktreeSlotManager:
         target_branch: str | None = None,
         kind: WorkspaceKind | None = None,
         operator_handoff: bool = False,
+        preserve_branch: bool = False,
     ) -> str:
         """Bring a slot to a pristine per-task state.  Returns the branch.
 
         Design §3.2: salvage-if-dirty → fetch → ``reset --hard`` +
         ``clean -fd`` (never ``-x``, so gitignored caches survive) → fresh
         ``aq/<task_id>`` (or *resume_branch*) → sentinel → ``worktree.reset``.
+        ``preserve_branch`` merges the proven parent into the exact owned
+        target, keeping existing child commits instead of resetting its tip.
         """
         # ``base_branch`` arrives from task metadata — untrusted text by
         # trust-and-ops §2.2.  Validate here rather than letting an
@@ -560,6 +563,8 @@ class WorktreeSlotManager:
 
         if operator_handoff and (target_branch is None or not is_valid_git_oid(base_branch)):
             raise GitError("operator handoff requires an exact branch and proved commit")
+        if preserve_branch and (target_branch is None or not is_valid_git_oid(base_branch)):
+            raise GitError("child preparation requires an exact branch and proved parent commit")
         slot_dir = Path(slot_ws.workspace_path)
         await self.ensure_git_exclude(slot_dir)
         if operator_handoff:
@@ -586,6 +591,11 @@ class WorktreeSlotManager:
             await self.git._arun(["reset", "--hard"], cwd=str(slot_dir))
             await self.git._arun(["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=str(slot_dir))
             branch = await restore_checkpoint(self.db, self.git, task.id, str(slot_dir), saved=checkpoint)
+            if preserve_branch:
+                await self.git.afetch_origin(
+                    str(slot_dir), repository_url=await self._repository_url(slot_ws.project_id),
+                )
+                await self.git.aprepare_child_branch(str(slot_dir), branch, base_branch)
             self.write_sentinel(slot_dir, WorktreeSentinel(
                 slot=slot_name(slot_ws.slot_index or 0), slot_index=slot_ws.slot_index or 0,
                 base_workspace_id=slot_ws.base_workspace_id or "", project_id=slot_ws.project_id,
@@ -622,7 +632,7 @@ class WorktreeSlotManager:
 
         async with self._git_mutex(base_path):
             start_ref = await self._fetch_and_resolve_start_ref(
-                base_path, start_point, required=False, cwd=str(slot_dir),
+                base_path, start_point, required=preserve_branch, cwd=str(slot_dir),
                 project_id=slot_ws.project_id,
             )
 
@@ -636,6 +646,11 @@ class WorktreeSlotManager:
             branch = target_branch or resume_branch or task_branch_name(task.id)
             if target_branch is not None:
                 await self._detach_stale_branch_holders(slot_dir, branch)
+            if preserve_branch:
+                await self.git.aprepare_child_branch(
+                    str(slot_dir), branch, base_branch, lock_held=True,
+                )
+            elif target_branch is not None:
                 await self.git._arun_unlocked(
                     ["switch", "-C", branch, start_ref], cwd=str(slot_dir)
                 )

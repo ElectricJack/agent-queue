@@ -1083,11 +1083,15 @@ class ClaimCommandsMixin:
                 "train",
             }
 
-            async def prepare_and_activate(*, conn=None, base_branch=None, target_branch=None):
+            async def prepare_and_activate(
+                *, conn=None, base_branch=None, target_branch=None, preserve_branch=False
+            ):
                 nonlocal prepared_branch
                 reset_kwargs = {"base_branch": base_branch} if base_branch else {}
                 if target_branch is not None:
                     reset_kwargs["target_branch"] = target_branch
+                if preserve_branch:
+                    reset_kwargs["preserve_branch"] = True
                 branch = await self.orchestrator._worktree_slots().reset_slot_for_task(
                     slot, task, **reset_kwargs
                 )
@@ -1189,13 +1193,19 @@ class ClaimCommandsMixin:
                                 fresh = await prepare_and_activate(
                                     conn=conn, base_branch=base_sha,
                                     target_branch=fence.target.branch,
+                                    preserve_branch=bool(
+                                        owner_role == "worker" and origin.get("prerequisite_head")
+                                    ),
                                 )
                 else:
                     async with ownership.mutation_exclusion(
                         fence, state="attached", expected_role=owner_role
                     ) as conn:
                         fresh = await prepare_and_activate(
-                            conn=conn, base_branch=base_sha, target_branch=fence.target.branch
+                            conn=conn, base_branch=base_sha, target_branch=fence.target.branch,
+                            preserve_branch=bool(
+                                owner_role == "worker" and origin.get("prerequisite_head")
+                            ),
                         )
             else:
                 fresh = await prepare_and_activate()

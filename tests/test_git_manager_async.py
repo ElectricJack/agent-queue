@@ -68,6 +68,29 @@ def mgr():
     return GitManager()
 
 
+async def test_child_parent_merge_conflict_preserves_child_tip_and_cleans_index(mgr, clone):
+    base = _git(["rev-parse", "HEAD"], cwd=clone)
+    _git(["checkout", "-b", "aq/child"], cwd=clone)
+    child = _commit_file(clone, "README.md", "child\n", "child work")
+    _git(["checkout", "-b", "aq/parent", base], cwd=clone)
+    parent = _commit_file(clone, "README.md", "parent\n", "parent delivery")
+
+    with pytest.raises(GitError):
+        await mgr.aprepare_child_branch(clone, "aq/child", parent)
+
+    assert _git(["rev-parse", "HEAD"], cwd=clone) == child
+    assert _git(["branch", "--show-current"], cwd=clone) == "aq/child"
+    assert _git(["status", "--porcelain"], cwd=clone) == ""
+
+
+async def test_child_preparation_with_unavailable_parent_keeps_checkout(mgr, clone):
+    before = _git(["rev-parse", "HEAD"], cwd=clone)
+    with pytest.raises(GitError):
+        await mgr.aprepare_child_branch(clone, "aq/child", "f" * 40)
+    assert _git(["rev-parse", "HEAD"], cwd=clone) == before
+    assert _git(["branch", "--show-current"], cwd=clone) == "main"
+
+
 # ------------------------------------------------------------------
 # _arun basic tests
 # ------------------------------------------------------------------

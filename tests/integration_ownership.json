@@ -8145,6 +8145,9 @@
     },
     "src/doctor/task_checks.py::import from src.database.queries.claim_queries import claim_frontier_predicates": {
       "reason": "Imports the integration-owned frontier predicate composer used by doctor to report Git prerequisite delivery exclusions."
+    },
+    "src/git/manager.py::GitManager.aprepare_child_branch": {
+      "reason": "Integration workspace preparation merges a proven parent head under the managed child writer fence; preserves local and published child history."
     }
   },
   "exclusions": {
@@ -12313,28 +12316,28 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: REPAIR_RECORD_META"
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::2142606549fbb7fc55f12062ec13ac7e0c300036166e68b70a945ed44a752050": {
-      "line": 1284,
+      "line": 1295,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "7b9da01b6e79df8ebeb98b7d290280318ab113da2cb76e61e60657c9953c4b2f",
+      "owner_fingerprint": "326a9833d4d625b883f7efb54518377ce1bb16aaaede2cb49d30396e15d38571",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary slot-reset failure diagnostics after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: 'slot_reset_failure'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
-      "line": 1270,
+      "line": 1281,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "7b9da01b6e79df8ebeb98b7d290280318ab113da2cb76e61e60657c9953c4b2f",
+      "owner_fingerprint": "326a9833d4d625b883f7efb54518377ce1bb16aaaede2cb49d30396e15d38571",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary attention marker when permanent preparation failure cannot safely detach an attached writer; PostgreSQL contention bypasses this write. Metadata key: 'needs_attention'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
-      "line": 1223,
+      "line": 1234,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "7b9da01b6e79df8ebeb98b7d290280318ab113da2cb76e61e60657c9953c4b2f",
+      "owner_fingerprint": "326a9833d4d625b883f7efb54518377ce1bb16aaaede2cb49d30396e15d38571",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary claim-preparation attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: 'needs_attention'; records repair_target_unpublished without remote OIDs, publication intent or ref replay authority."

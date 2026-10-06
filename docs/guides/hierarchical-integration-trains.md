@@ -43,6 +43,15 @@ refused while live subjects, owners or unresolved publication intents retain it.
 Policy routes must resolve to reviewed artifacts available to the project.
 Configuration changes never replace an in-flight subject's frozen artifact.
 
+A child with a completed `blocks` prerequisite under the same parent becomes
+claimable after Git proves the sibling's current work reached that parent.
+Workspace preparation merges the exact proven parent head into the child's
+branch under its managed writer fence before activation. Existing local and
+published child commits survive; the immutable filing origin stays unchanged.
+This uses the parent branch, even when the default branch has newer unrelated
+commits. Unknown or stale delivery evidence leaves the child unclaimable. A
+merge conflict fails preparation and preserves the child's committed work.
+
 For an existing historical subject, `engine-transfer` and
 `development-engine-transfer` offer a forward-only audited transfer to
 `reconciler`. Preview first, then supply every exact subject version, the reason

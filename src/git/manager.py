@@ -2786,6 +2786,39 @@ class GitManager:
         args += [worktree_path, ref]
         await self._arun(args, cwd=base_path)
 
+    async def aprepare_child_branch(
+        self, workspace: str, branch: str, parent_sha: str, *, lock_held: bool = False
+    ) -> None:
+        """Merge an exact proven parent tip, preserving local and published child work.
+
+        The caller holds the child's managed writer fence and has fetched its
+        repository. Never resolve a default branch, reset a child, or push here.
+        """
+        _validate_ref(branch, field="child branch")
+        if not is_valid_git_oid(parent_sha):
+            raise GitError("child preparation requires an exact proven parent commit")
+        run = self._arun_unlocked if lock_held else self._arun
+        await run(["cat-file", "-e", f"{parent_sha}^{{commit}}"], cwd=workspace)
+        local, remote = f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"
+        refs = set((await run(
+            ["for-each-ref", "--format=%(refname)", "--", local, remote], cwd=workspace
+        )).splitlines())
+        if local in refs:
+            await run(["switch", branch], cwd=workspace)
+        else:
+            await run(["switch", "-c", branch, remote if remote in refs else parent_sha],
+                      cwd=workspace)
+        for head in ([remote] if remote in refs else []) + [parent_sha]:
+            try:
+                await run(["merge", "--no-edit", "--no-autostash", head], cwd=workspace)
+            except GitError:
+                try:
+                    await run(["merge", "--abort"], cwd=workspace)
+                except GitError:
+                    pass  # A precondition failure need not have started a merge.
+                raise
+        await run(["merge-base", "--is-ancestor", parent_sha, "HEAD"], cwd=workspace)
+
     async def aworktree_prune(self, base_path: str) -> None:
         """Drop ``.git/worktrees`` registrations whose directory is gone."""
         await self._arun(["worktree", "prune"], cwd=base_path)
