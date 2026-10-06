@@ -151,9 +151,10 @@ async def test_parent_completed_push_without_required_checks_emits_red(ci_db, tm
     original = client.paged_items
 
     async def pages(path, *, key, max_pages=20):
-        if 'check_name=lint' in path:
-            return []
-        return await original(path, key=key, max_pages=max_pages)
+        rows = await original(path, key=key, max_pages=max_pages)
+        if key == 'check_runs' and 'check_name=' not in path:
+            return [row for row in rows if row.get('name') != 'lint']
+        return rows
 
     client.paged_items = pages
     client.repository = binding
@@ -250,10 +251,13 @@ class _AppParentClient:
             return [{'id': 31, 'workflow_id': 301, 'run_attempt': 1, 'check_suite_id': 21,
                      'head_sha': SHA, 'status': 'completed', 'conclusion': 'success',
                      'event': 'push'}]
-        name = path.split('check_name=', 1)[1].split('&', 1)[0]
-        self.asked.append(name)
-        return [{'id': 11, 'name': name, 'head_sha': SHA, 'status': 'completed',
-                 'conclusion': 'success', 'app': {'id': 404}, 'check_suite': {'id': 21}}]
+        # One unfiltered listing carries the tree's whole root set; the
+        # observer must select only its snapshot's names from it.
+        assert 'check_name=' not in path
+        self.asked.append(path)
+        return [{'id': 11 + index, 'name': name, 'head_sha': SHA, 'status': 'completed',
+                 'conclusion': 'success', 'app': {'id': 404}, 'check_suite': {'id': 21}}
+                for index, name in enumerate(('unit', 'postgres'))]
 
 
 def _app_parent_service(ci_db, tmp_path, manifest):
@@ -283,7 +287,7 @@ async def test_app_parent_observes_its_snapshot_checks_not_the_tree_manifest(ci_
 
     await service.tick(100.0)
 
-    assert client.asked == ['unit']
+    assert len(client.asked) == 1
     assert list(client.tree.pushed.values()) == [SHA]
     async with ci_db._engine.connect() as conn:
         evidence = (await conn.execute(select(integration_check_evidence))).mappings().all()

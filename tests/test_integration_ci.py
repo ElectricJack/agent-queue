@@ -271,6 +271,13 @@ class FakeGitHubClient:
         if key == "check_runs":
             if "Agent%20Queue%20Integration%20Attestation" in path:
                 return self.checks.get("attestation", [])
+            if "check_name=" not in path:
+                return [
+                    record
+                    for name, records in self.checks.items()
+                    if name != "attestation"
+                    for record in records
+                ]
             name = "unit" if "unit" in path else "postgres"
             return self.checks.get(name, [])
         if key == "jobs":
@@ -326,7 +333,9 @@ async def test_authenticated_observer_selects_newest_exact_producer_and_coherent
 
     assert observation.payload == AttestationPayload.model_validate(payload_dict())
     assert observation.workflow_ids == {21: 301, 22: 302}
-    assert all("filter=all" in path for path, key in client.paths if key == "check_runs")
+    assert [path for path, key in client.paths if key == "check_runs"] == [
+        f"/repos/acme/widgets/commits/{SHA}/check-runs?filter=all&per_page=100"
+    ]
 
 
 @pytest.mark.asyncio

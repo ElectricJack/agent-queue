@@ -382,6 +382,11 @@ class ProviderClient:
                     "head_repository": {"id": 303, "full_name": "acme/widgets"},
                 },
             ]
+        if key == "check_runs" and "check_name=" not in path:
+            return [
+                self._required("Tests (default)", 11, 21),
+                self._required("Tests (postgres-integration)", 12, 22),
+            ]
         if "check_name=Tests%20%28default%29" in path:
             return [self._required("Tests (default)", 11, 21)]
         if "check_name=Tests%20%28postgres-integration%29" in path:
@@ -474,7 +479,7 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
         original = client.paged_items
 
         async def pending(path, *, key):
-            if key == "check_runs" and "check_name=" in path:
+            if key == "check_runs" and "check_name=" not in path:
                 return []
             rows = await original(path, key=key)
             if key == "workflow_runs":
@@ -486,7 +491,7 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
         original = client.paged_items
 
         async def missing(path, *, key):
-            if key == "check_runs" and "check_name=" in path:
+            if key == "check_runs" and "check_name=" not in path:
                 return []
             return await original(path, key=key)
 
@@ -496,8 +501,11 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
 
         async def red(path, *, key):
             rows = await original(path, key=key)
-            if key == "check_runs" and "check_name=Tests%20%28default%29" in path:
-                rows[0] = {**rows[0], "conclusion": "failure"}
+            if key == "check_runs" and "check_name=" not in path:
+                rows = [
+                    {**row, "conclusion": "failure"} if row["name"] == "Tests (default)" else row
+                    for row in rows
+                ]
             return rows
 
         client.paged_items = red
@@ -589,8 +597,11 @@ async def test_red_candidate_regular_failure_folds_dossier_dedup(
 
     async def red(path, *, key):
         rows = await original(path, key=key)
-        if key == "check_runs" and "check_name=Tests%20%28default%29" in path:
-            rows[0] = {**rows[0], "conclusion": "failure"}
+        if key == "check_runs" and "check_name=" not in path:
+            rows = [
+                {**row, "conclusion": "failure"} if row["name"] == "Tests (default)" else row
+                for row in rows
+            ]
         return rows
 
     client.paged_items = red
@@ -654,8 +665,11 @@ async def test_red_candidate_double_observation_dedup_dossier(
 
     async def red(path, *, key):
         rows = await original(path, key=key)
-        if key == "check_runs" and "check_name=Tests%20%28default%29" in path:
-            rows[0] = {**rows[0], "conclusion": "failure"}
+        if key == "check_runs" and "check_name=" not in path:
+            rows = [
+                {**row, "conclusion": "failure"} if row["name"] == "Tests (default)" else row
+                for row in rows
+            ]
         return rows
 
     client.paged_items = red
@@ -714,9 +728,10 @@ async def test_existing_login_candidate_missing_check_emits_red_continuation(
     original = client.paged_items
 
     async def missing(path, *, key):
-        if key == "check_runs" and "check_name=Tests%20%28postgres-integration%29" in path:
-            return []
-        return await original(path, key=key)
+        rows = await original(path, key=key)
+        if key == "check_runs" and "check_name=" not in path:
+            return [row for row in rows if row["name"] != "Tests (postgres-integration)"]
+        return rows
 
     client.paged_items = missing
     service = IntegrationAttestationService(
@@ -892,13 +907,13 @@ SNAPSHOT_CHECKS = ("Tests (default)", "Tests (postgres-integration)")
 
 
 def _recording(client):
-    """Record every required-check name the observer asks the provider for."""
+    """Record every required-check listing the observer asks the provider for."""
     asked: list[str] = []
     original = client.paged_items
 
     async def paged_items(path, *, key):
-        if key == "check_runs" and "check_name=" in path and "Attestation" not in path:
-            asked.append(path.split("check_name=", 1)[1].split("&", 1)[0])
+        if key == "check_runs" and "check_name=" not in path:
+            asked.append(path)
         return await original(path, key=key)
 
     client.paged_items = paged_items
@@ -936,8 +951,9 @@ async def test_subject_check_set_is_informational_and_the_snapshot_decides(
     result = await service.handle_candidate_ci(dict(CANDIDATE_ROW), 10.0)
 
     assert result["outcome"] == "published"
-    # Observation and publication each read exactly the snapshot's names.
-    assert asked == ["Tests%20%28default%29", "Tests%20%28postgres-integration%29"] * 2
+    # Observation and publication each read one listing; the snapshot's names
+    # select from it (asserted on the published checks below).
+    assert len(asked) == 2
     published = json.loads(client.records[0]["output"]["text"])
     assert published["required_check_set_version"] == "checks-v1"
     assert tuple(check["name"] for check in published["checks"]) == SNAPSHOT_CHECKS
@@ -963,10 +979,14 @@ async def test_subject_check_set_cannot_lower_the_snapshot_bar(
 
     async def dropped(path, *, key):
         rows = await original(path, key=key)
-        if key == "check_runs" and "check_name=Tests%20%28postgres-integration%29" in path:
+        if key == "check_runs" and "check_name=" not in path:
+            postgres = "Tests (postgres-integration)"
             if provider_kind == "missing":
-                return []
-            rows[0] = {**rows[0], "conclusion": "failure"}
+                return [row for row in rows if row["name"] != postgres]
+            rows = [
+                {**row, "conclusion": "failure"} if row["name"] == postgres else row
+                for row in rows
+            ]
         return rows
 
     client.paged_items = dropped
