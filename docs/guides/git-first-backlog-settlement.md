@@ -14,6 +14,12 @@ configuration or lets the live train settle the backlog. Workers consume supplie
 sanitized evidence, build replay artifacts and report gaps. A worker's published
 branch proves neither activation nor delivery of an unrelated task.
 
+Completions closed before provenance was retained are recorded with
+[`scripts/backfill-legacy-deliveries.py`](../../scripts/backfill-legacy-deliveries.py):
+preview first, then apply with `--reason`. It writes `integration_legacy_deliveries`
+rows only for work Git proves is on the default branch; see [cutover runbook
+step 3a](git-first-cutover-runbook.md#3a-backfill-legacy-deliveries-the-train-cannot-see).
+
 ## Before observing settlement
 
 1. Record the UTC window, observing operator, project, running checkout, configured
