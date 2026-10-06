@@ -464,7 +464,7 @@ class PromoteCommandsMixin:
                     )
                     .values(pr_url=pr_url)
                 )
-                return {
+                return self._woken({
                     "success": True,
                     "outcome": "requested",
                     "project_id": project.id,
@@ -474,11 +474,18 @@ class PromoteCommandsMixin:
                     "intent": "open",
                     "promotion": meta,
                     "pr_url": pr_url,
-                }
+                }, project.id, repository.id, target_ref)
         except PromotionRefusal as exc:
             return exc.response()
         except (GitError, GitHubAccessError, OSError, ValueError) as exc:
             return _unavailable(exc)
+
+    def _woken(self, result, project_id, repository_id, target_ref):
+        """Let the train revisit a promotion target this command just changed."""
+        train = getattr(self.orchestrator, "integration_train", None)
+        if train is not None and result.get("success"):
+            train.wake(project_id, repository_id, target_ref)
+        return result
 
     async def _promotion_intent(self, project_id, request_id):
         async with self.db._engine.connect() as conn:
@@ -619,7 +626,7 @@ class PromoteCommandsMixin:
                     reason,
                     {**gate.evidence, "posted_by": login},
                 )
-            return {
+            return self._woken({
                 "success": True,
                 "outcome": "already_approved" if already else "approved",
                 "project_id": project.id,
@@ -627,7 +634,7 @@ class PromoteCommandsMixin:
                 "batch_id": row["id"],
                 "pr_url": meta["pr_url"],
                 "review": review,
-            }
+            }, project.id, row["repository_id"], row["target_ref"])
         except PromotionRefusal as exc:
             return exc.response()
         except (GitError, GitHubAccessError, OSError, ValueError) as exc:
@@ -718,14 +725,14 @@ class PromoteCommandsMixin:
                     .where(tasks.c.id == members[0].task_id, tasks.c.status == "IN_PROGRESS")
                     .values(status="FAILED", updated_at=now)
                 )
-            return {
+            return self._woken({
                 "success": True,
                 "outcome": "cancelled",
                 "project_id": project.id,
                 "request_id": request.request_id,
                 "batch_id": row["id"],
                 "pr_url": meta["pr_url"],
-            }
+            }, project.id, row["repository_id"], row["target_ref"])
         except PromotionRefusal as exc:
             return exc.response()
         except (GitError, GitHubAccessError, OSError, ValueError) as exc:

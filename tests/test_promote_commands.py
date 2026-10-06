@@ -7,7 +7,7 @@ import copy
 import hashlib
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 from sqlalchemy import insert, select, text, update
@@ -135,7 +135,9 @@ async def promote_env(promotion):
     handler.db = e.db
     lane = TrainLane(snapshot=e.snapshot, service=e.service, checks=e.checks)
     handler.orchestrator = SimpleNamespace(
-        integration_train=SimpleNamespace(lane_for=AsyncMock(return_value=lane)),
+        integration_train=SimpleNamespace(
+            lane_for=AsyncMock(return_value=lane), wake=Mock(return_value=1),
+        ),
         github_client_factory=lambda _: e.github,
         promotion_user_client_factory=lambda _: e.human,
     )
@@ -281,6 +283,25 @@ async def test_cancel_closes_pr_then_aborts_and_replays(promote_env):
     assert (await e.store.get(created["batch_id"])).intent == "aborted"
     assert git(e.ops.git.remote_path, "rev-parse", "main") == e.base
     assert not git(e.ops.git.remote_path, "for-each-ref", "refs/tags/")
+
+
+async def test_changing_commands_wake_only_their_own_promotion_target(promote_env):
+    """grand-lantern-78.4: a held promotion revisits at once after a promote command."""
+    e = promote_env
+    wake = e.handler.orchestrator.integration_train.wake
+    created = await request(e)
+    target = call("p", "r", "refs/heads/" + e.meta["step"]["target"])
+    assert wake.call_args_list == [target]
+    args = {"project_id": "p", "request_id": created["request_id"]}
+    assert (await e.handler._cmd_promote_approve(args))["outcome"] == "approved"
+    worker = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, policy=DENY_ALL, session_id="worker", project_id="p"
+    )
+    with principal_context(worker):
+        assert not (await e.handler._cmd_promote_cancel(args))["success"]
+    assert (await e.handler._cmd_promote_status({"project_id": "p"}))["success"]
+    assert (await e.handler._cmd_promote_cancel(args))["outcome"] == "cancelled"
+    assert wake.call_args_list == [target] * 3
 
 
 async def test_cancel_refuses_after_target_publish(promote_env):

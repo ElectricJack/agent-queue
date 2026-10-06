@@ -64,6 +64,11 @@ logger = logging.getLogger(__name__)
 #: or until GitHub's own retry time when that is later.
 RATE_LIMIT_BACKOFF_SECONDS = 60.0
 RATE_LIMIT_MAX_BACKOFF_SECONDS = 900.0
+#: A promotion held on a named reason waits on a person or on GitHub, so its
+#: target is revisited this long after, doubling while the same refusal repeats.
+#: A promote command wakes the target at once.
+PROMOTION_WAIT_SECONDS = 30.0
+PROMOTION_MAX_WAIT_SECONDS = 300.0
 
 TRAIN_KINDS = ("root", "epic", "development", "promotion")
 _PROGRESS: ContextVar[dict | None] = ContextVar("train_visit_progress", default=None)
@@ -376,6 +381,11 @@ class _Lane:
     start: int = 0
     visits: int = 0
     errors: int = 0
+    #: No visit starts before this time; :meth:`IntegrationTrain.wake` clears it.
+    not_before: float = 0.0
+    #: The (batch, reason) a promotion is waiting on, and how many visits in a row.
+    wait: tuple[str | None, str] | None = None
+    waits: int = 0
 
 
 @dataclass
@@ -436,7 +446,7 @@ class IntegrationTrain:
                 if lane.task is not None and not lane.task.done():
                     running.append(label)
                     continue
-                if not self._admit(target.key, now):
+                if lane.not_before > now or not self._admit(target.key, now):
                     deferred.append(label)
                     continue
                 self._starts += 1
@@ -472,8 +482,33 @@ class IntegrationTrain:
             }
             row["running"] = lane.task is not None and not lane.task.done()
             row["visits"], row["errors"] = lane.visits, lane.errors
+            if lane.not_before:
+                row["deferred_until"] = lane.not_before
             rows.append(row)
         return rows
+
+    def wake(self, project_id: str, repository_id: str | None = None,
+             target_ref: str | None = None) -> int:
+        """Let the matching targets' next tick start a visit; returns how many waited."""
+        woken = 0
+        for key, lane in self._lanes.items():
+            if (key[0] == project_id and repository_id in (None, key[1])
+                    and target_ref in (None, key[2]) and lane.not_before):
+                lane.not_before, woken = 0.0, woken + 1
+        return woken
+
+    def _wait(self, target: TrainTarget, lane: _Lane, visit: TrainVisit) -> TrainVisit:
+        """Back off a promotion whose visit named what it is waiting for."""
+        reason = (visit.detail or {}).get("reason")
+        if target.kind != "promotion" or visit.state != "held" or not isinstance(reason, str):
+            lane.not_before, lane.wait, lane.waits = 0.0, None, 0
+            return visit
+        wait = (visit.batch_id, reason)
+        lane.waits = lane.waits + 1 if lane.wait == wait else 1
+        lane.wait = wait
+        delay = min(PROMOTION_WAIT_SECONDS * 2 ** (lane.waits - 1), PROMOTION_MAX_WAIT_SECONDS)
+        lane.not_before = self.clock() + delay
+        return replace(visit, detail={**(visit.detail or {}), "retry_at": lane.not_before})
 
     async def _bounded(self, target: TrainTarget, lane: _Lane) -> None:
         progress = {"stage": "lane_setup"}
@@ -509,7 +544,7 @@ class IntegrationTrain:
             # A visit begun after the pause got past GitHub: the limit is over.
             del self._pauses[target.key[:2]]
         lane.visits += 1
-        lane.last = visit
+        lane.last = self._wait(target, lane, visit)
 
     def _admit(self, key: tuple[str, str, str], now: float) -> bool:
         """Whether the repository's rate-limit pause lets *key* start a visit."""

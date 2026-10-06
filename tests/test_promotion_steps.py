@@ -925,6 +925,44 @@ async def test_daemon_lane_reuses_source_checks_and_isolates_step_proofs(
     assert proof["step"] == "release" and proof["source_sha"] == e.source
 
 
+async def test_daemon_lane_reuses_subject_trust_until_its_key_or_ttl_changes():
+    """grand-lantern-78.4: a held promotion does not refetch S's manifest every visit."""
+    from src.integration.train_sources import PROMOTION_RESOLUTION_TTL_SECONDS, DaemonLanes
+
+    clock, loads = [100.0], []
+
+    async def load_trust(state):
+        loads.append(state)
+        return f"trust-{len(loads)}", "client"
+
+    attestation = SimpleNamespace(_load_trust=load_trust)
+    lanes = DaemonLanes(SimpleNamespace(db=None, git=None), batches=None,
+                        clock=lambda: clock[0])
+    batch = SimpleNamespace(id="b-1")
+    state = {"candidate_sha": "a" * 40, "revision": 0, "policy_snapshot": {"root": {}}}
+    assert await lanes._promotion_trust(attestation, batch, state) == ("trust-1", "client")
+    for _ in range(2):
+        # Each use keeps the entry; S is immutable, so only memory bounds it.
+        clock[0] += PROMOTION_RESOLUTION_TTL_SECONDS - 1
+        assert (await lanes._promotion_trust(attestation, batch, dict(state)))[0] == "trust-1"
+    assert len(loads) == 1
+    # A repair revision or a policy change reloads, and so does an idle lane.
+    changed = {**state, "policy_snapshot": {"root": {"required_checks": {"names": ["lint"]}}}}
+    assert (await lanes._promotion_trust(attestation, batch, {**state, "revision": 1}))[0] \
+        == "trust-2"
+    assert (await lanes._promotion_trust(attestation, batch, changed))[0] == "trust-3"
+    clock[0] += PROMOTION_RESOLUTION_TTL_SECONDS
+    assert (await lanes._promotion_trust(attestation, batch, changed))[0] == "trust-4"
+
+    async def refuse(state):
+        raise PromotionIntentInvalid("subject trust manifest names another identity")
+
+    with pytest.raises(PromotionIntentInvalid):
+        await lanes._promotion_trust(SimpleNamespace(_load_trust=refuse),
+                                     SimpleNamespace(id="b-2"), state)
+    assert set(lanes._promotion_trust_cache) == {"b-1"}
+
+
 @pytest.mark.parametrize("frozen", [
     {"check_names": None}, {"check_names": "unit"}, {"check_names": []},
     {"checks_version": ""},
