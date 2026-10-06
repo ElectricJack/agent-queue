@@ -20,6 +20,8 @@ const INTEGRATION_OWNED = "hierarchy.integration_owned";
 const INTEGRATION_CLEANUP_BLOCKED = "hierarchy.integration_cleanup_blocked";
 const INTEGRATION_UNDELIVERED = "hierarchy.integration_undelivered";
 const INTEGRATION_HISTORY_RETAINED = "hierarchy.integration_history_retained";
+const SEALED = "hierarchy.sealed";
+const DELIVERY_FIXED = "hierarchy.delivery_target_fixed";
 
 /** What the operator is told when integration history holds a task back. */
 export const INTEGRATION_HISTORY_MESSAGE =
@@ -59,7 +61,9 @@ export function integrationRemovalRefusal(error: unknown): string | null {
   if (
     body.code !== INTEGRATION_OWNED &&
     body.code !== INTEGRATION_CLEANUP_BLOCKED &&
-    body.code !== INTEGRATION_UNDELIVERED
+    body.code !== INTEGRATION_UNDELIVERED &&
+    body.code !== SEALED &&
+    body.code !== DELIVERY_FIXED
   ) {
     return null;
   }

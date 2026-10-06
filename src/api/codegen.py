@@ -166,6 +166,7 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "report_brief",
             "report_submit",
             "delete_task",
+            "remove_task",
             "archive_task",
             "delete_project",
             "provider_allocation_apply",
@@ -177,7 +178,7 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
 #: The subset of :data:`DETAILED_ERROR_COMMANDS` that documents its 422 body
 #: with :class:`~src.api.models.task.HierarchyRefusalResponse`.
 HIERARCHY_REFUSAL_COMMANDS: frozenset[str] = frozenset(
-    {"delete_task", "archive_task", "delete_project"}
+    {"delete_task", "remove_task", "archive_task", "delete_project"}
 )
 
 # Non-default statuses keyed by the command and its stable command error code.
