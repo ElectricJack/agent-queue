@@ -3576,18 +3576,24 @@ class HostShellConfig:
     YAML: ``dashboard.host_shell`` **or** a top-level ``host_shell:`` block
     (the config editor's field-name spelling); the nested one wins. Off by
     default: an enabled host shell is remote code execution by design, open
-    only to the authenticated local operator. Read per request, so an edit
-    bites on the next open or attach.
+    only to the local operator unless ``allow_remote`` also admits remote
+    dashboard viewers. Read per request, so an edit bites on the next open or
+    attach.
     """
 
     enabled: bool = False
     #: Upper bound on concurrently open host shells.
     max_shells: int = 4
+    #: Also admit a viewer the dashboard server proxied from another machine
+    #: (its edge verdict ``other``), not only the local operator. A bearer
+    #: token -- a worker or a supervisor -- is refused either way.
+    allow_remote: bool = False
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
-        if not isinstance(self.enabled, bool):
-            errors.append(ConfigError("dashboard.host_shell", "enabled", "must be true or false"))
+        for key in ("enabled", "allow_remote"):
+            if not isinstance(getattr(self, key), bool):
+                errors.append(ConfigError("dashboard.host_shell", key, "must be true or false"))
         if isinstance(self.max_shells, bool) or not isinstance(self.max_shells, int) or not (
             1 <= self.max_shells <= 32
         ):

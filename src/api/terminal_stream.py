@@ -19,7 +19,11 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from src.api.auth import LOCAL_SCOPE, request_operator_viewer
+from src.api.auth import (
+    LOCAL_SCOPE,
+    request_operator_viewer,
+    request_remote_dashboard_viewer,
+)
 from src.models import TaskStatus
 from src.sessions.host_shell import HostShellManager, is_host_shell_name
 from src.sessions.terminal_pty import TerminalAttachError
@@ -156,17 +160,27 @@ class TerminalStreamService:
         cfg = getattr(self.config, "host_shell", None)
         return bool(cfg is not None and cfg.enabled is True)
 
+    def host_shell_allow_remote(self) -> bool:
+        cfg = getattr(self.config, "host_shell", None)
+        return bool(cfg is not None and getattr(cfg, "allow_remote", False) is True)
+
+    def host_shell_viewer(self, request) -> bool:
+        """The local operator, or a remote dashboard viewer under ``allow_remote``."""
+        if request_operator_viewer(request):
+            return True
+        return self.host_shell_allow_remote() and request_remote_dashboard_viewer(request)
+
     async def _authorize(self, ws, token, *, host_shell: bool = False):
         if host_shell:
-            # A host shell is remote code execution by design: only the local
-            # operator (no bearer token at all, so never a worker or a
-            # supervisor) on loopback or through the dashboard edge's
-            # operator verdict.
+            # A host shell is remote code execution by design: never a bearer
+            # token (a worker or a supervisor); the local operator on loopback
+            # or through the dashboard edge's operator verdict; and, with
+            # ``allow_remote``, a viewer the edge proxied from another machine.
             if not self.host_shell_enabled():
                 raise TerminalStreamError("Host shells are disabled", 4403)
             if token is not None:
                 raise TerminalStreamError("Host shells are for the local operator only", 4403)
-            if not request_operator_viewer(ws):
+            if not self.host_shell_viewer(ws):
                 raise TerminalStreamError("Host shells are for the local operator only", 4403)
         scope = LOCAL_SCOPE
         if token is not None:
