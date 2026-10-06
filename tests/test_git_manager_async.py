@@ -161,6 +161,22 @@ async def test_patch_id_streams_large_complete_diffs_and_keeps_stdin_limit(clone
         await mgr.apatch_id(clone, "0" * 40, source)
 
 
+async def test_patch_id_excludes_exact_literal_paths(clone, mgr):
+    base = _git(["rev-parse", "HEAD"], cwd=clone)
+    code = _commit_file(clone, "source.txt", "source\n", "source")
+    generated = "generated[*].txt"
+    _commit_file(clone, "generated1.txt", "keep this file\n", "other source")
+    head = _commit_file(clone, generated, "generated\n", "generated output")
+    expected = _git(["diff", "--binary", base, head, "--", "source.txt", "generated1.txt"],
+                    cwd=clone)
+    expected_id = subprocess.check_output(
+        ["git", "patch-id", "--stable"], input=expected, text=True,
+    ).split()[0]
+    assert await mgr.apatch_id(clone, base, head, exclude_paths=[generated]) == expected_id
+    assert expected_id != await mgr.apatch_id(clone, base, code)
+    assert await mgr.apatch_id(clone, code, code, exclude_paths=[generated]) is None
+
+
 @pytest.mark.parametrize("failure", ["timeout", "cancel", "spawn", "patch"])
 async def test_patch_id_reaps_both_processes_on_interruption(clone, mgr, monkeypatch, failure):
     import sys

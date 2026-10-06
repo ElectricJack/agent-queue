@@ -5641,16 +5641,20 @@ class GitManager:
             if value in [item.strip() for item in fields[index + 1].split("\x1f")]
         ]
 
-    async def apatch_id(self, checkout_path: str, base: str, head: str) -> str | None:
+    async def apatch_id(
+        self, checkout_path: str, base: str, head: str, *, exclude_paths: Sequence[str] = (),
+    ) -> str | None:
         """Stream the whole binary diff into stable patch-id; empty diffs have no id.
 
         Historical target comparisons can exceed the bounded command-input
         limit even for a tiny source change. A pipe keeps the complete diff
         out of Python memory and leaves that general stdin limit intact.
         Both processes must succeed; partial output never proves delivery.
+        Exclusions are exact repository-relative filenames, never pathspec patterns.
         """
         args = ["git", "--no-replace-objects", "diff", "--no-ext-diff", "--no-textconv",
                 "--no-renames", "--binary", _validate_rev(base), _validate_rev(head), "--"]
+        args.extend(":(top,exclude,literal)" + path for path in exclude_paths)
         processes = []
         read_fd, write_fd = os.pipe()
         try:

@@ -102,6 +102,21 @@ If all probes succeed without a match, the resolved source remains pending.
 Invalid source/base identity and unavailable repository observations still fail
 closed as unknown.
 
+Whole-source patch IDs omit paths whose `merge` attribute is `aq-generated` in
+the pinned target commit. Apply that same attribute view to the entire source
+diff and every historical target range, including generated files absent from
+the target tree. Search history using only the source's non-generated paths;
+generated-only differences cannot consume the historical patch probe budget.
+Attribute lookup uses Git's pattern and override rules, independent of the
+observer checkout's current branch. Exact ancestry and full-tree proofs stay exact.
+
+The no-op merge proof also compares modulo those generated paths. A merge whose
+tree differs from the target only in generated artifacts proves delivery, even
+when those artifacts conflict. Any non-generated difference or conflict prevents
+that proof. The legacy delivery backfill uses the same content-equivalence rule.
+Partial multi-commit delivery still proves nothing; unavailable attribute or diff
+observations never prove equivalence.
+
 Delivery proof is ancestry of the exact final source in the inspected target,
 with Git replacement objects disabled. The metadata commit itself is never
 tested for containment. Multi-commit work, another generation's trailer, a
