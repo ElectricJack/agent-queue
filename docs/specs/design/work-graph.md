@@ -367,6 +367,41 @@ Containers are marked explicitly: `task_metadata.container = true`, set on a tas
 
 **Hierarchical child ids:** children created under a parent (supervisor graphs, plan subtasks, `--parent`) get `<parent_id>.1`, `<parent_id>.1.2` — ordinal per parent via `next_child_ordinal`, depth ≤ 3 — while root ids stay adjective-noun slugs. Ids never change after assignment. A name is never minted while anything still keys it: a live or archived task, or the integration identity a deleted task leaves behind (a `task_integration_checkpoints` row, a `task_branch_origins` row, live or retired, or an `integration_branch_owners` row it owns) — a new task minted onto that name would inherit the predecessor's checkpoint and branch fence (`_task_identity_exists` in `src/task_names.py`). The id itself now carries structure a human can read in Discord, a branch name (`aq/swift-falcon.2`), or a log line, and sorting groups a family together everywhere.
 
+### Operator removal (2026-10-06)
+
+`remove_task` (`aq task remove TASK --reason "..."`, dashboard **Remove**) is
+available to a local human or live project/global supervisor. A worker cannot
+remove its held task. An unconfirmed request previews the subtree without writes;
+the CLI and dashboard ask for one confirmation, explaining that sessions stop,
+open batches abort, audit history remains, and branches stay. A nonblank reason
+is required for the confirmed decision.
+
+Removal holds every task in the subtree in one transaction before stopping its
+captured sessions through manual-pause cleanup. Failed process/resource cleanup
+leaves those holds in place for a safe retry; tasks must never pass through a
+schedulable BLOCKED status as an intermediate cleanup step. New descendants
+detected after cleanup require another Remove attempt. Under publisher, parent,
+batch and hierarchy exclusions, removal aborts unpromoted batches containing the
+subtree (including batches sealing an ancestor), cancels legacy operations only
+when no runtime or writer owns them, and removes the entire subtree atomically.
+Any integration audit identity selects archive; otherwise hard deletion is safe.
+Existing live operation or unproven resource ownership remains an actionable
+refusal. No removal deletes a Git branch.
+
+Maintenance also settles orphaned parent operations under parent-engine exclusion.
+A live reconciler Subject or attached writer protects an operation. When the
+Git-first train has replaced the Subject runtimes, their legacy parent operations
+can retire once all attached writers stop. Cancellation retains operations,
+episodes and history and writes an `integration.orphan_cancelled` event.
+
+Archive preserves delivered identity: retained delivery receipts do not prohibit
+archive, including receipts from an aborted batch. Manual archive also accepts
+PAUSED, DEFINED and READY roots/descendants with a nonblank reason, records that
+reason in retained comments, and still refuses running sessions and live operations.
+Bulk/automatic archive keeps its terminal-only selection. Delete/archive refusals
+in the dashboard offer **Remove while keeping history and branches** where that
+control can resolve the refusal.
+
 ## 13a. Claims and pools
 
 **Implemented by the swarm work model.** Pull-based work assignment for `lifecycle: pool`

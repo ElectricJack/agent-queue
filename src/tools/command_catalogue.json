@@ -212,6 +212,14 @@
             ],
             "description": "LOCAL-only integration mode for new reconciler subjects."
           },
+          "promotion_flow": {
+            "type": [
+              "array",
+              "object",
+              "null"
+            ],
+            "description": "LOCAL-only promotion flow (steps list, or {promotion_flow: [...]}); validated and activated behind the integration generation CAS."
+          },
           "expected_integration_generation": {
             "type": "integer",
             "minimum": 0,
@@ -1698,6 +1706,30 @@
       }
     },
     {
+      "name": "remove_task",
+      "description": "Remove a task or epic subtree. Operator/live supervisor only. With confirmed=false, preview without changing anything. One confirmed decision stops sessions, aborts open batches, cancels ownerless legacy operations and archives when audit history exists. Branches are kept. Requires a reason when confirmed.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task or epic to remove"
+          },
+          "confirmed": {
+            "type": "boolean",
+            "default": false
+          },
+          "reason": {
+            "type": "string",
+            "description": "Reason for removing this work"
+          }
+        },
+        "required": [
+          "task_id"
+        ]
+      }
+    },
+    {
       "name": "delete_task",
       "description": "Delete a task. Cannot delete a task that is currently in progress.",
       "input_schema": {
@@ -1733,7 +1765,7 @@
         "properties": {
           "task_id": {
             "type": "string",
-            "description": "Archive a single task by ID (must be COMPLETED, FAILED, or BLOCKED)"
+            "description": "Archive a single task by ID; PAUSED, DEFINED and READY require reason"
           },
           "project_id": {
             "type": "string",
@@ -1750,7 +1782,7 @@
           },
           "reason": {
             "type": "string",
-            "description": "Required reason when abandon_undelivered is true."
+            "description": "Required to archive PAUSED/DEFINED/READY or abandon undelivered work."
           }
         }
       }
@@ -13841,6 +13873,73 @@
         }
       }
     },
+    "promote_schema": {
+      "name": "promote_schema",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "PromoteSchemaArgs",
+        "type": "object"
+      }
+    },
+    "promote_validate": {
+      "name": "promote_validate",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "flow": {
+            "default": null,
+            "title": "Flow"
+          },
+          "use_stored": {
+            "default": true,
+            "title": "Use Stored",
+            "type": "boolean"
+          },
+          "remote": {
+            "default": false,
+            "title": "Remote",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "PromoteValidateArgs",
+        "type": "object"
+      }
+    },
     "provider_availability_notify": {
       "name": "provider_availability_notify",
       "description": "Message the global supervisor and the human once when a provider moves between launchable and unavailable; a repeat for the same change sends nothing.",
@@ -14584,6 +14683,7 @@
     "task_recover": "task",
     "reopen_with_feedback": "task",
     "delete_task": "task",
+    "remove_task": "task",
     "skip_task": "task",
     "set_task_status": "task",
     "archive_task": "task",

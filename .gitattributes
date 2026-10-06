@@ -18,6 +18,7 @@
 tests/selection_catalogue.json merge=aq-generated linguist-generated
 docs/reference/cli-command-inventory.json merge=aq-generated linguist-generated
 docs/reference/configuration-schema.json merge=aq-generated linguist-generated
+docs/reference/promotion-flow-schema.json merge=aq-generated linguist-generated
 docs/reference/playbook-commands/README.md merge=aq-generated linguist-generated
 src/playbook_v2_schema.json merge=aq-generated linguist-generated
 src/tools/command_catalogue.json merge=aq-generated linguist-generated

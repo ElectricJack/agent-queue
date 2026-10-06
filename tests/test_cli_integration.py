@@ -83,6 +83,7 @@ def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail():
         "blockers": [{"code": "human_hold", "detail": "needs operator", "ref": "op"}],
         "blocker_digest": "sha256:" + "b" * 64,
         "warnings": [{"code": "audit_workflow_missing", "detail": "warns", "ref": "repo"}],
+        "promotion_flow": {"state": "misconfigured", "chain": "dev -> main"},
         "schedule": {"next_due_at": 123.0},
         "members": [{"task_id": "t"}],
         "github": {
@@ -115,6 +116,8 @@ def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail():
         # Non-blocking App-mode warnings stay visible in the brief projection.
         "warnings": response["warnings"],
         "github": response["github"],
+        # The promotion chain and its misconfigured marking stay visible too.
+        "promotion_flow": response["promotion_flow"],
         "state": None,
         "stage": None,
         "count": None,
