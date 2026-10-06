@@ -272,12 +272,16 @@ class TestWaitFor:
     async def test_wait_for_returns_matching_event(self):
         bus = EventBus()
 
-        async def fire():
-            await asyncio.sleep(0.01)
-            await bus.emit("task.ready", {"task_id": "t", "project_id": "p", "title": "t"})
-
-        asyncio.create_task(fire())
-        got = await bus.wait_for(["task.ready"], filter={"project_id": "p"}, timeout=1.0)
+        waiting = asyncio.create_task(
+            bus.wait_for(["task.ready"], filter={"project_id": "p"}, timeout=1.0)
+        )
+        # Run the waiter until it subscribes; event delivery needs no timed sleep.
+        await asyncio.sleep(0)
+        assert bus.subscriber_count("task.ready") == 1
+        await bus.emit("task.ready", {"task_id": "other", "project_id": "other", "title": "t"})
+        assert not waiting.done()
+        await bus.emit("task.ready", {"task_id": "t", "project_id": "p", "title": "t"})
+        got = await waiting
         assert got["task_id"] == "t"
         assert bus.subscriber_count("task.ready") == 0
 

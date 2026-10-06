@@ -8,9 +8,11 @@
     ],
     "companions": [
       "src/commands/integration_commands.py",
+      "src/commands/promote_commands.py",
       "src/commands/ci_commands.py",
       "src/commands/contracts/integration.py",
       "src/cli/integration.py",
+      "src/cli/promote.py",
       "src/doctor/integration_checks.py",
       "src/database/queries/integration_*.py"
     ],
