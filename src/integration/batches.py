@@ -130,7 +130,7 @@ class BatchStore:
                                  row["source_base_sha"], row["ordinal"]) for row in rows)
 
     async def freeze(self, batch: Batch, members: Iterable[BatchMember], *, trees: Mapping[str, str],
-                     promotion: Mapping | None = None):
+                     promotion: Mapping | None = None, conn=None):
         """Atomic immutable membership; replay must name exactly the same inputs."""
         members = tuple(members)
         if tuple(member.order for member in members) != tuple(range(len(members))):
@@ -145,61 +145,63 @@ class BatchStore:
 
             integration_branch = promotion_ref(promotion["step"], promotion)
         now = self.clock()
-        async with self.db.immediate() as conn:
-            # Serialize absent-id creation too. No Git or check work under this lock.
-            await conn.execute(select(func.pg_advisory_xact_lock(
-                func.hashtextextended("git-batch:" + batch.id, 0),
-            )))
-            existing = (await conn.execute(select(integration_batches).where(
-                integration_batches.c.id == batch.id,
-            ).with_for_update())).mappings().first()
-            if existing:
-                frozen = (await conn.execute(select(integration_batch_members).where(
-                    integration_batch_members.c.batch_id == batch.id,
-                ).order_by(integration_batch_members.c.ordinal))).mappings().all()
-                identity = (existing["project_id"], existing["repository_id"], existing["target_ref"])
-                wanted = (batch.project_id, batch.repository_id, batch.target_ref)
-                inputs = tuple(BatchMember(r["task_id"], r["source_sha"],
-                                          r["source_base_sha"], r["ordinal"]) for r in frozen)
-                if identity != wanted or inputs != members:
-                    raise ValueError("batch id already names different frozen inputs")
-                if promotion is not None and (
-                    existing["trigger"] != "promotion"
-                    or existing["request_id"] != promotion["request_id"]
-                    or existing["policy_snapshot"].get("promotion_step") != promotion["step"]
-                    or existing["policy_snapshot"].get("promotion_intent") != dict(promotion)
-                ):
-                    raise ValueError("batch id already names a different promotion request")
-                return Batch.from_row(existing)
-            manifest = hashlib.sha256(repr(members).encode()).hexdigest()
-            await conn.execute(insert(integration_batches).values(
-                id=batch.id, project_id=batch.project_id, repository_id=batch.repository_id,
-                target_ref=batch.target_ref, intent=batch.intent,
-                repair_attempt_count=batch.repair_attempt_count,
-                created_at=batch.created_at or now, updated_at=now,
-                # Compatibility-only required fields, never read by this engine.
-                request_id=batch.id if promotion is None else promotion["request_id"],
-                trigger="manual" if promotion is None else "promotion",
-                source_manifest_digest=manifest,
-                base_sha=members[0].base_sha, integration_branch=integration_branch,
-                lifecycle="sealing", policy_snapshot={} if promotion is None else {
-                    "promotion_step": promotion["step"],
-                    "promotion_intent": dict(promotion),
-                }, artifact_snapshot={}, cleanup_state="pending",
+        if conn is None:
+            async with self.db.immediate() as owned:
+                return await self.freeze(batch, members, trees=trees, promotion=promotion, conn=owned)
+        # Serialize absent-id creation too. No Git or check work under this lock.
+        await conn.execute(select(func.pg_advisory_xact_lock(
+            func.hashtextextended("git-batch:" + batch.id, 0),
+        )))
+        existing = (await conn.execute(select(integration_batches).where(
+            integration_batches.c.id == batch.id,
+        ).with_for_update())).mappings().first()
+        if existing:
+            frozen = (await conn.execute(select(integration_batch_members).where(
+                integration_batch_members.c.batch_id == batch.id,
+            ).order_by(integration_batch_members.c.ordinal))).mappings().all()
+            identity = (existing["project_id"], existing["repository_id"], existing["target_ref"])
+            wanted = (batch.project_id, batch.repository_id, batch.target_ref)
+            inputs = tuple(BatchMember(r["task_id"], r["source_sha"],
+                                      r["source_base_sha"], r["ordinal"]) for r in frozen)
+            if identity != wanted or inputs != members:
+                raise ValueError("batch id already names different frozen inputs")
+            if promotion is not None and (
+                existing["trigger"] != "promotion"
+                or existing["request_id"] != promotion["request_id"]
+                or existing["policy_snapshot"].get("promotion_step") != promotion["step"]
+                or existing["policy_snapshot"].get("promotion_intent") != dict(promotion)
+            ):
+                raise ValueError("batch id already names a different promotion request")
+            return Batch.from_row(existing)
+        manifest = hashlib.sha256(repr(members).encode()).hexdigest()
+        await conn.execute(insert(integration_batches).values(
+            id=batch.id, project_id=batch.project_id, repository_id=batch.repository_id,
+            target_ref=batch.target_ref, intent=batch.intent,
+            repair_attempt_count=batch.repair_attempt_count,
+            created_at=batch.created_at or now, updated_at=now,
+            # Compatibility-only required fields, never read by this engine.
+            request_id=batch.id if promotion is None else promotion["request_id"],
+            trigger="manual" if promotion is None else "promotion",
+            source_manifest_digest=manifest,
+            base_sha=members[0].base_sha, integration_branch=integration_branch,
+            lifecycle="sealing", policy_snapshot={} if promotion is None else {
+                "promotion_step": promotion["step"],
+                "promotion_intent": dict(promotion),
+            }, artifact_snapshot={}, cleanup_state="pending",
+        ))
+        for member in members:
+            tree = trees[member.task_id]
+            if not is_valid_git_oid(tree):
+                raise ValueError("source tree must be exact")
+            await conn.execute(insert(integration_batch_members).values(
+                batch_id=batch.id, ordinal=member.order, task_id=member.task_id,
+                repository_id=batch.repository_id, source_sha=member.source_sha,
+                source_base_sha=member.base_sha, reviewed_head_sha=member.source_sha,
+                reviewed_tree_sha=tree, review_evidence_id=None, review_evidence={},
             ))
-            for member in members:
-                tree = trees[member.task_id]
-                if not is_valid_git_oid(tree):
-                    raise ValueError("source tree must be exact")
-                await conn.execute(insert(integration_batch_members).values(
-                    batch_id=batch.id, ordinal=member.order, task_id=member.task_id,
-                    repository_id=batch.repository_id, source_sha=member.source_sha,
-                    source_base_sha=member.base_sha, reviewed_head_sha=member.source_sha,
-                    reviewed_tree_sha=tree, review_evidence_id=None, review_evidence={},
-                ))
-            await conn.execute(update(integration_batches).where(
-                integration_batches.c.id == batch.id,
-            ).values(lifecycle="sealed"))
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == batch.id,
+        ).values(lifecycle="sealed"))
         return replace(batch, created_at=batch.created_at or now)
 
     @asynccontextmanager

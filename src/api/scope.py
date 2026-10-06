@@ -137,6 +137,8 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "integration_status",
         "promote_schema",
         "promote_validate",
+        "promote_status",
+        "promote_list",
         # The command derives the candidate/member/fence from this session's
         # live repair assignment and separately fences pool calls by claim
         # epoch.  No caller-selected integration identity reaches the service.

@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-171 commands are registered.
+176 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -192,7 +192,12 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`object_loop_reconcile`](object_loop_reconcile.md) | Object Loop Reconcile | Coordinate a bounded, durable object evaluation round. |
 | [`object_loop_start`](object_loop_start.md) | Object Loop Start | Coordinate a bounded, durable object evaluation round. |
 | [`object_score_record`](object_score_record.md) | Object Score Record | Coordinate a bounded, durable object evaluation round. |
+| [`promote_approve`](promote_approve.md) | Promote Approve | Post a pinned GitHub approval using the authenticated human gh login. |
+| [`promote_cancel`](promote_cancel.md) | Promote Cancel | Close an unpublished promotion PR and abort its intent. |
+| [`promote_list`](promote_list.md) | Promote List | List promotion history using the local evidence cache. |
+| [`promote_request`](promote_request.md) | Promote Request | Open an idempotent promotion intent and a PR pinned to its source commit. |
 | [`promote_schema`](promote_schema.md) | Promote Schema | Authenticated hierarchical integration operational control. |
+| [`promote_status`](promote_status.md) | Promote Status | Read promotion intents and cached check and PR review evidence. |
 | [`promote_validate`](promote_validate.md) | Promote Validate | Authenticated hierarchical integration operational control. |
 | [`provider_allocation_preview`](provider_allocation_preview.md) | Preview a provider worker allocation | Show what one provider allocation would change -- the selected profiles before and after, the provider-wide ceiling, the sessions it drains and the busy set an interrupt would need, the pins and manual agents it leaves alone -- with the token apply consumes, without changing anything. |
 | [`provider_allocation_status`](provider_allocation_status.md) | Read provider worker allocation | Group every ordinary worker profile by provider with its pool supply, live sessions, pinned tasks, manual agents, project preferences and the provider-wide configured ceiling, without changing anything. |
