@@ -14182,13 +14182,13 @@
       "reason": "Clearing the exact holder from the task's own claimed_by_session record when the release takes that claim back; the claim itself, not a hold, ref replay or a duplicate lifecycle write."
     },
     "src/integration/batches.py::BatchStore.set_intent::6d729f7a8f24a4746d37ecea7871dfd209ea8cce995ce7499c8290475b86f660": {
-      "line": 213,
+      "line": 226,
       "owner": "BatchStore.set_intent",
       "call": "log_event",
-      "owner_fingerprint": "1fba644dbd4cacd61bb242b663e52e935b79937995e90c799b9baacbd531f561",
+      "owner_fingerprint": "19001f37899a71985161848da0bcf4af2e8f152e77ace4a4b80f82d9d456f21d",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Operator audit of batch abort or delivered-origin retirement with principal and reason; never replayed and carries no ref-update lifecycle."
+      "reason": "Operator audit of batch intent with principal and reason; abort now projects terminal lifecycle and queues cleanup atomically. The audit payload and call are unchanged, never replayed and carry no ref-update lifecycle."
     },
     "src/integration/train_controls.py::TrainControls.retire_origin::0b56c6446d96c90b01889f9a0444c2e70ac5351db133ff1989c85a029ccd494a": {
       "line": 226,

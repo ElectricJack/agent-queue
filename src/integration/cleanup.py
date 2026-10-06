@@ -74,6 +74,8 @@ class IntegrationCleanupService:
         git_manager: Any | None = None,
         github_client_factory: Any | None = None,
         forge_provider: Any | None = None,
+        binding_resolver=None,
+        candidate_store=None,
         clock=time.time,
     ) -> None:
         self.db = db
@@ -81,6 +83,8 @@ class IntegrationCleanupService:
         self.git = git_manager
         self.github_client_factory = github_client_factory
         self.forge_provider = forge_provider
+        self.binding_resolver = binding_resolver
+        self.candidate_store = candidate_store
         self.clock = clock
 
     async def advance(
@@ -895,6 +899,18 @@ class IntegrationCleanupService:
     @classmethod
     async def materialize_aborted_on(cls, conn, batch, now):
         """Queue audit PR retirement atomically with abort; retain all source work."""
+        # Only the aborted batch's detached compatibility reservation is free.
+        # Managed leases, attached writers and source-task owners are independent.
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.repository_id == batch["repository_id"],
+            integration_branch_owners.c.owner_id == batch["id"],
+            integration_branch_owners.c.owner_role == "collector",
+            integration_branch_owners.c.ref == batch["integration_branch"],
+            integration_branch_owners.c.handoff_state == "reserved",
+            integration_branch_owners.c.session_id.is_(None),
+            integration_branch_owners.c.workspace_id.is_(None),
+            integration_branch_owners.c.fence.is_(None),
+        ).values(handoff_state="released", updated_at=now))
         publications = (await conn.execute(
             select(integration_candidate_publications).where(
                 integration_candidate_publications.c.batch_id == batch["id"],
@@ -923,7 +939,7 @@ class IntegrationCleanupService:
                 expected_sha=publication["head_sha"], state="pending", attempts=0,
                 next_attempt_at=now, created_at=now, updated_at=now,
             ).on_conflict_do_nothing(index_elements=["batch_id", "kind", "identity"]))
-        if not seen:
+        if not seen and batch["target_ref"] is None:
             await conn.execute(update(integration_batches).where(
                 integration_batches.c.id == batch["id"],
                 integration_batches.c.lifecycle == "aborted",
@@ -934,23 +950,96 @@ class IntegrationCleanupService:
         )
 
     async def reconcile_aborted(self, now: float) -> None:
-        """Backfill audit PR cleanup after a restart or an older daemon's abort."""
+        """Recover old abort seals and retire terminal candidates and audit PRs."""
+        from src.integration.batches import BatchStore
+
+        await BatchStore(self.db, clock=lambda: now).reconcile_aborted()
         async with self.db._engine.connect() as conn:
             batch_ids = list((await conn.execute(select(integration_batches.c.id).where(
                 integration_batches.c.lifecycle == "aborted",
                 integration_batches.c.cleanup_state == "pending",
-                ~select(integration_cleanup_items.c.domain_key).where(
-                    integration_cleanup_items.c.batch_id == integration_batches.c.id,
-                ).exists(),
             ).order_by(integration_batches.c.id).limit(100))).scalars())
         for batch_id in batch_ids:
             try:
+                batch = await self.db.get_integration_batch(batch_id)
                 result = await self.materialize(batch_id, now=now)
                 if result.outcome not in {"materialized", "already_materialized"}:
                     logger.warning("Aborted batch PR cleanup %s: %s", batch_id, result.outcome)
+                    continue
+                if batch["target_ref"] is not None:
+                    if not await self._cleanup_aborted_candidate(batch):
+                        continue
+                await self.advance(batch_id, now=now)
+                if batch["target_ref"] is not None and not result.item_count:
+                    async with self.db.immediate() as conn:
+                        await conn.execute(update(integration_batches).where(
+                            integration_batches.c.id == batch_id,
+                            integration_batches.c.lifecycle == "aborted",
+                            integration_batches.c.cleanup_state == "pending",
+                            ~select(integration_cleanup_items.c.domain_key).where(
+                                integration_cleanup_items.c.batch_id == batch_id,
+                            ).exists(),
+                        ).values(cleanup_state="complete", updated_at=now))
             except Exception:
                 logger.warning("Could not queue aborted batch PR cleanup %s", batch_id,
                                exc_info=True)
+
+    async def _cleanup_aborted_candidate(self, batch) -> bool:
+        """Delete only this batch's private candidate under its managed ref lease."""
+        import asyncio
+
+        from src.git.manager import RemoteRefState
+        from src.integration.batches import candidate_ref
+        from src.integration.lock import BranchLock
+        from src.integration.models import BranchKey
+        from src.integration.ownership import BranchBusy
+
+        if self.git is None or self.binding_resolver is None or self.candidate_store is None:
+            return False
+        repository = await self.db.get_repo(batch["repository_id"])
+        binding = await self.binding_resolver(repository)
+        if binding is None:
+            return False
+        ref = candidate_ref(batch["id"])
+        if ref == batch["target_ref"] or self._short_head(ref) == repository.default_branch:
+            return False
+        store = str(await self.candidate_store(repository))
+        locks = BranchLock(self.db, clock=self.clock)
+        try:
+            fence = await locks.acquire(
+                BranchKey(repository_id=batch["repository_id"], branch=ref),
+                "service:integration-abort-cleanup", role="integration", ttl_seconds=30,
+            )
+        except BranchBusy:
+            return False
+        try:
+            async with locks.exclusion(fence) as owner:
+                current = await self.db.get_integration_batch(batch["id"])
+                if current["intent"] != "aborted" or current["lifecycle"] != "aborted":
+                    return False
+                short = self._short_head(ref)
+                observed = await self.git.als_remote_ref(
+                    store, short, repository_url=repository.url,
+                )
+                if observed.state is RemoteRefState.ERROR:
+                    return False
+                if observed.state is RemoteRefState.ABSENT:
+                    return True
+                try:
+                    await self.git.adelete_repository_ref(
+                        store, repository=binding, branch=short, expected_old_oid=observed.oid,
+                        authority_deadline=asyncio.get_running_loop().time()
+                        + max(0, owner["expires_at"] - self.clock()),
+                    )
+                except GitError:
+                    # A lost success response is settled by authenticated read-back.
+                    pass
+                actual = await self.git.als_remote_ref(
+                    store, short, repository_url=repository.url,
+                )
+                return actual.state is RemoteRefState.ABSENT
+        finally:
+            await locks.release(fence)
 
     async def _descendant_ref_items(
         self, conn, batch, publication, members, now, *, existing_refs: set[str]

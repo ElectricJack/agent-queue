@@ -207,9 +207,19 @@ class BatchStore:
                 raise ValueError("batch target or candidate changed; preview again")
             if dry_run:
                 return
+            values = {"intent": intent, "updated_at": self.clock()}
+            if intent == "aborted":
+                # Compatibility guards still read lifecycle. Commit the terminal
+                # projection with intent so members can be revised immediately.
+                values.update(
+                    lifecycle="aborted",
+                    human_abort_reason=reason.strip() or row["human_abort_reason"] or "Batch aborted",
+                )
+                if row["lifecycle"] != "aborted":
+                    values["cleanup_state"] = "pending"
             await conn.execute(update(integration_batches).where(
                 integration_batches.c.id == batch_id,
-            ).values(intent=intent, updated_at=self.clock()))
+            ).values(**values))
             if operator_id is not None:
                 import json
 
@@ -218,6 +228,30 @@ class BatchStore:
                     payload=json.dumps({"batch_id": batch_id, "intent": intent,
                                         "operator_id": operator_id, "reason": reason}), conn=conn,
                 )
+
+    async def reconcile_aborted(self, *, target=None, limit=100):
+        """Release compatibility seals left by pre-fix aborts; never undo promotion."""
+        pending = select(integration_batches.c.id).where(
+            integration_batches.c.target_ref.is_not(None),
+            integration_batches.c.intent == "aborted",
+            integration_batches.c.lifecycle.not_in(("aborted", "promoted")),
+        )
+        if target is not None:
+            pending = pending.where(
+                integration_batches.c.project_id == target.project_id,
+                integration_batches.c.repository_id == target.repository_id,
+                integration_batches.c.target_ref == target.target_ref,
+            )
+        async with self.db.immediate() as conn:
+            ids = list((await conn.execute(pending.order_by(integration_batches.c.id)
+                .limit(limit).with_for_update(skip_locked=True))).scalars())
+            if ids:
+                await conn.execute(update(integration_batches).where(
+                    integration_batches.c.id.in_(ids),
+                ).values(lifecycle="aborted", cleanup_state="pending",
+                    human_abort_reason=func.coalesce(
+                        integration_batches.c.human_abort_reason, "Batch aborted"),
+                    updated_at=self.clock()))
 
 
 class ManagedPublish(Protocol):
