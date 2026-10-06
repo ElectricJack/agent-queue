@@ -771,10 +771,12 @@ async def test_status_contract_carries_warnings():
     register_integration_contracts(registry)
     registration = registry.require("integration_status")
     warning = {"code": "audit_workflow_missing", "detail": "d", "ref": "agent-queue2"}
+    activity = {"scope": "daemon", "api_calls_per_minute": {"GET repos/acme/widgets": 3}}
 
     class StubHandler:
         async def execute(self, command, payload):
-            return {"outcome": "status", "ready": True, "blockers": [], "warnings": [warning]}
+            return {"outcome": "status", "ready": True, "blockers": [], "warnings": [warning],
+                    "github": activity}
 
     set_handler_provider(StubHandler)
     try:
@@ -784,6 +786,7 @@ async def test_status_contract_carries_warnings():
     finally:
         set_handler_provider(None)
     assert result.value.ready is True and result.value.warnings == (warning,)
+    assert result.value.github == activity
 
 
 # ---------------------------------------------------------------------------

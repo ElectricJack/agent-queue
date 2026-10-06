@@ -943,6 +943,12 @@ class IntegrationCommandsMixin:
         )
         status = await (service.control_status(project_id) if args.get("control_only")
                         else service.status(project_id))
+        if status is not None:
+            from src.git.github_cli import GhRunner
+
+            runner = getattr(self.orchestrator, "github_runner", None)
+            if isinstance(runner, GhRunner):
+                status["github"] = runner.activity()
         return {"outcome": "not_found", "project_id": project_id} if status is None else {
             "outcome": "status", **status}
 
