@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -10,6 +11,8 @@ import pytest
 from sqlalchemy import select
 
 from src.database.tables import integration_batches
+from src.git.github_contracts import GitHubAccessError
+from src.git.manager import GitError
 from src.integration.batches import Batch, BatchMember, BatchObservation, candidate_ref
 from src.integration.checks import (
     ChecksResult,
@@ -532,6 +535,200 @@ async def test_one_target_failure_is_recorded_and_others_continue():
     assert status["p"]["state"] == "unknown" and status["p"]["errors"] == 1
     assert status["p"]["detail"]["reason"] == "RuntimeError"
     assert status["q"]["state"] == "delivered"
+
+
+def _rate_limited(retry_at=None):
+    """A visit failure as the daemon sees it: GitError over the classified cause."""
+    cause = GitHubAccessError(
+        "rate_limited", "GitHub request was rate limited (rate_limited, HTTP 403)",
+        retry_at=retry_at, http_status=403,
+    )
+    try:
+        raise GitError("GitHub request was rate limited") from cause
+    except GitError as exc:
+        return exc
+
+
+async def test_rate_limited_visit_defers_the_target_with_backoff(caplog):
+    """fresh-quest-25: a secondary-limit burst is one line and a pause, not a failure per tick."""
+    clock, visits = [100.0], []
+
+    async def limited():
+        visits.append(clock[0])
+        raise _rate_limited()
+
+    async def lane_for(target):
+        return lane(Service(), fetch=limited)
+
+    t = IntegrationTrain(targets=Targets(ROOT), batches=Batches(), lane_for=lane_for,
+                         repair=Repair(), clock=lambda: clock[0])
+    label = "p/r/refs/heads/main"
+    caplog.set_level(logging.INFO, logger="src.integration.train")
+
+    assert (await t.tick())["started"] == [label]
+    await t.drain()
+    [row] = t.status()
+    assert (row["state"], row["errors"]) == ("unknown", 1)
+    assert row["detail"]["reason"] == "rate_limited" and row["detail"]["retry_at"] == 160.0
+
+    clock[0] = 159.0
+    assert await t.tick() == {"started": [], "running": [], "skipped": [], "deferred": [label]}
+    assert visits == [100.0]
+
+    clock[0] = 160.0
+    assert (await t.tick())["started"] == [label]
+    await t.drain()
+    # A second consecutive limit doubles the pause.
+    assert t.status()[0]["detail"]["retry_at"] == 160.0 + 120.0
+
+    records = [r for r in caplog.records if r.name == "src.integration.train"]
+    assert len(records) == 2
+    assert all(r.exc_info is None and r.levelno == logging.WARNING for r in records)
+    message = records[0].getMessage()
+    assert "p/r/refs/heads/main" in message
+    assert "code=rate_limited" in message and "http=403" in message
+    assert "\n" not in message
+
+
+async def test_rate_limited_visit_honours_a_later_github_retry_time():
+    clock = [100.0]
+
+    async def limited():
+        raise _rate_limited(retry_at=1000.0)
+
+    async def lane_for(target):
+        return lane(Service(), fetch=limited)
+
+    t = IntegrationTrain(targets=Targets(ROOT), batches=Batches(), lane_for=lane_for,
+                         repair=Repair(), clock=lambda: clock[0])
+    await t.tick()
+    await t.drain()
+    assert t.status()[0]["detail"]["retry_at"] == 1000.0
+    clock[0] = 999.0
+    assert (await t.tick())["deferred"] == ["p/r/refs/heads/main"]
+
+
+async def test_a_visit_after_a_rate_limit_resets_the_backoff():
+    clock, outcomes = [100.0], [_rate_limited(), None, _rate_limited()]
+
+    async def sometimes():
+        failure = outcomes.pop(0)
+        if failure is not None:
+            raise failure
+
+    async def lane_for(target):
+        return lane(Service(), fetch=sometimes)
+
+    t = IntegrationTrain(targets=Targets(ROOT), batches=Batches(), lane_for=lane_for,
+                         repair=Repair(), clock=lambda: clock[0])
+    for now in (100.0, 160.0, 170.0):
+        clock[0] = now
+        assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
+        await t.drain()
+    assert t.status()[0]["detail"]["retry_at"] == 170.0 + 60.0
+
+
+async def test_a_rate_limit_pauses_every_target_of_the_repository_behind_one_probe(caplog):
+    """fresh-quest-25: 33 targets of one repository re-hit GitHub's limit together each round.
+
+    The pause is the repository's: siblings limited in the same round count once,
+    and when it ends one probe visit goes first while the others wait for it.
+    """
+    first, second = TrainTarget("p", "r", "refs/heads/a"), TrainTarget("p", "r", "refs/heads/b")
+    other = TrainTarget("p", "s", "refs/heads/main")
+    clock, limited, visits = [100.0], {"r": True}, []
+
+    def fetch_for(target):
+        async def fetch():
+            visits.append((clock[0], target.target_ref, target.repository_id))
+            if limited.get(target.repository_id):
+                raise _rate_limited()
+        return fetch
+
+    async def lane_for(target):
+        return lane(Service(), fetch=fetch_for(target))
+
+    t = IntegrationTrain(targets=Targets(first, second, other), batches=Batches(),
+                         lane_for=lane_for, repair=Repair(), clock=lambda: clock[0])
+    a, b, s = ("/".join(x.key) for x in (first, second, other))
+    caplog.set_level(logging.INFO, logger="src.integration.train")
+
+    assert (await t.tick())["started"] == [a, b, s]
+    await t.drain()
+    # Two limited siblings in one round: one pause of the first step, one warning.
+    assert {row["target_ref"]: (row["detail"] or {}).get("retry_at") for row in t.status()} == {
+        "refs/heads/a": 160.0, "refs/heads/b": 160.0, "refs/heads/main": None,
+    }
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+
+    clock[0] = 120.0
+    tick = await t.tick()
+    assert (tick["started"], tick["deferred"]) == ([s], [a, b])
+    await t.drain()
+
+    # The pause ends: one probe, still limited, so the repository waits twice as long.
+    clock[0] = 160.0
+    tick = await t.tick()
+    assert (tick["started"], tick["deferred"]) == ([a, s], [b])
+    assert (await t.tick())["deferred"] == [b]
+    await t.drain()
+    assert t.status()[0]["detail"]["retry_at"] == 160.0 + 120.0
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 2
+
+    # The next probe succeeds and releases every target of the repository.
+    limited["r"] = False
+    clock[0] = 280.0
+    assert (await t.tick())["started"] == [a, s]
+    assert (await t.tick())["deferred"] == [b]
+    await t.drain()
+    clock[0] = 281.0
+    assert (await t.tick())["started"] == [a, b, s]
+    await t.drain()
+    assert [v for v in visits if v[2] == "r"] == [
+        (100.0, "refs/heads/a", "r"), (100.0, "refs/heads/b", "r"),
+        (160.0, "refs/heads/a", "r"), (280.0, "refs/heads/a", "r"),
+        (281.0, "refs/heads/a", "r"), (281.0, "refs/heads/b", "r"),
+    ]
+
+
+async def test_a_cancelled_probe_does_not_hold_the_repository_paused():
+    clock, limited = [100.0], [True]
+    first, second = TrainTarget("p", "r", "refs/heads/a"), TrainTarget("p", "r", "refs/heads/b")
+
+    async def fetch():
+        if limited[0]:
+            raise _rate_limited()
+        await asyncio.sleep(3600)
+
+    async def lane_for(target):
+        return lane(Service(), fetch=fetch)
+
+    t = IntegrationTrain(targets=Targets(first, second), batches=Batches(), lane_for=lane_for,
+                         repair=Repair(), clock=lambda: clock[0])
+    await t.tick()
+    await t.drain()
+    limited[0] = False
+    clock[0] = 160.0
+    assert (await t.tick())["started"] == ["p/r/refs/heads/a"]
+    await t.stop()
+    assert (await t.tick())["started"] == ["p/r/refs/heads/a"]
+    await t.stop()
+
+
+async def test_an_unexpected_visit_failure_keeps_its_traceback(caplog):
+    class Exploding(Service):
+        async def visit(self, *args):
+            raise RuntimeError("git exploded")
+
+    caplog.set_level(logging.INFO, logger="src.integration.train")
+    t = train(Targets(ROOT), Batches({ROOT.key: (batch(), MEMBERS)}),
+              {ROOT.key: lane(Exploding())})
+    await t.tick()
+    await t.drain()
+    [record] = [r for r in caplog.records if r.name == "src.integration.train"]
+    assert record.levelno == logging.ERROR and record.exc_info is not None
+    assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
+    await t.drain()
 
 
 async def test_visit_timeout_frees_the_target_for_the_next_tick():
