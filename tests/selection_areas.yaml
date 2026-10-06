@@ -424,6 +424,7 @@ areas:
     description: "Promotion-flow validation, child-to-parent and root-to-main promotion, parent assembly and completion, root PRs and authorization, bounded repairs, trusted review evidence, parent CI publication, legacy deliveries and proven closure of delivered PRs."
     match:
       - tests/test_promotion_flow.py
+      - tests/test_promotion_steps.py
       - tests/test_integration_promotion.py
       - tests/test_integration_child_delivery.py
       - tests/test_integration_cancelled_collection.py

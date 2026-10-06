@@ -10887,6 +10887,25 @@
         "type": "object"
       }
     },
+    "integration_promotion_publish": {
+      "name": "integration_promotion_publish",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationPromotionPublishArgs",
+        "type": "object"
+      }
+    },
     "integration_push_conflict_resolution": {
       "name": "integration_push_conflict_resolution",
       "description": "Push a frozen conflict resolution under the current repair writer fence.",

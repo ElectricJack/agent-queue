@@ -97,6 +97,20 @@ def test_defaults_are_filled_including_nested_and_step_dependent_values():
     assert validate([release()]).flow[0]["versioning"]["tag_format"] == "v{version}"
 
 
+@pytest.mark.parametrize("logins", [[], ["operator"], ["Operator", "second-admin"]])
+def test_operator_allowlist_is_optional_and_preserved(logins):
+    step = {**release(), "gate": {"operator_logins": logins}}
+    result = validate([step])
+    assert result.valid
+    assert result.flow[0]["gate"]["operator_logins"] == logins
+
+
+@pytest.mark.parametrize("logins", ["operator", ["operator", "operator"], [""], ["a/b"], [1]])
+def test_operator_allowlist_rejects_invalid_logins(logins):
+    result = validate([{**release(), "gate": {"operator_logins": logins}}])
+    assert not result.valid and result.layer == 1
+
+
 # Each enumerated refusal in layers 1-3 has a fixture and its exact pointer.
 @pytest.mark.parametrize(
     "code,path,updates",
