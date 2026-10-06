@@ -22,6 +22,7 @@ import pytest
 from src.sessions.exit_classifier import RATE_LIMIT_PATTERNS
 from src.sessions.usage_limit_screen import (
     USAGE_LIMIT_TAIL_LINES,
+    detect_usage_limit_screen,
     match_usage_limit_screen,
 )
 
@@ -65,6 +66,70 @@ CODEX_MESSAGES = [
         "to purchase more credits or try again at Sep 11th, 2026 7:09 AM."
     ),
 ]
+
+# Observed by the operator on 2026-10-06. OpenCode repaints this countdown
+# while the worker holds its claim, without making any provider progress.
+OPENCODE_LIMIT_PANE = (
+    "Free limit reached\n"
+    " ■■■■■■⬝⬝ Free usage exceeded, subscribe to Go [retrying in 15h 2m]\n"
+    "esc interrupt"
+)
+
+
+class TestOpenCode:
+    def test_observed_free_usage_exhaustion_and_reset(self):
+        screen = detect_usage_limit_screen(OPENCODE_LIMIT_PANE, opencode=True)
+        assert screen is not None
+        assert screen.usage_exhausted
+        assert screen.retry_after == 15 * 3600 + 2 * 60
+        assert screen.line == "Free usage exceeded, subscribe to Go [retrying in 15h 2m]"
+        assert match_usage_limit_screen(OPENCODE_LIMIT_PANE) is None
+
+    def test_retry_footer_with_animations_disabled(self):
+        screen = detect_usage_limit_screen(
+            " [⋯] Free limit reached [retrying in 15h 2m attempt #1] esc interrupt", opencode=True
+        )
+        assert screen is not None and screen.usage_exhausted and screen.retry_after == 54120
+
+    @pytest.mark.parametrize(
+        ("duration", "seconds"),
+        [
+            ("2h", 7200), ("1d 2h 3m 4s", 93784), ("90m", 5400), ("3s", 3),
+            ("~1 day", 86400), ("~2 days", 172800), ("~1 week", 604800),
+        ],
+    )
+    def test_free_limit_retry_durations(self, duration, seconds):
+        screen = detect_usage_limit_screen(
+            f"  Free limit reached [retrying in {duration} attempt #2]", opencode=True
+        )
+        assert screen is not None and screen.usage_exhausted
+        assert screen.retry_after == seconds
+
+    def test_long_server_retry_needs_corroboration(self):
+        screen = detect_usage_limit_screen(
+            "  ▄ Internal server error [retrying in 2h attempt #8] esc interrupt", opencode=True
+        )
+        assert screen is not None and screen.retry_after == 7200
+        assert not screen.usage_exhausted
+
+    @pytest.mark.parametrize("pane", [
+        "  ▄ Internal server error [retrying in 30s attempt #2] esc interrupt",
+        "Free usage exceeded, subscribe to Go",
+        'print("Free usage exceeded, subscribe to Go [retrying in 15h 2m]")',
+        "+Free usage exceeded, subscribe to Go [retrying in 15h 2m]",
+        "src/file.py:42:Free usage exceeded, subscribe to Go [retrying in 15h 2m]",
+        "› Free usage exceeded, subscribe to Go [retrying in 15h 2m]",
+        "     Free usage exceeded, subscribe to Go [retrying in 15h 2m]",
+        "  > Free usage exceeded, subscribe to Go [retrying in 15h 2m]",
+        "  - Free usage exceeded, subscribe to Go [retrying in 15h 2m]",
+        "Free usage exceeded [retrying in someday]",
+    ])
+    def test_ordinary_output_and_short_retries_are_left_alone(self, pane):
+        assert detect_usage_limit_screen(pane, opencode=True) is None
+
+    def test_old_retry_footer_is_history(self):
+        pane = OPENCODE_LIMIT_PANE + "\n" + "\n".join(["Working"] * USAGE_LIMIT_TAIL_LINES)
+        assert detect_usage_limit_screen(pane, opencode=True) is None
 
 
 def _codex_pane(message: str) -> str:

@@ -36,6 +36,12 @@ Replayed over every Claude transcript on the box where this was written
 (2,632 files, 2.5M lines rendered with the TUI's gutters), this matched all
 104 real limit messages and nothing else.
 
+OpenCode's retry footer is matched only when the caller has resolved that
+CLI from the harness registry. Its spinner can repaint the countdown while
+no work progresses, so callers inspect it before trusting pane activity.
+Explicit free-usage exhaustion carries stronger evidence than an ordinary
+server retry; the latter counts only for waits of at least an hour.
+
 The wordings were taken from the CLIs themselves on 2026-09-21: Claude Code
 2.1.278 builds every blocking message from the prefixes ``You've hit your``,
 ``You've reached your``, ``You're out of usage credits``/``extra usage`` and
@@ -51,11 +57,14 @@ out.  Gemini's wordings were not captured and are not guessed at.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 __all__ = [
     "USAGE_LIMIT_PATTERNS",
     "USAGE_LIMIT_PEEK_LINES",
     "USAGE_LIMIT_TAIL_LINES",
+    "UsageLimitScreen",
+    "detect_usage_limit_screen",
     "match_usage_limit_screen",
 ]
 
@@ -96,18 +105,67 @@ _GUTTER = r"[ \t\u00a0]{0,3}[⎿■]\s*"
 
 _SCREEN_RE = re.compile(rf"^{_GUTTER}(?:{'|'.join(USAGE_LIMIT_PATTERNS)})")
 
+# OpenCode paints a spinner and its retry message below the composer, rather
+# than a Claude/Codex gutter. Only callers that resolved the CLI may use this
+# matcher. Require its retry status as well as an error prefix: quoting a
+# limit string, a diff, a grep hit or text in the composer is not this screen.
+_OPENCODE_RE = re.compile(
+    r"^[ \t\u00a0]{0,3}(?:(?:[▀-▟⠁-⣿⋯■⬝·]{1,16}|\[⋯\])[ \t]+)?"
+    r"(?P<message>(?:Free limit reached|Free usage exceeded|"
+    r"Usage limit reached|(?:Rate limit|Quota) (?:reached|exceeded)|"
+    r"Too many requests|Internal server error|Bad gateway|Service unavailable)\b[^\n]*?)"
+    r"\s+\[retrying in (?P<duration>~?\d+\s*(?:days?|weeks?)\s*|(?:\d+\s*[dhms]\s*)+)"
+    r"(?:attempt #\d+)?\](?:\s+esc (?:again to )?interrupt)?\s*$",
+    re.IGNORECASE,
+)
+_DURATION_RE = re.compile(r"(\d+)\s*(days?|weeks?|[dhms])", re.IGNORECASE)
+_DURATION_SECONDS = {
+    "week": 604800, "weeks": 604800, "day": 86400, "days": 86400,
+    "d": 86400, "h": 3600, "m": 60, "s": 1,
+}
+_FREE_EXHAUSTED_RE = re.compile(r"^Free (?:limit reached|usage exceeded)\b", re.IGNORECASE)
 
-def match_usage_limit_screen(pane: str, *, tail_lines: int = USAGE_LIMIT_TAIL_LINES) -> str | None:
+
+@dataclass(frozen=True)
+class UsageLimitScreen:
+    line: str
+    retry_after: float | None = None
+    # An explicit quota statement paired with the CLI's own retry status,
+    # stronger than a broad rate-limit match or a long server retry alone.
+    usage_exhausted: bool = False
+
+
+def detect_usage_limit_screen(
+    pane: str, *, opencode: bool = False, tail_lines: int = USAGE_LIMIT_TAIL_LINES
+) -> UsageLimitScreen | None:
+    """Read a blocking screen, including its reset countdown when available."""
+    tail = [line for line in pane.splitlines() if line.strip()][-max(tail_lines, 1) :]
+    for line in reversed(tail):
+        if _SCREEN_RE.match(line) is not None:
+            return UsageLimitScreen(line.lstrip(" \t\u00a0⎿■").rstrip())
+        match = _OPENCODE_RE.match(line) if opencode else None
+        if match is None:
+            continue
+        seconds = float(
+            sum(
+                int(value) * _DURATION_SECONDS[unit.lower()]
+                for value, unit in _DURATION_RE.findall(match["duration"])
+            )
+        )
+        exhausted = _FREE_EXHAUSTED_RE.match(match["message"]) is not None
+        if not exhausted and seconds < 3600:
+            continue  # A normal brief server retry is still working.
+        return UsageLimitScreen(line[match.span("message")[0] :].rstrip(), seconds, exhausted)
+    return None
+
+
+def match_usage_limit_screen(
+    pane: str, *, opencode: bool = False, tail_lines: int = USAGE_LIMIT_TAIL_LINES
+) -> str | None:
     """Return the limit line if *pane* ends on a usage-limit screen, else ``None``.
 
     The returned line has its gutter stripped, so it can go straight into a
     verdict reason or a log line.
     """
-    if not pane:
-        return None
-    tail = [line for line in pane.splitlines() if line.strip()][-max(tail_lines, 1) :]
-    for line in reversed(tail):
-        match = _SCREEN_RE.match(line)
-        if match is not None:
-            return line.lstrip(" \t\u00a0⎿■").rstrip()
-    return None
+    screen = detect_usage_limit_screen(pane, opencode=opencode, tail_lines=tail_lines)
+    return screen.line if screen else None

@@ -638,16 +638,28 @@ class ProviderAvailabilityService:
             return True
         return self.is_unavailable(self.provider_for_harness(harness, project_id))
 
-    async def record_rate_limit_exit(self, session: Any, *, reason: str = "") -> None:
-        """An ``exit_classifier`` ``RATE_LIMIT`` verdict (medium, D2)."""
+    async def record_rate_limit_exit(
+        self,
+        session: Any,
+        *,
+        reason: str = "",
+        usage_exhausted: bool = False,
+        resets_at: float | None = None,
+    ) -> None:
+        """A rate-limit verdict, with typed quota/reset evidence from the screen."""
         provider = self.provider_for_harness(
             getattr(session, "harness", None), getattr(session, "project_id", None)
         )
+        detail: dict[str, Any] = {"reason": reason[:200]} if reason else {}
+        if usage_exhausted:
+            detail["usage_exhausted"] = True
+        if resets_at is not None:
+            detail["resets_at"] = resets_at
         await self.record(
             provider,
             EXIT_RATE_LIMIT,
             "usage",
-            detail={"reason": reason[:200]} if reason else None,
+            detail=detail or None,
             session_id=getattr(session, "id", None),
             task_id=getattr(session, "task_id", None),
             project_id=getattr(session, "project_id", None),
