@@ -30,6 +30,7 @@ from src.database.tables import (
 )
 from src.git.manager import GitError, is_valid_git_oid
 from src.integration.batches import Batch, BatchMember, BatchObservation, BatchService, BatchStore
+from src.integration.candidate_baseline import CandidateBaselineService
 from src.integration.delivery_observer import DeliveryTarget, delivery_targets
 from src.integration.delivery_truth import DeliveryState, load_delivery_requests
 from src.integration.git_truth import GitTruth, GitTruthSnapshot
@@ -661,5 +662,6 @@ def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> Integr
         batches=batches,
         lane_for=DaemonLanes(orchestrator, batches=batches, clock=clock),
         repair=OrdinaryRepairService(orchestrator.db, clock=clock),
+        baseline=CandidateBaselineService(orchestrator.db, clock=clock),
         clock=clock,
     )

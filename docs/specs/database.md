@@ -2364,6 +2364,11 @@ that will be built into a candidate and promoted to `main` together.
 | `pr_url` | TEXT | nullable | Audit PR for the candidate |
 | `repair_stage_ordinal` | INTEGER | nullable, `>= 0` | Active repair stage |
 | `tested_candidate_sha` | TEXT | nullable | Candidate head CI ran on |
+| `baseline_candidate_sha` | TEXT | nullable, `a00000000080` | Exact candidate whose failing required checks the target also failed, or has not decided |
+| `baseline_generation` | INTEGER | NOT NULL DEFAULT 0, `>= 0`, `a00000000080` | Repair generation those counters describe |
+| `baseline_observations` | INTEGER | NOT NULL DEFAULT 0, `>= 0`, `a00000000080` | Consecutive unrepairable red observations of that exact candidate; reset by any other candidate or repair generation |
+| `baseline_reruns` | INTEGER | NOT NULL DEFAULT 0, `>= 0`, `a00000000080` | Re-requests issued for that exact candidate |
+| `baseline_rerun_at` | REAL | nullable, `a00000000080` | Earliest time the candidate's failing suites may be re-requested again (bounded exponential backoff) |
 | `ci_evidence_id` | TEXT | nullable | Green `integration_check_evidence` |
 | `final_main_sha` | TEXT | nullable | `main` after promotion |
 | `human_abort_reason` | TEXT | nullable | Operator abort reason |
@@ -2381,6 +2386,13 @@ reads as busy to the legacy scheduler, and never holds its members out of the
 legacy frontier — so a rollback to `integration.git_first: shadow` leaves it
 inert rather than blocking. See
 [the cutover runbook](../guides/git-first-cutover-runbook.md#rollback).
+
+A red Git-first candidate is repaired only where the target commit it was built
+on does not also fail the same required check: a failure the target already has,
+or has not decided, is never repaired, so the `baseline_*` columns bound the
+re-requests of that candidate's own suites and name
+`candidate_pre_existing_failure` for a human once three consecutive observations
+were unrepairable.
 
 ### Table: `integration_batch_members`
 

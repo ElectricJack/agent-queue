@@ -36,7 +36,14 @@ recorded stall's Git, check, tree-review and task-transition evidence.
   `root.required_checks` (`parent.required_checks` for parent branches), from the
   trusted producer only.
 - **Repairs.** A red candidate's checks are refreshed once more first; a green
-  result ends the repair with no attempt counted. A red or conflicting candidate then
+  result ends the repair with no attempt counted. A red candidate is then measured
+  against the target commit it was built on: a failing required check the target
+  also fails is a pre-existing failure, and one the target has not decided yet is
+  nobody's, so neither is repaired — the visit re-requests that candidate's own
+  failing check suites under bounded backoff (`baseline_*` on the batch) and files
+  no repair, naming `candidate_pre_existing_failure` for a human once three
+  consecutive observations have been unrepairable. Only the failures the target
+  does not fail reach the repair, named in its brief. A conflicting candidate then
   gets one ordinary repair task for the batch and target
   (`OrdinaryRepairService.allocate`); its counter rises when a task is filed, never
   per visit. A merge conflict first publishes the partial merge head to the
@@ -58,8 +65,9 @@ recorded stall's Git, check, tree-review and task-transition evidence.
 ## Preconditions
 
 1. **Schema at head.** Revisions `a00000000073_integration_ref_leases`,
-   `a00000000074_git_batch_inputs` and
-   `a00000000075_integration_check_evidence_commit_cache` are applied:
+   `a00000000074_git_batch_inputs`,
+   `a00000000075_integration_check_evidence_commit_cache` and
+   `a00000000080_candidate_target_baseline` are applied:
    `aq db current`, then `aq db upgrade` if behind.
 2. **Reviewed bundles current.** The installed `agent-queue-root-train` and
    `agent-queue-parent-integration` bundles match the digests the project policy pins;
@@ -111,6 +119,8 @@ recorded stall's Git, check, tree-review and task-transition evidence.
 | `awaiting_visit` | No visit since the daemon started | Wait one tick |
 | `checks_pending` | Required checks not yet green on the exact candidate | Wait; check the producer if it stays |
 | `checks_red` | Red on the exact candidate | A repair task is filed; follow it |
+| `checks_preexisting` | Every failing required check also fails on the target commit, or the target has not decided it. No repair is filed and the candidate's suites are re-requested under backoff | Fix the target's own failure, or let the batch move; `candidate_pre_existing_failure` in `detail.re_request.blocker` means three consecutive observations were unrepairable |
+| `candidate_pre_existing_failure` | The bounded re-request of an unrepairable red candidate is spent | A person owns this batch: fix the target's required checks, or abort the batch |
 | `repair_open` | A repair task owns the candidate | Follow the named task |
 | `merge_conflict` | The batch does not merge onto its target | Follow the repair task, or inspect publication evidence if filing was withheld |
 | `repair_target_unconfirmed` | The repair starting OID could not be confirmed on the batch ref | Inspect the visit's publication evidence; the train retries |

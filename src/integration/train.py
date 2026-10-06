@@ -15,10 +15,16 @@ cannot stall the others. Checks are requested and refreshed outside every
 lock; the batch gate reads only the cached verdict.
 
 A red candidate is refreshed before a repair is allocated: a green observation
-ends the repair with no attempt counted. The allocator counts attempts when it
-files, never per visit. A merge conflict files one ordinary repair whose brief
-names the conflicting member and every member still to be merged, because a
-repaired head that lacks one of them lets the target advance without it.
+ends the repair with no attempt counted. A red candidate is then measured against
+the target commit it was built on, and only a failure the target does not also
+fail reaches the repair; a pre-existing or undecided failure is never repaired,
+because a repair for it spends an attempt and a worker on work the batch cannot
+do. Such a candidate's own suites are re-requested under bounded backoff, and the
+bound ends at a named blocker instead of an endless repair chain. The allocator
+counts attempts when it files, never per visit. A merge conflict files one
+ordinary repair whose brief names the conflicting member and every member still to
+be merged, because a repaired head that lacks one of them lets the target advance
+without it.
 """
 
 from __future__ import annotations
@@ -37,6 +43,11 @@ from src.integration.batches import (
     BatchObservation,
     BatchService,
     candidate_ref,
+)
+from src.integration.candidate_baseline import (
+    CandidateBaselineService,
+    UnrecordedBaseline,
+    red_brief,
 )
 from src.integration.checks import ChecksResult, ChecksState, ExactChecks
 from src.integration.git_truth import GitTruthSnapshot
@@ -316,6 +327,7 @@ class IntegrationTrain:
         batches: BatchSource,
         lane_for: Callable[[TrainTarget], Awaitable[TrainLane]],
         repair: RepairAllocator,
+        baseline: CandidateBaselineService | None = None,
         visit_timeout_seconds: float = 900.0,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -323,6 +335,9 @@ class IntegrationTrain:
             raise ValueError("visit timeout must be positive")
         self.targets, self.batches, self.lane_for = targets, batches, lane_for
         self.repair, self.clock = repair, clock
+        # Without a baseline service the train cannot compare the target, so it
+        # claims nothing and repairs a red candidate exactly as before.
+        self.baseline = baseline or UnrecordedBaseline()
         self.visit_timeout_seconds = visit_timeout_seconds
         self._lanes: dict[tuple[str, str, str], _Lane] = {}
         self._tick_lock = asyncio.Lock()
@@ -451,8 +466,40 @@ class IntegrationTrain:
                 await self.batches.settle(batch, published)
             return self._visit(target, published.state, batch, published, result)
         if result.state == ChecksState.RED:
-            return await self._repair(target, lane, batch, members, observation, result)
+            return await self._red(
+                target, lane, batch, members, observation, result, head, checks
+            )
         return self._visit(target, "testing", batch, observation, result)
+
+    async def _red(
+        self, target: TrainTarget, lane: TrainLane, batch: Batch,
+        members: tuple[BatchMember, ...], observation: BatchObservation, result: ChecksResult,
+        head: HeadIdentity, checks: ExactChecks,
+    ) -> TrainVisit:
+        """A red candidate is repaired only where the target is not already red.
+
+        A required check that also fails on the target commit this candidate was
+        built on is a pre-existing failure, and one the target has not decided is
+        nobody's: neither is repairable, so this visit re-requests the candidate's
+        own failing suites under bounded backoff and files no repair.
+        """
+        _progress("compare_target_baseline")
+        baseline = await self.baseline.verdict(
+            batch, candidate=result, target_sha=observation.target_sha, checks=checks,
+        )
+        if baseline.repair:
+            return await self._repair(
+                target, lane, batch, members, observation, result,
+                brief=red_brief(baseline, head.sha),
+            )
+        _progress("rerequest_preexisting", candidate_sha=head.sha)
+        re_requested = await self.baseline.re_request(
+            batch, candidate=result, baseline=baseline, checks=checks,
+        )
+        visit = self._visit(target, "preexisting", batch, observation, result)
+        return replace(visit, detail={
+            **(visit.detail or {}), **baseline.detail(), "re_request": re_requested,
+        })
 
     async def _checks(self, checks: ExactChecks, head: HeadIdentity) -> ChecksResult:
         """Request then refresh exact-head checks, outside every lock."""
@@ -464,7 +511,7 @@ class IntegrationTrain:
     async def _repair(
         self, target: TrainTarget, lane: TrainLane, batch: Batch,
         members: tuple[BatchMember, ...], observation: BatchObservation,
-        result: ChecksResult | None,
+        result: ChecksResult | None, brief: str = "",
     ) -> TrainVisit:
         # The repair works on the batch's candidate ref, never the target: the
         # train alone fast-forwards the target once the repaired head is green.
@@ -477,9 +524,10 @@ class IntegrationTrain:
         async def authorize():
             return await lane.service.repair_authorized(batch, members, head)
 
-        # Keep the publication fence and the complete member instructions.
-        brief = (conflict_brief(observation.detail, members, starting_sha=head)
-                 if observation.state == "conflict" else "")
+        # Keep the publication fence and the complete member instructions, and the
+        # scope the target baseline left this repair.
+        brief = brief or (conflict_brief(observation.detail, members, starting_sha=head)
+                          if observation.state == "conflict" else "")
         _progress("allocate_repair")
         repair = await self.repair.allocate(batch.id, target_ref=candidate_ref(batch.id),
                                             head_sha=head, held=batch.intent != "open",

@@ -11,7 +11,13 @@ from sqlalchemy import select
 
 from src.database.tables import integration_batches
 from src.integration.batches import Batch, BatchMember, BatchObservation, candidate_ref
-from src.integration.checks import ChecksState
+from src.integration.checks import (
+    ChecksResult,
+    ChecksState,
+    CommitCheck,
+    Conclusion,
+    RequiredChecks,
+)
 from src.integration.train import (
     BatchSelection,
     CandidateChecks,
@@ -54,7 +60,21 @@ CONFLICT = {
 
 
 def result(state: ChecksState):
-    return SimpleNamespace(state=state, green=state is ChecksState.GREEN)
+    """A cached exact-head verdict, with the check rows a red one is judged by."""
+    return ChecksResult(
+        repository_id="r", sha=CANDIDATE,
+        required=RequiredChecks(version="v1", names=("unit",), producer_id="p"),
+        state=state, checks=(
+            CommitCheck(
+                repository_id="r", sha=CANDIDATE, name="unit", producer_id="p",
+                required_check_version="v1",
+                conclusion=Conclusion.FAILURE if state is ChecksState.RED else (
+                    Conclusion.PENDING if state is ChecksState.PENDING else Conclusion.SUCCESS
+                ),
+                classification="conclusive", observed_at=1.0,
+            ),
+        ),
+    )
 
 
 class Service:
