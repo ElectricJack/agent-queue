@@ -37,6 +37,9 @@ MAX_DIAGNOSTIC_BYTES = 256 * 1024
 MAX_STDIN_BYTES = 1024 * 1024
 
 
+BINDING_REVERIFY_SECONDS = 600.0
+
+
 @dataclass(frozen=True, slots=True)
 class GitHubAccessStatus:
     """Non-secret status for the effective startup credential composition."""
@@ -71,6 +74,8 @@ class GitHubAccess:
         self.auth = auth
         self.runner = runner
         self._bindings: dict[str, GitHubRepositoryBinding] = {}
+        self._binding_verified_at: dict[str, float] = {}
+        self._binding_clock: Callable[[], float] = time.monotonic
 
     @classmethod
     def from_config(
@@ -333,15 +338,22 @@ class GitHubAccess:
                 raise GitHubAccessError(
                     "credentials", "authenticated repository identity did not match",
                 )
+            # A recently verified identity is reused without another API call:
+            # re-verifying on every bind tripped GitHub's secondary rate limit.
+            verified_at = self._binding_verified_at.get(full_name)
+            if verified_at is not None and self._binding_clock() - verified_at < BINDING_REVERIFY_SECONDS:
+                return binding
             # Retain identity only, never a selected token. Every verification
             # goes through the same expiry/401 recovery as other repository reads.
             result = await self.run_read(
                 ["api", "--method", "GET", f"repos/{full_name}"],
                 repository=binding,
             )
-            return self._verified_binding(
+            verified = self._verified_binding(
                 result, full_name=full_name, expected_binding=binding,
             )
+            self._binding_verified_at[full_name] = self._binding_clock()
+            return verified
 
         return await self._bind_new_repository(full_name, expected_binding=expected_binding)
 
@@ -404,6 +416,7 @@ class GitHubAccess:
                 await self.auth.accept_candidate(candidate)
             if candidate is not None:
                 self._bindings[full_name] = verified
+                self._binding_verified_at[full_name] = self._binding_clock()
             return verified
         except asyncio.CancelledError:
             if candidate is not None:
@@ -490,6 +503,9 @@ class GitHubAccess:
                 check_result=check_result,
             )
         except GitHubAccessError as exc:
+            if exc.category == "credentials":
+                # An auth rejection forces the next bind to re-verify identity.
+                self._binding_verified_at.pop(repository.full_name, None)
             if self.auth.mode is not GitHubCredentialMode.APP or exc.category != "credentials":
                 raise
         await self.auth.invalidate(repository, generation=selected.generation)

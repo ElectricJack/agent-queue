@@ -2388,8 +2388,26 @@ inert rather than blocking. See
 [the cutover runbook](../guides/git-first-cutover-runbook.md#rollback).
 
 A red Git-first candidate is repaired only where the target commit it was built
-on does not also fail the same required check: a failure the target already has,
-or has not decided, is never repaired, so the `baseline_*` columns bound the
+on does not also fail the same required check. An epic whose only failures are
+proven pre-existing may receive one ordinary sync repair to merge the current
+default branch's exact head, when that head is train-produced or attested and
+its own trusted checks pass every failing name. The repair input pins the
+default ref, SHA, check names and provenance. Its ordinary filing dedup key
+(`repair:<batch-id>:sync-default-branch`) bounds sync to one task per batch across
+candidate generations, restarts and archival. The worker retains every frozen
+member, resolves source conflicts and regenerates generated files; publication
+still requires trusted checks and attestation on the repaired exact candidate.
+The train inspects the pinned merge without changing refs or resolving code,
+and passes conflicting filenames through the existing conflict repair brief.
+A completed epic with every required child already contained can freeze a
+`train-epic-sync-` batch over those exact retained completion sources and the
+collected head. Retired origins and archived children are allowed; tasks are
+never reopened and no new child is filed. This batch owes its own tested
+candidate publication despite the children's prior inclusion. Its identity
+does not change when the default branch moves, so spent or aborted syncs do
+not become new attempts against the same collected head.
+Root targets, unproven failures, and default heads with red, missing, pending or
+untrusted evidence keep the existing behavior. The `baseline_*` columns bound the
 re-requests of that candidate's own suites and name
 `candidate_pre_existing_failure` for a human once three consecutive observations
 were unrepairable.

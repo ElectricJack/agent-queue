@@ -9,6 +9,7 @@ the supervisor's dry-run-first handle on one stuck root.
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -22,6 +23,8 @@ from src.database.tables import (
     task_integration_checkpoints,
     tasks,
 )
+from src.git.github_contracts import GitHubAccessError
+from src.git.manager import GitError
 from src.integration.root_pull_requests import (
     REDRIVE_EVENT,
     RootDeliveryRedrive,
@@ -180,6 +183,42 @@ async def test_reconciler_backs_off_a_root_it_cannot_open(db):
     await reconciler.tick(120.0)
     assert git.acreate_pr.await_count == 2
     assert await _pr_url(db, "r1") == PR
+
+
+async def test_reconciler_logs_a_classified_failure_on_one_line(db, caplog):
+    """fresh-quest-25: a handled GitHub refusal is one line per miss, no traceback."""
+    await _root(db)
+    git = _git()
+    try:
+        raise GitHubAccessError(
+            "conflict_or_invalid", "existing PR head did not match the requested delivery"
+        )
+    except GitHubAccessError as cause:
+        refusal = GitError(f"could not create PR: {cause}")
+        refusal.__cause__ = cause
+    git.acreate_pr.side_effect = refusal
+    caplog.set_level(logging.INFO, logger="src.integration.root_pull_requests")
+
+    await RootPullRequestReconciler(db, git).tick(100.0)
+
+    [record] = [r for r in caplog.records if "Could not open" in r.getMessage()]
+    assert record.levelno == logging.WARNING and record.exc_info is None
+    assert record.getMessage() == (
+        "Could not open the pull request for train root r1: GitError: could not create PR: "
+        "existing PR head did not match the requested delivery [code=conflict_or_invalid]"
+    )
+
+
+async def test_reconciler_keeps_the_traceback_of_an_unexpected_failure(db, caplog):
+    await _root(db)
+    git = _git()
+    git.acreate_pr.side_effect = RuntimeError("GitHub is down")
+    caplog.set_level(logging.INFO, logger="src.integration.root_pull_requests")
+
+    await RootPullRequestReconciler(db, git).tick(100.0)
+
+    [record] = [r for r in caplog.records if "Could not open" in r.getMessage()]
+    assert record.levelno == logging.WARNING and record.exc_info is not None
 
 
 async def test_reconciler_opens_nothing_for_a_head_already_on_main(db):

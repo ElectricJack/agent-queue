@@ -113,7 +113,8 @@ def batch(batch_id="batch-1", attempts=0):
                  repair_attempt_count=attempts)
 
 
-def train(checks, *, baseline=None, service=None, repair=None, frozen_batch=None):
+def train(checks, *, baseline=None, service=None, repair=None, frozen_batch=None,
+          sync_default_branch=None):
     """One target, one open batch, the given checks cache and baseline service."""
     from src.integration.train import BatchSelection
 
@@ -124,7 +125,7 @@ def train(checks, *, baseline=None, service=None, repair=None, frozen_batch=None
         return checks
 
     lane = TrainLane(snapshot=snapshot, service=service or Service(),
-                     checks=CandidateChecks(resolve))
+                     checks=CandidateChecks(resolve), sync_default_branch=sync_default_branch)
 
     class Batches:
         async def open_batch(self, target, snapshot_, service_):
@@ -410,6 +411,23 @@ async def test_a_pre_existing_failure_files_no_repair_and_rerequests(db):
     # The re-request addressed this candidate's own suite, nothing else.
     assert provider.rerequests == [(CANDIDATE, (21,))]
     assert [row["sha"] for row in await rows(db, TARGET)] == [TARGET, TARGET]
+
+
+async def test_root_preexisting_failure_never_considers_default_sync(db):
+    frozen_batch = await frozen(db, "batch-root-preexisting")
+    provider = Provider({CANDIDATE: {"unit": "failure", "lint": "success"},
+                         TARGET: {"unit": "failure", "lint": "success"}})
+    checks = ExactChecks(db, provider, clock=Clock())
+    sync = AsyncMock(return_value={"ref": "refs/heads/main", "sha": OTHER, "checks": ["unit"]})
+    repair = Repair()
+    t = train(checks, baseline=CandidateBaselineService(db, clock=Clock()), repair=repair,
+              frozen_batch=frozen_batch, sync_default_branch=sync)
+    for _ in range(3):
+        visit = await t.visit(ROOT)
+        assert visit.state == "preexisting" and visit.repair is None
+    assert visit.detail["re_request"]["blocker"] == BASELINE_BLOCKER
+    sync.assert_not_awaited()
+    assert repair.calls == []
 
 
 async def test_the_target_baseline_is_obtained_before_anything_is_classified(db):

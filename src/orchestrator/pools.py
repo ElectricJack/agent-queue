@@ -35,6 +35,7 @@ from collections.abc import Mapping
 
 from dataclasses import dataclass, field
 
+from src.database.queries.hierarchy_queries import ProjectIntegrationMode
 from src.models import (
     Agent,
     AgentProfile,
@@ -219,7 +220,9 @@ class PoolsMixin:
             service = DevelopmentPrimitives(self.db, data_dir=self.config.data_dir, git=self.git)
         return await observe_admission(self.db, task_ids, service)
 
-    async def _measure_pools(self, project_ids: set[str] | None = None) -> PoolMeasurement:
+    async def _measure_pools(
+        self, project_ids: set[str] | None = None, *, hierarchy_modes=None
+    ) -> PoolMeasurement:
         """One :class:`PoolMeasurement` for every pool profile, this tick.
 
         The loop is still per project — one ``count_ready_by_profile`` and
@@ -240,6 +243,10 @@ class PoolsMixin:
         needs the full pool session list even when no project is active.
         """
         measurement = PoolMeasurement()
+        if hierarchy_modes is None:
+            from src.integration.delivery_observer import hierarchy_frontier_modes
+
+            hierarchy_modes = await hierarchy_frontier_modes(self.db, project_ids=project_ids)
         # Keep this snapshot even if a launch finishes during the DB reads.
         # Its durable session is either in the rows below or counted here.
         pending_launches = tuple(getattr(self, "_pool_launches", {}).values())
@@ -292,6 +299,7 @@ class PoolsMixin:
                 project.id,
                 allowed_task_ids=allowed,
                 router_ready=project.id in ready_projects,
+                hierarchy_mode=hierarchy_modes.get(project.id) or ProjectIntegrationMode.of(project),
             )
             workspace_capacity = await self.db.count_available_workspaces(
                 project.id,
@@ -440,12 +448,12 @@ class PoolsMixin:
             return self.config.resources.max_concurrent_agents
         return explicit
 
-    async def _reconcile_pools(self) -> None:
+    async def _reconcile_pools(self, *, hierarchy_modes=None) -> None:
         """The pool cascade step: measure, size, place, converge.  No-op unless enabled."""
         if not (self.config.swarm.enabled and self.config.sessions.enabled):
             return
 
-        measurement = await self._measure_pools()
+        measurement = await self._measure_pools(hierarchy_modes=hierarchy_modes)
         # A drained holder's seat is counted from the next tick on.
         await self._release_container_claims(measurement.pool_sessions)
         now = time.time()

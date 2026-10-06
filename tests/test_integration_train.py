@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -10,6 +11,8 @@ import pytest
 from sqlalchemy import select
 
 from src.database.tables import integration_batches
+from src.git.github_contracts import GitHubAccessError
+from src.git.manager import GitError
 from src.integration.batches import Batch, BatchMember, BatchObservation, candidate_ref
 from src.integration.checks import (
     ChecksResult,
@@ -451,6 +454,158 @@ async def test_green_repaired_head_missing_a_member_never_settles_the_batch(conf
     assert git(env.ops.git.remote_path, "rev-parse", "main") == partial
 
 
+async def completed_repair_before_target_move(env, *, unchanged=False, retained=True,
+                                            moved_file="new.txt"):
+    """One ordinary repair publishes both members; main advances outside the train."""
+    from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
+    from src.integration.models import BranchKey
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+    from src.integration.repair import OrdinaryRepairService
+    from src.models import TaskStatus
+
+    left, right = env.members
+    repaired = git(env.repo.store, "commit-tree",
+                   git(env.repo.store, "rev-parse", f"{left.source_sha}^{{tree}}"),
+                   "-p", left.source_sha, "-p", right.source_sha, "-m", "Resolve both members")
+    starting = repaired if unchanged else left.source_sha
+    ref = candidate_ref(env.batch.id)
+    git(env.repo.store, "push", "origin", f"{starting}:{ref}")
+    repairs = OrdinaryRepairService(env.db)
+    first = await repairs.allocate(
+        env.batch.id, target_ref=ref, head_sha=starting,
+        authorize=lambda: env.service.repair_authorized(env.batch, env.members, starting),
+    )
+    assert first["outcome"] == "filed"
+    git(env.repo.store, "push", "origin", f"{repaired}:{ref}")
+    moved = commit(env.repo.store, {moved_file: "upstream\n"}, base=env.base)
+    if unchanged:
+        # Move before the close: an unchanged worker cannot call this head repaired.
+        git(env.repo.store, "push", "origin", f"{moved}:refs/heads/main")
+    if retained:
+        generation = "previous-repair-completion"
+        provenance = GitProvenance(env.ops.git, str(env.repo.store),
+                                   repository_url=str(env.ops.git.remote_path))
+        await provenance.write_completion(CompletedSource(
+            CompletionIdentity("p", "r", first["task_id"], generation), repaired,
+        ))
+        await env.db.set_task_meta(first["task_id"], DEVELOPMENT_COMPLETION_ID_KEY, generation)
+    await env.db.update_task(first["task_id"], status=TaskStatus.COMPLETED)
+    lease = await repairs.locks.get(BranchKey(repository_id="r", branch=ref))
+    await repairs.locks.release(lease.grant())
+    if not unchanged:
+        git(env.repo.store, "push", "origin", f"{moved}:refs/heads/main")
+    return repairs, first["task_id"], starting, repaired, moved
+
+
+@pytest.mark.parametrize("moved_file,merged_count", [("new.txt", 0), ("upstream.txt", 1)])
+async def test_conflict_after_target_move_publishes_and_briefs_the_real_partial_head(
+    conflicting_batch_env, moved_file, merged_count,
+):
+    from src.integration.train_sources import LeasedPublish
+
+    env = conflicting_batch_env
+    repairs, previous_task, _, repaired, moved = await completed_repair_before_target_move(
+        env, moved_file=moved_file,
+    )
+    env.service.publish = LeasedPublish(env.db, env.ops.git)
+    t = train(Targets(ROOT), Batches({ROOT.key: (env.batch, env.members)}), {
+        ROOT.key: TrainLane(snapshot=env.snapshot, service=env.service,
+                            checks=CandidateChecks.fixed(Checks())),
+    }, repairs)
+    visit = await t.visit(ROOT)
+    partial = visit.detail["head"]
+    assert visit.state == "repair" and visit.repair["outcome"] == "filed"
+    assert visit.repair["attempt_count"] == 2 and visit.repair["task_id"] != previous_task
+    assert visit.candidate_sha == partial != repaired
+    assert visit.detail["replaced_candidate_sha"] == repaired
+    assert len(visit.detail["members"]) == merged_count
+    assert await env.ops.is_ancestor(env.repo, moved, partial)
+    assert await env.ops.remote(env.repo, candidate_ref(env.batch.id)) == partial
+    assert await env.ops.remote(env.repo, "refs/heads/main") == moved
+    task = await env.db.get_task(visit.repair["task_id"])
+    assert f"starting head {partial}." in task.description
+    assert f"starting head {repaired}" not in task.description
+    if merged_count:
+        assert "Already merged into the starting head" in task.description
+        remaining = task.description.split("Still to merge onto the starting head")[1]
+        assert "task-a" not in remaining and "task-b" in remaining
+    else:
+        assert partial == moved
+        assert "Nothing is merged into the starting head yet." in task.description
+        assert "  1. task-a" in task.description and "  2. task-b" in task.description
+    assert (await repairs.input(task.id))["starting_sha"] == partial
+
+
+@pytest.mark.parametrize("retained,reason", [
+    (True, "repair_no_progress_missing_target"), (False, "repair_completion_unconfirmed"),
+])
+async def test_unchanged_repair_missing_target_blocks_without_spending_a_successor(
+    conflicting_batch_env, retained, reason,
+):
+    from src.integration.models import BranchKey
+    from src.integration.repair import OrdinaryRepairService
+
+    env = conflicting_batch_env
+    repairs, previous_task, starting, repaired, moved = await completed_repair_before_target_move(
+        env, unchanged=True, retained=retained,
+    )
+    for _ in range(3):
+        # A restart and the train resetting the candidate cannot erase the close's delta.
+        t = train(Targets(ROOT), Batches({ROOT.key: (env.batch, env.members)}), {
+            ROOT.key: TrainLane(snapshot=env.snapshot, service=env.service,
+                                checks=CandidateChecks.fixed(Checks())),
+        }, OrdinaryRepairService(env.db))
+        visit = await t.visit(ROOT)
+        assert visit.state == "blocked" and visit.repair["outcome"] == "blocked"
+        assert visit.detail["reason"] == reason
+        assert visit.repair["task_id"] == previous_task
+        assert visit.repair["starting_sha"] == starting == repaired
+        assert visit.repair["target_sha"] == moved
+        if retained:
+            assert visit.repair["completed_sha"] == repaired
+        assert (await env.store.get(env.batch.id)).repair_attempt_count == 1
+        assert await env.ops.remote(env.repo, candidate_ref(env.batch.id)) == moved
+        assert await env.ops.remote(env.repo, "refs/heads/main") == moved
+        lease = await repairs.locks.get(BranchKey(
+            repository_id="r", branch=candidate_ref(env.batch.id),
+        ))
+        assert lease.holder is None
+
+
+@pytest.mark.parametrize("refusal", ["busy", "transport", "moved"])
+async def test_stale_candidate_reset_never_files_over_live_writer_or_failed_transport(
+    conflicting_batch_env, refusal,
+):
+    from src.integration.models import BranchKey
+    from src.integration.train_sources import LeasedPublish
+
+    env = conflicting_batch_env
+    repairs, _, _, repaired, moved = await completed_repair_before_target_move(env)
+    env.service.publish = LeasedPublish(env.db, env.ops.git)
+    ref = candidate_ref(env.batch.id)
+    if refusal == "busy":
+        await repairs.locks.acquire(BranchKey(repository_id="r", branch=ref), "live-worker")
+    elif refusal == "transport":
+        env.ops.git.fail_push = True
+    else:
+        # Race the exact expected-old push with another candidate publication.
+        async def replace_ref():
+            git(env.ops.git.remote_path, "update-ref", ref, env.base)
+
+        env.ops.git.push_hook = replace_ref
+    t = train(Targets(ROOT), Batches({ROOT.key: (env.batch, env.members)}), {
+        ROOT.key: TrainLane(snapshot=env.snapshot, service=env.service,
+                            checks=CandidateChecks.fixed(Checks())),
+    }, repairs)
+    visit = await t.visit(ROOT)
+    assert visit.state == ("moved" if refusal == "moved" else "unknown")
+    assert visit.repair is None
+    assert visit.detail["repair_start_sha"] == moved
+    assert (await env.store.get(env.batch.id)).repair_attempt_count == 1
+    assert await env.ops.remote(env.repo, ref) == (env.base if refusal == "moved" else repaired)
+    assert await env.ops.remote(env.repo, "refs/heads/main") == moved
+
+
 @pytest.mark.parametrize("state", ["held", "moved", "source_moved", "unknown"])
 async def test_non_progress_observations_wait_for_the_next_visit(state):
     repair, checks = Repair(), Checks()
@@ -532,6 +687,200 @@ async def test_one_target_failure_is_recorded_and_others_continue():
     assert status["p"]["state"] == "unknown" and status["p"]["errors"] == 1
     assert status["p"]["detail"]["reason"] == "RuntimeError"
     assert status["q"]["state"] == "delivered"
+
+
+def _rate_limited(retry_at=None):
+    """A visit failure as the daemon sees it: GitError over the classified cause."""
+    cause = GitHubAccessError(
+        "rate_limited", "GitHub request was rate limited (rate_limited, HTTP 403)",
+        retry_at=retry_at, http_status=403,
+    )
+    try:
+        raise GitError("GitHub request was rate limited") from cause
+    except GitError as exc:
+        return exc
+
+
+async def test_rate_limited_visit_defers_the_target_with_backoff(caplog):
+    """fresh-quest-25: a secondary-limit burst is one line and a pause, not a failure per tick."""
+    clock, visits = [100.0], []
+
+    async def limited():
+        visits.append(clock[0])
+        raise _rate_limited()
+
+    async def lane_for(target):
+        return lane(Service(), fetch=limited)
+
+    t = IntegrationTrain(targets=Targets(ROOT), batches=Batches(), lane_for=lane_for,
+                         repair=Repair(), clock=lambda: clock[0])
+    label = "p/r/refs/heads/main"
+    caplog.set_level(logging.INFO, logger="src.integration.train")
+
+    assert (await t.tick())["started"] == [label]
+    await t.drain()
+    [row] = t.status()
+    assert (row["state"], row["errors"]) == ("unknown", 1)
+    assert row["detail"]["reason"] == "rate_limited" and row["detail"]["retry_at"] == 160.0
+
+    clock[0] = 159.0
+    assert await t.tick() == {"started": [], "running": [], "skipped": [], "deferred": [label]}
+    assert visits == [100.0]
+
+    clock[0] = 160.0
+    assert (await t.tick())["started"] == [label]
+    await t.drain()
+    # A second consecutive limit doubles the pause.
+    assert t.status()[0]["detail"]["retry_at"] == 160.0 + 120.0
+
+    records = [r for r in caplog.records if r.name == "src.integration.train"]
+    assert len(records) == 2
+    assert all(r.exc_info is None and r.levelno == logging.WARNING for r in records)
+    message = records[0].getMessage()
+    assert "p/r/refs/heads/main" in message
+    assert "code=rate_limited" in message and "http=403" in message
+    assert "\n" not in message
+
+
+async def test_rate_limited_visit_honours_a_later_github_retry_time():
+    clock = [100.0]
+
+    async def limited():
+        raise _rate_limited(retry_at=1000.0)
+
+    async def lane_for(target):
+        return lane(Service(), fetch=limited)
+
+    t = IntegrationTrain(targets=Targets(ROOT), batches=Batches(), lane_for=lane_for,
+                         repair=Repair(), clock=lambda: clock[0])
+    await t.tick()
+    await t.drain()
+    assert t.status()[0]["detail"]["retry_at"] == 1000.0
+    clock[0] = 999.0
+    assert (await t.tick())["deferred"] == ["p/r/refs/heads/main"]
+
+
+async def test_a_visit_after_a_rate_limit_resets_the_backoff():
+    clock, outcomes = [100.0], [_rate_limited(), None, _rate_limited()]
+
+    async def sometimes():
+        failure = outcomes.pop(0)
+        if failure is not None:
+            raise failure
+
+    async def lane_for(target):
+        return lane(Service(), fetch=sometimes)
+
+    t = IntegrationTrain(targets=Targets(ROOT), batches=Batches(), lane_for=lane_for,
+                         repair=Repair(), clock=lambda: clock[0])
+    for now in (100.0, 160.0, 170.0):
+        clock[0] = now
+        assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
+        await t.drain()
+    assert t.status()[0]["detail"]["retry_at"] == 170.0 + 60.0
+
+
+async def test_a_rate_limit_pauses_every_target_of_the_repository_behind_one_probe(caplog):
+    """fresh-quest-25: 33 targets of one repository re-hit GitHub's limit together each round.
+
+    The pause is the repository's: siblings limited in the same round count once,
+    and when it ends one probe visit goes first while the others wait for it.
+    """
+    first, second = TrainTarget("p", "r", "refs/heads/a"), TrainTarget("p", "r", "refs/heads/b")
+    other = TrainTarget("p", "s", "refs/heads/main")
+    clock, limited, visits = [100.0], {"r": True}, []
+
+    def fetch_for(target):
+        async def fetch():
+            visits.append((clock[0], target.target_ref, target.repository_id))
+            if limited.get(target.repository_id):
+                raise _rate_limited()
+        return fetch
+
+    async def lane_for(target):
+        return lane(Service(), fetch=fetch_for(target))
+
+    t = IntegrationTrain(targets=Targets(first, second, other), batches=Batches(),
+                         lane_for=lane_for, repair=Repair(), clock=lambda: clock[0])
+    a, b, s = ("/".join(x.key) for x in (first, second, other))
+    caplog.set_level(logging.INFO, logger="src.integration.train")
+
+    assert (await t.tick())["started"] == [a, b, s]
+    await t.drain()
+    # Two limited siblings in one round: one pause of the first step, one warning.
+    assert {row["target_ref"]: (row["detail"] or {}).get("retry_at") for row in t.status()} == {
+        "refs/heads/a": 160.0, "refs/heads/b": 160.0, "refs/heads/main": None,
+    }
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+
+    clock[0] = 120.0
+    tick = await t.tick()
+    assert (tick["started"], tick["deferred"]) == ([s], [a, b])
+    await t.drain()
+
+    # The pause ends: one probe, still limited, so the repository waits twice as long.
+    clock[0] = 160.0
+    tick = await t.tick()
+    assert (tick["started"], tick["deferred"]) == ([a, s], [b])
+    assert (await t.tick())["deferred"] == [b]
+    await t.drain()
+    assert t.status()[0]["detail"]["retry_at"] == 160.0 + 120.0
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 2
+
+    # The next probe succeeds and releases every target of the repository.
+    limited["r"] = False
+    clock[0] = 280.0
+    assert (await t.tick())["started"] == [a, s]
+    assert (await t.tick())["deferred"] == [b]
+    await t.drain()
+    clock[0] = 281.0
+    assert (await t.tick())["started"] == [a, b, s]
+    await t.drain()
+    assert [v for v in visits if v[2] == "r"] == [
+        (100.0, "refs/heads/a", "r"), (100.0, "refs/heads/b", "r"),
+        (160.0, "refs/heads/a", "r"), (280.0, "refs/heads/a", "r"),
+        (281.0, "refs/heads/a", "r"), (281.0, "refs/heads/b", "r"),
+    ]
+
+
+async def test_a_cancelled_probe_does_not_hold_the_repository_paused():
+    clock, limited = [100.0], [True]
+    first, second = TrainTarget("p", "r", "refs/heads/a"), TrainTarget("p", "r", "refs/heads/b")
+
+    async def fetch():
+        if limited[0]:
+            raise _rate_limited()
+        await asyncio.sleep(3600)
+
+    async def lane_for(target):
+        return lane(Service(), fetch=fetch)
+
+    t = IntegrationTrain(targets=Targets(first, second), batches=Batches(), lane_for=lane_for,
+                         repair=Repair(), clock=lambda: clock[0])
+    await t.tick()
+    await t.drain()
+    limited[0] = False
+    clock[0] = 160.0
+    assert (await t.tick())["started"] == ["p/r/refs/heads/a"]
+    await t.stop()
+    assert (await t.tick())["started"] == ["p/r/refs/heads/a"]
+    await t.stop()
+
+
+async def test_an_unexpected_visit_failure_keeps_its_traceback(caplog):
+    class Exploding(Service):
+        async def visit(self, *args):
+            raise RuntimeError("git exploded")
+
+    caplog.set_level(logging.INFO, logger="src.integration.train")
+    t = train(Targets(ROOT), Batches({ROOT.key: (batch(), MEMBERS)}),
+              {ROOT.key: lane(Exploding())})
+    await t.tick()
+    await t.drain()
+    [record] = [r for r in caplog.records if r.name == "src.integration.train"]
+    assert record.levelno == logging.ERROR and record.exc_info is not None
+    assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
+    await t.drain()
 
 
 async def test_visit_timeout_frees_the_target_for_the_next_tick():

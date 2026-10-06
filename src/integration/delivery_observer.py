@@ -287,6 +287,49 @@ class DeliveryView:
 _FETCH_LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
+async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None):
+    """Request-scoped Git prerequisite evidence for scheduling and diagnostics.
+
+    A cycle shares these modes between the scheduler and pool measurement.
+    Direct readers take their own view. Git runs outside transactions; identity
+    revalidation uses a short connection without locks. Claim activation still
+    revalidates its own view under the task locks.
+
+    Shadow observers preserve receipt admission. An unstable active view supplies
+    an empty delivered set, so it cannot fall back to a stale receipt.
+    """
+    from dataclasses import replace
+
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+
+    observer = getattr(db, "_delivery_observer", None)
+    if observer is None or getattr(observer, "truth", None) is None:
+        return {}
+    if task_id is not None:
+        task = await db.get_task(task_id)
+        if task is None or (project_ids is not None and task.project_id not in project_ids):
+            return {}
+        project_ids = {task.project_id}
+    candidates = await db.list_projects() if project_ids is None else [
+        project for pid in sorted(project_ids)
+        if (project := await db.get_project(pid)) is not None
+    ]
+    modes = {}
+    for project in candidates:
+        mode = ProjectIntegrationMode.of(project)
+        if not mode.hierarchical:
+            continue
+        view = await observer.prerequisite_view(project.id, task_id=task_id)
+        verified = {}
+        if await view.fresh():
+            async with db._engine.connect() as conn:
+                verified = await view.verified_on(conn, view.evidence)
+        modes[project.id] = replace(mode, delivered_prerequisite_ids=frozenset(
+            tid for tid, proof in verified.items() if proof.satisfied
+        ))
+    return modes
+
+
 def _fetch_lock(path: Path) -> asyncio.Lock:
     """One in-process lock per observer store, so fetches never race each other."""
     locks = _FETCH_LOCKS.setdefault(asyncio.get_running_loop(), {})

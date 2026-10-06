@@ -328,6 +328,7 @@ async def test_review_poll_and_push_destination_refresh_after_expiry(workflow, r
     if mode == "existing_login":
         pytest.skip("App token expiry/rejection is the subject")
     original_env = dict(env)
+    access._binding_clock = lambda: now[0]
     git = GitManager(github_access=access)
     poller = GitHubReviewPoller(None, None, git)
     url = "https://github.com/acme/widgets.git"
@@ -351,7 +352,8 @@ async def test_review_poll_and_push_destination_refresh_after_expiry(workflow, r
     assert provider.calls == [REPOSITORY] * generation
     events = _events(log_path)
     assert [event["generation"] for event in events] == (
-        ["1", "2", "3", "3", "3"] if reject_refreshed else ["1", "2", "2", "2"]
+        # The push-destination rebind is inside the re-verify TTL: no extra call.
+        ["1", "2", "3", "3"] if reject_refreshed else ["1", "2", "2"]
     )
     assert all(event["kind"] == "app" and event["config_isolated"] for event in events)
     assert all(not event["has_secondary_token"] for event in events)

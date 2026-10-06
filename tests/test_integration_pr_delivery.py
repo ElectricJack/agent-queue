@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import subprocess
 from types import SimpleNamespace
 
@@ -17,7 +18,8 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.database.tables import events, tasks
-from src.git.manager import GitManager
+from src.git.github_contracts import GitHubAccessError
+from src.git.manager import GitError, GitManager
 from src.integration.pr_delivery import (
     PR_CLOSED_DELIVERED_EVENT,
     DeliveredPullRequestClosure,
@@ -109,6 +111,8 @@ async def env(reuse_database, tmp_path, monkeypatch):
 
     monkeypatch.setattr(git, "bind_github_repository", binding)
     monkeypatch.setattr(git, "_github_client", lambda _binding: github)
+    # The bare remote on disk stands in for the GitHub repository.
+    monkeypatch.setattr("src.integration.pr_cleanup.lacks_pull_request_host", lambda _url: False)
     promotion = PromotionService(db, data_dir=tmp_path / "data", git_manager=git)
     clock = iter(float(n) for n in range(1000, 2000))
     yield SimpleNamespace(
@@ -583,3 +587,46 @@ async def test_old_orphan_prs_exclude_live_tasks_reservations_and_batch_members(
     assert [item["pr_number"] for item in findings] == [41]
     assert findings[0]["age_seconds"] > 24 * 3600
     assert env.github.closed == [] and env.github.comments == {}
+
+
+async def test_inventory_skips_a_repository_that_cannot_host_a_pull_request():
+    """fresh-quest-25: a bare remote on disk has no PRs to inventory, so no bind is tried."""
+    from unittest.mock import AsyncMock
+
+    from src.integration.pr_cleanup import open_aq_pull_requests
+
+    repo = SimpleNamespace(
+        id="repo", project_id="p", url="/home/u/.agent-queue/local-remotes/web.git",
+    )
+    db = SimpleNamespace(
+        get_project=AsyncMock(return_value=SimpleNamespace(integration_repository_id="repo")),
+        get_repo=AsyncMock(return_value=repo),
+    )
+    git = SimpleNamespace(bind_github_repository=AsyncMock(side_effect=AssertionError("bound")))
+    assert await open_aq_pull_requests(db, git, "p") == []
+    git.bind_github_repository.assert_not_awaited()
+
+
+async def test_periodic_sweep_logs_a_classified_inventory_failure_on_one_line(
+    env, monkeypatch, caplog,
+):
+    from src.integration import pr_cleanup
+
+    async def refused(*_args):
+        try:
+            raise GitHubAccessError("transient", "GitHub request failed (transient, HTTP 502)",
+                                    http_status=502)
+        except GitHubAccessError as cause:
+            raise GitError(str(cause)) from cause
+
+    monkeypatch.setattr(pr_cleanup, "open_aq_pull_requests", refused)
+    caplog.set_level(logging.INFO, logger="src.integration.pr_cleanup")
+    sweep = pr_cleanup.PullRequestReconciler(env.db, env.control.git, commands=object)
+    await sweep.tick(1000)
+
+    [record] = [r for r in caplog.records if "inventory" in r.getMessage()]
+    assert record.levelno == logging.WARNING and record.exc_info is None
+    assert record.getMessage() == (
+        "Could not inventory PRs for p: GitError: GitHub request failed (transient, HTTP 502) "
+        "[code=transient, http=502]"
+    )
