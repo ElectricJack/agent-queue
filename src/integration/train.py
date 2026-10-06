@@ -54,6 +54,7 @@ from src.integration.candidate_baseline import (
 )
 from src.integration.checks import ChecksResult, ChecksState, ExactChecks
 from src.integration.git_truth import GitTruthSnapshot
+from src.integration.models import RepairPolicy
 from src.integration.subjects import HeadIdentity
 from src.logging_config import log_handled
 
@@ -152,11 +153,15 @@ class BatchSource(Protocol):
 
 
 class RepairAllocator(Protocol):
+    async def settle_green(self, batch_id: str, head_sha: str) -> None:
+        """Clear repair escalation after an exact green or delivered observation."""
+
     async def allocate(
         self, batch_id: str, *, target_ref: str, head_sha: str,
         green_sha: str | None = None, held: bool = False, review_rejected: bool = False,
         authorize: Callable[[], Awaitable[bool]] | None = None,
         brief: str = "",
+        policy: RepairPolicy | None = None,
         completion_blocker: Callable[[str, str], Awaitable[dict | None]] | None = None,
         sync_default_branch: dict[str, Any] | None = None,
     ) -> dict:
@@ -169,6 +174,7 @@ class RepairAllocator(Protocol):
 
 def conflict_brief(
     detail: Mapping[str, Any] | None, members: Sequence[BatchMember], *, starting_sha: str,
+    conflict_scope: str = "member",
 ) -> str:
     """Plain-English instructions for the repair of one batch merge conflict.
 
@@ -202,6 +208,11 @@ def conflict_brief(
     files = [str(name) for name in (detail.get("files") or ())]
     lines = [
         f"The batch merge conflicted while building the starting head {starting_sha}.",
+        (f"Conflict scope: {conflict_scope}. " + (
+            "Resolve the conflicting member's changes while preserving the other members."
+            if conflict_scope == "member" else
+            "Resolve conflicts across the whole frozen batch, considering every member."
+        )),
         (f"Conflicting member: {conflict}" + (f" (source {source})" if source else "")
          + (f"; reason: {reason}" if reason else "") + ".") if conflict
         else (f"Conflicting merge; reason: {reason or 'not reported by the merge'}."),
@@ -229,6 +240,7 @@ def conflict_brief(
 
 def sync_default_branch_brief(
     decision: Mapping[str, Any], members: Sequence[BatchMember], *, starting_sha: str,
+    conflict_scope: str = "member",
 ) -> str:
     """Merge the verified default head without losing any frozen batch input."""
     lines = [
@@ -256,7 +268,7 @@ def sync_default_branch_brief(
             "head": starting_sha, "member": decision["ref"], "reason": "default_branch_sync",
             "files": decision["conflicting_files"],
             "members": [{"member": member.task_id} for member in members],
-        }, members, starting_sha=starting_sha))
+        }, members, starting_sha=starting_sha, conflict_scope=conflict_scope))
     return "\n".join(lines)
 
 
@@ -343,6 +355,7 @@ class TrainLane:
     snapshot: Callable[[], Awaitable[GitTruthSnapshot]]
     service: BatchService
     checks: CandidateChecks
+    repair_policy: RepairPolicy | None = None
     complete_epic: Callable[[GitTruthSnapshot], Awaitable[tuple[dict[str, Any], ...]]] | None = None
     sync_default_branch: Callable[
         [Batch, GitTruthSnapshot, str, tuple[str, ...]], Awaitable[dict[str, Any] | None]
@@ -607,6 +620,8 @@ class IntegrationTrain:
         _progress("observe_candidate", candidate_sha=observation.candidate_sha,
                   target_sha=observation.target_sha)
         if observation.state == "delivered":
+            if head := observation.candidate_sha or observation.target_sha:
+                await self.repair.settle_green(batch.id, head)
             _progress("settle_batch")
             await self.batches.settle(batch, observation)
             return self._visit(target, "delivered", batch, observation)
@@ -628,10 +643,14 @@ class IntegrationTrain:
         checks = await lane.checks.for_candidate(batch, observation.candidate_sha)
         result = None if checks is None else await self._checks(checks, head)
         if result is None or lane.checks.passes(result):
+            if result is None or result.green:
+                await self.repair.settle_green(batch.id, observation.candidate_sha)
             # The gate now reads this verdict; publish within this visit.
             _progress("publish_candidate")
             published = await lane.service.visit(batch, members, snapshot)
             if published.state == "delivered":
+                if result is not None and not result.green:
+                    await self.repair.settle_green(batch.id, observation.candidate_sha)
                 _progress("settle_batch")
                 await self.batches.settle(batch, published)
             return self._visit(target, published.state, batch, published, result)
@@ -689,7 +708,11 @@ class IntegrationTrain:
             if sync:
                 visit = await self._repair(
                     target, lane, batch, members, observation, result,
-                    brief=sync_default_branch_brief(sync, members, starting_sha=head.sha),
+                    brief=sync_default_branch_brief(
+                        sync, members, starting_sha=head.sha,
+                        conflict_scope=(lane.repair_policy.conflict_scope
+                                        if lane.repair_policy else "member"),
+                    ),
                     sync_default_branch=sync,
                 )
                 sync = {**sync, "outcome": (visit.repair or {}).get("outcome")}
@@ -734,8 +757,11 @@ class IntegrationTrain:
 
         # Keep the publication fence and the complete member instructions, and the
         # scope the target baseline left this repair.
-        brief = brief or (conflict_brief(observation.detail, members, starting_sha=head)
-                          if observation.state == "conflict" else "")
+        if not brief and observation.state == "conflict":
+            brief = conflict_brief(
+                observation.detail, members, starting_sha=head,
+                conflict_scope=lane.repair_policy.conflict_scope if lane.repair_policy else "member",
+            )
         missing_push = (observation.detail or {}).get("ci_not_triggered")
         if missing_push:
             source = missing_push.get("repair_source_ref", "the repository's default branch")
@@ -756,10 +782,11 @@ class IntegrationTrain:
         repair = await self.repair.allocate(batch.id, target_ref=candidate_ref(batch.id),
                                             head_sha=head, held=batch.intent != "open",
                                             authorize=authorize, brief=brief,
+                                            policy=lane.repair_policy,
                                             completion_blocker=completion_blocker,
                                             **({"sync_default_branch": sync_default_branch}
                                                if sync_default_branch else {}))
-        if repair.get("outcome") == "blocked":
+        if repair.get("outcome") in {"blocked", "human_required"}:
             return self._visit(target, "blocked", batch, replace(observation, detail={
                 **(observation.detail or {}), **repair,
             }), result, repair=repair)

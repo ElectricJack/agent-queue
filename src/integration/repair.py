@@ -24,6 +24,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.database.tables import (
     agents,
     archived_tasks,
+    escalations,
     integration_attestation_publications,
     integration_batch_members,
     integration_batches,
@@ -86,7 +87,8 @@ class OrdinaryRepairService:
     """Allocate once under the batch/target locks, through CommandHandler.
 
     The train supplies a freshly observed head and trusted exact green SHA.
-    Attempts guide policy/priority; they never limit allocation or green.
+    Attempts select the primary/debug budget or a supervisor escalation;
+    they never prevent a green head from settling the repair.
     A default-branch sync is a single ordinary filing per batch, identified by
     its dedup key; a spent sync returns to the pre-existing-failure blocker.
     Ordinary routing, claims, workspace recovery and task close own the worker
@@ -103,6 +105,7 @@ class OrdinaryRepairService:
         self, batch_id: str, *, target_ref: str, head_sha: str,
         green_sha: str | None = None, held: bool = False, review_rejected: bool = False,
         intelligence_class: str | None = None, priority: int = 100,
+        policy: RepairPolicy | None = None,
         brief: str = "", ttl_seconds: float = 480,
         authorize: Callable[[], Awaitable[bool]] | None = None,
         completion_blocker: Callable[[str, str], Awaitable[dict | None]] | None = None,
@@ -144,6 +147,7 @@ class OrdinaryRepairService:
 
             # Green is settled before querying tasks, counters or stop proofs.
             if green_sha == head_sha:
+                await self._settle_green_on(conn, batch_id, head_sha)
                 owner = await self.locks.lock_on(conn, target)
                 return answer("busy" if lease_is_live(owner) else "green")
 
@@ -219,6 +223,10 @@ class OrdinaryRepairService:
                         return answer("sync_exhausted", task_id=previous)
             if live_lease:
                 return answer("busy")
+            stage = policy.allocation_stage(attempt) if policy else None
+            if stage == "human":
+                incident = await self._escalate_on(conn, batch, policy, head_sha)
+                return answer("human_required", escalation_id=incident["id"])
             # The train must prove a published exact start before a task can
             # become claimable. Hold batch intent and ref acquisition locks
             # across this bounded observation and the ordinary filing.
@@ -252,6 +260,14 @@ class OrdinaryRepairService:
             repair_input = {"batch_id": batch_id, "attempt": attempt,
                             "repository_id": batch["repository_id"], "target_ref": target_ref,
                             "starting_sha": head_sha}
+            if policy:
+                seconds = policy.primary_seconds if stage == "primary" else policy.debug_seconds
+                if stage == "debug":
+                    intelligence_class = policy.debug_intelligence_class
+                repair_input.update(stage=stage, budget_seconds=seconds)
+                brief += (f"\n\nRepair stage: {stage}; work budget: {seconds} seconds. "
+                          "Publish any progress and close with ordinary evidence within this "
+                          "budget; the train re-observes the head before choosing the next repair.")
             if sync_default_branch:
                 repair_input["sync_default_branch"] = dict(sync_default_branch)
             fence = await self.locks.acquire_on(
@@ -277,6 +293,65 @@ class OrdinaryRepairService:
                 integration_batches.c.id == batch_id,
             ).values(repair_attempt_count=attempt, updated_at=self.clock()))
             return answer("filed", task_id=task_id, fence=fence.model_dump(mode="json"))
+
+    async def _escalate_on(self, conn, batch, policy: RepairPolicy, head_sha: str) -> dict:
+        """One incident and supervisor notice per batch, atomic with allocation."""
+        batch_id, now = batch["id"], self.clock()
+        incident_id = "escalation-" + ordinary_repair_id(batch_id, 1)
+        summary = f"Repair budget exhausted for batch {batch_id}"
+        decision = (f"Choose eject for a member of batch {batch_id}, or abort-batch for the "
+                    "whole batch. The train still observes the candidate and clears this "
+                    "escalation if it becomes green.")
+        incident = (await conn.execute(pg_insert(escalations).values(
+            id=incident_id, project_id=batch["project_id"], source_kind="integration_repair",
+            source_identity=batch_id, incident_key=f"repair-exhausted:{batch_id}",
+            supervisor_owner=f"supervisor-{batch['project_id']}", summary=summary,
+            investigation=(f"{batch['repair_attempt_count']} ordinary repairs were filed "
+                           f"({policy.primary_attempts} primary, {policy.debug_attempts} debug). "
+                           f"Candidate: {head_sha}; target: {batch['target_ref']}."),
+            decision_requested=decision, choices=["eject", "abort-batch"], severity="high",
+            created_at=now, updated_at=now,
+        ).on_conflict_do_nothing(index_elements=[escalations.c.id])
+          .returning(escalations))).mappings().one_or_none()
+        if incident is None:
+            return dict((await conn.execute(select(escalations).where(
+                escalations.c.id == incident_id,
+            ))).mappings().one())
+        await conn.execute(pg_insert(messages).values(
+            id="msg-" + incident_id, project_id=batch["project_id"],
+            from_kind="system", from_id="integration-train", to_kind="session",
+            to_id=incident["supervisor_owner"], subject=summary,
+            body=f"{summary}\n{incident['investigation']}\n{decision}\nIncident: {incident_id}",
+            thread_id=incident_id, priority=100, created_at=now, archive_after_inject=1,
+            body_kind="integration_repair_exhausted",
+        ).on_conflict_do_nothing(index_elements=[messages.c.id]))
+        # The escalation dispatcher reconciles these durable rows, including
+        # recovery, without depending on a notification or playbook consumer.
+        return dict(incident)
+
+    async def _settle_green_on(self, conn, batch_id: str, head_sha: str) -> None:
+        from src.database.queries.escalation_queries import OPEN_ESCALATION_STATES
+
+        now = self.clock()
+        await conn.execute(update(escalations).where(
+            escalations.c.id == "escalation-" + ordinary_repair_id(batch_id, 1),
+            escalations.c.source_kind == "integration_repair",
+            escalations.c.state.in_(tuple(OPEN_ESCALATION_STATES)),
+        ).values(
+            state="resolved", revision=escalations.c.revision + 1,
+            updated_at=now, terminal_at=now,
+            terminal_outcome=f"Batch {batch_id} candidate became green or delivered.",
+            terminal_evidence={"batch_id": batch_id, "candidate_sha": head_sha},
+        ))
+
+    async def settle_green(self, batch_id: str, head_sha: str) -> None:
+        """Clear an exhausted repair from exact checks/Git, without an allocation."""
+        async with self.db.immediate() as conn:
+            batch = await conn.scalar(select(integration_batches.c.id).where(
+                integration_batches.c.id == batch_id,
+            ).with_for_update())
+            if batch:
+                await self._settle_green_on(conn, batch_id, head_sha)
 
     async def input(self, task_id: str) -> dict | None:
         """Read the immutable ordinary task input for workspace/managed push ports."""

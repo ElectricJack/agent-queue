@@ -121,6 +121,15 @@ class RepairPolicy(BaseModel):
     # refused (``deprecated_route_fields``).
     debug_profile_id: str | None = None
 
+    def allocation_stage(self, filed_attempts: int) -> Literal["primary", "debug", "human"]:
+        """Escalate the next ordinary filing; green observations spend no budget."""
+        if filed_attempts < self.primary_attempts:
+            return "primary"
+        if (filed_attempts >= self.primary_attempts + self.debug_attempts
+                and self.on_exhausted == "human"):
+            return "human"
+        return "debug"
+
     @model_validator(mode="after")
     def ordered_source_ci_infra_backoff(self) -> "RepairPolicy":
         if self.source_ci_infra_backoff_max_seconds < self.source_ci_infra_backoff_seconds:
