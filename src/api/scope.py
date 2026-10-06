@@ -135,6 +135,8 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         # only for a task that session filed.
         "task_route",
         "integration_status",
+        "promote_schema",
+        "promote_validate",
         # The command derives the candidate/member/fence from this session's
         # live repair assignment and separately fences pool calls by claim
         # epoch.  No caller-selected integration identity reaches the service.
@@ -219,6 +221,7 @@ INTEGRATION_ROLLOUT_FIELDS = frozenset(
         "hierarchical_integration_policy",
         "hierarchical_integration_mode",
         "hierarchical_integration_desired_mode",
+        "promotion_flow",
         "hierarchical_integration_draining",
         "hierarchical_integration_generation",
         "expected_integration_generation",

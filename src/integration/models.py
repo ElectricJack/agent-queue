@@ -213,6 +213,73 @@ class IntegrationCleanupPolicy(BaseModel):
         return self
 
 
+CISource = Literal["hosted", "local", "hybrid"]
+#: The train's target kinds a CI source can be chosen for.  ``root`` covers a
+#: root candidate and the root PR gate, ``epic`` an epic (parent boundary)
+#: candidate, and ``promotion`` a promotion step's gate.
+CITargetKind = Literal["root", "epic", "promotion"]
+CI_TARGET_KINDS: tuple[CITargetKind, ...] = ("root", "epic", "promotion")
+
+
+class IntegrationCIPolicy(BaseModel):
+    """Which runner produces each boundary's required checks.
+
+    ``hosted`` reads the GitHub Actions checks the boundary requires.
+    ``local`` runs them on this box through the local job runner, one command
+    per required check name, and reads no GitHub CI: GitHub is just the push
+    remote.  ``hybrid`` gates candidates locally and still reads the hosted
+    checks GitHub itself enforces, a root PR's and a promotion step's; a
+    promotion step has no other gate, so ``promotion: hybrid`` is hosted.
+
+    Whichever runner produced them, green means the boundary's same named
+    required checks passed, so baselines, repairs and gate states read alike.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    source: CISource = "hosted"
+    #: Per target kind overrides of ``source``; unset kinds use ``source``.
+    root: CISource | None = None
+    epic: CISource | None = None
+    promotion: CISource | None = None
+    #: The local runner's command for each required check name, e.g.
+    #: ``{"lint": "ruff check src", "unit": "aq test tests/test_x.py"}``.
+    commands: dict[str, str] = Field(default_factory=dict)
+    #: Seconds a local command may wait for a test slot, then may run.
+    queue_seconds: int = Field(default=600, ge=0, le=3600)
+    run_seconds: int = Field(default=300, gt=0, le=3600)
+
+    @model_validator(mode="after")
+    def finite_commands(self) -> IntegrationCIPolicy:
+        from src.jobs.adapters import finite_command
+        from src.jobs.policy import JobError
+
+        for name, command in self.commands.items():
+            if not name:
+                raise ValueError("ci.commands names a check with an empty name")
+            try:
+                finite_command(command)
+            except JobError:
+                raise ValueError(
+                    f"ci.commands[{name!r}] is not a finite job command: {command!r}"
+                ) from None
+        if self.local_kinds() and not self.commands:
+            raise ValueError("a local or hybrid ci source requires ci.commands")
+        return self
+
+    def source_for(self, kind: CITargetKind) -> CISource:
+        return getattr(self, kind) or self.source
+
+    def local_kinds(self) -> tuple[CITargetKind, ...]:
+        """Kinds with a gate the local runner produces.
+
+        A promotion step has no candidate gate of its own, only the checks
+        GitHub enforces on its PR, so ``hybrid`` there is ``hosted``.
+        """
+        return tuple(kind for kind in CI_TARGET_KINDS if self.source_for(kind) == "local"
+                     or (self.source_for(kind) == "hybrid" and kind != "promotion"))
+
+
 class HierarchicalIntegrationPolicy(BaseModel):
     """Validated project policy consumed when reserving an operation."""
 
@@ -228,6 +295,25 @@ class HierarchicalIntegrationPolicy(BaseModel):
     max_wait_seconds: float = Field(
         default=DEFAULT_INTEGRATION_MAX_WAIT_SECONDS, gt=0, allow_inf_nan=False
     )
+    #: Unset is hosted for every target kind.
+    ci: IntegrationCIPolicy | None = None
+
+    @model_validator(mode="after")
+    def local_commands_cover_required_checks(self) -> HierarchicalIntegrationPolicy:
+        # A local runner must produce the boundary's own named checks, or a
+        # green local candidate would mean something a hosted one does not.
+        if self.ci is None:
+            return self
+        for kind, boundary in (("root", self.root), ("epic", self.parent)):
+            if self.ci.source_for(kind) == "hosted":
+                continue
+            missing = sorted(set(boundary.required_checks.names) - set(self.ci.commands))
+            if missing:
+                raise ValueError(
+                    f"ci source for {kind} is {self.ci.source_for(kind)} but ci.commands "
+                    f"has no command for required check(s) {', '.join(missing)}"
+                )
+        return self
 
     @model_serializer(mode="wrap")
     def _omit_default_max_wait(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
@@ -235,10 +321,49 @@ class HierarchicalIntegrationPolicy(BaseModel):
         # equality, and snapshots written before this field existed lack it.
         # Dumping the default would make every in-flight operation look
         # corrupt after an upgrade, so only a configured bound is written.
+        # ``ci`` is omitted unset for the same reason.
         dumped = handler(self)
         if self.max_wait_seconds == DEFAULT_INTEGRATION_MAX_WAIT_SECONDS:
             dumped.pop("max_wait_seconds", None)
+        if self.ci is None:
+            dumped.pop("ci", None)
         return dumped
+
+
+def integration_ci_sources(raw_policy: Any) -> dict[str, Any]:
+    """The CI source each target kind uses under a stored project policy.
+
+    ``origin`` says where the answer came from: ``policy`` for a configured
+    ``ci`` block, ``development`` for a pinned development source (its root
+    candidates run that source's local jobs; nothing else changes), else
+    ``default``.  A stored policy that no longer validates reads as default,
+    which is hosted, matching what the train's lanes do with it.
+    """
+    from src.integration.development_runtime import project_development_pin
+
+    hosted = dict.fromkeys(CI_TARGET_KINDS, "hosted")
+    if isinstance(raw_policy, dict) and project_development_pin(
+            {"hierarchical_integration_policy": raw_policy}) is not None:
+        return {**hosted, "root": "local", "origin": "development"}
+    ci = integration_ci_policy(raw_policy)
+    if ci is None:
+        return {**hosted, "origin": "default"}
+    return {**{kind: ci.source_for(kind) for kind in CI_TARGET_KINDS}, "origin": "policy"}
+
+
+def integration_ci_policy(raw_policy: Any) -> IntegrationCIPolicy | None:
+    """The validated ``ci`` block of a stored project policy, or ``None``.
+
+    ``None`` is hosted everywhere: an unconfigured project, a development
+    policy (it has no ``ci`` block) and a stored policy that no longer
+    validates all keep reading hosted checks.
+    """
+    if not isinstance(raw_policy, dict) or raw_policy.get("ci") is None:
+        return None
+    try:
+        return HierarchicalIntegrationPolicy.model_validate(raw_policy).ci
+    except (TypeError, ValueError):
+        return None
 
 
 def integration_max_wait_seconds(raw_policy: Any) -> float:

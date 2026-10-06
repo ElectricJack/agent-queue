@@ -20,7 +20,7 @@ from dataclasses import asdict, replace
 from typing import Any
 
 import yaml
-from sqlalchemy import and_, select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from src.database.tables import (
@@ -41,7 +41,12 @@ from src.database.tables import (
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, is_valid_git_oid
 from src.integration.batches import (
-    Batch, BatchMember, BatchObservation, BatchService, BatchStore, candidate_ref,
+    Batch,
+    BatchMember,
+    BatchObservation,
+    BatchService,
+    BatchStore,
+    candidate_ref,
 )
 from src.integration.candidate_baseline import CandidateBaselineService
 from src.integration.ci import (
@@ -56,8 +61,9 @@ from src.integration.epics import EpicGraphReader, EpicPolicy, EpicReadinessEval
 from src.integration.git_truth import GitTruth, GitTruthSnapshot
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
-from src.integration.models import BranchKey
+from src.integration.models import BranchKey, integration_ci_policy
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+from src.integration.promotion_steps import flow_status, flow_targets
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
 from src.integration.subjects import Subject
@@ -68,6 +74,7 @@ from src.integration.train import (
     TrainLane,
     TrainTarget,
 )
+from src.projects.github import GitHubError
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +135,10 @@ def _branch(ref: str) -> str:
 
 async def _pending_tasks(conn, project_id: str, repository_id: str, *, limit: int | None) -> list[str]:
     """Completed tasks with a live branch origin in the repository, newest first."""
+    flow = await conn.scalar(select(projects.c.promotion_flow).where(projects.c.id == project_id))
+    promotion_refs = {
+        ref for name in flow_targets(flow) for ref in (name, _branch(name))
+    }
     rows = await conn.execute(
         select(tasks.c.id)
         .select_from(tasks.join(task_branch_origins, and_(
@@ -135,7 +146,10 @@ async def _pending_tasks(conn, project_id: str, repository_id: str, *, limit: in
             task_branch_origins.c.repository_id == repository_id,
             task_branch_origins.c.retired_at.is_(None),
         )))
-        .where(tasks.c.project_id == project_id, tasks.c.status == "COMPLETED")
+        .where(tasks.c.project_id == project_id, tasks.c.status == "COMPLETED",
+               or_(tasks.c.task_type.is_(None), tasks.c.task_type != "promotion"),
+               or_(task_branch_origins.c.parent_ref.is_(None),
+                   task_branch_origins.c.parent_ref.not_in(promotion_refs)))
         .distinct()
         .order_by(tasks.c.id)
     )
@@ -250,16 +264,18 @@ class DatabaseTargets:
     parent branches its completed work routes to, and any open batch's target."""
 
     def __init__(self, db, *, limit: int = MEMBER_LIMIT, snapshot=project_snapshot,
-                 probe_timeout_seconds: float = 5.0) -> None:
+                 probe_timeout_seconds: float = 5.0, flow_problems=None) -> None:
         self.db, self.limit = db, limit
         self.snapshot = snapshot
         self.probe_timeout_seconds = probe_timeout_seconds
+        self.flow_problems = flow_problems
 
     async def targets(self, now: float) -> list[TrainTarget]:
         found: dict[tuple[str, str, str], TrainTarget] = {}
         async with self.db._engine.connect() as conn:
             rows = (await conn.execute(
                 select(projects.c.id, projects.c.hierarchical_integration_mode,
+                       projects.c.promotion_flow,
                        repos.c.id.label("repository_id"), repos.c.default_branch)
                 .select_from(projects.join(
                     repos, repos.c.id == projects.c.integration_repository_id))
@@ -279,6 +295,17 @@ class DatabaseTargets:
         default = _branch(row["default_branch"])
         kind = "development" if row["hierarchical_integration_mode"] == "development" else "root"
         root = TrainTarget(project_id, repository_id, default, kind)
+        recorded = self.flow_problems() if callable(self.flow_problems) else self.flow_problems
+        status = flow_status(
+            row["promotion_flow"], default_branch=row["default_branch"],
+            recorded=(recorded or {}).get(project_id),
+        )
+        flow = row["promotion_flow"] if status and status["state"] == "configured" else []
+        promotions = {
+            _branch(step["target"]): TrainTarget(
+                project_id, repository_id, _branch(step["target"]), "promotion", step=step,
+            ) for step in flow
+        }
         async with self.db._engine.connect() as conn:
             pending = await _pending_tasks(conn, project_id, repository_id, limit=None)
             routed = await delivery_targets(conn, pending, reduced=True)
@@ -301,15 +328,18 @@ class DatabaseTargets:
                     if task_id not in delivered and
                     (target.project_id, target.repository_id) == (project_id, repository_id))
         refs.update(_branch(branch) for task_id, branch in epics.items() if task_id not in delivered)
-        return [root if ref == default else TrainTarget(project_id, repository_id, ref, "epic")
-                for ref in sorted(refs)]
+        refs.update(promotions)
+        return [root if ref == default else promotions.get(ref) or
+                TrainTarget(project_id, repository_id, ref, "epic") for ref in sorted(refs)]
 
 
 class DatabaseBatches:
     """The open batch of a target, frozen from exact undelivered completions."""
 
-    def __init__(self, db, *, limit: int = MEMBER_LIMIT, clock: Callable[[], float] = time.time):
+    def __init__(self, db, *, limit: int = MEMBER_LIMIT, clock: Callable[[], float] = time.time,
+                 pr_gate: Callable | None = None):
         self.db, self.limit, self.clock = db, limit, clock
+        self.pr_gate = pr_gate
 
     async def open_batch(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, service: BatchService
@@ -319,7 +349,8 @@ class DatabaseBatches:
         blockers: list[dict[str, Any]] = []
         pending = None
         if not snapshot.error and snapshot.target_oid:
-            pending = await self.pending(target, snapshot, blockers=blockers)
+            pending = await self.pending(target, snapshot, blockers=blockers,
+                                         gate_pr=current is None)
         if current is not None:
             members = await service.store.members(current.id)
             # Old frozen inputs also stay out of duplicate epic publication.
@@ -345,10 +376,13 @@ class DatabaseBatches:
         return BatchSelection(frozen, await service.store.members(frozen.id), tuple(blockers))
 
     async def current(self, target: TrainTarget) -> Batch | None:
+        query = _open_batch_rows(target.project_id, target.repository_id).where(
+            integration_batches.c.target_ref == target.target_ref)
+        if target.kind == "promotion":
+            query = query.where(integration_batches.c.trigger == "promotion")
         async with self.db._engine.connect() as conn:
             row = (await conn.execute(
-                _open_batch_rows(target.project_id, target.repository_id)
-                .where(integration_batches.c.target_ref == target.target_ref)
+                query
                 .order_by(integration_batches.c.created_at, integration_batches.c.id)
                 .limit(1)
             )).mappings().first()
@@ -357,8 +391,11 @@ class DatabaseBatches:
     async def pending(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, *,
         blockers: list[dict[str, Any]] | None = None,
+        gate_pr: bool = True,
     ):
         """Exact pending inputs; report unknown delivery that prevents batching."""
+        if target.kind == "promotion":
+            return None
         async with self.db._engine.connect() as conn:
             ids = await _pending_tasks(conn, target.project_id, target.repository_id, limit=None)
         delivered_to_project = await self.delivered(target, snapshot, ids)
@@ -420,7 +457,9 @@ class DatabaseBatches:
             # Epic readiness gates new batching; it cannot undo proven delivery.
             if task_id in epics:
                 async with self.db._engine.connect() as conn:
-                    current = await self._epic_current_on(conn, task_id, request.completion_id)
+                    current = await self._epic_current_on(conn, task_id, request.completion_id,
+                                                         snapshot=snapshot,
+                                                         source=evidence.source_oid)
                 if not current:
                     if blockers is not None:
                         blockers.append({"code": "epic_completion_pending", "ref": task_id,
@@ -446,7 +485,17 @@ class DatabaseBatches:
                     or evidence.reason != "source_not_delivered"
                     or not is_valid_git_oid(source or "") or (task_id, source) in withheld):
                 continue
-            members[task_id] = BatchMember(task_id, source, base)
+            member = BatchMember(task_id, source, base)
+            if gate_pr and target.kind == "root":
+                refusal = (await self.pr_gate(target, member) if self.pr_gate else {
+                    "code": "unknown", "ref": task_id, "task_id": task_id,
+                    "detail": "root PR admission observer is unavailable",
+                })
+                if refusal:
+                    if blockers is not None:
+                        blockers.append(refusal)
+                    continue
+            members[task_id] = member
         # A member never lands ahead of undelivered work it depends on that
         # this batch does not carry; it waits for a later batch instead.
         blocked = set(ids) - members.keys() - delivered
@@ -478,19 +527,34 @@ class DatabaseBatches:
         ids = [member.task_id for member in members]
         async with self.db._engine.connect() as conn:
             mode = (await conn.execute(
-                select(projects.c.hierarchical_integration_mode, projects.c.status)
+                select(projects.c.hierarchical_integration_mode, projects.c.status,
+                       projects.c.promotion_flow)
                 .where(projects.c.id == batch.project_id)
             )).first()
             routed = await delivery_targets(conn, ids, reduced=True)
-            live = set((await conn.execute(select(task_branch_origins.c.task_id).where(
-                task_branch_origins.c.task_id.in_(ids),
-                task_branch_origins.c.repository_id == batch.repository_id,
-                task_branch_origins.c.retired_at.is_(None),
-            ))).scalars().all())
+            flow = () if mode is None else mode.promotion_flow or ()
+            promotion_refs = {
+                ref for name in flow_targets(flow) for ref in (name, _branch(name))
+            }
+            live = set((await conn.execute(
+                select(task_branch_origins.c.task_id)
+                .select_from(task_branch_origins.join(
+                    tasks, tasks.c.id == task_branch_origins.c.task_id))
+                .where(
+                    task_branch_origins.c.task_id.in_(ids),
+                    task_branch_origins.c.repository_id == batch.repository_id,
+                    task_branch_origins.c.retired_at.is_(None),
+                    or_(tasks.c.task_type.is_(None), tasks.c.task_type != "promotion"),
+                    or_(task_branch_origins.c.parent_ref.is_(None),
+                        task_branch_origins.c.parent_ref.not_in(promotion_refs)),
+                )
+            )).scalars().all())
         if mode is None or mode[0] not in TRAIN_MODES or mode[1] != "ACTIVE":
             return False
         if batch.epic_sync and await self.closed_epic_graph(TrainTarget(
                 batch.project_id, batch.repository_id, batch.target_ref, "epic")) is None:
+            return False
+        if batch.target_ref in promotion_refs:
             return False
         requests = await load_delivery_requests(
             self.db, ids, repository_id=batch.repository_id, target_ref=batch.target_ref,
@@ -554,7 +618,8 @@ class DatabaseBatches:
             requests[child.task_id] = request
         return (members, requests) if members else None
 
-    async def _epic_current_on(self, conn, task_id, generation, *, source=None) -> bool:
+    async def _epic_current_on(self, conn, task_id, generation, *, source=None,
+                               snapshot=None) -> bool:
         """Recheck ordinary inputs and cached head/review verdicts at admission."""
         record = (await conn.execute(select(task_completion_records).where(
             task_completion_records.c.task_id == task_id,
@@ -563,11 +628,32 @@ class DatabaseBatches:
         if record is None or record["outcome"] != "pass":
             return False
         try:
+            graph = await EpicGraphReader(policy_on=epic_policy_on,
+                source_base_on=epic_source_base_on).read_on(conn, task_id)
+            if snapshot is not None:
+                # The completion row describes a decision; it cannot prove
+                # today's children are in today's epic branch.
+                async def cached_checks(repository_id, head, policy):
+                    if not policy.check_names:
+                        return HeadChecks(repository_id, head, (), policy.check_trust, "green")
+                    rows = (await conn.execute(select(integration_check_evidence).where(
+                        integration_check_evidence.c.repository_id == repository_id,
+                        integration_check_evidence.c.sha == head,
+                        integration_check_evidence.c.producer_id == policy.check_trust,
+                        integration_check_evidence.c.required_check_version == policy.check_version,
+                        integration_check_evidence.c.check_name.in_(policy.check_names),
+                    ))).mappings().all()
+                    green = {row["check_name"] for row in rows if row["conclusion"] == "success"}
+                    return HeadChecks(repository_id, head, policy.check_names, policy.check_trust,
+                                      "green" if set(policy.check_names) <= green else "unknown")
+
+                readiness = await EpicReadinessEvaluator(self.db, EpicGraphReader(
+                    policy_on=epic_policy_on, source_base_on=epic_source_base_on,
+                ), TreeReviews(self.db), checks=cached_checks).evaluate(graph, snapshot)
+                return readiness.ready and readiness.head_sha == source
             notes = json.loads(record["notes"])
             if source is not None and json.loads(record["commits"]) != [source]:
                 return False
-            graph = await EpicGraphReader(policy_on=epic_policy_on,
-                source_base_on=epic_source_base_on).read_on(conn, task_id)
             if notes["graph_sha256"] != epic_graph_digest(graph):
                 return False
             for subject_id, head, tree in notes["heads"]:
@@ -591,7 +677,15 @@ class DatabaseBatches:
         return True
 
     async def settle(self, batch: Batch, observation: BatchObservation) -> None:
+        async with self.db._engine.connect() as conn:
+            trigger = await conn.scalar(select(integration_batches.c.trigger).where(
+                integration_batches.c.id == batch.id,
+            ))
         async with self.db.immediate() as conn:
+            if trigger == "promotion":
+                from src.integration.promotion_steps import settle_promotion
+
+                await settle_promotion(self.db, batch, observation, clock=self.clock, conn=conn)
             await conn.execute(
                 update(integration_batches)
                 .where(integration_batches.c.id == batch.id,
@@ -624,7 +718,14 @@ async def epic_policy_on(conn, row, project) -> EpicPolicy:
             if evidence.get("decision_path") in {"github_pull_request", "review_task_close",
                                                   "reopen_with_feedback", "tree_review"}:
                 reviewers.add(identity)
-    return EpicPolicy(tuple(required.get("names") or ()), str(required.get("producer_id") or ""),
+    trust = str(required.get("producer_id") or "")
+    ci = integration_ci_policy(policy)
+    if ci is not None and ci.source_for("epic") != "hosted":
+        # The local runner produces the parent boundary's named checks.
+        from src.integration.checks import LOCAL_CHECKS_PRODUCER_ID
+
+        trust = LOCAL_CHECKS_PRODUCER_ID
+    return EpicPolicy(tuple(required.get("names") or ()), trust,
                       ReviewRequirements(reviewed, frozenset(reviewers)),
                       str(required.get("version") or ""))
 
@@ -662,8 +763,10 @@ class EpicCompletions:
     """
 
     def __init__(self, db, evaluator: EpicReadinessEvaluator, *, refresh: Callable,
+                 pull_requests=None,
                  clock: Callable[[], float] = time.time):
         self.db, self.evaluator, self.refresh, self.clock = db, evaluator, refresh, clock
+        self.pull_requests = pull_requests
 
     async def settle(self, target: TrainTarget, snapshot: GitTruthSnapshot) -> tuple[dict, ...]:
         if target.kind != "epic":
@@ -721,7 +824,7 @@ class EpicCompletions:
             latest = await conn.scalar(select(task_completion_records.c.completed_at).where(
                 task_completion_records.c.task_id == node.task_id,
             ).order_by(task_completion_records.c.completed_at.desc()).limit(1))
-            await conn.execute(insert(task_completion_records).values(
+            recorded = await conn.execute(insert(task_completion_records).values(
                 id=generation, task_id=node.task_id, outcome="pass",
                 branch=node.branch_ref.removeprefix("refs/heads/"),
                 commits=json.dumps([readiness.head_sha]),
@@ -730,13 +833,22 @@ class EpicCompletions:
                 summary="Collected epic: required children contained, head checks green, "
                         "required tree review satisfied.",
                 completed_at=max(self.clock(), (latest or 0) + 0.000001),
-            ).on_conflict_do_nothing(index_elements=["id"]))
+            ).on_conflict_do_nothing(index_elements=["id"]).returning(task_completion_records.c.id))
+            first = recorded.scalar_one_or_none() is not None
             from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
 
             marker = insert(task_metadata).values(task_id=node.task_id,
                 key=DEVELOPMENT_COMPLETION_ID_KEY, value=json.dumps(generation))
             await conn.execute(marker.on_conflict_do_update(
                 index_elements=["task_id", "key"], set_={"value": marker.excluded.value}))
+        if first and node.parent_id is None and self.pull_requests is not None:
+            try:
+                opened = await self.pull_requests.open_for_epic(
+                    node.task_id, expected_head_sha=readiness.head_sha)
+            except (GitError, GitHubError, GitHubAccessError, OSError, ValueError) as exc:
+                opened = {"outcome": "unknown", "reason": str(exc)}
+            return ({"code": "epic_pr", "task_id": node.task_id, "ref": node.task_id,
+                     "head_sha": readiness.head_sha, "blocking": False, **opened},)
         return ()
 
 
@@ -751,6 +863,7 @@ class LeasedPublish:
                  clock: Callable[[], float] = time.time) -> None:
         self.locks, self.git = BranchLock(db, clock=clock), git
         self.holder, self.ttl_seconds = holder, ttl_seconds
+        self.clock = clock
 
     async def __call__(
         self, repo: RetainedRepository, ref: str, *, expected_old_oid: str, new_oid: str,
@@ -768,6 +881,51 @@ class LeasedPublish:
         finally:
             await self.locks.release(fence)
 
+    async def qualified(self, repo, target_ref, ref, *, expected_old_oid, new_oid, authorize):
+        """An immutable tag write shares the promotion target's branch fence."""
+        from src.integration.lock import CRITICAL_SECTION_SECONDS, PublishWithdrawn
+
+        fence = await self.locks.acquire(
+            BranchKey(repository_id=repo.repository_id, branch=target_ref), self.holder,
+            ttl_seconds=self.ttl_seconds, role="integration",
+        )
+        try:
+            async with self.locks.exclusion(fence) as row:
+                if not await authorize():
+                    raise PublishWithdrawn("promotion tag is no longer authorized")
+                remaining = min(CRITICAL_SECTION_SECONDS, row["expires_at"] - self.clock())
+                deadline = asyncio.get_running_loop().time() + remaining
+                async with asyncio.timeout(remaining):
+                    return await self.git.apush_qualified_ref(
+                        str(repo.store), repository=repo.binding, ref=ref, tip_oid=new_oid,
+                        expected_old_oid=expected_old_oid, authority_deadline=deadline,
+                    )
+        finally:
+            await self.locks.release(fence)
+
+    async def delete(self, repo, ref, *, expected_old_oid, authorize):
+        """Cleanup of a private promotion head shares the managed-ref fence."""
+        from src.integration.lock import CRITICAL_SECTION_SECONDS, PublishWithdrawn
+
+        fence = await self.locks.acquire(
+            BranchKey(repository_id=repo.repository_id, branch=ref), self.holder,
+            ttl_seconds=self.ttl_seconds, role="integration",
+        )
+        try:
+            async with self.locks.exclusion(fence) as row:
+                if not await authorize():
+                    raise PublishWithdrawn("promotion cleanup no longer has delivery proof")
+                remaining = min(CRITICAL_SECTION_SECONDS, row["expires_at"] - self.clock())
+                deadline = asyncio.get_running_loop().time() + remaining
+                async with asyncio.timeout(remaining):
+                    await self.git.adelete_repository_ref(
+                        str(repo.store), repository=repo.binding,
+                        branch=ref.removeprefix("refs/heads/"), expected_old_oid=expected_old_oid,
+                        authority_deadline=deadline,
+                    )
+        finally:
+            await self.locks.release(fence)
+
 
 async def retain_train_candidate(git, store, batch: Batch, candidate_sha: str) -> None:
     """Make the candidate reachable to a clone of the retained store; local only."""
@@ -782,13 +940,34 @@ async def _never_trusted(subject, sha) -> bool:
     return False
 
 
+def _ci_kind(target) -> str:
+    """The policy ``ci`` kind choosing *target*'s candidate runner."""
+    return target.kind if target.kind in {"epic", "promotion"} else "root"
+
+
+async def _exact_head_verdict(exact, head):
+    """Re-observe hosted checks; only read a local runner's stored rows.
+
+    A local job exists once requested for its exact head and plan. Observing a
+    head nobody requested would overwrite the evidence its own candidate run
+    left there with ``not_requested``.
+    """
+    from src.integration.checks import HostedChecks
+
+    if isinstance(exact.provider, HostedChecks):
+        return await exact.refresh(head)
+    return await exact.read(head)
+
+
 class DaemonLanes:
     """Per-target lanes over the daemon's git, retained stores and checks.
 
     The store is the repository's retained clone. A project with a pinned
     development source validates its root candidates with that source's local
-    jobs and rebuilds generated files with its command; everything else reads
-    the hosted checks the project requires at the target's boundary.
+    jobs and rebuilds generated files with its command. Otherwise the project
+    policy's ``ci`` block picks each target kind's runner (``hosted`` when
+    unset): a candidate gate, the root PR gate and a promotion step gate each
+    read the boundary's named required checks from that one producer.
     """
 
     def __init__(self, orchestrator, *, batches: DatabaseBatches,
@@ -798,6 +977,26 @@ class DaemonLanes:
         self.truth = GitTruth(orchestrator.git)
         self.store = BatchStore(self.db, clock=clock)
         self.publish = LeasedPublish(self.db, self.git, clock=clock)
+        if self.batches.pr_gate is None:
+            from src.integration.github_review_poll import RootPullRequestGate
+
+            async def repository(target):
+                repo = await self.db.get_repo(target.repository_id)
+                binding = await self.orchestrator.github_repository_binding_resolver(repo)
+                return binding, self.git._github_client(binding)
+
+            hosted_pr_gate = RootPullRequestGate(
+                self.db, repository=repository, checks=self._pr_checks, clock=clock)
+
+            async def pr_gate(target, member):
+                # Local candidate validation comes from a retained reviewed
+                # artifact. Its admission does not depend on hosted PRs.
+                settings, _ = await self._settings(await self._policy(target.project_id))
+                if settings is not None:
+                    return None
+                return await hosted_pr_gate(target, member)
+
+            self.batches.pr_gate = pr_gate
 
     async def __call__(self, target: TrainTarget) -> TrainLane:
         from src.integration.development_runtime import development_repository
@@ -830,11 +1029,19 @@ class DaemonLanes:
             authority=SubjectGitAuthority(self.db, trusted_green=_never_trusted),
         )
         local = settings is not None and target.kind != "epic"
+        # A development source's own local jobs take precedence; its policy
+        # has no ci block.
+        ci = None if settings is not None else integration_ci_policy(policy)
+        local_ci = (ci is not None and target.kind != "promotion"
+                    and ci.source_for(_ci_kind(target)) != "hosted")
 
         async def resolve(batch: Batch, candidate_sha: str):
             if local:
                 return await self._local(target, retained, settings, version, batch,
                                          candidate_sha)
+            if local_ci:
+                await retain_train_candidate(self.git, retained.store, batch, candidate_sha)
+                return self._local_checks(target, retained.store, ci, policy, batch)
             return await self._hosted(policy, binding, target, batch, candidate_sha,
                                       retained=retained)
 
@@ -860,10 +1067,6 @@ class DaemonLanes:
             )
             return (await attestation.publish(subject, producer=producer)).outcome
 
-        service = BatchService(self.store, gitops, publish=self.publish,
-                               eligible=self.batches.eligible, gate=checks.gate,
-                               attest=None if local else attest, require_attestation=not local)
-
         async def snapshot() -> GitTruthSnapshot:
             return await self.truth.snapshot(
                 str(retained.store), project_id=target.project_id,
@@ -871,11 +1074,22 @@ class DaemonLanes:
                 target_ref=target.target_ref,
             )
 
+        if target.kind == "promotion":
+            return await self._promotion_lane(target, retained, binding, gitops, policy, snapshot,
+                                              ci=ci)
+
+        # A locally gated candidate has no hosted checks to attest.
+        unattested = local or local_ci
+        service = BatchService(self.store, gitops, publish=self.publish,
+                               eligible=self.batches.eligible, gate=checks.gate,
+                               attest=None if unattested else attest,
+                               require_attestation=not unattested)
+
         complete_epic = None
         sync_default_branch = None
         sync_closed_epic = None
         if target.kind == "epic":
-            complete_epic = self._epic_completion(target, binding)
+            complete_epic = self._epic_completion(target, binding, retained)
 
             async def sync_default_branch(batch, snapshot, candidate_sha, names):
                 return await self._default_branch_sync(
@@ -901,7 +1115,7 @@ class DaemonLanes:
                     from src.integration.checks import Conclusion
                     from src.integration.subjects import HeadIdentity
 
-                    result = await exact.refresh(HeadIdentity(
+                    result = await _exact_head_verdict(exact, HeadIdentity(
                         repository_id=target.repository_id, ref=target.target_ref,
                         sha=snapshot.target_oid, generation=0,
                     ))
@@ -943,13 +1157,19 @@ class DaemonLanes:
                 # merge cannot repair it, even on a new repair generation.
                 return None
             root = TrainTarget(target.project_id, target.repository_id, default_ref)
-            exact = await self._hosted(policy, binding, root, batch, sha)
+            ci = integration_ci_policy(policy)
+            if ci is not None and ci.source_for("root") != "hosted":
+                # The root candidate that became this head left its local
+                # evidence; reading it runs nothing.
+                exact = self._local_checks(root, retained.store, ci, policy, batch)
+            else:
+                exact = await self._hosted(policy, binding, root, batch, sha)
             if exact is None or not set(names) <= set(exact.required.names):
                 return None
             from src.integration.checks import Conclusion
             from src.integration.subjects import HeadIdentity
 
-            result = await exact.refresh(HeadIdentity(
+            result = await _exact_head_verdict(exact, HeadIdentity(
                 repository_id=target.repository_id, ref=default_ref, sha=sha,
                 generation=batch.repair_attempt_count,
             ))
@@ -966,10 +1186,11 @@ class DaemonLanes:
                            for id_ in root_batches)
             provenance = "train_candidate"
             if not produced:
-                producer = exact.provider.producer
-                trust = producer.trust
+                # Only a hosted head carries the App's attestation.
+                trust = getattr(exact.provider.producer, "trust", None)
                 if not isinstance(trust, IntegrationTrustManifest):
                     return None
+                producer = exact.provider.producer
                 attestation = self.orchestrator.integration_attestation_service
                 records = await attestation._attestation_records(producer.client, trust, sha)
                 select_trusted_attestation(records, trust, expected_head_sha=sha)
@@ -994,13 +1215,16 @@ class DaemonLanes:
             logger.info("integration batch %s default-branch sync evidence unavailable", batch.id)
             return None
 
-    def _epic_completion(self, target, binding):
+    def _epic_completion(self, target, binding, retained):
+        from src.integration.checks import HostedChecks
         from src.integration.subjects import HeadIdentity
 
         resolved = {}
 
         async def refresh(graph, snapshot):
             policy = await self._policy(target.project_id)
+            ci = integration_ci_policy(policy)
+            local = ci is not None and ci.source_for("epic") != "hosted"
             refused: list[dict] = []
             for node in graph.nodes:
                 head = snapshot.for_target(node.branch_ref).target_oid if node.branch_ref else None
@@ -1012,7 +1236,11 @@ class DaemonLanes:
                 batch = Batch("epic-readiness-" + node.task_id, target.project_id,
                               target.repository_id, node.branch_ref)
                 try:
-                    exact = await self._hosted(policy, binding, target, batch, head)
+                    if local:
+                        await retain_train_candidate(self.git, retained.store, batch, head)
+                        exact = self._local_checks(target, retained.store, ci, policy, batch)
+                    else:
+                        exact = await self._hosted(policy, binding, target, batch, head)
                 except SubjectTrustError as exc:
                     # A branch cut before the repository carried a trust manifest
                     # owes the epic a refresh, not a failed visit: the head's
@@ -1028,10 +1256,14 @@ class DaemonLanes:
                     continue
                 resolved[(head, node.policy)] = exact
                 if exact is not None:
-                    await exact.request(HeadIdentity(repository_id=graph.repository_id,
-                        ref=node.branch_ref, sha=head, generation=0))
-                    await exact.refresh(HeadIdentity(repository_id=graph.repository_id,
-                        ref=node.branch_ref, sha=head, generation=0))
+                    identity = HeadIdentity(repository_id=graph.repository_id,
+                                            ref=node.branch_ref, sha=head, generation=0)
+                    # A published epic head is usually the candidate its train
+                    # already ran locally; green evidence there runs nothing.
+                    if (isinstance(exact.provider, HostedChecks)
+                            or not (await exact.read(identity)).green):
+                        await exact.request(identity)
+                        await exact.refresh(identity)
             return tuple(refused)
 
         async def head_checks(repository_id, head, policy):
@@ -1048,12 +1280,112 @@ class DaemonLanes:
         evaluator = EpicReadinessEvaluator(self.db, EpicGraphReader(
             policy_on=epic_policy_on, source_base_on=epic_source_base_on,
         ), TreeReviews(self.db), checks=head_checks)
-        completions = EpicCompletions(self.db, evaluator, refresh=refresh, clock=self.clock)
+        from src.integration.root_pull_requests import EpicPullRequestService
+
+        completions = EpicCompletions(self.db, evaluator, refresh=refresh, clock=self.clock,
+            pull_requests=EpicPullRequestService(self.db, git_manager=self.git, clock=self.clock))
 
         async def complete(snapshot):
             return await completions.settle(target, snapshot)
 
         return complete
+
+    async def _promotion_lane(self, target, retained, binding, gitops, policy, snapshot, *,
+                              ci=None):
+        from src.integration.checks import ExactChecks, HostedChecks
+        from src.integration.ci import IntegrationTrustManifest
+        from src.integration.ci_producers import HostedCIProducer
+        from src.integration.promotion_steps import (
+            PromotionChecks, PromotionIntentInvalid, PromotionVisit, StepAdmission,
+            StepPullRequestGate,
+            publish_step_attestation, step_required_checks,
+        )
+
+        admission = StepAdmission(self.db, gitops, target.step)
+        resolved = {}
+        local = ci is not None and ci.source_for("promotion") == "local"
+
+        async def resolve_local(batch, sha, meta):
+            # The step still selects its checks from the source tree's own
+            # manifest; this box runs them, and no App proof is published.
+            manifest = await self._retained_manifest(retained, sha)
+            required = step_required_checks(manifest, meta["step"])
+            if required.version != meta["checks_version"]:
+                raise PromotionIntentInvalid("promotion check version differs from request")
+            missing = sorted(set(required.names) - set(ci.commands))
+            if missing:
+                raise PromotionIntentInvalid("ci_command_missing:" + ",".join(missing))
+            client = self.git._github_client(binding)
+            resolved[batch.id] = manifest, client, StepPullRequestGate(client, binding)
+            await retain_train_candidate(self.git, retained.store, batch, sha)
+            return self._local_checks(target, retained.store, ci, None, batch, requested=True,
+                                      names=required.names, version=required.version)
+
+        async def resolve(batch, sha):
+            members = await self.store.members(batch.id)
+            meta = await admission.load(batch, members)
+            if local:
+                return await resolve_local(batch, sha, meta)
+            attestation = getattr(self.orchestrator, "integration_attestation_service", None)
+            if attestation is None:
+                raise PromotionIntentInvalid("promotion requires hosted App attestation service")
+            state = {
+                "project_id": target.project_id, "canonical_repository_id": target.repository_id,
+                "repository_numeric_id": binding.repository_id,
+                "repository_full_name": binding.full_name, "candidate_sha": sha,
+                "batch_id": batch.id, "operation_id": batch.id,
+                "revision": batch.repair_attempt_count,
+                "policy_snapshot": {"root": policy.get("root") or {}},
+            }
+            # Load the exact source manifest using the existing App identity checks;
+            # check selection comes from the frozen step, independently of root policy.
+            trust, client = await attestation._load_trust(state)
+            if not isinstance(trust, IntegrationTrustManifest):
+                raise PromotionIntentInvalid("promotion requires App-mode trust")
+            manifest = await attestation._subject_manifest(state, binding)
+            required = step_required_checks(manifest, meta["step"])
+            if required.version != meta["checks_version"]:
+                raise PromotionIntentInvalid("promotion check version differs from request")
+            resolved[batch.id] = manifest, client, StepPullRequestGate(client, binding)
+            selected = manifest.model_copy(update={"required_checks": required})
+            return ExactChecks(self.db, HostedChecks(HostedCIProducer(client, selected)))
+
+        checks = PromotionChecks(admission, resolve, pull_request=lambda batch: resolved[batch.id][2])
+
+        async def attest(batch, sha):
+            trust, client, _pr_gate = resolved[batch.id]
+            return await publish_step_attestation(
+                admission, batch, await self.store.members(batch.id), trust, client,
+            )
+
+        service = PromotionVisit(
+            self.store, gitops, admission=admission, checks=checks, publish=self.publish,
+            publish_tag=self.publish.qualified, delete_ref=self.publish.delete,
+            attest=None if local else attest, snapshot=snapshot, clock=self.clock,
+        )
+        await service.reconcile_cleanup(target)
+        return TrainLane(snapshot=snapshot, service=service, checks=checks)
+
+    async def _pr_checks(self, target, member, policy, binding):
+        """The required checks a root PR member's head must pass to be admitted."""
+        batch = Batch("pr-admission-" + member.task_id, target.project_id,
+                      target.repository_id, target.target_ref)
+        ci = integration_ci_policy(policy)
+        if ci is not None and ci.source_for("root") == "local":
+            # The member head's own required checks, run on this box; hybrid
+            # still reads the PR checks GitHub enforces.
+            repo_row = await self.db.get_repo(target.repository_id)
+            primitives = self.orchestrator.development_integration
+            store = await primitives.store(repo_row, fetch=False)
+            try:
+                await retain_train_candidate(self.git, store, batch, member.source_sha)
+            except ValueError:
+                # The member head was pushed after the store's last fetch.
+                await primitives.store(repo_row)
+                await retain_train_candidate(self.git, store, batch, member.source_sha)
+            return self._local_checks(target, store, ci, policy, batch, requested=True)
+        return await self._hosted(policy, binding, target, batch, member.source_sha,
+                                  expected_event="pull_request")
 
     async def _policy(self, project_id: str) -> dict:
         async with self.db._engine.connect() as conn:
@@ -1079,6 +1411,54 @@ class DaemonLanes:
         )
         return pinned.settings, sha
 
+    async def _retained_manifest(self, retained, sha):
+        """The trust manifest in *sha*'s tree, read from the retained store."""
+        from src.integration.attestation import _parse_trust_manifest
+        from src.integration.ci import TRUST_MANIFEST_PATH
+
+        result = await self.git.arun_git_result(
+            ["show", f"{sha}:{TRUST_MANIFEST_PATH}"], cwd=str(retained.store),
+            env={"LC_ALL": "C"},
+        )
+        if result.returncode:
+            raise SubjectTrustError("missing", f"subject tree has no {TRUST_MANIFEST_PATH}")
+        return _parse_trust_manifest(result.stdout.encode("utf-8"))
+
+    def _local_checks(self, target, store, ci, policy, batch, *, requested=False,
+                      names=None, version=None):
+        """The local runner producing a boundary's named required checks.
+
+        Each required check name runs its ``ci.commands`` entry and its row
+        carries that name under the boundary's version: the same checks a hosted
+        runner reports, from another producer. *names* and *version* default to
+        the target boundary's ``required_checks`` in *policy*.
+        """
+        from src.integration.checks import ExactChecks, LocalChecks, RequestedChecks
+        from src.integration.ci_producers import LocalCIProducer, LocalValidationPlan
+        from src.jobs.adapters import PublisherJobs
+
+        if names is None:
+            boundary = "parent" if target.kind == "epic" else "root"
+            required = (policy.get(boundary) or {}).get("required_checks") or {}
+            names, version = required.get("names") or (), str(required.get("version") or "")
+        names = tuple(names)
+        missing = sorted(set(names) - set(ci.commands))
+        if missing:
+            raise ValueError("ci.commands has no command for required check(s) "
+                             + ", ".join(missing))
+        plan = LocalValidationPlan(
+            version=version, attempt_id=f"{batch.repair_attempt_count}:0",
+            commands=tuple(ci.commands[name] for name in names),
+            queue_seconds=ci.queue_seconds, run_seconds=ci.run_seconds,
+        )
+        producer = LocalCIProducer(
+            self.db, PublisherJobs(lambda: self.orchestrator._command_handler),
+            store=store, plan=plan, clock=self.clock,
+        )
+        checks = RequestedChecks if requested else ExactChecks
+        return checks(self.db, LocalChecks(producer, project_id=target.project_id,
+                                           names=names, version=version), clock=self.clock)
+
     async def _local(self, target, retained, settings, version, batch, candidate_sha):
         from src.integration.checks import ExactChecks, LocalChecks
         from src.integration.ci_producers import LocalCIProducer, LocalValidationPlan
@@ -1098,7 +1478,8 @@ class DaemonLanes:
         )
         return ExactChecks(self.db, LocalChecks(producer, project_id=target.project_id))
 
-    async def _hosted(self, policy, binding, target, batch, candidate_sha, *, retained=None):
+    async def _hosted(self, policy, binding, target, batch, candidate_sha, *, retained=None,
+                      expected_event="push"):
         from src.integration.checks import ExactChecks, HostedChecks
         from src.integration.ci_producers import HostedCIProducer
 
@@ -1124,7 +1505,8 @@ class DaemonLanes:
             return await self._workflow_diagnostic(retained, head)
 
         return ExactChecks(self.db, HostedChecks(
-            HostedCIProducer(client, trust), diagnose=diagnose if retained is not None else None,
+            HostedCIProducer(client, trust, expected_event=expected_event),
+            diagnose=diagnose if retained is not None else None,
         ), clock=self.clock)
 
     async def _workflow_diagnostic(self, retained, head):
@@ -1211,7 +1593,10 @@ def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> Integr
 
     batches = DatabaseBatches(orchestrator.db, clock=clock)
     return IntegrationTrain(
-        targets=DatabaseTargets(orchestrator.db),
+        targets=DatabaseTargets(
+            orchestrator.db,
+            flow_problems=lambda: getattr(orchestrator, "promotion_flow_problems", None),
+        ),
         batches=batches,
         lane_for=DaemonLanes(orchestrator, batches=batches, clock=clock),
         repair=OrdinaryRepairService(orchestrator.db, clock=clock),

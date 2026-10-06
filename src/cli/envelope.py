@@ -98,6 +98,8 @@ BRIEF_PROJECTIONS: dict[str, tuple[str, ...]] = {
         "blockers",
         "blocker_digest",
         "warnings",
+        "promotion_flow",
+        "ci_source",
         "state",
         "stage",
         "count",

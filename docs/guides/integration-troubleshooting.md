@@ -261,6 +261,37 @@ WHERE  owner_row_id = 'o-a3f7…'
 ORDER  BY created_at DESC;
 ```
 
+## A promotion flow is refused or misconfigured
+
+`aq project set PROJECT_ID promotion-flow FLOW.yaml
+--expected-integration-generation N` activates a flow only when every layer
+passes: the schema and chain rules, the trust manifest's attestations and check
+sets, and the targets themselves. Before it writes, it creates any missing target
+with a create-only push from its source's tip. A refusal names the code and the
+JSON pointer into the file, and never stores the flow. The one thing a refusal
+can leave behind is a target branch it already created at its source's tip;
+the result lists it under `created_targets`, and a retry reuses it. Check a file
+first with `aq promote validate --project PROJECT_ID --file FLOW.yaml`.
+
+A step with an open promotion keeps its `id`, `source`, `target`, `type`,
+`gate`, `versioning` and `notes` until that promotion closes
+(`promotion_flow_in_use`). Its `after` hooks, `gate.request_ttl` and new steps
+appended at the end can still change. A flow that names a new target while live
+integration work holds it is refused with `repository_busy`. An open train batch also
+holds the repository: changing the integration repository or deleting the
+project is refused until it finishes.
+
+The daemon re-validates every stored flow when it starts. When a stored flow no
+longer validates, for example after a default-branch rename or a trust-manifest
+change, `aq integration status` marks its targets `misconfigured`. Schema and
+chain problems are re-checked on every status read, so renaming the default
+back clears them at once; a trust-manifest problem clears when the flow is
+activated again or the daemon restarts. The train keeps promoting to the
+default branch, and nothing is rewritten:
+
+```bash
+aq doctor --check integration.promotion_flow
+```
 
 ## Source and related pages
 

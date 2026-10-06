@@ -20,7 +20,12 @@ from src.database import Database
 from src.database.tables import jobs, projects
 from src.git.manager import GitManager
 from src.integration.batches import Batch
-from src.integration.checks import ChecksState, LocalChecks
+from src.integration.checks import (
+    LOCAL_CHECKS_PRODUCER_ID,
+    ChecksState,
+    LocalChecks,
+    RequestedChecks,
+)
 from src.integration.gitops import RetainedRepository
 from src.integration.train import CandidateChecks, TrainTarget, candidate_head
 from src.integration.train_sources import (
@@ -276,6 +281,8 @@ async def test_development_pin_validates_roots_with_its_retained_source_jobs(
     assert isinstance(checks.provider, LocalChecks) and hosted == []
     assert checks.provider.producer.plan.commands == (COMMAND,)
     assert checks.provider.producer.store == str(world.store)
+    # A development source names each check after its own command.
+    assert checks.provider.names == (COMMAND,)
     retained = await run(world.git, world.store, "rev-parse", RETAINED_CANDIDATE_PREFIX + BATCH.id)
     assert retained == world.candidate
 
@@ -291,3 +298,199 @@ async def test_development_pin_leaves_epic_targets_on_hosted_checks(
     assert await lane.checks.for_candidate(BATCH, world.candidate) == "hosted"
     assert hosted == ["epic"]
     assert await job_rows(world.db) == []
+
+
+async def ci_lanes(world, monkeypatch, ci: dict, names=("lint",)):
+    """The daemon's lanes for a project whose policy ``ci`` block picks the runner."""
+    from tests.test_integration_service import _minimal_policy_values
+
+    policy = _minimal_policy_values()
+    required = {"version": "v7", "names": list(names), "producer_id": "forge"}
+    for boundary in ("root", "parent"):
+        policy[boundary] = {**policy[boundary], "required_checks": required}
+    policy["ci"] = ci
+    async with world.db._engine.begin() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_policy=policy))
+    await world.db.create_repo(RepoConfig(
+        id="r", project_id="p", source_type=RepoSourceType.CLONE, url=str(world.store),
+    ))
+    hosted = []
+
+    async def binding(repo_row):
+        return None
+
+    fetches = []
+
+    async def store(repo_row, *, fetch=True):
+        if fetch:
+            fetches.append(repo_row.id)
+        return str(world.store)
+
+    orchestrator = SimpleNamespace(
+        db=world.db, git=world.git, _command_handler=world.lanes.orchestrator._command_handler,
+        config=SimpleNamespace(), github_repository_binding_resolver=binding,
+        development_integration=SimpleNamespace(store=store, fetches=fetches),
+    )
+    lanes = DaemonLanes(orchestrator, batches=DatabaseBatches(world.db))
+
+    async def hosted_checks(policy, binding, target, batch, sha, *, retained=None,
+                            expected_event="push"):
+        hosted.append((target.kind, expected_event))
+        return "hosted"
+
+    monkeypatch.setattr(lanes, "_hosted", hosted_checks)
+    return lanes, policy, hosted
+
+
+LOCAL_CI = {"source": "local", "commands": {"lint": COMMAND}}
+
+
+async def test_local_ci_source_runs_the_boundarys_named_checks_on_this_box(world, monkeypatch):
+    lanes, _, hosted = await ci_lanes(world, monkeypatch, LOCAL_CI)
+    lane = await lanes(TARGET)
+    exact = await lane.checks.for_candidate(BATCH, world.candidate)
+    assert isinstance(exact.provider, LocalChecks) and hosted == []
+    # The same named required checks a hosted runner reports, from this box.
+    assert exact.required.names == ("lint",) and exact.required.version == "v7"
+    assert exact.required.producer_id == LOCAL_CHECKS_PRODUCER_ID
+    assert exact.provider.producer.plan.commands == (COMMAND,)
+    assert not lane.checks.advisory
+    # No hosted proof exists to attest; GitHub is just the push remote.
+    assert lane.service.attest is None and not lane.service.require_attestation
+
+    head = candidate_head(BATCH, world.candidate)
+    await exact.request(head)
+    [job] = await job_rows(world.db)
+    assert job["input_ref"] == world.candidate
+    pending = await exact.refresh(head)
+    assert pending.state == ChecksState.PENDING
+    assert [check.name for check in pending.checks] == ["lint"]
+    await finish(world.db, job, exit_code=0)
+    green = await exact.refresh(head)
+    assert green.green and green.checks[0].required_check_version == "v7"
+    assert await lane.checks.gate(BATCH, world.candidate, "tree")
+
+
+async def test_ci_source_switch_takes_effect_on_the_next_visit(world, monkeypatch):
+    lanes, policy, hosted = await ci_lanes(world, monkeypatch, LOCAL_CI)
+    member = SimpleNamespace(task_id="t1", source_sha=world.candidate)
+
+    async def store_ci(ci):
+        stored = {**policy, "ci": ci} if ci is not None else {
+            key: value for key, value in policy.items() if key != "ci"}
+        async with world.db._engine.begin() as conn:
+            await conn.execute(update(projects).where(projects.c.id == "p").values(
+                hierarchical_integration_policy=stored))
+        return stored
+
+    async def visit(stored):
+        lane = await lanes(TARGET)
+        candidate = await lane.checks.for_candidate(BATCH, world.candidate)
+        return candidate, await lanes._pr_checks(TARGET, member, stored, None)
+
+    candidate, pr = await visit(policy)
+    assert isinstance(candidate.provider, LocalChecks) and isinstance(pr, RequestedChecks)
+    assert hosted == []
+    # The same lanes object: each visit re-reads the stored policy.
+    candidate, pr = await visit(await store_ci(None))
+    assert (candidate, pr) == ("hosted", "hosted")
+    assert hosted == [("root", "push"), ("root", "pull_request")]
+    candidate, pr = await visit(await store_ci({**LOCAL_CI, "source": "hybrid"}))
+    assert isinstance(candidate.provider, LocalChecks) and pr == "hosted"
+    assert hosted[-1] == ("root", "pull_request") and len(hosted) == 3
+
+async def test_local_ci_source_names_each_check_by_its_required_name(world, monkeypatch):
+    lint, unit = COMMAND, "aq test tests/test_sample.py"
+    lanes, _, _ = await ci_lanes(world, monkeypatch, {
+        "source": "local", "commands": {"unit": unit, "lint": lint},
+    }, names=("unit", "lint"))
+    lane = await lanes(TARGET)
+    exact = await lane.checks.for_candidate(BATCH, world.candidate)
+    # Commands run in the boundary's check order, each labelled by its name.
+    assert exact.provider.producer.plan.commands == (unit, lint)
+    result = await exact.refresh(candidate_head(BATCH, world.candidate))
+    assert [check.name for check in result.checks] == ["unit", "lint"]
+    assert {check.reason for check in result.checks} == {"not_requested"}
+
+
+async def test_local_ci_source_red_check_blocks_the_candidate(world, monkeypatch):
+    lanes, _, _ = await ci_lanes(world, monkeypatch, LOCAL_CI)
+    lane = await lanes(TARGET)
+    exact = await lane.checks.for_candidate(BATCH, world.candidate)
+    head = candidate_head(BATCH, world.candidate)
+    await exact.request(head)
+    [job] = await job_rows(world.db)
+    await finish(world.db, job, exit_code=1)
+    assert (await exact.refresh(head)).state == ChecksState.RED
+    assert not await lane.checks.gate(BATCH, world.candidate, "tree")
+
+
+async def test_epic_override_keeps_root_candidates_hosted(world, monkeypatch):
+    lanes, _, hosted = await ci_lanes(world, monkeypatch, {**LOCAL_CI, "source": "hosted",
+                                                           "epic": "local"})
+    root = await lanes(TARGET)
+    assert await root.checks.for_candidate(BATCH, world.candidate) == "hosted"
+    assert hosted == [("root", "push")]
+    assert root.service.require_attestation
+    epic = TrainTarget(project_id="p", repository_id="r", target_ref="refs/heads/aq/epic",
+                       kind="epic")
+    lane = await lanes(epic)
+    exact = await lane.checks.for_candidate(BATCH, world.candidate)
+    assert isinstance(exact.provider, LocalChecks) and len(hosted) == 1
+    assert exact.required.names == ("lint",) and exact.required.version == "v7"
+
+
+@pytest.mark.parametrize("source, local_gate", [("local", True), ("hybrid", False),
+                                                ("hosted", False)])
+async def test_root_pr_gate_reads_the_selected_runner(world, monkeypatch, source, local_gate):
+    lanes, policy, hosted = await ci_lanes(world, monkeypatch, {**LOCAL_CI, "source": source})
+    member = SimpleNamespace(task_id="t1", source_sha=world.candidate)
+    exact = await lanes._pr_checks(TARGET, member, policy, None)
+    if not local_gate:
+        # Hybrid still reads the PR checks GitHub itself enforces.
+        assert exact == "hosted" and hosted == [("root", "pull_request")]
+        assert await job_rows(world.db) == []
+        return
+    assert isinstance(exact, RequestedChecks) and hosted == []
+    assert exact.required.names == ("lint",)
+    # The member head is already in the retained store: no fetch.
+    assert lanes.orchestrator.development_integration.fetches == []
+    head = candidate_head(Batch("pr-admission-t1", "p", "r", TARGET.target_ref),
+                          world.candidate)
+    # The PR gate only refreshes; a local head's jobs start on that refresh.
+    pending = await exact.refresh(head)
+    assert pending.state == ChecksState.PENDING
+    [job] = await job_rows(world.db)
+    assert job["input_ref"] == world.candidate
+    retained = await run(world.git, world.store, "rev-parse",
+                         RETAINED_CANDIDATE_PREFIX + "pr-admission-t1")
+    assert retained == world.candidate
+    await finish(world.db, job, exit_code=0)
+    assert (await exact.refresh(head)).green
+    assert len(await job_rows(world.db)) == 1
+
+
+@pytest.mark.parametrize("hosted", [True, False])
+async def test_exact_head_verdict_reads_local_evidence_without_observing(hosted):
+    from src.integration.checks import HostedChecks
+    from src.integration.train_sources import _exact_head_verdict
+
+    calls = []
+
+    class Exact:
+        provider = (HostedChecks.__new__(HostedChecks) if hosted
+                    else LocalChecks.__new__(LocalChecks))
+
+        async def refresh(self, head):
+            calls.append("refresh")
+            return "observed"
+
+        async def read(self, head):
+            calls.append("read")
+            return "stored"
+
+    # Observing a local head nobody requested would record not_requested over
+    # the evidence its own candidate run left.
+    verdict = await _exact_head_verdict(Exact(), "head")
+    assert (verdict, calls) == (("observed", ["refresh"]) if hosted else ("stored", ["read"]))

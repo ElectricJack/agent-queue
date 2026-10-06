@@ -28,6 +28,7 @@ import BranchDiscardPrompt from "../../components/BranchDiscardPrompt";
 import StatusBadge from "../../components/StatusBadge";
 import { EpicDeliveryPanel, EpicStatus } from "../../components/EpicDelivery";
 import TaskActions from "../../components/TaskActions";
+import RemoveTaskModal from "../../components/RemoveTaskModal";
 import TaskCollaboration from "../../components/TaskCollaboration";
 import TaskComments from "../../components/TaskComments";
 import TaskSubtaskList from "../../components/TaskSubtaskList";
@@ -74,7 +75,7 @@ function pendingDeliverable(item: Record<string, string>): DeliverableRow {
   };
 }
 
-type LocalModal = "close" | "reopen" | null;
+type LocalModal = "close" | "remove" | "reopen" | null;
 
 type RelatedReview = { id: string; title: string; relation?: unknown };
 
@@ -543,7 +544,12 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, onLeave = 
             />
           )}
           {integrationRefusal && (
-            <p role="alert" className="text-sm text-amber-200">{integrationRefusal}</p>
+            <div className="space-y-2">
+              <p role="alert" className="text-sm text-amber-200">{integrationRefusal}</p>
+              <button onClick={() => setModal("remove")} className="text-sm text-blue-300 underline">
+                Remove while keeping history and branches
+              </button>
+            </div>
           )}
           {deleteTask.isError && !branchPrompt && !integrationRefusal && (
             <p role="alert" className="text-sm text-red-300">
@@ -587,6 +593,8 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, onLeave = 
         </div>
       </Modal>
 
+      {modal === "remove" && task && <RemoveTaskModal task={task}
+        onClose={() => setModal(null)} onRemoved={onClose} />}
       <Modal open={modal === "reopen"} onClose={() => setModal(null)} title="Reopen with Feedback">
         <div className="space-y-4">
           <textarea

@@ -169,3 +169,54 @@ async def test_app_mode_check_reads_the_designated_repository_url():
 
 def test_app_mode_check_is_registered():
     assert "integration.trust" in {check.id for check in default_registry().checks()}
+
+
+# ---------------------------------------------------------------------------
+# integration.ci_source (policy-selected CI source)
+# ---------------------------------------------------------------------------
+
+
+async def test_ci_source_check_names_local_runners_and_invalid_blocks(reuse_database):
+    from sqlalchemy import update
+
+    from src.database.tables import projects
+    from src.doctor.integration_checks import _BY_ID
+    from tests.test_integration_service import _minimal_policy_values
+
+    check = _BY_ID["integration.ci_source"]
+    assert "integration.ci_source" in {c.id for c in default_registry().checks()}
+    assert (await check.run(DoctorContext(config=SimpleNamespace()))).severity == Severity.INFO
+    db = await reuse_database("doctor-ci-source.db")
+    for project_id in ("hosted", "local", "broken"):
+        await db.create_project(Project(id=project_id, name=project_id))
+    ctx = DoctorContext(config=SimpleNamespace(), db=db)
+    result = await check.run(ctx)
+    assert result.severity == Severity.OK
+    assert result.detail == "every project reads hosted checks"
+
+    commands = {"unit": "aq test tests/test_x.py"}
+    stored = {
+        "hosted": _minimal_policy_values(),
+        "local": {**_minimal_policy_values(),
+                  "ci": {"source": "local", "promotion": "hosted", "commands": commands}},
+        "broken": {**_minimal_policy_values(), "ci": {"source": "local"}},
+    }
+    async with db._engine.begin() as conn:
+        for project_id, policy in stored.items():
+            await conn.execute(update(projects).where(projects.c.id == project_id)
+                               .values(hierarchical_integration_policy=policy))
+    result = await check.run(ctx)
+    assert result.severity == Severity.ERROR
+    assert result.data["invalid"][0]["project_id"] == "broken"
+    assert "broken:" in result.detail and "requires ci.commands" in result.detail
+    assert result.data["projects"] == [{
+        "project_id": "local", "root": "local", "epic": "local", "promotion": "hosted",
+        "origin": "policy"}]
+
+    del stored["broken"]
+    async with db._engine.begin() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "broken")
+                           .values(hierarchical_integration_policy=None))
+    result = await check.run(ctx)
+    assert result.severity == Severity.OK
+    assert result.detail.startswith("1 project(s) run required checks locally")
