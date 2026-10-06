@@ -41,7 +41,12 @@ from src.database.tables import (
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, is_valid_git_oid
 from src.integration.batches import (
-    Batch, BatchMember, BatchObservation, BatchService, BatchStore, candidate_ref,
+    Batch,
+    BatchMember,
+    BatchObservation,
+    BatchService,
+    BatchStore,
+    candidate_ref,
 )
 from src.integration.candidate_baseline import CandidateBaselineService
 from src.integration.ci import (
@@ -57,8 +62,8 @@ from src.integration.git_truth import GitTruth, GitTruthSnapshot
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
-from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.promotion_steps import flow_status, flow_targets
+from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
 from src.integration.subjects import Subject
@@ -1159,9 +1164,13 @@ class DaemonLanes:
         from src.integration.ci import IntegrationTrustManifest
         from src.integration.ci_producers import HostedCIProducer
         from src.integration.promotion_steps import (
-            PromotionChecks, PromotionIntentInvalid, PromotionVisit, StepAdmission,
+            PromotionChecks,
+            PromotionIntentInvalid,
+            PromotionVisit,
+            StepAdmission,
             StepPullRequestGate,
-            publish_step_attestation, step_required_checks,
+            frozen_required_checks,
+            publish_step_attestation,
         )
 
         admission = StepAdmission(self.db, gitops, target.step)
@@ -1181,17 +1190,15 @@ class DaemonLanes:
                 "revision": batch.repair_attempt_count,
                 "policy_snapshot": {"root": policy.get("root") or {}},
             }
-            # Load the exact source manifest using the existing App identity checks;
-            # check selection comes from the frozen step, independently of root policy.
+            # The App identity checks refuse a subject naming another identity;
+            # the check set is the one the request froze from committed trust,
+            # never S's own manifest (attestation I3).
             trust, client = await attestation._load_trust(state)
             if not isinstance(trust, IntegrationTrustManifest):
                 raise PromotionIntentInvalid("promotion requires App-mode trust")
-            manifest = await attestation._subject_manifest(state, binding)
-            required = step_required_checks(manifest, meta["step"])
-            if required.version != meta["checks_version"]:
-                raise PromotionIntentInvalid("promotion check version differs from request")
-            resolved[batch.id] = manifest, client, StepPullRequestGate(client, binding)
-            selected = manifest.model_copy(update={"required_checks": required})
+            required = frozen_required_checks(meta)
+            resolved[batch.id] = trust, client, StepPullRequestGate(client, binding)
+            selected = trust.model_copy(update={"required_checks": required})
             return ExactChecks(self.db, HostedChecks(HostedCIProducer(client, selected)))
 
         checks = PromotionChecks(admission, resolve, pull_request=lambda batch: resolved[batch.id][2])

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
-import hashlib
 import re
 import time
 from datetime import UTC, datetime
@@ -14,20 +14,24 @@ from sqlalchemy import func, insert, select, update
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 from src.commands.supervisor_authority import integration_operator
 from src.database.tables import (
-    projects,
-    tasks,
-    task_context,
-    task_metadata,
-    integration_batches,
     integration_batch_members,
+    integration_batches,
     integration_check_evidence,
     integration_review_evidence,
+    projects,
+    task_context,
+    task_metadata,
+    tasks,
 )
-from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.git.github_contracts import GitHubAccessError, rate_limit_cause
+from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.integration.batches import Batch, BatchMember, BatchStore
-from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, promotion_ref
-from src.integration.promotion_steps import FlowSchema
+from src.integration.promotion_steps import (
+    PROMOTION_CONTEXT,
+    PROMOTION_RESULT,
+    FlowSchema,
+    promotion_ref,
+)
 
 
 class PromoteCommandsMixin:
@@ -240,8 +244,8 @@ class PromoteCommandsMixin:
 
     async def _cmd_promote_request(self, args):
         from src.commands.contracts.promote import PromoteRequestArgs
-        from src.integration.promotion_steps import StepAdmission, step_required_checks
         from src.integration.ci import IntegrationTrustManifest
+        from src.integration.promotion_steps import StepAdmission, step_required_checks
 
         request = PromoteRequestArgs.model_validate(args)
         try:
@@ -261,7 +265,7 @@ class PromoteCommandsMixin:
             if trust.canonical_repository_id != repository.id:
                 raise PromotionRefusal("promotion_flow_invalid", "Trust names another repository.")
             required = step_required_checks(trust, step)
-            lane, ops, repo, client = await self._promotion_runtime(project, repository, step)
+            _lane, ops, repo, client = await self._promotion_runtime(project, repository, step)
             if (trust.repository_id, trust.full_name) != (
                 repo.binding.repository_id,
                 repo.binding.full_name,
@@ -366,6 +370,8 @@ class PromoteCommandsMixin:
                     "step": step,
                     "version": version,
                     "checks_version": required.version,
+                    # Frozen from committed trust so the lane never reads S's own set.
+                    "check_names": list(required.names),
                     "requested_at": now,
                     "requester": requester,
                     "notes_sha256": notes_sha,

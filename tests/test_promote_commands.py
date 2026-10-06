@@ -25,7 +25,8 @@ from src.database.tables import (
 from src.git.github_contracts import GitHubAccessError, GitHubCredentialIdentity
 from src.integration.ci import ATTESTATION_CHECK_NAME, IntegrationTrustManifest
 from src.integration.delivery_observer import delivery_targets
-from src.integration.promotion_steps import promotion_ref
+from src.integration.batches import BatchStore
+from src.integration.promotion_steps import cache_promotion_review, promotion_ref
 from src.integration.train import TrainLane
 from src.profiles.capabilities import DENY_ALL
 from tests.test_integration_gitops import commit, git, setup as setup
@@ -159,6 +160,7 @@ async def test_request_freezes_identity_retains_source_and_replays(promote_env):
     meta = first["promotion"]
     assert meta["source_sha"] == e.source and meta["base_sha"] == e.base
     assert meta["version"] == "0.2.0" and meta["requester"]["github_login"] == "operator"
+    assert meta["check_names"] == ["unit"] and meta["checks_version"] == "checks-v1"
     assert meta["notes_sha256"] is None
     assert e.github.created == 1
     assert git(e.ops.git.remote_path, "rev-parse", promotion_ref(meta["step"], meta)) == e.source
@@ -238,6 +240,7 @@ async def test_approve_refuses_wrong_credentials_permissions_or_head(promote_env
 async def test_cache_read_includes_veto_and_never_calls_github(promote_env):
     e = promote_env
     created = await request(e)
+    # Another reviewer's changes request is advisory in requester mode.
     e.github.reviews.append(
         e.github.review(1, e.source, login="reviewer", state="CHANGES_REQUESTED")
     )
@@ -250,6 +253,15 @@ async def test_cache_read_includes_veto_and_never_calls_github(promote_env):
         "cache read contacted GitHub"
     )
     e.handler._promotion_manifest = AsyncMock(side_effect=AssertionError("read fetched trust"))
+    status = await e.handler._cmd_promote_status({"project_id": "p", "step_id": "release"})
+    assert status["promotions"][0]["review"]["verdict"] == "approved"
+    # A later lane observation of the requester's own veto supersedes the approval.
+    [member] = await BatchStore(e.db).members(created["batch_id"])
+    async with e.db.immediate() as conn:
+        await cache_promotion_review(
+            conn, "r", member, git(e.repo.store, "rev-parse", e.source + "^{tree}"),
+            "promotion_pr_changes_requested", {"observed_by": "lane"},
+        )
     for method in (e.handler._cmd_promote_status, e.handler._cmd_promote_list):
         result = await method({"project_id": "p", "step_id": "release"})
         assert result["success"] and result["evidence_source"] == "cache"

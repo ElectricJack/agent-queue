@@ -8,32 +8,38 @@ from __future__ import annotations
 
 import copy
 import fnmatch
-import re
 import json
 import logging
+import re
 import time
 import uuid
 from collections import deque
 from dataclasses import dataclass
-from typing import Any
 from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import quote
 
 from jsonschema import Draft202012Validator
-
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from src.database.tables import (
-    integration_batch_members, integration_batches, task_context, task_metadata, tasks,
+    integration_batch_members,
+    integration_batches,
     integration_review_evidence,
+    task_context,
+    task_metadata,
+    tasks,
 )
-from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.git.github_contracts import GitHubAccessError
+from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.integration.batches import BatchObservation, BatchService
 from src.integration.ci import (
-    AttestationPayload, AuthenticatedGitHubObserver, IntegrationTrustManifest,
-    PromotionAttestationPayload, TrustedCIObservation,
+    AttestationPayload,
+    AuthenticatedGitHubObserver,
+    IntegrationTrustManifest,
+    PromotionAttestationPayload,
+    TrustedCIObservation,
 )
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.subjects import HeadIdentity
@@ -939,6 +945,21 @@ def step_required_checks(trust: IntegrationTrustManifest, step: dict):
     return RequiredChecksManifest(version=trust.required_checks.version, names=names)
 
 
+def frozen_required_checks(meta: dict):
+    """The check set the request froze from committed trust; S's tree never supplies it (I3)."""
+    from pydantic import ValidationError
+
+    from src.integration.ci import RequiredChecksManifest
+
+    names = meta.get("check_names")
+    if not isinstance(names, list):
+        raise PromotionIntentInvalid("promotion check set is not frozen in its request")
+    try:
+        return RequiredChecksManifest(version=meta["checks_version"], names=tuple(names))
+    except (KeyError, ValidationError) as exc:
+        raise PromotionIntentInvalid("promotion frozen check set is invalid") from exc
+
+
 async def cache_promotion_review(conn, repository_id, member, tree, reason, evidence):
     """Cache an observed PR verdict for readers; admission always re-observes GitHub."""
     await conn.execute(insert(integration_review_evidence).values(
@@ -1014,12 +1035,14 @@ class PromotionChecks:
 
 
 async def publish_step_attestation(admission, batch, members, trust, client) -> str:
-    """Publish and read back only this admitted step's canonical proof, outside locks."""
+    """Publish and read back only this admitted step's canonical proof, outside locks.
+
+    ``trust`` supplies only identity; the request validated the step's
+    attestation name against committed trust and froze its check set.
+    """
     meta = await admission.load(batch, members)
     step = meta["step"]
-    required = step_required_checks(trust, step)
-    if meta["checks_version"] != required.version:
-        raise PromotionIntentInvalid("promotion check version differs from the pinned request")
+    required = frozen_required_checks(meta)
     selected = trust.model_copy(update={"required_checks": required})
     observer = AuthenticatedGitHubObserver(client, expected_event="push")
     observed = await observer.observe(selected, meta["source_sha"])
@@ -1041,7 +1064,8 @@ async def publish_step_attestation(admission, batch, members, trust, client) -> 
     })
     if not await admission.eligible(batch, members):
         return "promotion_intent_invalid"
-    record_id = await observer.publish(trust, payload)
+    # Validate against the frozen set; committed trust may have gained a check since.
+    record_id = await observer.publish(selected, payload)
     from urllib.parse import quote
 
     records = await client.paged_items(

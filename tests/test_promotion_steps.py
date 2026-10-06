@@ -20,7 +20,7 @@ from src.integration.provenance import CompletionIdentity
 from src.integration.promotion_steps import (
     FlowSchema, PromotionChecks, PromotionIntentInvalid, PromotionVisit, StepAdmission,
     StepPullRequestGate,
-    promotion_ref, settle_promotion,
+    frozen_required_checks, promotion_ref, settle_promotion,
 )
 from tests.test_integration_gitops import commit, git, setup as setup
 from tests.test_integration_train_sources import HostedGitHub
@@ -102,7 +102,7 @@ async def promotion(setup, request):
         "request_id": "promotion:r:release:1.2.3", "repository_id": "r",
         "target_ref": batch.target_ref, "source_sha": source, "base_sha": base,
         "step": step, "version": None if step["versioning"]["kind"] == "none" else "1.2.3",
-        "checks_version": "checks-v1",
+        "checks_version": "checks-v1", "check_names": ["unit"],
         "requested_at": batch.created_at,
         "requester": {"identity": "human:local-operator", "github_login": "operator"},
         "notes_sha256": None,
@@ -763,7 +763,10 @@ async def test_settlement_requires_git_truth_even_with_source_and_tag_present(pr
         assert await conn.scalar(select(tasks.c.status)) == "IN_PROGRESS"
 
 
-async def test_daemon_lane_reuses_source_checks_and_isolates_step_proofs(promotion):
+@pytest.mark.parametrize("current_names", [["unit"], ["unit", "lint"]])
+async def test_daemon_lane_reuses_source_checks_and_isolates_step_proofs(
+    promotion, current_names,
+):
     from src.integration.train import TrainTarget
     from src.integration.train_sources import DaemonLanes, DatabaseBatches
 
@@ -782,7 +785,8 @@ async def test_daemon_lane_reuses_source_checks_and_isolates_step_proofs(promoti
         full_name=client.full_name, ci_producer_app_id=15368, attestation_app_id=101,
         attestation_name=ATTESTATION_CHECK_NAME,
         promotion_attestation_names=(e.meta["step"]["gate"]["attestation"],),
-        required_checks={"version": "checks-v1", "names": ["unit"]},
+        # Trust that gained a check after the request still runs the frozen set.
+        required_checks={"version": "checks-v1", "names": current_names},
     )
 
     async def load_trust(state):
@@ -792,7 +796,9 @@ async def test_daemon_lane_reuses_source_checks_and_isolates_step_proofs(promoti
     orchestrator = SimpleNamespace(
         db=e.db, git=e.ops.git,
         integration_attestation_service=SimpleNamespace(
-            _load_trust=load_trust, _subject_manifest=AsyncMock(return_value=manifest),
+            # The check set is frozen in the request; S's own tree never selects it.
+            _load_trust=load_trust,
+            _subject_manifest=AsyncMock(side_effect=AssertionError("lane read S's manifest")),
         ),
     )
     lanes = DaemonLanes(orchestrator, batches=DatabaseBatches(e.db))
@@ -808,12 +814,24 @@ async def test_daemon_lane_reuses_source_checks_and_isolates_step_proofs(promoti
     checks = await lane.checks.for_candidate(e.batch, e.source)
     assert (await checks.refresh(await lane.checks.head(e.batch, e.source))).green
     e.service = lane.service
-    assert (await visit(e)).state == "delivered"
+    observed = await visit(e)
+    assert observed.state == "delivered", observed
     assert not git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/")
     [record] = [r for r in client.records if r["id"] > 2]
     assert record["name"] == e.meta["step"]["gate"]["attestation"]
     proof = json.loads(record["output"]["text"])
     assert proof["step"] == "release" and proof["source_sha"] == e.source
+
+
+@pytest.mark.parametrize("frozen", [
+    {"check_names": None}, {"check_names": "unit"}, {"check_names": []},
+    {"checks_version": ""},
+])
+def test_frozen_check_set_refuses_request_without_a_valid_one(frozen):
+    meta = {"checks_version": "checks-v1", "check_names": ["unit"]}
+    assert frozen_required_checks(meta).names == ("unit",)
+    with pytest.raises(PromotionIntentInvalid):
+        frozen_required_checks({**meta, **frozen})
 
 
 async def test_publish_command_refuses_worker_then_settles_via_service(promotion):
