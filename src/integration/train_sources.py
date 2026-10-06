@@ -56,7 +56,7 @@ from src.integration.epics import EpicGraphReader, EpicPolicy, EpicReadinessEval
 from src.integration.git_truth import GitTruth, GitTruthSnapshot
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
-from src.integration.models import BranchKey
+from src.integration.models import BranchKey, RepairPolicy
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
@@ -803,6 +803,9 @@ class DaemonLanes:
         from src.integration.development_runtime import development_repository
 
         policy = await self._policy(target.project_id)
+        repair_policy = (policy.get("parent" if target.kind == "epic" else "root") or {}).get(
+            "repair"
+        )
         settings, version = await self._settings(policy)
         repo_row = await self.db.get_repo(target.repository_id)
         binding = await self.orchestrator.github_repository_binding_resolver(repo_row)
@@ -916,6 +919,8 @@ class DaemonLanes:
                     return None
 
         return TrainLane(snapshot=snapshot, service=service, checks=checks,
+                         repair_policy=(RepairPolicy.model_validate(repair_policy)
+                                        if repair_policy else None),
                          complete_epic=complete_epic, sync_default_branch=sync_default_branch,
                          sync_closed_epic=sync_closed_epic)
 

@@ -1166,6 +1166,28 @@ async def hosted_train(world, *, retained_store=None, clock=time.time):
     return train, github, trusts
 
 
+@pytest.mark.parametrize("kind,boundary", [("root", "root"), ("epic", "parent")])
+async def test_daemon_lane_refreshes_boundary_repair_policy_on_each_visit(world, kind, boundary):
+    from src.integration.models import RepairPolicy
+
+    train, _, _ = await hosted_train(world)
+    target = MAIN if kind == "root" else TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    policy = {
+        lane: {"repair": RepairPolicy(debug_intelligence_class=f"{lane}-debug").model_dump()}
+        for lane in ("root", "parent")
+    }
+    for attempts, debug_class in ((2, "standard-high"), (1, "deep-high")):
+        policy[boundary]["repair"].update(primary_attempts=attempts,
+                                          debug_intelligence_class=debug_class)
+        async with world.db.immediate() as conn:
+            await conn.execute(update(projects).where(projects.c.id == "p").values(
+                hierarchical_integration_policy=policy,
+            ))
+        current = await train.lane_for(target)
+        assert current.repair_policy.primary_attempts == attempts
+        assert current.repair_policy.debug_intelligence_class == debug_class
+
+
 @pytest.fixture
 async def collected_epic(world):
     """Two ordinary completions collected through the daemon's actual epic lane."""

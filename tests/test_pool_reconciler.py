@@ -145,7 +145,10 @@ async def _deliver_first_by_train(db, env):
         batches=SimpleNamespace(open_batch=AsyncMock(return_value=BatchSelection(batch, members)),
                                 settle=AsyncMock()),
         lane_for=AsyncMock(return_value=TrainLane(snapshot, service, checks)),
-        repair=SimpleNamespace(allocate=AsyncMock(side_effect=AssertionError("unexpected repair"))),
+        repair=SimpleNamespace(
+            allocate=AsyncMock(side_effect=AssertionError("unexpected repair")),
+            settle_green=AsyncMock(),
+        ),
     )
     await train.tick()
     await train.drain()
