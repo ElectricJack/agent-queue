@@ -323,6 +323,73 @@ async def test_operator_permission_lookup_failure_is_a_named_blocker(promotion, 
     e.service.attest.assert_not_awaited()
 
 
+def fail_permission_lookup(e, *logins):
+    request = e.github.request_json
+
+    async def unavailable(method, path, **kwargs):
+        if any(f"/collaborators/{login}/" in path for login in logins):
+            raise OSError("permission lookup unavailable")
+        return await request(method, path, **kwargs)
+
+    e.github.request_json = unavailable
+
+
+async def test_changes_requested_by_a_non_operator_does_not_block(promotion):
+    e = promotion
+    e.github.reviews.append(e.github.review(2, e.source, login="outsider",
+                                            state="CHANGES_REQUESTED"))
+    assert (await visit(e)).state == "delivered"
+
+
+@pytest.mark.parametrize("promotion", [{"gate": {"operator_logins": ["operator"]}}],
+                         indirect=True)
+async def test_changes_requested_by_an_admin_outside_the_allowlist_does_not_block(promotion):
+    e = promotion
+    e.github.admins.add("other-admin")
+    e.github.reviews.append(e.github.review(2, e.source, login="other-admin",
+                                            state="CHANGES_REQUESTED"))
+    assert (await visit(e)).state == "delivered"
+
+
+async def test_unverifiable_changes_request_fails_closed(promotion):
+    e = promotion
+    e.github.reviews.append(e.github.review(2, e.source, login="unknown",
+                                            state="CHANGES_REQUESTED"))
+    fail_permission_lookup(e, "unknown")
+    result = await visit(e)
+    assert result.detail["reason"] == "promotion_operator_permission_unavailable"
+    e.service.attest.assert_not_awaited()
+
+
+async def test_failed_lookup_for_one_approver_does_not_hide_an_operator_approval(promotion):
+    e = promotion
+    e.github.reviews = [e.github.review(1, e.source, login="flaky"),
+                        e.github.review(2, e.source)]
+    fail_permission_lookup(e, "flaky")
+    assert (await visit(e)).state == "delivered"
+
+
+@pytest.mark.parametrize("promotion", [{"gate": {"approval": "requester"}, "intent": {
+    "requester": {"identity": "session:requester", "github_login": "requester"},
+}}], indirect=True)
+async def test_requester_gate_blocks_only_on_the_requesters_own_changes_request(promotion):
+    e = promotion
+    make = e.github.review
+    e.github.reviews = [make(1, e.source, login="requester"),
+                        make(2, e.source, state="CHANGES_REQUESTED")]
+    assert (await visit(e)).state == "delivered"
+
+
+@pytest.mark.parametrize("promotion", [{"gate": {"approval": "requester"}, "intent": {
+    "requester": {"identity": "session:requester", "github_login": "requester"},
+}}], indirect=True)
+async def test_requester_changes_request_blocks_the_requester_gate(promotion):
+    e = promotion
+    e.github.reviews = [e.github.review(3, e.source, login="Requester",
+                                        state="CHANGES_REQUESTED")]
+    assert (await visit(e)).detail["reason"] == "promotion_pr_changes_requested"
+
+
 async def test_operator_permission_is_observed_again_before_publication(promotion):
     e = promotion
 

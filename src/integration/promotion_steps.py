@@ -870,36 +870,49 @@ class StepPullRequestGate:
                 # A newer dismissal or review on another head invalidates the
                 # reviewer's old approval; comments alone do not replace it.
                 latest[login.casefold()] = review
-            if any(r.get("commit_id") == meta["source_sha"] and r["state"] == "CHANGES_REQUESTED"
-                   for r in latest.values()):
-                return "promotion_pr_changes_requested"
-            approved = [r["user"]["login"] for r in latest.values()
-                        if r["state"] == "APPROVED" and r.get("commit_id") == meta["source_sha"]]
+            # Only a reviewer who could approve this step can block it with
+            # CHANGES_REQUESTED; anyone else's review on S is advisory.
+            current = [r for r in latest.values() if r.get("commit_id") == meta["source_sha"]
+                       and r["state"] in {"APPROVED", "CHANGES_REQUESTED"}]
             if approval == "requester":
                 requester = meta["requester"]
                 login = requester.get("github_login") if isinstance(requester, dict) else None
                 if not login:
                     return "promotion_requester_identity_missing"
-                return (None if login.casefold() in {name.casefold() for name in approved}
-                        else "promotion_requester_approval_missing")
+                own = {r["state"] for r in current
+                       if r["user"]["login"].casefold() == login.casefold()}
+                if "CHANGES_REQUESTED" in own:
+                    return "promotion_pr_changes_requested"
+                return None if "APPROVED" in own else "promotion_requester_approval_missing"
             if approval == "operator":
                 allowed = meta["step"]["gate"].get("operator_logins")
-                for login in approved:
-                    if allowed is not None and login.casefold() not in {
-                        name.casefold() for name in allowed
-                    }:
+                allowed = None if allowed is None else {name.casefold() for name in allowed}
+                unknown = False
+                # Blockers first: an unverifiable blocker fails closed, and a
+                # failed lookup for one approver does not hide another's approval.
+                for review in sorted(current, key=lambda r: r["state"] != "CHANGES_REQUESTED"):
+                    login = review["user"]["login"]
+                    if allowed is not None and login.casefold() not in allowed:
                         continue
                     try:
                         operator = await self.is_operator(login)
                     except GitHubAccessError as exc:
                         if exc.category == "rate_limited":
                             raise
-                        return "promotion_operator_permission_unavailable"
+                        operator = None
                     except (OSError, ValueError, TypeError):
-                        return "promotion_operator_permission_unavailable"
-                    if operator:
+                        operator = None
+                    if review["state"] == "CHANGES_REQUESTED":
+                        if operator is None:
+                            return "promotion_operator_permission_unavailable"
+                        if operator:
+                            return "promotion_pr_changes_requested"
+                    elif operator:
                         return None
-                return "promotion_operator_approval_missing"
+                    elif operator is None:
+                        unknown = True
+                return ("promotion_operator_permission_unavailable" if unknown
+                        else "promotion_operator_approval_missing")
             return "promotion_intent_invalid"
         except GitHubAccessError as exc:
             if exc.category == "rate_limited":
