@@ -24,7 +24,7 @@ world = _sources.world  # the shared train-sources fixture
 
 
 async def legacy(world, tid, *, record_commits=True, land=False, squash=False,
-                 delete_branch=False) -> str:
+                 delete_branch=False, close_row=True) -> str:
     """A completed task closed before provenance existed: no retained record."""
     db, origin = world.db, world.origin
     head = origin.work(tid)
@@ -37,10 +37,11 @@ async def legacy(world, tid, *, record_commits=True, land=False, squash=False,
             base_sha=base, creation_generation=0, reserved=True, materialized=True,
             created_at=time.time(),
         ))
-    await db.save_task_completion(TaskCompletion(
-        id=f"close-{tid}", task_id=tid, outcome="pass",
-        commits=[head] if record_commits else [], completed_at=time.time(),
-    ))
+    if close_row:
+        await db.save_task_completion(TaskCompletion(
+            id=f"close-{tid}", task_id=tid, outcome="pass",
+            commits=[head] if record_commits else [], completed_at=time.time(),
+        ))
     await db.transition_task(tid, TaskStatus.COMPLETED)
     if land:
         origin.land(tid)
@@ -118,3 +119,14 @@ async def test_backfill_skips_reopened_generation(world):
     ))
     await db.transition_task("merged", TaskStatus.COMPLETED)
     assert "merged" in await blocker_codes(world)
+
+
+async def test_backfill_records_a_legacy_close_without_a_completion_row(world):
+    db = world.db
+    await legacy(world, "rowless", close_row=False, land=True)
+    assert "rowless" in await blocker_codes(world)
+    applied = await backfill_legacy_deliveries(db, "p", dry_run=False, operator_id="op",
+                                               reason="r")
+    assert [(r["task_id"], r["outcome"], r["via"]) for r in applied["results"]] == [
+        ("rowless", "recorded", "branch_tip")]
+    assert "rowless" not in await blocker_codes(world)
