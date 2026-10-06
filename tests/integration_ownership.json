@@ -8115,6 +8115,36 @@
     },
     "src/api/target_scope.py::CONTEXT_TARGET_RESOLVERS[('decision_list', 'object_id')]": {
       "reason": "Registers tagged integration operator decision read ownership."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.claim_frontier_exclusions": {
+      "reason": "Claim frontier diagnostics evaluate the fresh Git prerequisite view for hierarchy/train projects."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.count_ready_by_profile": {
+      "reason": "Pool demand counts apply the shared Git prerequisite view before counting claimable work."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.queries.hierarchy_queries import HIERARCHY_MODES, ProjectIntegrationMode, container_flag_exists, delivered_prerequisites_for_projects, delivered_same_parent_prerequisites_when_hierarchical, materialized_origin_when_hierarchical, never_leaseable_container": {
+      "reason": "Imports the per-project Git prerequisite predicate alongside the existing hierarchy admission fences."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin.hierarchy_runnable_task_ids": {
+      "reason": "Scheduler admission filters hierarchy/train tasks through the revalidated Git prerequisite view."
+    },
+    "src/database/queries/hierarchy_queries.py::delivered_prerequisites_for_projects": {
+      "reason": "Selects each project's Git prerequisite predicate while retaining legacy admission for other modes."
+    },
+    "src/doctor/task_checks.py::_check_ready_frontier_exclusions": {
+      "reason": "Frontier diagnostics observe current hierarchical Git delivery proof without storing delivery state."
+    },
+    "src/orchestrator/core.py::Orchestrator.run_one_cycle": {
+      "reason": "Observes one request-scoped hierarchical Git prerequisite view and shares it across scheduling and pool reconciliation."
+    },
+    "src/orchestrator/pools.py::import from src.database.queries.hierarchy_queries import ProjectIntegrationMode": {
+      "reason": "Imports hierarchy integration mode identity for the pool demand admission fallback."
+    },
+    "src/database/queries/claim_queries.py::claim_frontier_predicates": {
+      "reason": "Builds diagnostic claim predicates with the per-project Git prerequisite view shared by frontier checks."
+    },
+    "src/doctor/task_checks.py::import from src.database.queries.claim_queries import claim_frontier_predicates": {
+      "reason": "Imports the integration-owned diagnostic claim frontier predicates for current Git prerequisite checks."
     }
   },
   "exclusions": {
