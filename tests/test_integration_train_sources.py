@@ -413,8 +413,8 @@ async def test_train_control_handlers_refuse_non_supervisor_principals(world, ki
     assert (await store.get("batch")).intent == "open"
 
 
-async def test_abort_batch_preview_apply_and_promoted_candidate_refusal(world):
-    db, origin = world.db, world.origin
+async def test_abort_batch_preview_apply(world):
+    db = world.db
     source = await completed(world, "a")
     store = BatchStore(db)
     batch = Batch("abort-me", "p", "r", MAIN.target_ref)
@@ -435,16 +435,92 @@ async def test_abort_batch_preview_apply_and_promoted_candidate_refusal(world):
             events.c.event_type == "integration.batch_intent"))).scalars().all()
     assert "duplicate work" in audit
     assert await DatabaseBatches(db).pending(MAIN, await snapshot(world)) is None
-    promoted = Batch("promoted", "p", "r", MAIN.target_ref)
-    await store.freeze(promoted, (BatchMember("a", source, source),), trees={"a": tree(world, source)})
-    git(origin.clone, "push", "origin", f"main:{candidate_ref(promoted.id)}")
-    with pytest.raises(ValueError, match="promoted candidate"):
-        await controls.abort_batch(promoted.id, dry_run=False, operator_id="operator", reason="no")
-    async with db._engine.begin() as conn:
-        await conn.execute(update(integration_batches).where(integration_batches.c.id == promoted.id)
-                           .values(lifecycle="promoted"))
-    with pytest.raises(ValueError, match="promoted batch"):
-        await store.set_intent(promoted.id, "aborted")
+
+
+async def test_abort_first_member_conflict_at_target_releases_member(world):
+    from src.commands.task_commands import TaskCommandsMixin
+    from src.database.queries.hierarchy_queries import HierarchyError
+
+    db, origin = world.db, world.origin
+    base = git(origin.clone, "rev-parse", "origin/main")
+    git(origin.clone, "checkout", "-q", "-b", "aq/rework", base)
+    (origin.clone / "base.txt").write_text("source change\n")
+    git(origin.clone, "commit", "-qam", "source change")
+    source = git(origin.clone, "rev-parse", "HEAD")
+    git(origin.clone, "push", "-q", "origin", "aq/rework")
+    await completed(world, "rework", head=source)
+    git(origin.clone, "checkout", "-q", "main")
+    (origin.clone / "base.txt").write_text("target change\n")
+    git(origin.clone, "commit", "-qam", "target change")
+    git(origin.clone, "push", "-q", "origin", "main")
+    target = git(origin.clone, "rev-parse", "HEAD")
+
+    store = BatchStore(db)
+    batch = Batch("first-conflict", "p", "r", MAIN.target_ref)
+    members = (BatchMember("rework", source, base),)
+    await store.freeze(batch, members, trees={"rework": tree(world, source)})
+    train, _, _ = lane(world, LocalGit(Path(origin.url)))
+    train_lane = await train.lane_for(MAIN)
+    result = await train_lane.service.visit(batch, members, await snapshot(world))
+    assert result.state == "conflict"
+    assert result.candidate_sha == result.target_sha == target
+    assert git(origin.url, "rev-parse", candidate_ref(batch.id)) == target
+
+    handler = TaskCommandsMixin()
+    handler.db, handler._current_scope = db, {}
+    with pytest.raises(HierarchyError, match="sealed subtree"):
+        await handler._cmd_reopen_with_feedback({"task_id": "rework", "feedback": "resolve conflict"})
+    before = await db.get_integration_batch(batch.id)
+    async with db._engine.connect() as conn:
+        audit_before = (await conn.execute(select(events.c.id).where(
+            events.c.event_type == "integration.batch_intent"))).scalars().all()
+    controls = TrainControls(db)
+    preview = await controls.abort_batch(batch.id, dry_run=True, operator_id="operator", reason="")
+    assert preview["outcome"] == "preview"
+    assert preview["candidate_sha"] == preview["target_sha"] == target
+    assert await db.get_integration_batch(batch.id) == before
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(events.c.id).where(
+            events.c.event_type == "integration.batch_intent"))).scalars().all() == audit_before
+    applied = await controls.abort_batch(batch.id, dry_run=False, operator_id="operator",
+                                        reason="resolve conflict")
+    assert applied["outcome"] == "aborted"
+    aborted = await db.get_integration_batch(batch.id)
+    assert (aborted["intent"], aborted["lifecycle"]) == ("aborted", "aborted")
+    assert (await handler._cmd_reopen_with_feedback({
+        "task_id": "rework", "feedback": "resolve conflict",
+    }))["status"] == "READY"
+
+
+@pytest.mark.parametrize("proof", ["ancestry", "squash", "lifecycle"])
+@pytest.mark.parametrize("candidate_present", [False, True])
+async def test_abort_refuses_promoted_batch_with_or_without_candidate(world, proof, candidate_present):
+    db, origin = world.db, world.origin
+    source = await completed(world, "a")
+    base = git(origin.clone, "rev-parse", f"{source}^")
+    store = BatchStore(db)
+    batch = Batch("promoted", "p", "r", MAIN.target_ref)
+    await store.freeze(batch, (BatchMember("a", source, base),), trees={"a": tree(world, source)})
+    if proof == "ancestry":
+        origin.land("a")
+    elif proof == "squash":
+        git(origin.clone, "checkout", "-q", "main")
+        git(origin.clone, "merge", "--squash", "aq/a")
+        git(origin.clone, "commit", "-qm", "squashed source")
+        git(origin.clone, "push", "-q", "origin", "main")
+        assert git(origin.clone, "rev-parse", "main") != source
+    else:
+        async with db._engine.begin() as conn:
+            await conn.execute(update(integration_batches).where(integration_batches.c.id == batch.id)
+                               .values(lifecycle="promoted"))
+    if candidate_present:
+        git(origin.clone, "push", "-q", "origin", f"main:{candidate_ref(batch.id)}")
+    before = await db.get_integration_batch(batch.id)
+    controls = TrainControls(db)
+    for dry_run in (True, False):
+        with pytest.raises(ValueError, match="promoted batch"):
+            await controls.abort_batch(batch.id, dry_run=dry_run, operator_id="operator", reason="no")
+        assert await db.get_integration_batch(batch.id) == before
 
 
 @pytest.mark.parametrize("lifecycle", ["sealed", "testing"])
@@ -613,14 +689,18 @@ async def test_retire_origin_preview_apply_removes_pending_and_requires_delivery
 
 
 @pytest.mark.parametrize("unknown_ancestry", [True, False])
-async def test_abort_requires_observed_promotion_and_unchanged_refs(world, monkeypatch, unknown_ancestry):
+@pytest.mark.parametrize("candidate_present", [False, True])
+async def test_abort_requires_observed_promotion_and_unchanged_refs(
+    world, monkeypatch, unknown_ancestry, candidate_present,
+):
     from unittest.mock import AsyncMock
 
     source = await completed(world, "a")
     batch = Batch("uncertain", "p", "r", MAIN.target_ref)
     store = BatchStore(world.db)
     await store.freeze(batch, (BatchMember("a", source, source),), trees={"a": tree(world, source)})
-    git(world.origin.clone, "push", "origin", f"{source}:{candidate_ref(batch.id)}")
+    if candidate_present:
+        git(world.origin.clone, "push", "origin", f"{source}:{candidate_ref(batch.id)}")
     if unknown_ancestry:
         monkeypatch.setattr(GitManager, "ais_ancestor", AsyncMock(return_value=None))
         cause = "promotion cannot be observed"
@@ -636,9 +716,15 @@ async def test_abort_requires_observed_promotion_and_unchanged_refs(world, monke
 
 async def test_retire_origin_requires_aborting_its_open_batches(world):
     source = await completed(world, "a", land=True)
+    pending = await completed(world, "pending")
     store = BatchStore(world.db)
     batch = Batch("duplicate", "p", "r", MAIN.target_ref)
-    await store.freeze(batch, (BatchMember("a", source, source),), trees={"a": tree(world, source)})
+    await store.freeze(batch, (
+        BatchMember("a", source, git(world.origin.clone, "rev-parse", f"{source}^")),
+        BatchMember("pending", pending, git(world.origin.clone, "rev-parse", f"{pending}^"), order=1),
+    ), trees={"a": tree(world, source), "pending": tree(world, pending)})
+    # A repair start already contained by the target still lacks one member.
+    git(world.origin.clone, "push", "-q", "origin", f"main:{candidate_ref(batch.id)}")
     controls = TrainControls(world.db)
     with pytest.raises(ValueError, match="abort the task's open batches"):
         await controls.retire_origin("a", dry_run=False, origin_id="a-origin",
