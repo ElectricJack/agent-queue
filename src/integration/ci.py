@@ -1055,6 +1055,7 @@ class AuthenticatedGitHubObserver:
             else None
         )
         selected: list[dict[str, Any]] = []
+        diagnostics: dict[int, dict[str, Any]] = {}
         missing: list[str] = []
         # One listing per observation, filtered locally by name. A per-name
         # query cost one API call per required check (17 per observation) and
@@ -1137,6 +1138,7 @@ class AuthenticatedGitHubObserver:
                     ),
                 }
             )
+            diagnostics[newest["id"]] = _failed_check_diagnostics(newest)
 
         missing_suite_id: int | None = None
         if missing:
@@ -1254,6 +1256,15 @@ class AuthenticatedGitHubObserver:
                     head_sha=head_sha,
                     full_name=trust.full_name,
                 )
+                jobs_by_name = {job["name"]: job for job in jobs}
+                for check in selected:
+                    if check["check_suite_id"] == suite_id:
+                        job = jobs_by_name[check["name"]]
+                        diagnostics[check["check_run_id"]]["job_url"] = (
+                            job.get("html_url") or
+                            f"https://github.com/{trust.full_name}/actions/runs/"
+                            f"{workflow_run_id}/job/{job['id']}"
+                        )
             workflow_rows.append(
                 {
                     "workflow_run_id": workflow_run_id,
@@ -1274,7 +1285,9 @@ class AuthenticatedGitHubObserver:
         ):
             verdict = failed_run_verdict(selected, workflow_rows)
             return FailedCIObservation(
-                checks=tuple(selected),
+                # Diagnostics are repair evidence, outside the canonical green receipt.
+                checks=tuple({**check, **diagnostics.get(check.get("check_run_id"), {})}
+                             for check in selected),
                 workflow_runs=tuple(workflow_rows),
                 workflow_ids=workflow_ids,
                 conclusion="cancelled" if verdict == "cancelled" else "failure",
@@ -1452,6 +1465,25 @@ def _require_workflow_repository(record: dict[str, Any], trust: IntegrationCITru
         or head_repository.get("full_name") != trust.full_name
     ):
         raise AttestationError("workflow repository identity does not match CI trust")
+
+
+def _failed_check_diagnostics(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Retain job links and pytest failure IDs already present in the one listing."""
+    detail: dict[str, Any] = {}
+    if isinstance(record.get("html_url"), str) and record["html_url"]:
+        detail["job_url"] = record["html_url"]
+    output = record.get("output")
+    if isinstance(output, dict):
+        failed = []
+        for key in ("summary", "text"):
+            value = output.get(key)
+            if isinstance(value, str):
+                failed.extend(re.findall(
+                    r"(?m)^\s*(?:FAILED|ERROR)\s+(\S+\.py::.+?)(?:\s+-\s+.*)?$", value,
+                ))
+        if failed:
+            detail["failing_test_ids"] = list(dict.fromkeys(failed))
+    return detail
 
 
 def _require_latest_attempt_jobs(
