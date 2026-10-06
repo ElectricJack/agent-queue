@@ -115,19 +115,30 @@ task's new completion is not covered by the old row.
 
 A child of a still-open epic whose exact source is already on the epic branch
 gets retained provenance instead (`epic_branch_provenance`), because the epic's
-readiness reads provenance, not rows. An old **completed** epic whose branch never
-reached the default branch and must not now (it conflicts, or its work arrived
-another way) needs an explicit decision, never a bulk one:
+readiness reads provenance, not rows. For the rest — a completion git can no
+longer prove and that must not now be delivered — an explicit, reasoned decision
+is the only answer, and it is per task:
 
 ```bash
-.venv/bin/python scripts/backfill-legacy-deliveries.py "$PROJECT_ID" --abandon-epic EPIC_ID
-.venv/bin/python scripts/backfill-legacy-deliveries.py "$PROJECT_ID" --abandon-epic EPIC_ID \
+.venv/bin/python scripts/backfill-legacy-deliveries.py "$PROJECT_ID" \
+    --abandon-task TASK_ID --abandon-task ANOTHER_TASK_ID
+.venv/bin/python scripts/backfill-legacy-deliveries.py "$PROJECT_ID" \
+    --abandon-task TASK_ID --abandon-task ANOTHER_TASK_ID \
     --apply --reason "superseded by later work on main"
 ```
 
-That records `abandoned` rows for the epic and its undelivered descendants, so
-the train neither blocks on them nor merges the stale branch. Nothing is deleted;
+`--abandon-task` names any one completed task, leaf or container, and records
+`abandoned` rows for it and, when it is a container, for its undelivered
+descendants, so the train neither blocks on them nor merges a stale branch.
+Both flags are repeatable and both are refused when git already proves the work
+(the ordinary backfill then records that proof instead), when the task is not
+`COMPLETED`, or when `--apply` has no nonblank `--reason`. A container with no
+branch of its own is decided the same way; `--abandon-epic` is the same decision
+by name for a container, and refuses a task with no children. Nothing is deleted;
 removing the rows restores the previous state.
+
+Re-run the ordinary backfill afterwards: it lists whatever still cannot be
+accounted for, and every such task needs its own decision here.
 
 ## 4. Select `active` and restart
 

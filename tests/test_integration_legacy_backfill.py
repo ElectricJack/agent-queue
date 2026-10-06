@@ -173,6 +173,28 @@ async def test_open_epic_child_on_epic_branch_gets_retained_provenance(world):
         assert (await conn.execute(select(integration_legacy_deliveries))).all() == []
 
 
+async def branchless(world, tid, *, child=None):
+    """A completed task with no branch of its own, optionally over one legacy child.
+
+    Its close reported a source, so git cannot account for it and the train lists
+    it as an unknown blocker for good; the NULL-branch origin keeps it an
+    undelivered train input.
+    """
+    db, origin = world.db, world.origin
+    await db.create_task(Task(id=tid, project_id="p", repo_id="r", title=tid, description="",
+                              branch_name=None, status=TaskStatus.IN_PROGRESS))
+    head = await legacy(world, child, parent=tid) if child else origin.work(tid)
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id=f"{tid}-origin", task_id=tid, repository_id="r", branch_name=None,
+            base_sha=git(origin.clone, "rev-parse", "origin/main"),
+            creation_generation=0, reserved=True, materialized=True, created_at=time.time()))
+    await db.save_task_completion(TaskCompletion(
+        id=f"close-{tid}", task_id=tid, outcome="pass", commits=[head], completed_at=time.time()))
+    await db.transition_task(tid, TaskStatus.COMPLETED)
+    return head
+
+
 async def test_abandon_completed_epic_records_decision_for_epic_and_children(world):
     from src.integration.legacy_backfill import abandon_epic
 
@@ -195,6 +217,114 @@ async def test_abandon_completed_epic_records_decision_for_epic_and_children(wor
     assert not {"old", "kid"} & set(await blocker_codes(world))
     with pytest.raises(ValueError, match="completed epic"):
         await abandon_epic(db, "p", "kid")
+
+
+async def test_abandon_task_records_one_decision_for_a_legacy_leaf(world):
+    from src.integration.legacy_backfill import abandon_task
+
+    db = world.db
+    await legacy(world, "stranded")
+    assert "stranded" in await blocker_codes(world)
+    with pytest.raises(ValueError, match="nonblank reason"):
+        await abandon_task(db, "p", "stranded", dry_run=False)
+    preview = await abandon_task(db, "p", "stranded")
+    assert [(r["task_id"], r["proof"], r["via"]) for r in preview["results"]] == [
+        ("stranded", "abandoned", "operator_decision")]
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_legacy_deliveries))).all() == []
+    applied = await abandon_task(db, "p", "stranded", dry_run=False, operator_id="op",
+                                 reason="superseded by later work on main")
+    assert [(r["task_id"], r["outcome"]) for r in applied["results"]] == [("stranded", "recorded")]
+    async with db._engine.connect() as conn:
+        row = (await conn.execute(select(integration_legacy_deliveries))).one()
+    assert (row.task_id, row.proof, row.delivered_sha, row.operator_id) == (
+        "stranded", "abandoned", None, "op")
+    assert "superseded by later work on main" in row.reason and "abandon stranded" in row.reason
+    assert "stranded" not in await blocker_codes(world)
+    again = await abandon_task(db, "p", "stranded", dry_run=False, operator_id="op", reason="r")
+    assert again["results"] == []
+
+
+async def test_abandon_task_refuses_what_git_already_proves(world):
+    from src.integration.legacy_backfill import abandon_task
+
+    db = world.db
+    await legacy(world, "landed", land=True)
+    await legacy(world, "squashed", squash=True)
+    with pytest.raises(ValueError, match="already proves landed"):
+        await abandon_task(db, "p", "landed")
+    with pytest.raises(ValueError, match="already proves squashed"):
+        await abandon_task(db, "p", "squashed")
+    await db.create_task(Task(id="open", project_id="p", repo_id="r", title="open", description="",
+                              branch_name="aq/open", status=TaskStatus.IN_PROGRESS))
+    with pytest.raises(ValueError, match="only a completed task"):
+        await abandon_task(db, "p", "open")
+    with pytest.raises(ValueError, match="not a task of this project"):
+        await abandon_task(db, "p", "no-such-task")
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_legacy_deliveries))).all() == []
+
+
+async def test_a_branchless_task_is_decided_by_either_surface(world):
+    from src.integration.legacy_backfill import abandon_epic, abandon_task
+
+    db = world.db
+    await branchless(world, "flat", child="under")
+    await branchless(world, "loose")
+    assert await blocker_codes(world) == {"flat": "missing_git_provenance",
+                                          "loose": "missing_git_provenance",
+                                          "under": "missing_git_provenance"}
+    with pytest.raises(ValueError, match="nonblank reason"):
+        await abandon_epic(db, "p", "flat", dry_run=False)
+    preview = await abandon_epic(db, "p", "flat")
+    assert {r["task_id"] for r in preview["results"]} == {"flat", "under"}
+    await abandon_epic(db, "p", "flat", dry_run=False, operator_id="op", reason="superseded")
+    leaf = await abandon_task(db, "p", "loose", dry_run=False, operator_id="op",
+                              reason="superseded")
+    assert [(r["task_id"], r["outcome"]) for r in leaf["results"]] == [("loose", "recorded")]
+    async with db._engine.connect() as conn:
+        rows = {r.task_id: r.proof for r in
+                (await conn.execute(select(integration_legacy_deliveries))).all()}
+    assert rows == {"flat": "abandoned", "under": "abandoned", "loose": "abandoned"}
+    assert set(await blocker_codes(world)) == set()
+
+
+async def test_a_container_collected_onto_main_is_refused_by_name(world):
+    from src.integration.legacy_backfill import abandon_epic
+
+    db, origin = world.db, world.origin
+    base = git(origin.clone, "rev-parse", "origin/main")
+    await epic_with_child(world, "landed", "part", epic_status=TaskStatus.COMPLETED)
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="landed-origin", task_id="landed", repository_id="r", branch_name="aq/landed",
+            base_sha=base, creation_generation=0, reserved=True, materialized=True,
+            created_at=time.time()))
+    origin.land("landed")
+    with pytest.raises(ValueError, match="already proves landed"):
+        await abandon_epic(db, "p", "landed")
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_legacy_deliveries))).all() == []
+    # The refusal names the alternative that works: the ordinary backfill proves it.
+    preview = await backfill_legacy_deliveries(db, "p")
+    assert "landed" in {r["task_id"] for r in preview["results"]}
+
+
+async def test_abandon_task_on_a_container_covers_its_undelivered_children(world):
+    from src.integration.legacy_backfill import abandon_task
+
+    db = world.db
+    await epic_with_child(world, "parent", "child", epic_status=TaskStatus.COMPLETED)
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="parent-origin", task_id="parent", repository_id="r", branch_name="aq/parent",
+            base_sha=git(world.origin.clone, "rev-parse", "origin/main"),
+            creation_generation=0, reserved=True, materialized=True, created_at=time.time()))
+    applied = await abandon_task(db, "p", "parent", dry_run=False, operator_id="op",
+                                 reason="superseded")
+    assert [(r["task_id"], r["outcome"]) for r in applied["results"]] == [
+        ("child", "recorded"), ("parent", "recorded")]
+    assert not {"parent", "child"} & set(await blocker_codes(world))
 
 
 async def test_backfill_never_answers_an_epic_by_its_branch(world):
