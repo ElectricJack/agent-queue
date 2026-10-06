@@ -6,10 +6,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.tables import task_branch_origins, task_integration_checkpoints
+from src.database.tables import task_branch_origins, task_integration_checkpoints, tasks
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.stacked_branches import StackedBranches, observe_stacks, stacked_policy
@@ -286,6 +286,51 @@ async def test_already_delivered_dependent_keeps_its_completion(stack, delivered
     await checkpoint(stack.db, "first", next_head)
     assert await stack.service.refresh("child", stack.gitops) == "already_delivered"
     assert git(stack.origin.url, "rev-parse", "refs/heads/aq/child") == stack.child
+    assert (await stack.db.get_task_completion("child")).id == original.id
+    assert await generation(stack.db, "child") == child_generation
+
+
+@pytest.mark.parametrize("prerequisite_change", ["updated_at", "reopen", "reclose"])
+@pytest.mark.parametrize("pending_dependent", [False, True], ids=["settle", "batch"])
+async def test_delivered_stale_stack_does_not_block_epic_pending(
+    stack, prerequisite_change, pending_dependent,
+):
+    original = await stack.db.get_task_completion("child")
+    child_generation = await generation(stack.db, "child")
+    git(stack.origin.clone, "push", "origin", f"{stack.child}:aq/epic")
+    if pending_dependent:
+        git(stack.origin.clone, "push", "origin", f"{stack.child}:refs/heads/aq/after")
+        after = stack.origin.work("after")
+        await completed(stack.world, "after", parent="epic", needs=("child",), head=after)
+        await checkpoint(stack.db, "after", after)
+        await stack.service.prepare("after")
+    if prerequisite_change == "reopen":
+        await stack.db.transition_task("first", TaskStatus.IN_PROGRESS, force=True)
+    elif prerequisite_change == "reclose":
+        await stack.db.transition_task("first", TaskStatus.IN_PROGRESS, force=True)
+        await close(stack.db, "first", [stack.first], close_id="first-reclosed", origin=stack.origin)
+        await checkpoint(stack.db, "first", stack.first)
+    else:
+        async with stack.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "first").values(
+                updated_at=tasks.c.updated_at + 1,
+            ))
+    assert not await stack.service.current("child")
+    assert await stack.service.refresh("child", stack.gitops) == "already_delivered"
+
+    target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    blockers = []
+    pending = await DatabaseBatches(stack.db).pending(
+        target, await snapshot(stack.world, target), blockers=blockers,
+    )
+    assert blockers == []
+    if pending_dependent:
+        members, requests, dependencies = pending
+        assert [(member.task_id, member.source_sha) for member in members] == [("after", after)]
+        assert set(requests) == {"after"}
+        assert dependencies == {"after": set()}
+    else:
+        assert pending is None
     assert (await stack.db.get_task_completion("child")).id == original.id
     assert await generation(stack.db, "child") == child_generation
 

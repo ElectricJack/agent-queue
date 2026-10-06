@@ -108,7 +108,10 @@ file an isolated repair task; the dependent stays withheld until the repair
 resolves and current heads are included. Reopened, abandoned or unproven
 prerequisites pause dependent delivery. A refreshed source gets a new batch;
 the former frozen candidate cannot publish it. Explicit batch pauses still hold.
-Already-delivered dependents keep their existing completions. Workspace
+Already-delivered dependents keep their existing completions. Batching checks
+delivery before stack freshness: a later prerequisite change cannot block epic
+collection or withhold work that depends on the delivered task. Stack holds
+apply to undelivered sources. Workspace
 preparation retains the recorded stack, its hold, pending repair and refreshed
 head. A transient freshness hold clears without creating another completion.
 After a dependent is reopened and closed again, refresh recognizes its matching

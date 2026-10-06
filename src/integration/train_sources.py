@@ -553,6 +553,13 @@ class DatabaseBatches:
             request, base = requests.get(task_id), bases.get(task_id)
             if task_id in repairs:
                 continue
+            if request is None or not is_valid_git_oid(base or ""):
+                continue
+            evidence = await snapshot.is_delivered(request, source_base=base)
+            if evidence.satisfied:
+                delivered.add(task_id)
+                continue
+            # Stack freshness gates new batching; it cannot undo proven delivery.
             if not await stacks.current(task_id):
                 if blockers is not None:
                     async with self.db._engine.connect() as conn:
@@ -560,12 +567,6 @@ class DatabaseBatches:
                     hold = (origin and origin["stack_snapshot"] or {}).get("hold", "changed")
                     blockers.append({"code": "stack_" + hold, "task_id": task_id,
                         "ref": task_id, "detail": "Prerequisite stack is withheld: " + hold})
-                continue
-            if request is None or not is_valid_git_oid(base or ""):
-                continue
-            evidence = await snapshot.is_delivered(request, source_base=base)
-            if evidence.satisfied:
-                delivered.add(task_id)
                 continue
             # Epic readiness gates new batching; it cannot undo proven delivery.
             if task_id in epics:
