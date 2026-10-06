@@ -281,7 +281,7 @@ async def _whole_patch(
     paths = (await _run(snapshot, "diff", "--no-renames", "--name-only", "-z",
                         base, source, "--")).split("\0")
     history = await _run(snapshot, "log", "--full-history", "--topo-order", "--reverse",
-                         "--format=%H %P", target,
+                         "--format=%H %P", target, *(("^" + base,) if common_base else ()),
                          "--", *(path for path in paths if path))
     starts = {base} if common_base else set()
     first_error = None
@@ -298,8 +298,12 @@ async def _whole_patch(
                 continue
             probes += 1
             if probes > HISTORICAL_PATCH_PROBE_LIMIT:
-                raise _HistoricalPatchFailure(first_error or GitError(
-                    "historical patch probe budget exhausted"))
+                # Every probe so far was negative: the search answers "not
+                # found" (pending), never unknown, so a long-lived source
+                # cannot block forever. A failed probe stays unavailable.
+                if first_error is not None:
+                    raise _HistoricalPatchFailure(first_error) from first_error
+                return False
             try:
                 candidate = await snapshot.git.apatch_id(snapshot.store, start, head)
             except (GitError, OSError) as exc:
@@ -323,7 +327,9 @@ async def _whole_patch(
 #: quadratic in the commits after the source base that touch the source's
 #: paths; an old task on a hot path (2026-10-06: tests/selection_catalogue.json)
 #: ran for over 120 s each and kept the root visit past its timeout. Spent, the
-#: probe is unavailable rather than negative, exactly like a failed probe.
+#: search answers negative unless a probe failed, and the cheaper no-op merge
+#: and tree proofs still run. History is bounded to base..target when the base
+#: is on the target: delivered work can only follow its base.
 HISTORICAL_PATCH_PROBE_LIMIT = 150
 
 
