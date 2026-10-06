@@ -95,6 +95,9 @@ def _pull_request(head_ref, *, head_repository='acme/widgets', draft=False):
     ('aq/parent/example/0123/1/' + 'a' * 40, True),
     (CANDIDATE_REF, True),
     (BATCH_REF, True),
+    ('aq/promote/main/' + 'a' * 40, True),
+    ('aq/promote/staging/main/' + 'a' * 40, True),
+    ('aq/promote-example', False),
     ('aq/sound-current', False),
     ('aq/feature/example', False),
     ('aq/example', False),
@@ -199,7 +202,7 @@ def test_tests_keeps_its_triggers_and_job_names_and_can_be_called():
     tests = workflow()
     assert list(tests['on']) == ['pull_request', 'push', 'workflow_dispatch', 'workflow_call']
     assert tests['on']['push']['branches'] == [
-        'aq/parent/**', 'aq/integration/**', 'aq/batches/**',
+        'aq/parent/**', 'aq/integration/**', 'aq/batches/**', 'aq/promote/**',
     ]
     assert tests['on']['workflow_call'] == ''  # No inputs or secrets: it runs as pushed.
     assert list(tests['jobs']) == ['test', 'e2e-cli', 'dashboard']
