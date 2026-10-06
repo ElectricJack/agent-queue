@@ -43,6 +43,44 @@ refused while live subjects, owners or unresolved publication intents retain it.
 Policy routes must resolve to reviewed artifacts available to the project.
 Configuration changes never replace an in-flight subject's frozen artifact.
 
+The git-first train accepts an optional `train` block in the hierarchical
+integration policy:
+
+```json
+{
+  "train": {
+    "cadence_seconds": 300,
+    "settling_cap_seconds": 1800
+  }
+}
+```
+
+This fragment belongs alongside the required `parent`, `root`,
+`branchless_parent` and `on_failed_child` fields. Both train timing values
+must be positive integers. Omitting `train` uses the timing defaults at
+runtime and keeps the field absent from serialized policy snapshots, so
+pre-existing snapshots still compare equal.
+
+A root seals after a quiet period of `cadence_seconds` since the latest
+admission, or at `settling_cap_seconds` since the first admission, whichever
+comes first. With the defaults, roots admitted at 0 s and 10 s share a batch
+at 310 s; arrivals every 200 s share a batch at the 1800 s cap. This corrects
+the fidelity spec's 300 s example to use the old settling rule, latest
+admission plus cadence. The status state is `settling`, with the admission
+times and `seal_at` in `detail`. Admission timing survives daemon restarts
+but never substitutes for the current PR gate or Git delivery proof.
+Epic collection and local development targets freeze immediately.
+
+The `IntegrationTrain.visit(target, seal_now=True)` and
+`DatabaseBatches.open_batch(..., seal_now=True)` hooks bypass the timing
+window for one call. They preserve all admission and publication checks;
+an empty or blocked call does not arm a bypass for future work. A5 supplies
+the supervisor-facing `seal-now` command.
+
+The git-first path still rebuilds on target movement. It does not implement
+`on_main_moved: wait` or a `max_wait_seconds` limit on candidate rebuilds;
+these policy gaps are tracked separately from cadence and settling.
+
 A child with a completed `blocks` prerequisite under the same parent becomes
 claimable after Git proves the sibling's current work reached that parent.
 Workspace preparation merges the exact proven parent head into the child's

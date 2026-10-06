@@ -80,8 +80,15 @@ async def green_pr(target, member):
     """Other train-mechanism tests supply an already-satisfied PR observer."""
 
 
+class SealedBatches(DatabaseBatches):
+    """Mechanism tests seal explicitly; cadence tests use DatabaseBatches itself."""
+
+    async def open_batch(self, target, snapshot, service, *, seal_now=True):
+        return await super().open_batch(target, snapshot, service, seal_now=seal_now)
+
+
 def fixture_batches(db, **kwargs):
-    return DatabaseBatches(db, pr_gate=green_pr, **kwargs)
+    return SealedBatches(db, pr_gate=green_pr, **kwargs)
 
 
 def catalogue_repository(origin: Origin) -> None:
@@ -794,7 +801,8 @@ class GreenWhen:
         return self._result(head)
 
 
-def lane(world, transport, *, regenerate=DEFAULT_REGENERATE_COMMAND):
+def lane(world, transport, *, regenerate=DEFAULT_REGENERATE_COMMAND, clock=time.time,
+         settling=False):
     """A train lane over the origin clone. *regenerate* may be a callable, read
     per visit, so a test can change the repository's configuration."""
     db, origin = world.db, world.origin
@@ -809,7 +817,8 @@ def lane(world, transport, *, regenerate=DEFAULT_REGENERATE_COMMAND):
         assert batch.repository_id == "r"
         return retained(command())
 
-    batches = fixture_batches(db)
+    batches = (DatabaseBatches(db, pr_gate=green_pr, clock=clock) if settling
+               else fixture_batches(db, clock=clock))
     checks = GreenWhen()
     candidates = CandidateChecks.fixed(checks)
     service = BatchService(
@@ -832,8 +841,155 @@ def lane(world, transport, *, regenerate=DEFAULT_REGENERATE_COMMAND):
         return TrainLane(snapshot=lane_snapshot, service=service, checks=candidates)
 
     train = IntegrationTrain(targets=DatabaseTargets(db), batches=batches, lane_for=lane_for,
-                             repair=OrdinaryRepairService(db))
+                             repair=OrdinaryRepairService(db), clock=clock)
     return train, checks, retained(command())
+
+
+async def test_root_cadence_uses_latest_admission_and_survives_restart(world):
+    now = [1000.0]
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0],
+                       settling=True)
+    await completed(world, "a")
+    first = await train.visit(MAIN)
+    assert first.state == "settling" and first.batch_id is None
+    assert first.detail["seal_at"] == 1300
+    now[0] = 1010
+    await completed(world, "b")
+    second = await train.visit(MAIN)
+    assert second.detail["first_admission_at"] == 1000
+    assert second.detail["latest_admission_at"] == 1010
+    assert second.detail["seal_at"] == 1310
+    # A fresh source and train instance must recover the original timing hints.
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0],
+                            settling=True)
+    for moment in (1300, 1309.99):
+        now[0] = moment
+        waiting = await train.visit(MAIN)
+        assert waiting.state == "settling" and waiting.detail["seal_at"] == 1310
+        assert await train.batches.current(MAIN) is None
+    now[0] = 1310
+    sealed = await train.visit(MAIN)
+    assert sealed.state == "testing", sealed
+    assert {m.task_id for m in await BatchStore(world.db).members(sealed.batch_id)} == {"a", "b"}
+    checks.green.add(sealed.candidate_sha)
+    assert (await train.visit(MAIN)).state == "delivered"
+    # A subsequent generation of work gets its own quiet period.
+    now[0] = 1400
+    await completed(world, "c")
+    assert (await train.visit(MAIN)).detail["seal_at"] == 1700
+
+
+async def test_root_settling_cap_bounds_continuous_admissions_across_restart(world):
+    now = [1000.0]
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0],
+                       settling=True)
+    for index in range(9):
+        now[0] = 1000 + index * 200
+        await completed(world, f"root-{index}")
+        waiting = await train.visit(MAIN)
+        assert waiting.state == "settling" and waiting.batch_id is None
+        assert waiting.detail["seal_at"] == min(now[0] + 300, 2800)
+        if index == 4:
+            train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0],
+                               settling=True)
+    now[0] = 2799.99
+    assert (await train.visit(MAIN)).state == "settling"
+    now[0] = 2800
+    sealed = await train.visit(MAIN)
+    assert sealed.state == "testing", sealed
+    async with world.db._engine.connect() as conn:
+        assert len((await conn.execute(select(integration_batches.c.id))).all()) == 1
+    assert len(await BatchStore(world.db).members(sealed.batch_id)) == 9
+
+
+@pytest.mark.parametrize("cadence,cap,due", [(40, 1800, 1050), (300, 90, 1090)])
+async def test_root_cadence_and_cap_follow_project_policy(world, cadence, cap, due):
+    now = [1000.0]
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "train": {"cadence_seconds": cadence, "settling_cap_seconds": cap},
+    })
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0],
+                       settling=True)
+    await completed(world, "a")
+    assert (await train.visit(MAIN)).state == "settling"
+    now[0] = 1010
+    await completed(world, "b")
+    assert (await train.visit(MAIN)).detail["seal_at"] == due
+    now[0] = due - 0.01
+    assert (await train.visit(MAIN)).batch_id is None
+    now[0] = due
+    assert (await train.visit(MAIN)).state == "testing"
+
+
+async def test_seal_now_is_one_call_and_preserves_pr_and_candidate_gates(world):
+    now = [1000.0]
+    train, github, _ = await hosted_train(world, clock=lambda: now[0], settling=True)
+    assert (await train.visit(MAIN, seal_now=True)).state == "idle"
+    head = await completed(world, "a")
+    github.pr_runs[head] = "failure"
+    blocked = await train.visit(MAIN, seal_now=True)
+    assert blocked.batch_id is None
+    assert blocked.detail["blockers"][0]["code"] == "pr_checks_red"
+    now[0] = 1010
+    github.pr_runs[head] = "success"
+    assert (await train.visit(MAIN)).detail["seal_at"] == 1310
+    sealed = await train.visit(MAIN, seal_now=True)
+    assert sealed.state == "testing", sealed
+    assert sealed.checks == "pending"
+    assert git(world.origin.url, "rev-parse", "main") != sealed.candidate_sha
+
+
+async def test_root_cadence_resets_for_a_new_completion_identity(world):
+    now = [1000.0]
+    head = await completed(world, "a")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0],
+                       settling=True)
+    assert (await train.visit(MAIN)).detail["seal_at"] == 1300
+    now[0] = 1299
+    await close(world.db, "a", [head], close_id="reopened-generation", origin=world.origin)
+    waiting = await train.visit(MAIN)
+    assert waiting.state == "settling" and waiting.detail["seal_at"] == 1599
+    now[0] = 1300
+    assert (await train.visit(MAIN)).state == "settling"
+
+
+async def test_mature_settling_hint_never_substitutes_for_current_pr_eligibility(world):
+    now = [1000.0]
+    train, github, _ = await hosted_train(world, clock=lambda: now[0], settling=True)
+    head = await completed(world, "a")
+    assert (await train.visit(MAIN)).state == "settling"
+    now[0] = 1300
+    github.pr_runs[head] = "failure"
+    for forced in (False, True):
+        blocked = await train.visit(MAIN, seal_now=forced)
+        assert blocked.batch_id is None
+        assert blocked.detail["blockers"][0]["code"] == "pr_checks_red"
+    async with world.db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_batches.c.id))).first() is None
+
+
+async def test_seal_now_direct_batch_hook_and_epic_immediacy(world):
+    await world.db.create_task(Task(id="epic", project_id="p", repo_id="r", title="epic",
+                                   description="", branch_name="aq/epic",
+                                   status=TaskStatus.IN_PROGRESS))
+    git(world.origin.clone, "push", "origin", "main:aq/epic")
+    await completed(world, "child", parent="epic")
+    await completed(world, "root")
+    batches = DatabaseBatches(world.db, pr_gate=green_pr, clock=lambda: 1000)
+    store = BatchStore(world.db)
+
+    async def freeze(batch, members, **kwargs):
+        return await store.freeze(batch, members, trees={m.task_id: tree(world, m.source_sha)
+                                                        for m in members})
+
+    service = SimpleNamespace(store=store, freeze=freeze)
+    epic = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    collected = await batches.open_batch(epic, await snapshot(world, epic), service)
+    assert [m.task_id for m in collected.members] == ["child"]
+    assert collected.batch is not None
+    assert (await batches.open_batch(MAIN, await snapshot(world), service)).batch is None
+    sealed = await batches.open_batch(MAIN, await snapshot(world), service, seal_now=True)
+    assert sealed.batch is not None and [m.task_id for m in sealed.members] == ["root"]
 
 
 async def test_visit_freezes_gates_and_fast_forwards_through_the_lease(world):
@@ -1170,7 +1326,7 @@ class HostedGitHub:
         return {"id": record["id"]}
 
 
-async def hosted_train(world, *, retained_store=None, clock=time.time):
+async def hosted_train(world, *, retained_store=None, clock=time.time, settling=False):
     """The daemon's own lanes for a project with no development pin: hosted checks."""
     db, origin = world.db, world.origin
     async with db._engine.begin() as conn:
@@ -1230,7 +1386,7 @@ async def hosted_train(world, *, retained_store=None, clock=time.time):
         return url
 
     orchestrator.git.acreate_pr = AsyncMock(side_effect=create_pr)
-    batches = DatabaseBatches(db)
+    batches = (DatabaseBatches if settling else SealedBatches)(db, clock=clock)
     train = IntegrationTrain(
         targets=DatabaseTargets(db), batches=batches,
         lane_for=DaemonLanes(orchestrator, batches=batches, clock=clock),
@@ -2106,7 +2262,7 @@ async def development_train(world, tmp_path, monkeypatch, validation: str, *, mo
         github_repository_binding_resolver=binding, development_integration=SimpleNamespace(),
         integration_attestation_service=SimpleNamespace(publish=AsyncMock()),
     )
-    batches = DatabaseBatches(db)
+    batches = SealedBatches(db)
     train = IntegrationTrain(
         targets=DatabaseTargets(db), batches=batches,
         lane_for=DaemonLanes(orchestrator, batches=batches), repair=OrdinaryRepairService(db),
