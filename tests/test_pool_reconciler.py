@@ -36,6 +36,222 @@ from tests.assignment_routing_helpers import route_source_for
 PROJECT_ID = "proj"
 
 
+@pytest.fixture
+async def git_first_frontier(orch, db, tmp_path):
+    """A completed sibling with retained provenance, but no delivery receipts."""
+    from types import SimpleNamespace
+
+    from src.database.tables import task_branch_origins, task_integration_checkpoints
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.integration.git_truth import GitTruth
+    from src.integration.models import BranchKey
+    from src.integration.ownership import BranchOwnership
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+    from src.models import RepoConfig, TaskCompletion
+    from tests.test_delivery_consumers import Origin, git
+    from tests.test_integration_gitops import LocalGit
+
+    origin = Origin(tmp_path)
+    base = git(origin.clone, "rev-parse", "HEAD")
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    source = origin.work("first")
+    transport = LocalGit(tmp_path / "origin.git")
+    orch.git = transport
+    await db.update_profile("worker", default_class="standard-medium")
+    orch.config.worktrees.enabled = False
+    orch._worktree_slots = MagicMock(return_value=MagicMock(
+        reset_slot_for_task=AsyncMock(return_value="aq/second"),
+    ))
+    await db.create_repo(RepoConfig(id="repo", project_id=PROJECT_ID,
+                                   source_type=RepoSourceType.CLONE, url=origin.url))
+    await db.create_task(Task(id="epic", project_id=PROJECT_ID, title="epic", description="",
+                              status=TaskStatus.IN_PROGRESS, repo_id="repo", branch_name="aq/epic"))
+    for tid in ("first", "second"):
+        await ready(db, tid, intelligence_class="standard-medium")
+        await db.update_task(tid, repo_id="repo", branch_name=f"aq/{tid}")
+        await db.add_dependency(tid, "epic", "parent-child")
+        async with db.immediate() as conn:
+            await conn.execute(insert(task_branch_origins).values(
+                id=f"origin-{tid}", task_id=tid, repository_id="repo", branch_name=f"aq/{tid}",
+                parent_task_id="epic", parent_repository_id="repo", parent_ref="aq/epic",
+                base_sha=base, creation_generation=0, reserved=True, materialized=True,
+                created_at=time.time(),
+            ))
+            await conn.execute(insert(task_integration_checkpoints).values(
+                task_id=tid, repository_id="repo", branch=f"aq/{tid}",
+                checkpoint_sha=source if tid == "first" else base, updated_at=time.time(),
+            ))
+    await db.add_dependency("second", "first")
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="train",
+                            integration_repository_id="repo", repo_url=origin.url)
+    await db.save_task_completion(TaskCompletion(
+        id="close-first", task_id="first", outcome="pass", commits=[source], completed_at=time.time(),
+    ))
+    await GitProvenance(transport, str(origin.clone), repository_url=origin.url).write_completion(
+        CompletedSource(CompletionIdentity(PROJECT_ID, "repo", "first", "close-first"), source),
+    )
+    await db.transition_task("first", TaskStatus.COMPLETED)
+    await BranchOwnership(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/second"), "second", "worker"
+    )
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "observer",
+                                truth=GitTruth(transport))
+    db.set_delivery_observer(observer)
+    return SimpleNamespace(origin=origin, base=base, source=source, observer=observer, git=git)
+
+
+async def _deliver_first_by_train(db, env):
+    """Run the actual reduced train and managed Git publication on the epic target."""
+    from types import SimpleNamespace
+
+    from src.git.github_contracts import GitHubRepositoryBinding
+    from src.integration.batches import Batch, BatchMember, BatchService, BatchStore
+    from src.integration.git_truth import GitTruth
+    from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
+    from src.integration.train import BatchSelection, CandidateChecks, IntegrationTrain, TrainLane
+    from src.integration.train import TrainTarget
+    from src.integration.train_sources import LeasedPublish, _never_trusted
+
+    target = TrainTarget(PROJECT_ID, "repo", "refs/heads/aq/epic", kind="epic")
+    batch = Batch("sibling-batch", PROJECT_ID, "repo", target.target_ref)
+    members = (BatchMember("first", env.source, env.base),)
+    store = BatchStore(db)
+    await store.freeze(batch, members, trees={
+        "first": env.git(env.origin.clone, "rev-parse", f"{env.source}^{{tree}}"),
+    })
+    transport = env.observer.git
+    repo = RetainedRepository("repo", env.origin.clone, GitHubRepositoryBinding(123, "test/repo"),
+                              "main")
+    checks = CandidateChecks(AsyncMock(return_value=None))
+    service = BatchService(
+        store, GitOperations(db, git=transport, repository=AsyncMock(return_value=repo),
+                             authority=SubjectGitAuthority(db, trusted_green=_never_trusted)),
+        publish=LeasedPublish(db, transport), eligible=AsyncMock(return_value=True),
+        gate=checks.gate, require_attestation=False,
+    )
+
+    async def snapshot():
+        return await GitTruth(transport).snapshot(
+            str(env.origin.clone), project_id=PROJECT_ID, repository_id="repo",
+            repository_url=env.origin.url, target_ref=target.target_ref,
+        )
+
+    train = IntegrationTrain(
+        targets=SimpleNamespace(targets=AsyncMock(return_value=[target])),
+        batches=SimpleNamespace(open_batch=AsyncMock(return_value=BatchSelection(batch, members)),
+                                settle=AsyncMock()),
+        lane_for=AsyncMock(return_value=TrainLane(snapshot, service, checks)),
+        repair=SimpleNamespace(allocate=AsyncMock(side_effect=AssertionError("unexpected repair"))),
+    )
+    await train.tick()
+    await train.drain()
+    [visit] = train.status()
+    assert visit["state"] == "delivered", visit
+
+
+async def test_git_first_delivery_releases_scheduler_pool_and_claim(orch, db, git_first_frontier):
+    from src.commands.handler import CommandHandler
+    from src.database.tables import task_delivery_receipts
+    from src.doctor.models import DoctorContext
+    from src.doctor.task_checks import _check_ready_frontier_exclusions
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+    from src.scheduler import PoolKey
+    from sqlalchemy import select
+
+    env = git_first_frontier
+    handler = CommandHandler(orch, orch.config)
+
+    async def frontier(expected):
+        # These are the real scheduler/reconciler and pool consumers of one tick's view.
+        modes = await hierarchy_frontier_modes(db)
+        env.observer.prerequisite_view = AsyncMock(wraps=env.observer.prerequisite_view)
+        await orch._schedule(hierarchy_modes=modes)
+        assert ("second" in orch._last_scheduler_state.hierarchy_runnable_task_ids) is expected
+        measurement = await orch._measure_pools(hierarchy_modes=modes)
+        assert measurement.demand[PoolKey("worker")] == int(expected)
+        env.observer.prerequisite_view.assert_not_awaited()
+        assert await db.is_hierarchy_task_runnable("second") is expected
+        explained = await handler._cmd_explain_task({"task_id": "second"})
+        assert any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
+                   for r in explained["reasons"]) is not expected
+        diagnosis = await _check_ready_frontier_exclusions(DoctorContext(config=orch.config, db=db))
+        assert any(
+            row["task_id"] == "second" and "sibling_prerequisite_not_delivered" in row["reasons"]
+            for row in diagnosis.data.get("tasks", [])
+        ) is not expected
+        return modes
+
+    await frontier(False)
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    assert await db.list_sessions(lifecycle="pool") == []
+
+    await _deliver_first_by_train(db, env)
+    modes = await frontier(True)
+    async with db._engine.connect() as conn:
+        assert not (await conn.execute(select(task_delivery_receipts))).first()
+    await orch._reconcile_pools(hierarchy_modes=modes)
+    await orch.wait_for_pool_launches()
+    [session] = await db.list_sessions(lifecycle="pool")
+    assert session.state == "running"
+    handler._current_scope = {"kind": "session", "session_id": session.id,
+                              "project_id": PROJECT_ID, "task_id": None, "elevated": False}
+    result = await handler._cmd_task_claim({"next": True})
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "second"
+
+
+@pytest.mark.parametrize("movement", ["rewind", "retarget", "generation", "unstable", "shadow"])
+async def test_git_first_frontier_withholds_invalid_or_shadow_proof(
+    orch, db, git_first_frontier, movement, monkeypatch,
+):
+    from src.commands.handler import CommandHandler
+    from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
+    from src.database.tables import task_delivery_receipts
+    from src.models import TaskCompletion
+    from src.scheduler import PoolKey
+
+    env = git_first_frontier
+    await _deliver_first_by_train(db, env)
+    assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 1}
+    if movement == "rewind":
+        env.git(env.origin.clone, "push", "--force", "origin", f"{env.base}:aq/epic")
+    elif movement == "retarget":
+        await db.update_task("epic", branch_name="aq/another-epic")
+    elif movement == "generation":
+        # Model a new completed generation without provenance. The prior one proves nothing.
+        await db.save_task_completion(TaskCompletion(
+            id="close-first-again", task_id="first", outcome="pass", commits=[env.source],
+            completed_at=time.time(),
+        ))
+        await db.set_task_meta("first", DEVELOPMENT_COMPLETION_ID_KEY, "close-first-again")
+    elif movement == "unstable":
+        view = await env.observer.prerequisite_view(PROJECT_ID)
+        monkeypatch.setattr(type(view), "fresh", AsyncMock(return_value=False))
+        env.observer.prerequisite_view = AsyncMock(return_value=view)
+    else:
+        env.observer.truth = None
+
+    if movement in {"rewind", "unstable"}:
+        # A perfectly matching old receipt must not override current Git truth.
+        async with db.immediate() as conn:
+            await conn.execute(insert(task_delivery_receipts).values(
+                id="misleading-receipt", domain_key="first-delivery", source_task_id="first",
+                target_task_id="epic", repository_id="repo", target_branch="aq/epic",
+                reviewed_head_sha=env.source, before_sha=env.base, squash_sha=env.source,
+                after_sha=env.source, disposition="code", created_at=time.time(),
+            ))
+
+    assert not await db.is_hierarchy_task_runnable("second")
+    assert await db.count_ready_by_profile(PROJECT_ID) == {}
+    await orch._schedule()
+    assert "second" not in orch._last_scheduler_state.hierarchy_runnable_task_ids
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == 0
+    explained = await CommandHandler(orch, orch.config)._cmd_explain_task({"task_id": "second"})
+    assert any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
+               for r in explained["reasons"])
+
+
 class _FakeSlotManager:
     """Stubs the git-level slot creation ``WorktreeSlotManager`` normally does.
 

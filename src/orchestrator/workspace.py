@@ -544,7 +544,7 @@ class WorkspaceMixin:
     ) -> tuple[dict, Fence, str]:
         """Resolve exact origin/target and the server-derived current role."""
         # Claim selection and workspace preparation are separated by Git and
-        # slot acquisition. Re-check receipt-backed sibling prerequisites at
+        # slot acquisition. Re-check current sibling delivery proof at
         # this second boundary so a reopened prerequisite cannot race a child
         # into a checkout that no longer contains its delivered work.
         if not await self.db.is_hierarchy_task_runnable(task.id):

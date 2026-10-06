@@ -34,6 +34,7 @@ from src.database.queries.hierarchy_queries import (
     HIERARCHY_MODES,
     ProjectIntegrationMode,
     container_flag_exists,
+    delivered_prerequisites_for_projects,
     delivered_same_parent_prerequisites_when_hierarchical,
     materialized_origin_when_hierarchical,
     never_leaseable_container,
@@ -425,13 +426,17 @@ def _claim_preparation_predicates():
     }
 
 
-def claim_frontier_predicates():
+def claim_frontier_predicates(hierarchy_modes=None):
     """All profile-independent acceptance filters, including candidate preparation."""
-    return {
+    predicates = {
         **_frontier_predicates(),
         **_claim_preparation_predicates(),
         "hold_label": apply_label_filters(select(tasks.c.id), exclude_hold=True).whereclause,
     }
+    predicates["sibling_prerequisite_not_delivered"] = delivered_prerequisites_for_projects(
+        hierarchy_modes
+    )
+    return predicates
 
 
 FRONTIER_PREDICATE_DETAILS = {
@@ -445,8 +450,8 @@ FRONTIER_PREDICATE_DETAILS = {
     ),
     "sibling_prerequisite_not_delivered": (
         "delivered_same_parent_prerequisites_when_hierarchical(): requires the preserved "
-        "parent origin and a code receipt for each completed blocks sibling matching the "
-        "parent, repository, branch and checkpoint head, created after that sibling's rework cutoff"
+        "parent origin and delivery of each completed blocks sibling to the shared parent; "
+        "Git-first uses current Git proof, shadow uses matching code receipts after rework"
     ),
     "container_settles_without_worker": "container_flag_exists() must be false",
     "has_children": "the task must have no children (a parent is a container)",
@@ -477,7 +482,11 @@ class ClaimQueryMixin:
         *router_ready* adds the route filter (:func:`route_claimable`) for a
         project whose router is (not) ready.
         """
-        predicates = claim_frontier_predicates()
+        from src.integration.delivery_observer import hierarchy_frontier_modes
+
+        predicates = claim_frontier_predicates(
+            await hierarchy_frontier_modes(self, task_id=task_id)
+        )
         if router_ready is not None:
             predicates["route_not_claimable"] = route_claimable(router_ready)
         async with self._engine.connect() as conn:
@@ -2113,7 +2122,8 @@ class ClaimQueryMixin:
         return res.rowcount == 1
 
     async def count_ready_by_profile(
-        self, project_id: str, *, allowed_task_ids=None, router_ready: bool | None = None
+        self, project_id: str, *, allowed_task_ids=None, router_ready: bool | None = None,
+        hierarchy_mode: ProjectIntegrationMode | None = None,
     ) -> dict[str | None, int]:
         """Count structural work, restricted to verified development admission when supplied.
 
@@ -2121,9 +2131,15 @@ class ClaimQueryMixin:
         which is what pool demand is (mandatory routing §9.1); ``None``
         counts every READY frontier row, unrouted ones under ``None``.
         """
+        if hierarchy_mode is None:
+            from src.integration.delivery_observer import hierarchy_frontier_modes
+
+            hierarchy_mode = (await hierarchy_frontier_modes(
+                self, project_ids={project_id}
+            )).get(project_id)
         stmt = (
             select(tasks.c.profile_id, func.count())
-            .where(_frontier_where(project_id, router_ready=router_ready))
+            .where(_frontier_where(project_id, hierarchy_mode, router_ready=router_ready))
             .group_by(tasks.c.profile_id)
         )
         if allowed_task_ids is not None:
