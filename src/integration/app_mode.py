@@ -164,6 +164,7 @@ class AppModeContext:
     #: The command's own inputs, repeated in every fix command it prints.
     policy_path: str | None = None
     repository_arg: str | None = None
+    promotion_flow: list[dict] | None = None
 
 
 def required_protection(mode: str | None) -> str | None:
@@ -537,6 +538,21 @@ async def check_protection(ctx: AppModeContext) -> AppModeItem:
         if rule.ruleset_name == target and rule.ruleset_source_type == "Repository"
     }
     observed["ruleset_id"] = named.pop() if len(named) == 1 else None
+    if ctx.promotion_flow and ctx.identity.app_id is not None and ctx.default_branch:
+        from src.integration.promotion_steps import FlowSchema, read_promotion_protection
+
+        normalized = FlowSchema.validate(ctx.promotion_flow, default_branch=ctx.default_branch)
+        # Trust is judged separately; malformed chains cannot be read as valid protection.
+        if any(problem.layer < 3 for problem in normalized.problems):
+            observed["promotion"] = {"problems": [p.as_dict() for p in normalized.problems]}
+            warnings = (*warnings, "promotion_flow_invalid")
+        else:
+            chain = await read_promotion_protection(
+                ctx.client, ctx.binding, normalized.flow, default_branch=ctx.default_branch,
+                app_id=ctx.identity.app_id, policy=ctx.policy,
+            )
+            observed["promotion"] = chain
+            warnings = tuple(dict.fromkeys([*warnings, *(w["code"] for w in chain["warnings"])]))
     if not failures and not warnings:
         return AppModeItem("protection", OK, expected=expected, observed=observed)
     return AppModeItem(
@@ -545,7 +561,9 @@ async def check_protection(ctx: AppModeContext) -> AppModeItem:
         failures or warnings,
         expected=expected,
         observed=observed,
-        fix=_protection_fix(ctx, (failures or warnings)[0]),
+        fix=(f"inspect `aq promote rulesets --project {ctx.project_id}` and apply the "
+             "reported rulesets as repository admin" if not failures and ctx.promotion_flow
+             else _protection_fix(ctx, (failures or warnings)[0])),
     )
 
 

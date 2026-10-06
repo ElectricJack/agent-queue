@@ -817,44 +817,58 @@ class TaskQueryMixin:
     async def pause_task(self, task_id: str) -> dict:
         """Persist an operator hold and fence the previous claim in one transaction."""
         async with self.immediate() as conn:
-            row = (await conn.execute(
-                select(tasks).where(tasks.c.id == task_id).with_for_update()
-            )).mappings().fetchone()
-            if row is None:
-                raise ValueError(f"Task '{task_id}' not found")
-            if row["status"] in self._TERMINAL_TASK_STATUSES:
-                raise ValueError(f"Cannot pause task in {row['status']}")
-            saved = (await conn.execute(select(task_metadata.c.value).where(
-                task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
-            ))).scalar_one_or_none()
-            if saved is not None:
-                return json.loads(saved)
-            owned_workspaces = (await conn.execute(select(workspaces.c.id).where(
-                workspaces.c.locked_by_task_id == task_id
-            ))).scalars().all()
-            if len(owned_workspaces) > 1:
-                raise ValueError("Cannot pause a task with multiple locked workspaces safely. Stop or finish it before changing its workspace assignments.")
-            owned_sessions = (await conn.execute(select(
-                sessions.c.id, sessions.c.instance_token
-            ).where(sessions.c.task_id == task_id, sessions.c.state.not_in(("stopped", "quarantined"))))).mappings().all()
-            snapshot = {
-                "sessions": [dict(session) for session in owned_sessions],
-                "status": row["status"],
-                "resume_after": row["resume_after"],
-                "agent_id": row["assigned_agent_id"],
-                "claim_epoch": row["claim_epoch"],
-                "cleanup_pending": bool(row["assigned_agent_id"] or owned_sessions or owned_workspaces),
-            }
-            if row["status"] == "DEFINED":
-                await self._upsert_meta(task_id, "manual_pause_withholds_children", True, conn=conn)
+            snapshot, result = await self._pause_task_on(task_id, conn=conn)
+        if result:
+            await self.log_blocked_flips(result.flipped)
+        return snapshot
+
+    async def _pause_task_on(self, task_id: str, *, conn, for_removal=False):
+        row = (await conn.execute(
+            select(tasks).where(tasks.c.id == task_id).with_for_update()
+        )).mappings().fetchone()
+        if row is None:
+            raise ValueError(f"Task '{task_id}' not found")
+        if row["status"] in self._TERMINAL_TASK_STATUSES and not for_removal:
+            raise ValueError(f"Cannot pause task in {row['status']}")
+        saved = (await conn.execute(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
+        ))).scalar_one_or_none()
+        if saved is not None:
+            return json.loads(saved), None
+        owned_workspaces = (await conn.execute(select(workspaces.c.id).where(
+            workspaces.c.locked_by_task_id == task_id
+        ))).scalars().all()
+        if len(owned_workspaces) > 1:
+            raise ValueError("Cannot pause a task with multiple locked workspaces safely. Stop or finish it before changing its workspace assignments.")
+        owned_sessions = (await conn.execute(select(
+            sessions.c.id, sessions.c.instance_token
+        ).where(sessions.c.task_id == task_id, sessions.c.state.not_in(("stopped", "quarantined"))))).mappings().all()
+        snapshot = {
+            "sessions": [dict(session) for session in owned_sessions],
+            "status": row["status"],
+            "resume_after": row["resume_after"],
+            "agent_id": row["assigned_agent_id"],
+            "claim_epoch": row["claim_epoch"],
+            "cleanup_pending": bool(row["assigned_agent_id"] or owned_sessions or owned_workspaces),
+        }
+        if for_removal:
+            snapshot["removal"] = True
+        if row["status"] == "DEFINED":
+            await self._upsert_meta(task_id, "manual_pause_withholds_children", True, conn=conn)
+        result = None
+        if row["status"] in self._TERMINAL_TASK_STATUSES:
+            # Removal must stop a draining terminal writer without reopening delivered work.
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+                claim_epoch=tasks.c.claim_epoch + 1,
+            ))
+        else:
             result = await self._apply_transition(
                 conn, task_id, TaskStatus.PAUSED, context="manual_pause", force=True,
                 _manual_pause_control=True, resume_after=None,
                 extra_values={"claim_epoch": tasks.c.claim_epoch + 1},
             )
-            await self._upsert_meta(task_id, "manual_pause", snapshot, conn=conn)
-        await self.log_blocked_flips(result.flipped)
-        return snapshot
+        await self._upsert_meta(task_id, "manual_pause", snapshot, conn=conn)
+        return snapshot, result
 
     async def finish_task_pause(self, task_id: str, snapshot: dict) -> None:
         """Release only this stopped claim's resources, never a reused worker's."""
@@ -862,7 +876,14 @@ class TaskQueryMixin:
             row = (await conn.execute(
                 select(tasks).where(tasks.c.id == task_id).with_for_update()
             )).mappings().fetchone()
-            if row is None or row["status"] != "PAUSED" or row["resume_after"] is not None:
+            retained_terminal = (
+                snapshot.get("removal") and row is not None
+                and row["status"] == snapshot["status"]
+                and row["status"] in self._TERMINAL_TASK_STATUSES
+            )
+            if row is None or not retained_terminal and (
+                row["status"] != "PAUSED" or row["resume_after"] is not None
+            ):
                 raise ValueError("Task pause changed while stopping its session")
             agent_id = snapshot.get("agent_id")
             await conn.execute(

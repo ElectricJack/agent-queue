@@ -463,6 +463,8 @@ from . import streams as _streams_cli  # noqa: E402, F401
 from . import playbook as _playbook_cli  # noqa: E402, F401
 from . import test_runner as _test_runner_cli  # noqa: E402, F401
 from . import integration as _integration_cli  # noqa: E402, F401
+from . import promote as _promote_cli  # noqa: E402, F401
+from . import promote_rulesets as _promote_rulesets_cli  # noqa: E402, F401
 # Before register_auto_commands(): the generated dashboard_state_* commands
 # merge into this hand-written group instead of creating their own.
 from . import dashboard as _dashboard_cli  # noqa: E402, F401

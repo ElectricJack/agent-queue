@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from ..models.edit_project_request_hierarchical_integration_policy_type_0 import (
         EditProjectRequestHierarchicalIntegrationPolicyType0,
     )
+    from ..models.edit_project_request_promotion_flow_type_1 import EditProjectRequestPromotionFlowType1
 
 
 T = TypeVar("T", bound="EditProjectRequest")
@@ -38,6 +39,8 @@ class EditProjectRequest:
         hierarchical_integration_policy (EditProjectRequestHierarchicalIntegrationPolicyType0 | None | Unset): LOCAL-
             only complete typed hierarchical integration policy.
         hierarchical_integration_mode (None | str | Unset): LOCAL-only integration mode for new reconciler subjects.
+        promotion_flow (EditProjectRequestPromotionFlowType1 | list[Any] | None | Unset): LOCAL-only promotion flow
+            (steps list, or {promotion_flow: [...]}); validated and activated behind the integration generation CAS.
         expected_integration_generation (int | None | Unset): Required generation CAS for integration configuration.
         reason (None | str | Unset): Operator reason recorded for integration configuration.
     """
@@ -55,6 +58,7 @@ class EditProjectRequest:
     integration_repository_id: None | str | Unset = UNSET
     hierarchical_integration_policy: EditProjectRequestHierarchicalIntegrationPolicyType0 | None | Unset = UNSET
     hierarchical_integration_mode: None | str | Unset = UNSET
+    promotion_flow: EditProjectRequestPromotionFlowType1 | list[Any] | None | Unset = UNSET
     expected_integration_generation: int | None | Unset = UNSET
     reason: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -63,6 +67,7 @@ class EditProjectRequest:
         from ..models.edit_project_request_hierarchical_integration_policy_type_0 import (
             EditProjectRequestHierarchicalIntegrationPolicyType0,
         )
+        from ..models.edit_project_request_promotion_flow_type_1 import EditProjectRequestPromotionFlowType1
 
         project_id = self.project_id
 
@@ -140,6 +145,17 @@ class EditProjectRequest:
         else:
             hierarchical_integration_mode = self.hierarchical_integration_mode
 
+        promotion_flow: dict[str, Any] | list[Any] | None | Unset
+        if isinstance(self.promotion_flow, Unset):
+            promotion_flow = UNSET
+        elif isinstance(self.promotion_flow, list):
+            promotion_flow = self.promotion_flow
+
+        elif isinstance(self.promotion_flow, EditProjectRequestPromotionFlowType1):
+            promotion_flow = self.promotion_flow.to_dict()
+        else:
+            promotion_flow = self.promotion_flow
+
         expected_integration_generation: int | None | Unset
         if isinstance(self.expected_integration_generation, Unset):
             expected_integration_generation = UNSET
@@ -183,6 +199,8 @@ class EditProjectRequest:
             field_dict["hierarchical_integration_policy"] = hierarchical_integration_policy
         if hierarchical_integration_mode is not UNSET:
             field_dict["hierarchical_integration_mode"] = hierarchical_integration_mode
+        if promotion_flow is not UNSET:
+            field_dict["promotion_flow"] = promotion_flow
         if expected_integration_generation is not UNSET:
             field_dict["expected_integration_generation"] = expected_integration_generation
         if reason is not UNSET:
@@ -195,6 +213,7 @@ class EditProjectRequest:
         from ..models.edit_project_request_hierarchical_integration_policy_type_0 import (
             EditProjectRequestHierarchicalIntegrationPolicyType0,
         )
+        from ..models.edit_project_request_promotion_flow_type_1 import EditProjectRequestPromotionFlowType1
 
         d = dict(src_dict)
         project_id = d.pop("project_id")
@@ -323,6 +342,31 @@ class EditProjectRequest:
             d.pop("hierarchical_integration_mode", UNSET)
         )
 
+        def _parse_promotion_flow(data: object) -> EditProjectRequestPromotionFlowType1 | list[Any] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                promotion_flow_type_0 = cast(list[Any], data)
+
+                return promotion_flow_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                promotion_flow_type_1 = EditProjectRequestPromotionFlowType1.from_dict(data)
+
+                return promotion_flow_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(EditProjectRequestPromotionFlowType1 | list[Any] | None | Unset, data)
+
+        promotion_flow = _parse_promotion_flow(d.pop("promotion_flow", UNSET))
+
         def _parse_expected_integration_generation(data: object) -> int | None | Unset:
             if data is None:
                 return data
@@ -357,6 +401,7 @@ class EditProjectRequest:
             integration_repository_id=integration_repository_id,
             hierarchical_integration_policy=hierarchical_integration_policy,
             hierarchical_integration_mode=hierarchical_integration_mode,
+            promotion_flow=promotion_flow,
             expected_integration_generation=expected_integration_generation,
             reason=reason,
         )

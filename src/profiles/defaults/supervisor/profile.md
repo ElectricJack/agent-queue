@@ -106,6 +106,7 @@ start code work, tests or QA from a digest author turn.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "remove_task",
     "artifact_verify",
     "object_checkpoint_read",
     "job_retain",
@@ -201,6 +202,9 @@ start code work, tests or QA from a digest author turn.
     "phase_list",
     "pool_status",
     "prime",
+    "promote_schema",
+    "promote_validate",
+    "promote_rulesets",
     "provider_allocation_preview",
     "provider_allocation_status",
     "provider_held_tasks",

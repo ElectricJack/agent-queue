@@ -20,7 +20,7 @@ from dataclasses import asdict, replace
 from typing import Any
 
 import yaml
-from sqlalchemy import and_, select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from src.database.tables import (
@@ -58,6 +58,7 @@ from src.integration.gitops import GitOperations, RetainedRepository, SubjectGit
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+from src.integration.promotion_steps import flow_status, flow_targets
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
 from src.integration.subjects import Subject
@@ -128,6 +129,10 @@ def _branch(ref: str) -> str:
 
 async def _pending_tasks(conn, project_id: str, repository_id: str, *, limit: int | None) -> list[str]:
     """Completed tasks with a live branch origin in the repository, newest first."""
+    flow = await conn.scalar(select(projects.c.promotion_flow).where(projects.c.id == project_id))
+    promotion_refs = {
+        ref for name in flow_targets(flow) for ref in (name, _branch(name))
+    }
     rows = await conn.execute(
         select(tasks.c.id)
         .select_from(tasks.join(task_branch_origins, and_(
@@ -135,7 +140,10 @@ async def _pending_tasks(conn, project_id: str, repository_id: str, *, limit: in
             task_branch_origins.c.repository_id == repository_id,
             task_branch_origins.c.retired_at.is_(None),
         )))
-        .where(tasks.c.project_id == project_id, tasks.c.status == "COMPLETED")
+        .where(tasks.c.project_id == project_id, tasks.c.status == "COMPLETED",
+               or_(tasks.c.task_type.is_(None), tasks.c.task_type != "promotion"),
+               or_(task_branch_origins.c.parent_ref.is_(None),
+                   task_branch_origins.c.parent_ref.not_in(promotion_refs)))
         .distinct()
         .order_by(tasks.c.id)
     )
@@ -250,16 +258,18 @@ class DatabaseTargets:
     parent branches its completed work routes to, and any open batch's target."""
 
     def __init__(self, db, *, limit: int = MEMBER_LIMIT, snapshot=project_snapshot,
-                 probe_timeout_seconds: float = 5.0) -> None:
+                 probe_timeout_seconds: float = 5.0, flow_problems=None) -> None:
         self.db, self.limit = db, limit
         self.snapshot = snapshot
         self.probe_timeout_seconds = probe_timeout_seconds
+        self.flow_problems = flow_problems
 
     async def targets(self, now: float) -> list[TrainTarget]:
         found: dict[tuple[str, str, str], TrainTarget] = {}
         async with self.db._engine.connect() as conn:
             rows = (await conn.execute(
                 select(projects.c.id, projects.c.hierarchical_integration_mode,
+                       projects.c.promotion_flow,
                        repos.c.id.label("repository_id"), repos.c.default_branch)
                 .select_from(projects.join(
                     repos, repos.c.id == projects.c.integration_repository_id))
@@ -279,6 +289,17 @@ class DatabaseTargets:
         default = _branch(row["default_branch"])
         kind = "development" if row["hierarchical_integration_mode"] == "development" else "root"
         root = TrainTarget(project_id, repository_id, default, kind)
+        recorded = self.flow_problems() if callable(self.flow_problems) else self.flow_problems
+        status = flow_status(
+            row["promotion_flow"], default_branch=row["default_branch"],
+            recorded=(recorded or {}).get(project_id),
+        )
+        flow = row["promotion_flow"] if status and status["state"] == "configured" else []
+        promotions = {
+            _branch(step["target"]): TrainTarget(
+                project_id, repository_id, _branch(step["target"]), "promotion", step=step,
+            ) for step in flow
+        }
         async with self.db._engine.connect() as conn:
             pending = await _pending_tasks(conn, project_id, repository_id, limit=None)
             routed = await delivery_targets(conn, pending, reduced=True)
@@ -301,8 +322,9 @@ class DatabaseTargets:
                     if task_id not in delivered and
                     (target.project_id, target.repository_id) == (project_id, repository_id))
         refs.update(_branch(branch) for task_id, branch in epics.items() if task_id not in delivered)
-        return [root if ref == default else TrainTarget(project_id, repository_id, ref, "epic")
-                for ref in sorted(refs)]
+        refs.update(promotions)
+        return [root if ref == default else promotions.get(ref) or
+                TrainTarget(project_id, repository_id, ref, "epic") for ref in sorted(refs)]
 
 
 class DatabaseBatches:
@@ -345,10 +367,13 @@ class DatabaseBatches:
         return BatchSelection(frozen, await service.store.members(frozen.id), tuple(blockers))
 
     async def current(self, target: TrainTarget) -> Batch | None:
+        query = _open_batch_rows(target.project_id, target.repository_id).where(
+            integration_batches.c.target_ref == target.target_ref)
+        if target.kind == "promotion":
+            query = query.where(integration_batches.c.trigger == "promotion")
         async with self.db._engine.connect() as conn:
             row = (await conn.execute(
-                _open_batch_rows(target.project_id, target.repository_id)
-                .where(integration_batches.c.target_ref == target.target_ref)
+                query
                 .order_by(integration_batches.c.created_at, integration_batches.c.id)
                 .limit(1)
             )).mappings().first()
@@ -359,6 +384,8 @@ class DatabaseBatches:
         blockers: list[dict[str, Any]] | None = None,
     ):
         """Exact pending inputs; report unknown delivery that prevents batching."""
+        if target.kind == "promotion":
+            return None
         async with self.db._engine.connect() as conn:
             ids = await _pending_tasks(conn, target.project_id, target.repository_id, limit=None)
         delivered_to_project = await self.delivered(target, snapshot, ids)
@@ -478,19 +505,34 @@ class DatabaseBatches:
         ids = [member.task_id for member in members]
         async with self.db._engine.connect() as conn:
             mode = (await conn.execute(
-                select(projects.c.hierarchical_integration_mode, projects.c.status)
+                select(projects.c.hierarchical_integration_mode, projects.c.status,
+                       projects.c.promotion_flow)
                 .where(projects.c.id == batch.project_id)
             )).first()
             routed = await delivery_targets(conn, ids, reduced=True)
-            live = set((await conn.execute(select(task_branch_origins.c.task_id).where(
-                task_branch_origins.c.task_id.in_(ids),
-                task_branch_origins.c.repository_id == batch.repository_id,
-                task_branch_origins.c.retired_at.is_(None),
-            ))).scalars().all())
+            flow = () if mode is None else mode.promotion_flow or ()
+            promotion_refs = {
+                ref for name in flow_targets(flow) for ref in (name, _branch(name))
+            }
+            live = set((await conn.execute(
+                select(task_branch_origins.c.task_id)
+                .select_from(task_branch_origins.join(
+                    tasks, tasks.c.id == task_branch_origins.c.task_id))
+                .where(
+                    task_branch_origins.c.task_id.in_(ids),
+                    task_branch_origins.c.repository_id == batch.repository_id,
+                    task_branch_origins.c.retired_at.is_(None),
+                    or_(tasks.c.task_type.is_(None), tasks.c.task_type != "promotion"),
+                    or_(task_branch_origins.c.parent_ref.is_(None),
+                        task_branch_origins.c.parent_ref.not_in(promotion_refs)),
+                )
+            )).scalars().all())
         if mode is None or mode[0] not in TRAIN_MODES or mode[1] != "ACTIVE":
             return False
         if batch.epic_sync and await self.closed_epic_graph(TrainTarget(
                 batch.project_id, batch.repository_id, batch.target_ref, "epic")) is None:
+            return False
+        if batch.target_ref in promotion_refs:
             return False
         requests = await load_delivery_requests(
             self.db, ids, repository_id=batch.repository_id, target_ref=batch.target_ref,
@@ -1211,7 +1253,10 @@ def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> Integr
 
     batches = DatabaseBatches(orchestrator.db, clock=clock)
     return IntegrationTrain(
-        targets=DatabaseTargets(orchestrator.db),
+        targets=DatabaseTargets(
+            orchestrator.db,
+            flow_problems=lambda: getattr(orchestrator, "promotion_flow_problems", None),
+        ),
         batches=batches,
         lane_for=DaemonLanes(orchestrator, batches=batches, clock=clock),
         repair=OrdinaryRepairService(orchestrator.db, clock=clock),

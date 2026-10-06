@@ -240,6 +240,7 @@ def _status_checks(
     app_id: int | None,
     producer: int | None,
     names: frozenset[str],
+    attestation_name: str = ATTESTATION_NAME,
 ) -> tuple[str | None, bool]:
     """``(refusal, requires_attestation)`` for one set of required checks.
 
@@ -257,7 +258,7 @@ def _status_checks(
         if not isinstance(context, str):
             raise ProtectionUnreadable("a required status check has no context")
         pinned = _pinned(check.get(pin_key))
-        if context == ATTESTATION_NAME and app_id is not None and pinned == app_id:
+        if context == attestation_name and app_id is not None and pinned == app_id:
             requires_attestation = True
         elif context in names and producer is not None and pinned == producer:
             continue
@@ -280,6 +281,7 @@ def _ruleset_rule(
     app_id: int | None,
     producer: int | None,
     names: frozenset[str],
+    attestation_name: str = ATTESTATION_NAME,
 ) -> ProtectionRule:
     if not isinstance(entry, dict):
         raise ProtectionUnreadable("an effective rule is malformed")
@@ -306,7 +308,8 @@ def _ruleset_rule(
             raise ProtectionUnreadable("a required status check rule has no parameters")
         checks = parameters.get("required_status_checks")
         refusal, requires_attestation = _status_checks(
-            checks, pin_key="integration_id", app_id=app_id, producer=producer, names=names
+            checks, pin_key="integration_id", app_id=app_id, producer=producer, names=names,
+            attestation_name=attestation_name,
         )
         return ProtectionRule(
             **fields,
@@ -339,6 +342,7 @@ def _classic_rules(
     app_id: int | None,
     producer: int | None,
     names: frozenset[str],
+    attestation_name: str = ATTESTATION_NAME,
 ) -> list[ProtectionRule]:
     """Classic branch protection as rules; ``None`` (a 404) is none."""
     if classic is None:
@@ -362,7 +366,8 @@ def _classic_rules(
                 raise ProtectionUnreadable("classic required contexts are malformed")
             checks = [{"context": context} for context in contexts]
         refusal, requires_attestation = _status_checks(
-            checks, pin_key="app_id", app_id=app_id, producer=producer, names=names
+            checks, pin_key="app_id", app_id=app_id, producer=producer, names=names,
+            attestation_name=attestation_name,
         )
         if checks:
             rules.append(
@@ -398,6 +403,7 @@ def classify(
     app_id: int | None,
     policy: HierarchicalIntegrationPolicy | None = None,
     ruleset_names: Mapping[int, str] | None = None,
+    attestation_name: str = ATTESTATION_NAME,
 ) -> ProtectionReading:
     """Classify the three reads for the App's promotion push (spec §8.3).
 
@@ -417,11 +423,15 @@ def classify(
                 )
         rules = [
             _ruleset_rule(
-                entry, bypass, ruleset_names or {}, app_id=app_id, producer=producer, names=names
+                entry, bypass, ruleset_names or {}, app_id=app_id, producer=producer, names=names,
+                attestation_name=attestation_name,
             )
             for entry in effective
         ]
-        rules += _classic_rules(classic, app_id=app_id, producer=producer, names=names)
+        rules += _classic_rules(
+            classic, app_id=app_id, producer=producer, names=names,
+            attestation_name=attestation_name,
+        )
     except ProtectionUnreadable as exc:
         return ProtectionReading(UNVERIFIABLE, reason=str(exc))
 
@@ -469,6 +479,7 @@ async def read_protection(
     *,
     app_id: int | None,
     policy: HierarchicalIntegrationPolicy | None = None,
+    attestation_name: str = ATTESTATION_NAME,
 ) -> ProtectionReading:
     """Read and classify the default branch's protection through *client*.
 
@@ -518,7 +529,8 @@ async def read_protection(
     except Exception as exc:  # noqa: BLE001 - every failed read is unverifiable
         return ProtectionReading(UNVERIFIABLE, reason=f"{stage} not read: {_describe(exc)}")
     return classify(
-        effective, bypass, classic, app_id=app_id, policy=policy, ruleset_names=ruleset_names
+        effective, bypass, classic, app_id=app_id, policy=policy, ruleset_names=ruleset_names,
+        attestation_name=attestation_name,
     )
 
 

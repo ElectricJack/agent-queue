@@ -940,6 +940,7 @@ class IntegrationCommandsMixin:
             self.db,
             git_first=getattr(self.config.integration, "git_first", "shadow"),
             train=getattr(self.orchestrator, "integration_train", None),
+            flow_problems=getattr(self.orchestrator, "promotion_flow_problems", None),
         )
         status = await (service.control_status(project_id) if args.get("control_only")
                         else service.status(project_id))
@@ -1127,6 +1128,8 @@ class IntegrationCommandsMixin:
         refusal, inputs = await self._integration_app_inputs(args)
         if refusal is not None:
             return refusal
+        from src.integration.promotion_steps import read_stored_promotion_flow
+
         binding = inputs["binding"]
         report = await app_mode.evaluate(
             app_mode.AppModeContext(
@@ -1140,6 +1143,7 @@ class IntegrationCommandsMixin:
                 mode=getattr(inputs["project"], "hierarchical_integration_mode", None),
                 policy_path=args.get("policy_path") if args.get("policy") is not None else None,
                 repository_arg=args.get("repository_id") or None,
+                promotion_flow=await read_stored_promotion_flow(self.db, inputs["project_id"]),
             )
         )
         return {

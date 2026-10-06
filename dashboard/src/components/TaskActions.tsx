@@ -26,6 +26,7 @@ import { sendChatMessage } from "../api/chat";
 import { branchesAwaitingChoice, type BranchChoice, type DiscardBranch } from "../api/branchDiscard";
 import { integrationRemovalRefusal } from "../api/deleteRefusals";
 import Modal from "./Modal";
+import RemoveTaskModal from "./RemoveTaskModal";
 import BranchDiscardPrompt from "./BranchDiscardPrompt";
 import TaskAgentTerminalButton from "./TaskAgentTerminalButton";
 import { canFocusTerminal } from "./terminalFocus";
@@ -40,7 +41,7 @@ interface TaskActionsProps {
   onOpenTerminal?: () => void;
 }
 
-type ModalType = "reopen" | "answer" | "delete" | null;
+type ModalType = "reopen" | "answer" | "delete" | "remove" | null;
 
 /** The supervisor session the agents page can render a terminal for. */
 const SUPERVISOR_SESSION = "supervisor-global";
@@ -209,6 +210,13 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
       show: ["COMPLETED", "FAILED"].includes(s),
     },
     {
+      label: "Remove",
+      icon: <TrashIcon className="h-3.5 w-3.5" />,
+      onClick: () => openModal("remove"),
+      variant: "danger",
+      show: true,
+    },
+    {
       label: "Delete",
       icon: <TrashIcon className="h-3.5 w-3.5" />,
       onClick: () => openModal("delete"),
@@ -256,7 +264,11 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
         </p>}
       </section>
 
-      <Modal open={modal !== null && modal !== "delete"} onClose={closeModal} title={modalTitles[modal ?? ""] ?? ""}>
+      {modal === "remove" && <RemoveTaskModal task={task} onClose={closeModal} onRemoved={() => {
+        onDeleted?.();
+        navigate(returnTo ?? workspaceHref(task.project_id, "tasks-knowledge"));
+      }} />}
+      <Modal open={modal !== null && modal !== "delete" && modal !== "remove"} onClose={closeModal} title={modalTitles[modal ?? ""] ?? ""}>
         <div className="space-y-4">
           <textarea
             value={textInput}
@@ -301,7 +313,12 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
             />
           )}
           {integrationRefusal && (
-            <p role="alert" className="text-sm text-amber-200">{integrationRefusal}</p>
+            <div className="space-y-2">
+              <p role="alert" className="text-sm text-amber-200">{integrationRefusal}</p>
+              <button onClick={() => openModal("remove")} className="text-sm text-indigo-300 underline">
+                Remove while keeping history and branches
+              </button>
+            </div>
           )}
           {deleteTask.isError && !branchPrompt && !integrationRefusal && (
             <p role="alert" className="text-sm text-red-300">

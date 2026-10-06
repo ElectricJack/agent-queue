@@ -91,6 +91,42 @@ class IntegrationStatusArgs(CommandArgs):
     project_id: str = Field(min_length=1)
 
 
+class PromoteSchemaArgs(CommandArgs):
+    pass
+
+
+class PromoteSchemaValue(CommandValue):
+    # Avoid shadowing BaseModel.schema while preserving the command wire field.
+    schema_document: dict[str, Any] = Field(default_factory=dict, alias="schema")
+
+
+class PromoteValidateArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    #: The session scope gate injects these before the handler validates arguments.
+    task_id: str | None = None
+    session_id: str | None = None
+    flow: Any = None
+    #: False when flow supplies a document, including explicit null.
+    use_stored: bool = True
+    remote: bool = False
+
+
+class PromoteValidateValue(CommandValue):
+    project_id: str | None = None
+    valid: bool = False
+    flow: list[dict[str, Any]] | None = None
+    layer: int | None = None
+    problems: tuple[dict[str, Any], ...] = ()
+    warnings: tuple[dict[str, Any], ...] = ()
+    protection: dict[str, Any] | None = None
+    workflow_triggers: dict[str, Any] | None = None
+
+
+class PromoteRulesetsValue(PromoteValidateValue):
+    app_id: int | None = None
+    rulesets: tuple[dict[str, Any], ...] = ()
+
+
 class IntegrationAbortBatchArgs(CommandArgs):
     batch_id: str = Field(min_length=1)
     reason: str = ""
@@ -523,6 +559,9 @@ class IntegrationStatusValue(IntegrationOperationalValue):
     #: Non-blocking App-mode configuration warnings (spec §6.2); never part
     #: of ``blockers``, their digest or ``ready``.
     warnings: tuple[dict[str, Any], ...] = ()
+    #: The stored promotion flow as a chain, re-validated on read; its
+    #: targets are ``misconfigured`` when the flow no longer validates.
+    promotion_flow: dict[str, Any] | None = None
 
 
 class IntegrationRedriveRootValue(CommandValue):
@@ -1058,6 +1097,24 @@ def _operational_contract(
         ),
     )
 
+
+PROMOTE_SCHEMA = _operational_contract(
+    "promote_schema", PromoteSchemaArgs, ("schema",),
+    successes=frozenset({"schema"}), side_effect=SideEffectClass.READ,
+    result_model=PromoteSchemaValue,
+)
+PROMOTE_VALIDATE = _operational_contract(
+    "promote_validate", PromoteValidateArgs, ("valid", "invalid", "not_found"),
+    successes=frozenset({"valid"}), side_effect=SideEffectClass.READ,
+    result_model=PromoteValidateValue,
+)
+
+# E1 read-only configuration registration, independent of promotion intents.
+PROMOTE_RULESETS = _operational_contract(
+    "promote_rulesets", PromoteValidateArgs, ("rulesets", "invalid", "not_found"),
+    successes=frozenset({"rulesets"}), side_effect=SideEffectClass.READ,
+    result_model=PromoteRulesetsValue,
+)
 
 INTEGRATION_STATUS = _operational_contract(
     "integration_status",
@@ -2639,6 +2696,32 @@ async def _status_adapter(args: IntegrationStatusReadArgs, ctx: CommandContext |
     )
 
 
+async def _promote_schema_adapter(args: PromoteSchemaArgs, ctx: CommandContext | None):
+    from src.commands.contracts.builtin import _handler
+
+    if ctx is None:
+        raw = await _handler().execute("promote_schema", {})
+    else:
+        with principal_context(ctx):
+            raw = await _handler().execute("promote_schema", {})
+    return CommandResult(outcome=raw["outcome"], value=PromoteSchemaValue(
+        schema=raw.get("schema", {})
+    ), summary="Promotion-flow JSON schema")
+
+
+async def _promote_validate_adapter(args: PromoteValidateArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "promote_validate", args, ctx, PromoteValidateValue, {"valid", "invalid", "not_found"},
+    )
+
+
+async def _promote_rulesets_adapter(args: PromoteValidateArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "promote_rulesets", args, ctx, PromoteRulesetsValue,
+        {"rulesets", "invalid", "not_found", "unauthorized"},
+    )
+
+
 async def _trust_manifest_adapter(
     args: IntegrationTrustManifestArgs, ctx: CommandContext | None
 ):
@@ -2905,6 +2988,9 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         )
     for contract, adapter in (
         (INTEGRATION_STATUS, _status_adapter),
+        (PROMOTE_SCHEMA, _promote_schema_adapter),
+        (PROMOTE_VALIDATE, _promote_validate_adapter),
+        (PROMOTE_RULESETS, _promote_rulesets_adapter),
         (INTEGRATION_TRUST_MANIFEST, _trust_manifest_adapter),
         (INTEGRATION_APP_VERIFY, _app_verify_adapter),
         (INTEGRATION_EJECT, _eject_adapter),
