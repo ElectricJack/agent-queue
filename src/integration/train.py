@@ -139,12 +139,15 @@ class TargetSource(Protocol):
 
 class BatchSource(Protocol):
     async def open_batch(
-        self, target: TrainTarget, snapshot: GitTruthSnapshot, service: BatchService
+        self, target: TrainTarget, snapshot: GitTruthSnapshot, service: BatchService, *,
+        seal_now: bool = False,
     ) -> BatchSelection:
         """The target's open batch with its frozen members, freezing one when due.
 
         A new batch freezes through ``service.freeze``, which retains every
         exact completion source before the membership becomes immutable.
+        ``seal_now`` bypasses admission timing for this call only; it never
+        bypasses source, PR or publication gates.
         """
 
     async def settle(self, batch: Batch, observation: BatchObservation) -> None:
@@ -357,6 +360,7 @@ class BatchSelection:
     batch: Batch | None = None
     members: tuple[BatchMember, ...] = ()
     blockers: tuple[dict[str, Any], ...] = ()
+    detail: dict[str, Any] | None = None
 
 
 @dataclass
@@ -556,26 +560,32 @@ class IntegrationTrain:
                                   "retry_at": pause.retry_at},
                           observed_at=now)
 
-    async def visit(self, target: TrainTarget) -> TrainVisit:
-        """Observe the target once and take at most one step toward delivery."""
+    async def visit(self, target: TrainTarget, *, seal_now: bool = False) -> TrainVisit:
+        """Observe the target once and take at most one step toward delivery.
+
+        ``seal_now`` bypasses cadence for this observation only. Admission and
+        publication still require their ordinary evidence.
+        """
         from src.integration.ci import hosted_observation_scope
 
         with hosted_observation_scope():
-            return await self._visit_target(target)
+            return await self._visit_target(target, seal_now=seal_now)
 
-    async def _visit_target(self, target: TrainTarget) -> TrainVisit:
+    async def _visit_target(self, target: TrainTarget, *, seal_now: bool = False) -> TrainVisit:
         lane = await self.lane_for(target)
         _progress("fetch_snapshot")
         snapshot = await lane.snapshot()
         _progress("select_batch", target_sha=snapshot.target_oid)
-        opened = await self.batches.open_batch(target, snapshot, lane.service)
+        opened = await self.batches.open_batch(
+            target, snapshot, lane.service, **({"seal_now": True} if seal_now else {}),
+        )
         if (target.kind == "epic" and opened.batch is None
                 and not opened.blockers and lane.sync_closed_epic):
             opened = await lane.sync_closed_epic(snapshot) or opened
         if opened.batch is None:
             state = ("unknown" if any(b["code"] == "unknown" for b in opened.blockers)
-                     else "blocked" if opened.blockers else "idle")
-            visit = self._visit(target, state, snapshot=snapshot)
+                     else "blocked" if opened.blockers else "settling" if opened.detail else "idle")
+            visit = replace(self._visit(target, state, snapshot=snapshot), detail=opened.detail)
         else:
             visit = await self._visit_batch(target, lane, snapshot, opened.batch, opened.members)
         blockers = opened.blockers

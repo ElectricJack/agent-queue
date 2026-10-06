@@ -213,6 +213,15 @@ class IntegrationCleanupPolicy(BaseModel):
         return self
 
 
+class IntegrationTrainPolicy(BaseModel):
+    """Root admission timing; epic collection does not wait for this window."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    cadence_seconds: int = Field(default=300, gt=0)
+    settling_cap_seconds: int = Field(default=1800, gt=0)
+
+
 class HierarchicalIntegrationPolicy(BaseModel):
     """Validated project policy consumed when reserving an operation."""
 
@@ -225,19 +234,21 @@ class HierarchicalIntegrationPolicy(BaseModel):
     on_failed_child: Literal["block", "ask"]
     on_main_moved: Literal["rebuild", "wait"] = "rebuild"
     cleanup: IntegrationCleanupPolicy = Field(default_factory=IntegrationCleanupPolicy)
+    train: IntegrationTrainPolicy | None = None
     max_wait_seconds: float = Field(
         default=DEFAULT_INTEGRATION_MAX_WAIT_SECONDS, gt=0, allow_inf_nan=False
     )
 
     @model_serializer(mode="wrap")
-    def _omit_default_max_wait(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+    def _omit_optional_defaults(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
         # Batches, operations and stages compare frozen snapshots by dict
-        # equality, and snapshots written before this field existed lack it.
-        # Dumping the default would make every in-flight operation look
-        # corrupt after an upgrade, so only a configured bound is written.
+        # equality. Older snapshots lack optional policy additions, so omit
+        # their defaults rather than invalidating in-flight work on upgrade.
         dumped = handler(self)
         if self.max_wait_seconds == DEFAULT_INTEGRATION_MAX_WAIT_SECONDS:
             dumped.pop("max_wait_seconds", None)
+        if self.train is None:
+            dumped.pop("train", None)
         return dumped
 
 
