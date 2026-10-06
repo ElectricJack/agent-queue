@@ -1417,7 +1417,7 @@
       ]
     }
   },
-  "digest": "sha256:28b140b33fdf697049e96f42c63220b9e0c954ca0615d7d76290a6767bc2408c",
+  "digest": "sha256:f8cd35d085e3f75342b366e6172c1bb71dca2ccf3933e3b52ce6287d70c41c11",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3071,6 +3071,7 @@
         "src.git.manager",
         "src.integration.admission",
         "src.integration.batches",
+        "src.integration.delivery_observer",
         "src.integration.development",
         "src.integration.git_truth",
         "src.integration.gitops",
@@ -3087,6 +3088,7 @@
         "src.models",
         "src.orchestrator",
         "src.orchestrator.workspace_claim_recovery",
+        "src.orchestrator.worktree_manager",
         "src.scheduler",
         "src.sessions",
         "src.sessions.reconciler"
