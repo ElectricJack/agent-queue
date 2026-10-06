@@ -1415,7 +1415,7 @@
       ]
     }
   },
-  "digest": "sha256:e4cdb05e7e8bba3312787dfc4f8be83851cd60b8c0cf04a9925813a791161242",
+  "digest": "sha256:0c4a448a500b8cc3223dd5026d7df7d4d77f8bad188d28c4f1739b1b1de9ddf2",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7679,7 +7679,8 @@
         "src.models"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Git-proven backfill of pre-provenance completions (src/integration/legacy_backfill.py)."
     },

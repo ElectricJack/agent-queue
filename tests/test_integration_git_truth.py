@@ -730,7 +730,7 @@ async def test_oversized_source_patch_is_complete_and_uses_delivery_proofs(repos
 
 async def test_failed_historical_probe_does_not_hide_later_match(repository, monkeypatch):
     repo = repository
-    _first, head, request = await source_work(repo)
+    _first, _head, request = await source_work(repo)
     await repo.run("checkout", "main")
     failed_head = await repo.commit("one", "historical content\n")
     await repo.run("revert", "--no-edit", failed_head)
