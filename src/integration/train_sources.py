@@ -38,6 +38,7 @@ from src.database.tables import (
 )
 from src.git.manager import GitError, is_valid_git_oid
 from src.integration.batches import Batch, BatchMember, BatchObservation, BatchService, BatchStore
+from src.integration.ci import SubjectTrustError
 from src.integration.delivery_observer import DeliveryTarget, delivery_targets
 from src.integration.delivery_truth import DeliveryState, load_delivery_requests
 from src.integration.epics import EpicGraphReader, EpicPolicy, EpicReadinessEvaluator, HeadChecks
@@ -587,12 +588,15 @@ class EpicCompletions:
         if not node.container or (graph.project_id, graph.repository_id) != target.key[:2]:
             return ()
         # Provider refreshes stay outside the hierarchy/action transaction.
-        await self.refresh(graph, snapshot)
+        refused = await self.refresh(graph, snapshot)
         readiness = await self.evaluator.evaluate(graph, snapshot)
-        if not readiness.ready:
-            return tuple({"code": reason, "task_id": task_id, "ref": task_id,
-                          "detail": f"epic {node.task_id} readiness: {reason}"}
-                         for task_id, reason in readiness.blockers)
+        if refused or not readiness.ready:
+            # A refused subject is never collected: its head checks are unread,
+            # so the named refusal and the readiness verdict are reported together.
+            return (*refused, *(
+                {"code": reason, "task_id": task_id, "ref": task_id,
+                 "detail": f"epic {node.task_id} readiness: {reason}"}
+                for task_id, reason in readiness.blockers))
         # A generation never changes source. Reopening rotates legacy_generation;
         # collecting a later aggregate produces another immutable head identity.
         identity = (graph.project_id, graph.repository_id, node.task_id,
@@ -785,6 +789,7 @@ class DaemonLanes:
 
         async def refresh(graph, snapshot):
             policy = await self._policy(target.project_id)
+            refused: list[dict] = []
             for node in graph.nodes:
                 head = snapshot.for_target(node.branch_ref).target_oid if node.branch_ref else None
                 if not node.container or not head:
@@ -794,13 +799,29 @@ class DaemonLanes:
                     continue
                 batch = Batch("epic-readiness-" + node.task_id, target.project_id,
                               target.repository_id, node.branch_ref)
-                exact = await self._hosted(policy, binding, target, batch, head)
+                try:
+                    exact = await self._hosted(policy, binding, target, batch, head)
+                except SubjectTrustError as exc:
+                    # A branch collected before the repository carried a trust
+                    # manifest owes the epic a refresh, not a failed visit: the
+                    # head's checks stay unread and the refusal is named.
+                    resolved[(head, node.policy)] = None
+                    refused.append({
+                        "code": "subject_trust_missing" if exc.cause == "missing"
+                        else "subject_trust_invalid",
+                        "task_id": node.task_id, "ref": node.branch_ref,
+                        "head_sha": head,
+                        "detail": f"epic {node.task_id} branch {node.branch_ref} at {head}: "
+                                  f"{exc}; refresh the branch from the default branch",
+                    })
+                    continue
                 resolved[(head, node.policy)] = exact
                 if exact is not None:
                     await exact.request(HeadIdentity(repository_id=graph.repository_id,
                         ref=node.branch_ref, sha=head, generation=0))
                     await exact.refresh(HeadIdentity(repository_id=graph.repository_id,
                         ref=node.branch_ref, sha=head, generation=0))
+            return tuple(refused)
 
         async def head_checks(repository_id, head, policy):
             exact = resolved.get((head, policy))

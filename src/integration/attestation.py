@@ -112,6 +112,8 @@ class IntegrationAttestationService:
         self._owned_publications: dict[str, str] = {}
         # Refused subject trees by operation id, for ``aq integration status``.
         self._subject_trust: dict[str, dict[str, Any]] = {}
+        # Operations whose refusal names no durable subject, logged once each.
+        self._unnamed_subject_trust: set[str] = set()
 
     async def publish(
         self, subject: RootAttestationSubject, *, producer: HostedCIProducer | None = None,
@@ -474,6 +476,19 @@ class IntegrationAttestationService:
         operation_id = state.get("operation_id")
         project_id = state.get("project_id")
         if not operation_id or not project_id:
+            return
+        if boundary == "parent" and state.get("parent_task_id") is None:
+            # An epic readiness read takes the parent boundary on a branch that
+            # is no parent's verification subject: there is no parent
+            # checkpoint or operation whose currency could keep this record, so
+            # status cannot own it. The epic lane names the refusal itself
+            # (``subject_trust_missing``) instead.
+            if operation_id not in self._unnamed_subject_trust:
+                self._unnamed_subject_trust.add(operation_id)
+                logger.warning(
+                    "Integration subject trust invalid for an unnamed parent subject at %s: %s",
+                    state.get("candidate_sha"), error,
+                )
             return
         subject = (
             {"parent_task_id": state["parent_task_id"], "generation": state["generation"]}
