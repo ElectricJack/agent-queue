@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 import pytest
 import structlog
@@ -196,6 +197,70 @@ class TestSetupLogging:
         root = logging.getLogger()
         file_handlers = [h for h in root.handlers if hasattr(h, "baseFilename")]
         assert len(file_handlers) == 0
+
+
+@pytest.mark.parametrize("output_format", ["dev", "plain", "json"])
+@pytest.mark.parametrize("native", [False, True])
+def test_exception_logging_never_renders_locals(output_format, native, capsys, tmp_path):
+    """Large poller state and credential locals must never be inspected by logging."""
+    repr_calls = []
+
+    class PrivateState:
+        def __repr__(self):
+            repr_calls.append(True)
+            return "PRIVATE-LOCAL-DATA" * 10000
+
+    log_file = tmp_path / "logs" / "exceptions.jsonl"
+    setup_logging(format=output_format, log_file=str(log_file))
+    test_logger = (
+        structlog.get_logger("test.locals") if native else logging.getLogger("test.locals")
+    )
+
+    def fail():
+        private_state = PrivateState()  # noqa: F841 - retained in the exception frame
+        raise ValueError("bounded traceback")
+
+    try:
+        fail()
+    except ValueError:
+        test_logger.exception("unexpected failure")
+
+    output = re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().err)
+    record = json.loads(log_file.read_text().splitlines()[-1])
+    assert "ValueError: bounded traceback" in output
+    assert "ValueError: bounded traceback" in record["exception"]
+    assert "PRIVATE-LOCAL-DATA" not in output + record["exception"]
+    assert repr_calls == []
+    if output_format in {"dev", "plain"}:
+        assert len(output.splitlines()) < 100
+        assert max(map(len, output.splitlines())) <= 100
+
+
+@pytest.mark.parametrize("output_format", ["dev", "plain", "json"])
+def test_deep_exception_logging_has_bounded_frames(output_format, capsys, tmp_path):
+    log_file = tmp_path / "logs" / "deep.jsonl"
+    setup_logging(format=output_format, log_file=str(log_file))
+    # Distinct frames prevent Python/Rich's repeated-frame compression from
+    # masking an unbounded formatter.
+    functions = {}
+    source = "\n".join(
+        f"def frame_{index}():\n    frame_{index + 1}()" for index in range(80)
+    ) + '\ndef frame_80():\n    raise RuntimeError("deep failure")'
+    exec(compile(source, "deep_traceback.py", "exec"), functions)
+    try:
+        functions["frame_0"]()
+    except RuntimeError:
+        logging.getLogger("test.deep").exception("unexpected failure")
+    output = re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().err)
+    assert "RuntimeError: deep failure" in output
+    if output_format != "json":
+        assert "frames hidden" in output
+        assert len(output.splitlines()) < 100
+    else:
+        assert json.loads(output)["exception"].count('File "deep_traceback.py"') <= 20
+    record = json.loads(log_file.read_text().splitlines()[-1])
+    assert record["exception"].count('File "deep_traceback.py"') == 20
+    assert "RuntimeError: deep failure" in record["exception"]
 
 
 class TestStructlogOutput:

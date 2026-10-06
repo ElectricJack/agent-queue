@@ -15,6 +15,8 @@ The cache lives in memory and is keyed by the exact source identity, so a
 restart or a new identity starts with a full observation, and an observation
 that raised or stored nothing is never marked complete. Per-root warnings are
 logged once per change of condition, not once per tick.
+Repository binding failures back off across ticks and log once per retry window,
+without keeping exceptions or rendering their tracebacks for each root.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from sqlalchemy import and_, select
 from src.database.tables import projects, repos, tasks
 from src.git.github import GitHubAccess
 from src.git.github_contracts import GitHubAccessError
+from src.git.manager import GitError
 from src.integration.source_ancestry import SourceAncestryInvalid, SourceAncestryObservation
 from src.models import TaskStatus
 
@@ -57,6 +60,14 @@ class _Repository:
     open_numbers: Any = _UNREAD
 
 
+@dataclass
+class _RepositoryFailure:
+    """Retry state without retaining exception tracebacks and their locals."""
+
+    retry_at: float
+    delay: float
+
+
 class GitHubReviewPoller:
     """Read a bounded page through AQ's configured repository credential."""
 
@@ -64,18 +75,24 @@ class GitHubReviewPoller:
         self, db: Any, evidence_producer: Any, git_manager: Any, *,
         interval_seconds: float = 30.0, page_size: int = 20,
         review_refresh_seconds: float = 600.0,
+        repository_retry_seconds: float = 60.0,
+        repository_retry_max_seconds: float = 600.0,
         source_ci_handler=None,
         ancestry_handler=None,
         parent_head_handler=None,
     ) -> None:
         if interval_seconds <= 0 or page_size <= 0 or review_refresh_seconds <= 0:
             raise ValueError("review poll interval, page size and refresh must be positive")
+        if repository_retry_seconds <= 0 or repository_retry_max_seconds < repository_retry_seconds:
+            raise ValueError("repository retry delays must be positive and ordered")
         self.db = db
         self.producer = evidence_producer
         self.git = git_manager
         self.interval_seconds = interval_seconds
         self.page_size = page_size
         self.review_refresh_seconds = review_refresh_seconds
+        self.repository_retry_seconds = repository_retry_seconds
+        self.repository_retry_max_seconds = repository_retry_max_seconds
         self.next_due_at = 0.0
         self.after_id: str | None = None
         self.source_ci_handler = source_ci_handler
@@ -84,7 +101,8 @@ class GitHubReviewPoller:
         self._observed: dict[str, _Observation] = {}
         self._reported: dict[str, tuple] = {}
         self._cycle_seen: set[str] = set()
-        self._repositories: dict[str, _Repository | Exception] = {}
+        self._repositories: dict[str, _Repository | None] = {}
+        self._repository_failures: dict[str, _RepositoryFailure] = {}
 
     async def tick(self, now: float) -> None:
         if now < self.next_due_at:
@@ -102,6 +120,12 @@ class GitHubReviewPoller:
             self._cycle_seen.add(row["id"])
             try:
                 await self._poll(row, now)
+            except (GitHubAccessError, GitError) as exc:
+                self._report(
+                    row["id"], ("failed", type(exc).__name__, str(exc)), logging.WARNING,
+                    "GitHub PR review poll failed for epic %s in %s: %s",
+                    row["id"], row["url"], " ".join(str(exc).split())[:1000],
+                )
             except Exception as exc:  # noqa: BLE001 - logged once per root and failure
                 self._report(
                     row["id"], ("failed", type(exc).__name__, str(exc)), logging.ERROR,
@@ -206,19 +230,31 @@ class GitHubReviewPoller:
             return
         self._report(observation.task_id, ("withdrawn", identity))
 
-    async def _repository(self, url: str) -> _Repository:
-        """Bind each repository once per tick; a failed bind fails its roots alike."""
-        found = self._repositories.get(url)
-        if found is None:
-            try:
-                binding = await self.git.bind_github_repository(url)
-                found = _Repository(binding, self.git._github_client(binding))
-            except Exception as exc:
-                self._repositories[url] = exc
-                raise
-            self._repositories[url] = found
-        if isinstance(found, Exception):
-            raise found
+    async def _repository(self, url: str, now: float) -> _Repository | None:
+        """Share failed binds across roots and ticks, retrying with capped backoff."""
+        if url in self._repositories:
+            return self._repositories[url]
+        failure = self._repository_failures.get(url)
+        if failure is not None and now < failure.retry_at:
+            self._repositories[url] = None
+            return None
+        try:
+            binding = await self.git.bind_github_repository(url)
+            found = _Repository(binding, self.git._github_client(binding))
+        except Exception as exc:
+            delay = min(
+                failure.delay * 2 if failure else self.repository_retry_seconds,
+                self.repository_retry_max_seconds,
+            )
+            self._repository_failures[url] = _RepositoryFailure(now + delay, delay)
+            self._repositories[url] = None
+            logger.warning(
+                "GitHub PR review repository bind failed for %s; retry in %.0fs: %s",
+                url, delay, " ".join(str(exc).split())[:1000],
+            )
+            return None
+        self._repository_failures.pop(url, None)
+        self._repositories[url] = found
         return found
 
     async def _still_closed(self, repository: _Repository, number: int) -> bool:
@@ -233,6 +269,12 @@ class GitHubReviewPoller:
             pulls = await repository.client.paged_list(
                 f"/repositories/{repository.binding.repository_id}/pulls?state=open&per_page=100"
             )
+        except (GitHubAccessError, GitError) as exc:
+            logger.debug(
+                "Open pull request list unavailable for %s: %s",
+                repository.binding.full_name, " ".join(str(exc).split())[:1000],
+            )
+            return None
         except Exception:
             logger.debug("Open pull request list unavailable", exc_info=True)
             return None
@@ -252,7 +294,9 @@ class GitHubReviewPoller:
         seen = self._observed.get(row["id"])
         if seen is None or seen.identity != identity:
             seen = self._observed[row["id"]] = _Observation(identity)
-        repository = await self._repository(row["url"])
+        repository = await self._repository(row["url"], now)
+        if repository is None:
+            return
         binding, client = repository.binding, repository.client
         number = GitHubAccess.validate_pr_url(binding, source["pr_url"])
         if seen.open is False and await self._still_closed(repository, number):
