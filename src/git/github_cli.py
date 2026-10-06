@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import shutil
@@ -86,6 +87,8 @@ _KNOWN_SECRET_PATTERNS = (
     ),
     re.compile(r"\b(?:github_pat_|gh[pousr]_)[A-Za-z0-9_]+\b"),
 )
+
+_log = logging.getLogger(__name__)
 
 
 class GhCredentialProvider(Protocol):
@@ -348,7 +351,14 @@ class GhRunner:
         safe_stderr = _scrub_diagnostic(stderr, secrets=diagnostic_secrets)
         result = GhResult(process.returncode or 0, stdout, safe_stderr)
         if check and result.returncode != 0:
-            raise _cli_error(result.returncode, stderr)
+            error = _cli_error(result.returncode, stderr)
+            status = re.search(r"\bHTTP\s+(\d{3})\b", safe_stderr, flags=re.IGNORECASE)
+            _log.warning(
+                "GitHub CLI request failed: category=%s returncode=%s http_status=%s stderr=%s",
+                error.category, result.returncode,
+                status.group(1) if status else None, safe_stderr[-500:].strip(),
+            )
+            raise error
         return result
 
     def _resolve_executable(self) -> str:

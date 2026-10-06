@@ -1053,12 +1053,17 @@ class AuthenticatedGitHubObserver:
         )
         selected: list[dict[str, Any]] = []
         missing: list[str] = []
+        # One listing per observation, filtered locally by name. A per-name
+        # query cost one API call per required check (17 per observation) and
+        # exhausted the App installation's hourly rate limit within an hour of
+        # every daemon restart.
+        all_records = await self.client.paged_items(
+            f"/repos/{owner}/{repository}/commits/{head_sha}/check-runs"
+            "?filter=all&per_page=100",
+            key="check_runs",
+        )
         for name in trust.required_checks.names:
-            path = (
-                f"/repos/{owner}/{repository}/commits/{head_sha}/check-runs"
-                f"?check_name={quote(name, safe='')}&filter=all&per_page=100"
-            )
-            records = await self.client.paged_items(path, key="check_runs")
+            records = [record for record in all_records if record.get("name") == name]
             candidates: list[tuple[int, dict[str, Any]]] = []
             for record in records:
                 app = record.get("app")
