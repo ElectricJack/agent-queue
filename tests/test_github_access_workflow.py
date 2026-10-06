@@ -331,7 +331,7 @@ async def test_review_poll_and_push_destination_refresh_after_expiry(workflow, r
     git = GitManager(github_access=access)
     poller = GitHubReviewPoller(None, None, git)
     url = "https://github.com/acme/widgets.git"
-    first = await poller._repository(url)
+    first = await poller._repository(url, now[0])
     assert first.binding == REPOSITORY
 
     now[0] += 3601
@@ -340,7 +340,7 @@ async def test_review_poll_and_push_destination_refresh_after_expiry(workflow, r
         state["reject_app_generations"] = ["2"]
         state_path.write_text(json.dumps(state))
     poller._repositories.clear()  # A new poll tick binds the repository again.
-    refreshed = await poller._repository(url)
+    refreshed = await poller._repository(url, now[0])
     assert await refreshed.client.exact_head_ref("main") == BASE
 
     # This is the credential-selection path used by guarded worker Git pushes.
