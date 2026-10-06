@@ -1482,6 +1482,7 @@ class HierarchyQueryMixin:
         integration_authorized: bool = False,
         completed_parent_for_repair: bool = False,
         reject_live_parent: bool = False,
+        defer_projection: bool = False,
     ) -> TransitionResult:
         """Move *task_id* under *parent_id* (``None`` = root).  Spec §5.
 
@@ -1498,6 +1499,9 @@ class HierarchyQueryMixin:
         ``reject_live_parent`` protects a reparent destination from acquiring
         children while another worker holds it. Creation paths leave it off:
         workers deliberately creating subtasks must retain their ownership.
+
+        ``defer_projection`` is for a task change set: the caller must
+        recompute the final graph and settle both parents before committing.
         """
         task_row = (
             await conn.execute(
@@ -1641,6 +1645,8 @@ class HierarchyQueryMixin:
             .values(parent_task_id=parent_id, updated_at=time.time())
         )
         affected |= await self._collect_affected({task_id}, conn)
+        if defer_projection:
+            return TransitionResult()
         flipped = await self.recompute_blocked(affected, conn=conn)
         settle_result = await self.settle_containers(
             {p for p in (old_parent, parent_id) if p}, conn=conn

@@ -63,7 +63,8 @@ streams.py         `aq stream start|tail|kill`
 styles.py          Theme, status icons, color maps
 system_config.py   `aq system config` — YAML config editing
 tasks.py           Hand-crafted `aq task` commands needing interactive features
-                   (create wizard, select, close, claim, comment)
+                   or file input (create wizard, graph files, batch-propose,
+                   select, close, claim, comment)
 test_runner.py     `aq test` — pytest behind the box-wide test semaphore
 uninstall.py       `aq uninstall` — plans and removes installer-owned resources from the
                    resume record; destructive scopes are opt-in and confirmed one by one

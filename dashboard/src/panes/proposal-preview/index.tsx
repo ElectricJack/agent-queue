@@ -242,6 +242,62 @@ export default function ProposalPreviewPane({
       </div>
 
       <div className="flex-1 overflow-auto">
+        {data.diff && (
+          <div className="mb-3 space-y-2" data-testid="proposal-change-diff">
+            <p className="text-xs font-medium">Task changes ({data.diff.tasks.length})</p>
+            {data.diff.tasks.map((change) => (
+              <details key={change.task_id} className="rounded border border-gray-800 p-2">
+                <summary className="cursor-pointer text-xs">
+                  {change.before === null ? "Create" : change.after === null ? "Archive" : "Edit"}
+                  {" "}{change.task_id}
+                </summary>
+                <dl className="mt-2 space-y-1 text-xs">
+                  {Object.keys({ ...change.before, ...change.after }).filter((field) =>
+                    change.before?.[field] !== change.after?.[field],
+                  ).map((field) => (
+                    <div key={field}>
+                      <dt className="text-gray-400">{field}</dt>
+                      <dd className="whitespace-pre-wrap break-words">
+                        {JSON.stringify(change.before?.[field] ?? null)} → {JSON.stringify(change.after?.[field] ?? null)}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              </details>
+            ))}
+          </div>
+        )}
+        {!!data.edits?.length && (
+          <div className="mb-3 space-y-1 text-xs">
+            <p className="font-medium">Requested edits</p>
+            {data.edits.map(({ task_id, ...fields }) => (
+              <p key={task_id} className="whitespace-pre-wrap break-words">
+                {task_id}: {JSON.stringify(fields)}
+              </p>
+            ))}
+          </div>
+        )}
+        {!!(data.edges.length || data.remove_edges?.length) && (
+          <div className="mb-3 space-y-1 text-xs" data-testid="proposal-edge-changes">
+            <p className="font-medium">Dependency changes</p>
+            {data.edges.map((edge, i) => (
+              <p key={`add-${i}`}>Add {edge.from} → {edge.to} ({edge.dep_type})</p>
+            ))}
+            {data.remove_edges?.map((edge, i) => (
+              <p key={`remove-${i}`}>Remove {edge.from} → {edge.to} ({edge.dep_type})</p>
+            ))}
+          </div>
+        )}
+        {!!data.comments?.length && (
+          <div className="mb-3 space-y-1 text-xs" data-testid="proposal-comments">
+            <p className="font-medium">Comments to add</p>
+            {data.comments.map((comment, i) => (
+              <p key={i} className="whitespace-pre-wrap break-words">
+                {comment.task_id} ({comment.kind ?? "note"}): {comment.body}
+              </p>
+            ))}
+          </div>
+        )}
         <div className="mb-1 flex items-center justify-between">
           <span className="text-xs font-medium text-gray-300">
             Proposed tasks ({data.tasks.length})
@@ -291,11 +347,11 @@ export default function ProposalPreviewPane({
 
       {data.status === "committed" && (
         <p className="text-xs text-emerald-400">
-          Committed — {data.tasks.length} tasks created.
+          Committed — {data.tasks.length} tasks created. All changes applied.
         </p>
       )}
       {data.status === "discarded" && (
-        <p className="text-xs text-gray-500">Discarded — no tasks were created.</p>
+        <p className="text-xs text-gray-500">Discarded — no tasks were created. No changes applied.</p>
       )}
 
       {showActions && (
