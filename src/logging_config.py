@@ -2,7 +2,8 @@
 
 Uses ``structlog`` with a processor pipeline that supports three output modes:
 
-- **dev** — Rich-colored console output with aligned columns (default)
+- **dev** — colored console output with aligned columns (default); colors only
+  when stderr is a terminal, tracebacks always plain text
 - **json** — Single-line JSON objects for log aggregation / ``jq``
 - **plain** — Human-readable text without ANSI escape codes (for piping)
 
@@ -270,39 +271,100 @@ def _get_console_processors(
         # Shorten timestamps and logger names for human-readable modes
         processors.append(_shorten_timestamp)
         processors.append(_shorten_logger_name)
+    # ``aq start`` redirects the daemon's stderr to ``daemon.log``: colour
+    # codes only when a person is watching a terminal.
+    colors = fmt != "plain" and _is_terminal(sys.stderr)
     if fmt == "json":
         processors.append(_bounded_exc_info)
         processors.append(structlog.processors.JSONRenderer())
     elif console_format:
         # User-defined format template — overrides default renderer
-        colors = fmt != "plain"
         processors.append(_TemplateRenderer(console_format, colors=colors))
-    elif fmt == "plain":
-        processors.append(structlog.dev.ConsoleRenderer(
-            colors=False, exception_formatter=_console_exception_formatter(colors=False),
-        ))
     else:
-        # "dev" (or "text" backward compat)
+        # "dev" (or "text" backward compat) and "plain"
         processors.append(structlog.dev.ConsoleRenderer(
-            colors=True, exception_formatter=_console_exception_formatter(colors=True),
+            colors=colors, exception_formatter=_plain_bounded_traceback,
         ))
     return processors
 
 
-def _console_exception_formatter(*, colors: bool) -> Any:
-    """Keep daemon tracebacks bounded and never inspect frame locals."""
-    return structlog.dev.RichTracebackFormatter(
-        show_locals=False, max_frames=_MAX_TRACEBACK_FRAMES, width=100, extra_lines=1,
-        color_system="truecolor" if colors else None,
-    )
+def _is_terminal(stream: Any) -> bool:
+    try:
+        return bool(stream.isatty())
+    except (AttributeError, ValueError):
+        return False
 
 
 def _format_bounded_exception(exc_info: Any) -> str:
-    """Keep the innermost frames in JSON output without capturing locals."""
+    """Keep the innermost frames without capturing locals."""
     return "".join(traceback.format_exception(*exc_info, limit=-_MAX_TRACEBACK_FRAMES)).rstrip()
 
 
+def _plain_bounded_traceback(sio: Any, exc_info: Any) -> None:
+    """Console tracebacks as plain text.
+
+    Never Rich: its pygments highlighting of every traceback kept the daemon's
+    event loop at ~a full core (fresh-quest-25).
+    """
+    sio.write("\n" + _format_bounded_exception(exc_info))
+
+
 _bounded_exc_info = structlog.processors.ExceptionRenderer(_format_bounded_exception)
+
+
+# ── Handled, recurring failures: one line ──────────────────────────────
+
+_MAX_EXCEPTION_SUMMARY = 300
+# Set on a record whose caller deliberately left the traceback out.
+_NO_AUTO_EXC_INFO = "_aq_no_auto_exc_info"
+
+
+def describe_exception(exc: BaseException) -> str:
+    """``Type: message [code=…, http=…]`` on one bounded line.
+
+    The code and HTTP status come from the first exception in the
+    ``__cause__``/``__context__`` chain that carries them (``code`` on
+    ``GitHubError``, ``category``/``http_status`` on ``GitHubAccessError``),
+    so a wrapping ``GitError`` still reports the GitHub classification.
+    """
+    message = " ".join(str(exc).split())
+    if len(message) > _MAX_EXCEPTION_SUMMARY:
+        message = message[: _MAX_EXCEPTION_SUMMARY - 1] + "…"
+    described = f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+    code = http_status = None
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if code is None:
+            raw = getattr(current, "code", None) or getattr(current, "category", None)
+            if raw is not None:
+                code = getattr(raw, "value", raw)
+        if http_status is None:
+            http_status = getattr(current, "http_status", None)
+        current = current.__cause__ or current.__context__
+    tags = [f"code={code}"] if code is not None else []
+    if http_status is not None:
+        tags.append(f"http={http_status}")
+    return f"{described} [{', '.join(tags)}]" if tags else described
+
+
+def log_handled(
+    log: logging.Logger, level: int, msg: str, *args: Any, exc: BaseException,
+) -> None:
+    """Log a failure the caller already handles: one line, traceback at DEBUG.
+
+    For errors that recur every tick (rate limits, a misconfigured
+    repository), a traceback per occurrence buries the log and costs CPU.
+    The traceback is attached only when the logger is enabled for DEBUG.
+    """
+    if not log.isEnabledFor(level):
+        return
+    exc_info = exc if log.isEnabledFor(logging.DEBUG) else None
+    log.log(
+        level, msg + ": %s", *args, describe_exception(exc),
+        exc_info=exc_info, extra={_NO_AUTO_EXC_INFO: True},
+    )
 
 
 # ── Auto-attach traceback to error logs inside except blocks ───────────
@@ -315,11 +377,16 @@ class _AutoExcInfoFilter(logging.Filter):
     without ``exc_info=True``, the traceback would normally be dropped.
     This filter inspects ``sys.exc_info()`` and attaches the live
     exception so the handler prints a full stack.  No effect when no
-    exception is active or when the caller already set ``exc_info``.
+    exception is active, when the caller already set ``exc_info``, or on
+    a :func:`log_handled` record.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if record.levelno >= logging.ERROR and not record.exc_info:
+        if (
+            record.levelno >= logging.ERROR
+            and not record.exc_info
+            and not getattr(record, _NO_AUTO_EXC_INFO, False)
+        ):
             exc = sys.exc_info()
             if exc[0] is not None:
                 record.exc_info = exc
@@ -343,7 +410,7 @@ def setup_logging(
 
     Args:
         level: Log level name (DEBUG, INFO, WARNING, ERROR, CRITICAL).
-        format: Output format — ``"dev"`` for colored Rich output,
+        format: Output format — ``"dev"`` for colored console output,
             ``"json"`` for JSON-lines, ``"plain"`` for uncolored text.
             ``"text"`` is accepted as a backward-compatible alias for ``"dev"``.
         include_source: Include filename/lineno in output.

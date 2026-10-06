@@ -998,7 +998,7 @@ class LoggingConfig:
 
     Controls the structlog-powered logging setup.  Three output modes:
 
-    - ``"dev"`` — Rich-colored console output (default, best for terminals)
+    - ``"dev"`` — colored console output (default; colors only on a terminal)
     - ``"json"`` — Single-line JSON objects for log aggregation / ``jq``
     - ``"plain"`` — Human-readable text without ANSI codes (for piping)
 
