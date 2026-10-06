@@ -53,6 +53,15 @@ credentials and repository protection. Applying project policy does not change
 GitHub configuration. Root admission and publication are reconciler decisions;
 there is no manual sweep or operator ejection command.
 
+When GitHub rate-limits a visit, the train pauses every target of that
+repository instead of failing each one on every tick. The pause lasts 60 s and
+doubles with each consecutive limit up to 15 minutes, or runs until GitHub's
+own retry time when that is later. In `aq integration status`, the paused
+targets show `detail.reason: rate_limited` and `detail.retry_at`. When the pause
+ends, a single target probes GitHub first and the rest resume once it gets
+through. The daemon log carries one warning per pause; the traceback appears
+only at DEBUG.
+
 The controls keyed by a task, operation, batch or reservation — `redrive-root`,
 `redrive-child`, `reopen-collection`, `reserve-owner`, `release-owner` — take no `project_id`,
 so authorization resolves their target project server-side. `record-noop` is an

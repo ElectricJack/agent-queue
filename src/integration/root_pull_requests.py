@@ -20,11 +20,15 @@ the head the dry run reported.
 """
 
 from __future__ import annotations
+
 import json
 import logging
+import re
 import time
 from typing import Any
+
 from sqlalchemy import and_, exists, func, or_, select, update
+
 from src.database.queries.integration_train_queries import _root_delivery_receipt_conditions
 from src.database.tables import (
     archived_tasks,
@@ -36,15 +40,12 @@ from src.database.tables import (
     task_integration_checkpoints,
     tasks,
 )
+from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError
-from src.task_graph.integration_dependencies import dependencies_for
-import re
+from src.logging_config import log_handled
 from src.models import TaskStatus
-
-
-
-
-
+from src.projects.github import GitHubError
+from src.task_graph.integration_dependencies import dependencies_for
 
 _OID = re.compile(r"[0-9a-f]{40}")
 
@@ -191,6 +192,11 @@ class RootPullRequestReconciler:
             result = await EpicPullRequestService(
                 self.db, git_manager=self.git
             ).open_for_epic(task_id)
+        except (GitError, GitHubError, GitHubAccessError) as exc:
+            log_handled(logger, logging.WARNING,
+                        "Could not open the pull request for train root %s", task_id, exc=exc)
+            self._defer(task_id, now)
+            return None
         except Exception:
             logger.warning(
                 "Could not open the pull request for train root %s", task_id, exc_info=True

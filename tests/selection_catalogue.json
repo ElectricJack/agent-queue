@@ -1417,7 +1417,7 @@
       ]
     }
   },
-  "digest": "sha256:ce815edf70bfe1843df54925ae50b5216c3aefe70c158b903ae0a02ec2120908",
+  "digest": "sha256:db3508b64843dbbdb8d1aaff42dbb34220fc92cbb2ed055ad9c7be389125142b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8060,7 +8060,9 @@
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.database.tables",
+        "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
         "src.integration.pr_cleanup",
         "src.integration.pr_delivery",
         "src.integration.promotion",
@@ -8361,6 +8363,8 @@
       "default_arm": true,
       "imports": [
         "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
         "src.integration.root_pull_requests",
         "src.models"
       ],
@@ -8639,6 +8643,8 @@
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
         "src.integration.batches",
         "src.integration.checks",
         "src.integration.git_truth",
@@ -9689,7 +9695,10 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.logging_config"
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.logging_config",
+        "src.projects.github"
       ],
       "markers": [
         "parametrize"
