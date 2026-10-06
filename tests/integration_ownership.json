@@ -13167,13 +13167,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/integration/development.py::DevelopmentPrimitives.stale_branches::1a8916f711dc47c080cb0bac5599a46fa61aee803ddea03d9439036c30b321e9": {
-      "line": 1016,
+      "line": 1028,
       "owner": "DevelopmentPrimitives.stale_branches",
       "call": "log_event",
-      "owner_fingerprint": "024a084b28c16536d892ea4caac836da19d3189890ab0593316a54fee7180a21",
+      "owner_fingerprint": "65b3e8213e67f1399deb2e887c6cb924ace5ef5946609c43fb962f2923121eb8",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Audit of stale branch deletions after excluding repository default and promotion targets; the event records outcomes and backup paths without ref replay authority."
     },
     "src/integration/development_adapter.py::DevelopmentIntegrationAdapter._record_on::702e45e3d58f1919b9761bd1eb1c7dbbd47a30b156ead275183d7ee30484d94f": {
       "line": 214,
