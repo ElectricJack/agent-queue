@@ -860,6 +860,7 @@ doc_review_revisions = Table(
     # The submitted markdown with any leading frontmatter stripped.
     Column("content", Text, nullable=False),
     Column("content_sha256", Text, nullable=False),
+    Column("spec_kind", Text, nullable=True),
     Column("submitted_by", Text, nullable=False),  # principal label
     Column("submitted_task_id", Text, nullable=True),
     Column("changes_note", Text, nullable=True),
@@ -874,6 +875,10 @@ doc_review_revisions = Table(
     # approval stores in the artifact store.  NULL for every other review.
     Column("playbook", JSON, nullable=True),
     Column("playbook_artifact", Text, nullable=True),
+    CheckConstraint(
+        "spec_kind IS NULL OR spec_kind IN ('design', 'implementation')",
+        name="ck_doc_review_revisions_spec_kind",
+    ),
 )
 
 # Image evidence belongs to the submitted review revision, not the source task.

@@ -6415,7 +6415,9 @@ _ALL_TOOL_DEFINITIONS = [
             "rejected up front if the shape is wrong, if it references tasks "
             "that do not exist, or if it would introduce a dependency cycle "
             "against the project's current graph. Returns a proposal_id for "
-            "task_batch_update / _commit / _discard."
+            "task_batch_update / _commit / _discard. A live spec-ingest role "
+            "holding the matching approved vault path may commit immediately; "
+            "those batches require epics with children and leaf dependency edges."
         ),
         "input_schema": {
             "type": "object",
@@ -6613,7 +6615,8 @@ _ALL_TOOL_DEFINITIONS = [
             "the proposal's source as provenance. Refused (``not_approved``) "
             "unless a resolved human gate in the proposal's project, awaiting "
             "this proposal, carries an approval resolution (``approve`` or "
-            "``approved``). Task versions and graph state are rechecked under the "
+            "``approved``), or the server stamped approved-document authority "
+            "from a live spec-ingest role. Task versions and graph state are rechecked under the "
             "routing/hierarchy/write locks; two concurrent commits cannot both win. Any failure "
             "rolls back all changes, the audit and receipt in PostgreSQL, leaving the "
             "proposal in ``ready`` for a retry. A conflict requires a fresh proposal. Committing an already "

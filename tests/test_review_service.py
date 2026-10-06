@@ -327,8 +327,13 @@ async def test_approve_resolves_the_gate_and_unblocks_waiters(svc, db, hooks, tm
     assert event["revision"] == 1
     assert event["unblocked_task_ids"] == ["impl"]
     assert event["note"] == "Ship it."
-    assert hooks.of("spec.approved") == []
-    assert [kind for kind, _ in hooks.events] == ["review.submitted", "review.decided"]
+    assert hooks.of("spec.approved") == [{
+        "project_id": PROJECT,
+        "spec_path": str((svc.vault_root / result["vault_path"]).resolve()),
+    }]
+    assert [kind for kind, _ in hooks.events] == [
+        "review.submitted", "review.decided", "spec.approved",
+    ]
 
 
 async def test_racing_decisions_let_exactly_one_win(svc, db, hooks):
@@ -342,6 +347,52 @@ async def test_racing_decisions_let_exactly_one_win(svc, db, hooks):
     assert losses[0].code in {"review_closed", "not_in_review", "stale_revision"}
     assert (await db.get_review(review_id))["state"] == wins[0]["state"]
     assert len(hooks.of("review.decided")) == 1
+
+
+@pytest.mark.parametrize("kind", ["spec", "plan", "other"])
+async def test_only_approved_specs_and_plans_emit_ingestion(svc, hooks, kind):
+    submitted = await submit(svc, kind=kind)
+    await approve(svc, submitted["review_id"])
+    events = hooks.of("spec.approved")
+    assert len(events) == (0 if kind == "other" else 1)
+    if events:
+        assert events[0]["spec_path"] == str((svc.vault_root / submitted["vault_path"]).resolve())
+    await raises("review_closed", approve(svc, submitted["review_id"]))
+    assert hooks.of("spec.approved") == events
+
+
+@pytest.mark.parametrize("spec_kind", ["design", "implementation"])
+async def test_revision_classification_survives_revise_approval_and_recovery(
+    svc, db, tmp_path, spec_kind,
+):
+    submitted = await submit(svc, content=f"---\nspec_kind: {spec_kind}\n---\n{DOC}")
+    review_id = submitted["review_id"]
+    assert (await db.get_review_revision(review_id, 1))["spec_kind"] == spec_kind
+    assert read_vault(tmp_path, submitted["vault_path"])[0]["spec_kind"] == spec_kind
+    await request_changes(svc, review_id)
+    await revise(svc, review_id, DOC + "\nMore implementation detail.\n")
+    assert (await db.get_review_revision(review_id, 2))["spec_kind"] == spec_kind
+    await approve(svc, review_id, revision=2)
+    (tmp_path / submitted["vault_path"]).unlink()
+    await svc.show(review_id=review_id)
+    fm, _ = read_vault(tmp_path, submitted["vault_path"])
+    assert fm["spec_kind"] == spec_kind
+    assert fm["status"] == "approved"
+
+
+async def test_revision_can_change_classification_without_mutating_prior_revision(svc, db):
+    submitted = await submit(svc, content=f"---\nspec_kind: design\n---\n{DOC}")
+    review_id = submitted["review_id"]
+    await request_changes(svc, review_id)
+    await revise(svc, review_id, f"---\nspec_kind: implementation\n---\n{DOC}")
+    assert (await db.get_review_revision(review_id, 1))["spec_kind"] == "design"
+    assert (await db.get_review_revision(review_id, 2))["spec_kind"] == "implementation"
+
+
+@pytest.mark.parametrize("field", ["spec_kind: typo", "spec_kind: [design]", "[broken"])
+async def test_invalid_spec_classification_is_refused_without_review(svc, db, field):
+    await raises("bad_spec_kind", submit(svc, content=f"---\n{field}\n---\n{DOC}"))
+    assert await db.list_reviews(project_id=PROJECT) == []
 
 
 # ── 5. decide: request changes ────────────────────────────────────────────

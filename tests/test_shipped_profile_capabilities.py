@@ -50,7 +50,7 @@ EXPECTED_UNREACHABLE: dict[str, set[str]] = {
     "playbook-compiler": set(),
     "pr-merger": {"pr_merge"},
     "reviewer": {"reopen_with_feedback"},
-    "spec-ingest": {"get_downstream_tasks", "task_batch_propose"},
+    "spec-ingest": {"get_downstream_tasks", "task_batch_commit", "task_batch_propose"},
     "supervisor": set(),
     "triage": {"edit_task"},
     "worker-claude": {"pr_merge"},
