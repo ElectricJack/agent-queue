@@ -113,7 +113,9 @@ async def _check_ready_frontier_exclusions(ctx: DoctorContext) -> CheckResult:
     check_id = "tasks.ready_frontier_exclusions"
     if ctx.db is None:
         return CheckResult(id=check_id, severity=Severity.INFO, detail="database unavailable")
-    predicates = claim_frontier_predicates()
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+
+    predicates = claim_frontier_predicates(await hierarchy_frontier_modes(ctx.db))
     stmt = (
         select(
             tasks.c.id, tasks.c.project_id,

@@ -813,7 +813,7 @@ async def test_failing_pool_reconciliation_does_not_stop_sessions(orch, monkeypa
 
     await orch.run_one_cycle()
 
-    pools.assert_awaited_once_with()
+    pools.assert_awaited_once_with(hierarchy_modes={})
     sessions.assert_awaited_once_with()
     assert caplog.text.count("Scheduler cycle error") == 1
 
@@ -829,7 +829,7 @@ async def test_failed_cycle_logs_at_most_one_error_per_reconciler(orch, monkeypa
 
     await orch.run_one_cycle()
 
-    pools.assert_awaited_once_with()
+    pools.assert_awaited_once_with(hierarchy_modes=None)
     sessions.assert_awaited_once_with()
     assert caplog.text.count("Scheduler cycle error") == 1
     assert caplog.text.count("Pool reconciliation error") == 1
@@ -933,7 +933,7 @@ async def test_failing_monitoring_checks_do_not_stop_pools_or_sessions(
 
     stuck.assert_awaited_once_with()
     failed.assert_awaited_once_with()
-    pools.assert_awaited_once_with()
+    pools.assert_awaited_once_with(hierarchy_modes={})
     sessions.assert_awaited_once_with()
     assert "Stuck DEFINED task check failed" in caplog.text
     assert "FAILED/BLOCKED task report failed" in caplog.text
