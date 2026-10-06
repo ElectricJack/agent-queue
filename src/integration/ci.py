@@ -147,10 +147,12 @@ class CIObservationDeferred(AttestationError):
     """
 
     def __init__(
-        self, message: str, *, classification: Literal["none", "pending", "infra", "superseded"]
+        self, message: str, *, classification: Literal["none", "pending", "infra", "superseded"],
+        details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.classification = classification
+        self.details = details or {}
 
 
 SubjectTrustCause = Literal["missing", "too_large", "malformed", "identity_mismatch"]
@@ -1047,6 +1049,7 @@ class AuthenticatedGitHubObserver:
                 _strict_int(record.get("check_suite_id"))
                 for record in workflow_records
                 if record.get("event") == self.expected_event
+                and record.get("head_sha") == head_sha
             }
             if self.expected_event is not None
             else None
@@ -1135,11 +1138,16 @@ class AuthenticatedGitHubObserver:
             # An empty check list immediately after a push is not a CI failure.
             # Only completed push workflows for this exact head can establish
             # that the snapshot's required name was never produced.
-            push_runs = [record for record in workflow_records if record.get("event") == "push"]
+            push_runs = [record for record in workflow_records
+                         if record.get("event") == "push" and record.get("head_sha") == head_sha]
             if not push_runs or any(record.get("status") != "completed" for record in push_runs):
+                missing_push = self.expected_event == "push" and not push_runs
                 raise CIObservationDeferred(
                     f"required check is pending: {', '.join(missing)}",
-                    classification="pending" if workflow_records or selected else "none",
+                    classification="none" if missing_push else (
+                        "pending" if workflow_records or selected else "none"
+                    ),
+                    details={"missing_push_run": True} if missing_push else {},
                 )
             for record in push_runs:
                 suite_id = _strict_int(record.get("check_suite_id"))

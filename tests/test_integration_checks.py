@@ -11,6 +11,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 
 from src.database.tables import integration_check_evidence
+from src.git.manager import GitError
 from src.integration.checks import (
     ChecksState,
     CommitCheck,
@@ -184,6 +185,102 @@ async def test_current_rerun_supersedes_cached_success(db):
     assert (red.checks[0].attempt, red.checks[0].run_id) == (2, "31")
     assert (await checks.read(head())).state is ChecksState.RED
     assert len(await stored(db)) == 1
+
+
+async def test_missing_push_run_is_bounded_across_cache_reconstruction_and_recovers(db):
+    client, trust = github(app=False)
+    push_runs = list(client.workflows)
+    client.workflows.clear()
+    clock = Clock()
+    checks = hosted(db, client, trust, clock)
+    first = await checks.refresh(head())
+    assert first.state is ChecksState.PENDING
+    assert first.checks[0].detail["missing_push_since"] == 1000
+    clock.now += 299
+    assert (await checks.refresh(head())).state is ChecksState.PENDING
+
+    # New lane and daemon instances reuse the same durable exact-head deadline.
+    clock.now += 1
+    checks = hosted(db, client, trust, clock)
+    blocked = await checks.refresh(head())
+    assert blocked.state is ChecksState.UNKNOWN and not blocked.green
+    check = blocked.checks[0]
+    assert (check.conclusion, check.classification) == (
+        Conclusion.UNAVAILABLE, "ci_not_triggered",
+    )
+    assert HEAD in check.reason and head().ref in check.reason
+    assert blocked.due_at == 1600  # Still refreshable; this is not fabricated red.
+    assert (await checks.refresh(head(sha=OTHER))).state is ChecksState.PENDING
+
+    client.workflows[:] = push_runs
+    clock.now += 1
+    recovered = await checks.refresh(head())
+    assert recovered.green and recovered.checks[0].classification == "conclusive"
+    assert "missing_push_since" not in recovered.checks[0].detail
+
+
+async def test_dispatch_and_foreign_head_push_cannot_extend_missing_push_deadline(db):
+    client, trust = github(app=False)
+    original = dict(client.workflows[0])
+    client.workflows[:] = [
+        {**original, "event": "workflow_dispatch"},
+        {**original, "id": 99, "head_sha": OTHER},
+    ]
+    clock = Clock()
+    checks = hosted(db, client, trust, clock)
+    assert (await checks.refresh(head())).state is ChecksState.PENDING
+    clock.now += 300
+    blocked = await checks.refresh(head())
+    assert blocked.state is ChecksState.UNKNOWN
+    assert blocked.checks[0].classification == "ci_not_triggered"
+    assert not blocked.green
+
+
+async def test_transport_failure_does_not_restart_missing_push_deadline(db):
+    client, trust = github(app=False)
+    client.workflows.clear()
+    clock = Clock()
+    checks = hosted(db, client, trust, clock)
+    await checks.refresh(head())
+    paged = client.paged_items.side_effect
+    client.paged_items.side_effect = OSError("github down")
+    clock.now += 200
+    unavailable = await checks.refresh(head())
+    assert unavailable.checks[0].classification == "infra"
+    client.paged_items.side_effect = paged
+    clock.now += 100
+    assert (await checks.refresh(head())).checks[0].classification == "ci_not_triggered"
+
+
+async def test_real_push_run_in_progress_keeps_waiting_without_trigger_blocker(db):
+    client, trust = github(app=False)
+    client.checks.clear()
+    client.workflows[0].update(status="in_progress", conclusion=None)
+    clock = Clock()
+    checks = hosted(db, client, trust, clock)
+    await checks.refresh(head())
+    clock.now += 10000
+    pending = await checks.refresh(head())
+    assert pending.state is ChecksState.PENDING
+    assert pending.checks[0].classification == "pending"
+    assert "missing_push_since" not in pending.checks[0].detail
+
+
+async def test_workflow_inspection_failure_keeps_the_named_trigger_blocker(db):
+    client, trust = github(app=False)
+    client.workflows.clear()
+    clock = Clock()
+    diagnose = AsyncMock(side_effect=GitError("candidate blob unavailable"))
+    checks = ExactChecks(db, HostedChecks(HostedCIProducer(client, trust), diagnose=diagnose),
+                         clock=clock)
+    await checks.refresh(head())
+    diagnose.assert_not_awaited()
+    clock.now += 300
+    blocked = await checks.refresh(head())
+    assert blocked.state is ChecksState.UNKNOWN
+    assert blocked.checks[0].classification == "ci_not_triggered"
+    assert "workflow inspection unavailable" in blocked.checks[0].reason
+    assert "candidate blob unavailable" in blocked.checks[0].reason
 
 
 @pytest.mark.parametrize(

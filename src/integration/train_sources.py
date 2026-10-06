@@ -13,11 +13,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import asdict
 from typing import Any
 
+import yaml
 from sqlalchemy import and_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
@@ -65,6 +67,41 @@ TRAIN_HOLDER = "service:integration-train"
 # detached validation clone sees it. Never pushed.
 RETAINED_CANDIDATE_PREFIX = "refs/heads/aq/train-candidate/"
 MEMBER_LIMIT = 200
+
+
+def _push_branch_allowed(push: dict, ref: str) -> bool | None:
+    """Diagnose simple branch globs; unfamiliar syntax remains unknown.
+
+    This is explanatory evidence only, never a substitute for a push run.
+    """
+    branch = ref.removeprefix("refs/heads/")
+    if any(key in push and not isinstance(push[key], list)
+           for key in ("branches", "branches-ignore")):
+        return None
+
+    def matches(pattern):
+        if not isinstance(pattern, str) or re.search(r"[?+\[\]\\]", pattern):
+            return None
+        glob = re.escape(pattern).replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
+        return re.fullmatch(glob, branch) is not None
+
+    allowed = "branches" not in push
+    if allowed and ("tags" in push or "tags-ignore" in push) and "branches-ignore" not in push:
+        return False
+    for pattern in push.get("branches", []):
+        negative = isinstance(pattern, str) and pattern.startswith("!")
+        match = matches(pattern[1:] if negative else pattern)
+        if match is None:
+            return None
+        if match:
+            allowed = not negative
+    for pattern in push.get("branches-ignore", []):
+        match = matches(pattern)
+        if match is None:
+            return None
+        if match:
+            allowed = False
+    return allowed
 
 
 def batch_id(target: TrainTarget, members: Iterable[BatchMember]) -> str:
@@ -737,7 +774,8 @@ class DaemonLanes:
             if local:
                 return await self._local(target, retained, settings, version, batch,
                                          candidate_sha)
-            return await self._hosted(policy, binding, target, batch, candidate_sha)
+            return await self._hosted(policy, binding, target, batch, candidate_sha,
+                                      retained=retained)
 
         checks = CandidateChecks(
             resolve, advisory=local and settings.validation == "advisory"
@@ -866,7 +904,7 @@ class DaemonLanes:
         )
         return ExactChecks(self.db, LocalChecks(producer, project_id=target.project_id))
 
-    async def _hosted(self, policy, binding, target, batch, candidate_sha):
+    async def _hosted(self, policy, binding, target, batch, candidate_sha, *, retained=None):
         from src.integration.checks import ExactChecks, HostedChecks
         from src.integration.ci_producers import HostedCIProducer
 
@@ -887,7 +925,63 @@ class DaemonLanes:
         if attestation is None:
             return None
         trust, client = await attestation._load_trust(state, boundary=boundary)
-        return ExactChecks(self.db, HostedChecks(HostedCIProducer(client, trust)))
+
+        async def diagnose(head):
+            return await self._workflow_diagnostic(retained, head)
+
+        return ExactChecks(self.db, HostedChecks(
+            HostedCIProducer(client, trust), diagnose=diagnose if retained is not None else None,
+        ), clock=self.clock)
+
+    async def _workflow_diagnostic(self, retained, head):
+        """Read workflow filters from the candidate's tree, never the daemon checkout."""
+        async def read(args):
+            result = await self.git.arun_git_result(args, cwd=str(retained.store))
+            if result.returncode:
+                raise GitError(result.stderr.strip())
+            return result.stdout
+
+        paths = await read(["ls-tree", "-r", "--name-only", head.sha, "--", ".github/workflows"])
+        workflows, reasons = [], []
+        for path in paths.splitlines():
+            if not path.endswith((".yml", ".yaml")):
+                continue
+            source = await read(["show", f"{head.sha}:{path}"])
+            try:
+                document = yaml.safe_load(source)
+            except yaml.YAMLError:
+                reasons.append(f"{path}: workflow YAML is malformed.")
+                continue
+            if not isinstance(document, dict):
+                reasons.append(f"{path}: workflow YAML is not a mapping.")
+                continue
+            # PyYAML's YAML 1.1 loader treats an unquoted `on` as True.
+            events = document.get("on", document.get(True, {}))
+            has_push = ("push" in events if isinstance(events, (dict, list))
+                        else events == "push")
+            push = events.get("push") if isinstance(events, dict) else None
+            push = push if isinstance(push, dict) else {}
+            allowed = _push_branch_allowed(push, head.ref) if has_push else False
+            filters = {key: push[key] for key in
+                       ("branches", "branches-ignore", "tags", "tags-ignore", "paths", "paths-ignore")
+                       if key in push}
+            workflows.append({"path": path, "name": document.get("name", path),
+                              "push": has_push, "branch_allowed": allowed, "filters": filters})
+            if allowed is False:
+                reasons.append(f"{path}: " + (
+                    f"push trigger filters {json.dumps(filters, sort_keys=True)} exclude {head.ref}."
+                    if has_push else "no push trigger."
+                ))
+            elif allowed is None:
+                reasons.append(f"{path}: push trigger filters {json.dumps(filters, sort_keys=True)} "
+                               f"require inspection for {head.ref}.")
+        if not workflows and not reasons:
+            reasons.append("The candidate tree has no .github/workflows YAML files.")
+        if not reasons:
+            reasons.append("Candidate workflows allow the branch; inspect path filters, "
+                           "push credentials and GitHub Actions availability.")
+        return {"workflows": workflows, "reason": " ".join(reasons),
+                "repair_source_ref": "refs/heads/" + retained.default_branch}
 
 
 class TrainCommandDriver:
