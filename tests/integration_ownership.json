@@ -14739,6 +14739,7 @@
     "src/knowledge/legacy.py::LEGACY_MEMORY_PLUGINS": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/llm.py::LLMClient": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/llm_logger.py::LLMLogger": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/logging_config.py::log_handled": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/logging_config.py::setup_logging": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/mcp_interfaces.py::agent_to_dict": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/mcp_interfaces.py::profile_to_dict": "Generic dependency; integration-specific definitions in this file are charged independently.",

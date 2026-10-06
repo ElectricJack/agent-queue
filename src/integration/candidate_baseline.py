@@ -20,8 +20,11 @@ the candidate's failing checks remain repairable. Missing candidate checks still
 fail the required set, and publication still requires trusted exact-candidate
 success.
 
-An unproven or pre-existing failure is never repaired.  The candidate's failing
-check suites are re-requested under bounded exponential backoff, exactly as
+An unproven failure is never repaired. An epic with only proven pre-existing
+failures may receive one ordinary default-branch sync repair when the current
+default head is train-produced or attested and its own trusted exact-head checks
+pass those failing names. Otherwise the candidate's failing check suites are
+re-requested under bounded exponential backoff, exactly as
 source-CI infrastructure handling is, and the bound names the
 ``candidate_pre_existing_failure`` blocker for a human instead of filing repairs
 forever.  The counters are durable per exact candidate, so a repaired or moved

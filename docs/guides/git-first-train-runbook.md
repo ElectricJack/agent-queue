@@ -39,7 +39,24 @@ recorded stall's Git, check, tree-review and task-transition evidence.
   result ends the repair with no attempt counted. A red candidate is then measured
   against the target commit it was built on: a failing required check the target
   also fails is a pre-existing failure, and one the target has not decided yet is
-  nobody's, so neither is repaired — the visit re-requests that candidate's own
+  nobody's. For an epic with only proven pre-existing failures, the train may
+  file one ordinary sync repair to merge the current default branch at a pinned
+  SHA. The default head must be the exact fetched candidate of a known root batch
+  or carry a trusted App attestation, and its own trusted required checks must
+  freshly pass every failing name. The visit records `detail.sync_default_branch`
+  with the default ref, SHA, check names, provenance and allocation outcome.
+  The repair keeps every frozen member, resolves conflicts and regenerates
+  generated files; its resulting candidate still owes exact-head CI and
+  attestation. Its ordinary dedup key allows only one sync per batch, including
+  after a restart or archival. Root targets and unproven failures do not sync.
+  The train inspects the pinned merge and names conflicting files in the
+  existing worker conflict brief; it never resolves real code automatically.
+  A completed epic whose required children are already collected gets a
+  `train-epic-sync-` batch freezing those exact sources and the current epic
+  head, including children with retired origins or archived tasks. This works
+  after an earlier batch was aborted, without reopening work or filing children.
+  If default evidence is unavailable or red, the fix is already in the candidate,
+  or the sync is spent, the visit re-requests that candidate's own
   failing check suites under bounded backoff (`baseline_*` on the batch) and files
   no repair, naming `candidate_pre_existing_failure` for a human once three
   consecutive observations have been unrepairable. Only an observed `FAILURE`
@@ -137,7 +154,7 @@ recorded stall's Git, check, tree-review and task-transition evidence.
 | `checks_pending` | Required checks not yet green on the exact candidate | Wait; check the producer if it stays |
 | `ci_not_triggered` | No push workflow run on the exact candidate after five minutes | Follow the ordinary repair; its brief names workflow filters and how to bring needed changes from the default branch into the candidate. A manual dispatch does not count |
 | `checks_red` | Red on the exact candidate | A repair task is filed; follow it |
-| `checks_preexisting` | Every failing required check also fails on the target commit, or the target has not decided it. No repair is filed and the candidate's suites are re-requested under backoff | Fix the target's own failure, or let the batch move; `candidate_pre_existing_failure` in `detail.re_request.blocker` means three consecutive observations were unrepairable |
+| `checks_preexisting` | Every failing required check also fails on the target commit, or the target has not decided it. No verified default-branch sync is available and the candidate's suites are re-requested under backoff | Fix the target's own failure, or let the batch move; `candidate_pre_existing_failure` in `detail.re_request.blocker` means three consecutive observations were unrepairable |
 | `candidate_pre_existing_failure` | The bounded re-request of an unrepairable red candidate is spent | A person owns this batch: fix the target's required checks, or abort the batch |
 | `repair_open` | A repair task owns the candidate | Follow the named task |
 | `merge_conflict` | The batch does not merge onto its target | Follow the repair task, or inspect publication evidence if filing was withheld |

@@ -7910,6 +7910,56 @@ async def test_ordinary_repair_allocates_once_across_concurrent_visits_and_resta
     assert (await env.store.get("ordinary")).repair_attempt_count == 1
 
 
+@pytest.mark.parametrize("archived", [False, True])
+async def test_ordinary_default_sync_is_bounded_across_restart_and_archival(ordinary_env, archived):
+    from src.integration.repair import OrdinaryRepairService
+
+    env = ordinary_env
+    decision = {"ref": "refs/heads/main", "sha": "c" * 40, "checks": ["unit"],
+                "provenance": "train_candidate"}
+    results = await asyncio.gather(*(env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha=STARTING_SHA, sync_default_branch=decision,
+        authorize=AsyncMock(return_value=True), ttl_seconds=10,
+    ) for _ in range(4)))
+    assert [r["outcome"] for r in results].count("filed") == 1
+    assert len({r["task_id"] for r in results}) == 1
+    task_id = results[0]["task_id"]
+    assert (await env.service.input(task_id))["sync_default_branch"] == decision
+    assert (await env.db.get_task(task_id)).dedup_key == "repair:ordinary:sync-default-branch"
+    await env.db.update_task(task_id, status=TaskStatus.COMPLETED)
+    env.now += 10
+    if archived:
+        await env.db.archive_task(task_id)
+        assert await env.db.get_task(task_id) is None
+    restarted = OrdinaryRepairService(env.db, locks=env.locks, clock=lambda: env.now)
+    authorize = AsyncMock(return_value=True)
+    for _ in range(3):
+        # New candidate and new default head do not grant another sync attempt.
+        replay = await restarted.allocate(
+            "ordinary", target_ref=env.ref, head_sha="d" * 40, authorize=authorize,
+            sync_default_branch={**decision, "sha": "e" * 40},
+        )
+        assert (replay["outcome"], replay["task_id"], replay["attempt_count"]) == (
+            "sync_exhausted", task_id, 1,
+        )
+    authorize.assert_not_awaited()
+    # Other repairs remain ordinary, and green still bypasses all repair bounds.
+    next_ = await restarted.allocate("ordinary", target_ref=env.ref, head_sha="d" * 40,
+                                     authorize=authorize, ttl_seconds=10)
+    assert (next_["outcome"], next_["attempt_count"]) == ("filed", 2)
+    await env.db.update_task(next_["task_id"], status=TaskStatus.COMPLETED)
+    env.now += 10
+    assert (await restarted.allocate(
+        "ordinary", target_ref=env.ref, head_sha="d" * 40, green_sha="d" * 40,
+        sync_default_branch=decision,
+    ))["outcome"] == "green"
+    assert (await restarted.allocate(
+        "ordinary", target_ref=env.ref, head_sha="d" * 40, sync_default_branch=decision,
+        authorize=authorize,
+    ))["outcome"] == "sync_exhausted"
+    assert (await env.store.get("ordinary")).repair_attempt_count == 2
+
+
 async def test_ordinary_repair_next_allocation_counts_once_and_has_no_ceiling(ordinary_env):
     env = ordinary_env
     first = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref, head_sha=STARTING_SHA,
@@ -7925,6 +7975,33 @@ async def test_ordinary_repair_next_allocation_counts_once_and_has_no_ceiling(or
     assert [r["outcome"] for r in results].count("filed") == 1
     assert {r["attempt_count"] for r in results} == {101}
     assert (await env.store.get("ordinary")).repair_attempt_count == 101
+
+
+async def test_ordinary_repair_missing_completed_input_does_not_spend_a_successor(ordinary_env):
+    from sqlalchemy import delete
+
+    from src.database.tables import task_context
+
+    env = ordinary_env
+    first = await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+        authorize=AsyncMock(return_value=True),
+    )
+    await env.db.update_task(first["task_id"], status=TaskStatus.COMPLETED)
+    await env.locks.release((await env.locks.get(env.target)).grant())
+    # Archival removes context; there is no authoritative start to compare.
+    async with env.db.immediate() as conn:
+        await conn.execute(delete(task_context).where(task_context.c.id == first["task_id"]))
+    blocker = AsyncMock(return_value=None)
+    result = await env.service.allocate(
+        "ordinary", target_ref=env.ref, head_sha="c" * 40,
+        authorize=AsyncMock(return_value=True), completion_blocker=blocker,
+    )
+    assert (result["outcome"], result["reason"], result["task_id"], result["attempt_count"]) == (
+        "blocked", "repair_input_unconfirmed", first["task_id"], 1,
+    )
+    blocker.assert_not_awaited()
+    assert (await env.store.get("ordinary")).repair_attempt_count == 1
 
 
 @pytest.mark.parametrize("lost", ["released", "expired"])
@@ -8264,4 +8341,3 @@ async def test_ordinary_repair_keeps_normal_recovery_task_after_lease_expiry(ord
     assert {r["task_id"] for r in results} == {first["task_id"]}
     assert {r["outcome"] for r in results} == {"exists"}
     assert (await env.store.get("ordinary")).repair_attempt_count == 1
-

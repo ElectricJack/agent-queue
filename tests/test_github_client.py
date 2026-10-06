@@ -1205,3 +1205,24 @@ async def test_app_credential_failure_before_merge_is_not_an_uncertain_write():
         )
     assert caught.value.category == "credentials"
     assert not runner.calls
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_cli_failure_logs_scrubbed_stderr(tmp_path, caplog):
+    executable = tmp_path / "gh"
+    executable.write_text(
+        "#!/usr/bin/python3\nimport sys\n"
+        "sys.stderr.write('Authorization: Bearer opaque-secret\\n'"
+        " + 'gh: You have exceeded a secondary rate limit (HTTP 403)\\n')\n"
+        "sys.exit(1)\n"
+    )
+    executable.chmod(0o700)
+    runner = GhRunner(GitHubAuth(), executable=str(executable), env={}, cwd=tmp_path)
+    caplog.set_level(logging.WARNING, logger="src.git.github_cli")
+
+    result = await runner.run(["api", "repos/acme/widgets"], repository=REPOSITORY, check=False)
+
+    assert result.returncode == 1
+    assert "gh rate_limited; repository=acme/widgets" in caplog.text
+    assert "secondary rate limit" in caplog.text
+    assert "opaque-secret" not in caplog.text
