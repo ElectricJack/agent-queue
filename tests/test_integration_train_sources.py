@@ -3198,6 +3198,12 @@ async def test_train_controls_refuse_supervisor_from_another_project(world, monk
         ):
             result = await command(args | {"dry_run": False})
             assert result["outcome"] == "unauthorized" and "another project" in result["error"]
+        for task_id in ("a", "", None):
+            foreign = await handler._cmd_integration_eject({"batch_id": visit.batch_id,
+                "task_id": task_id, "reason": "foreign control"})
+            missing = await handler._cmd_integration_eject({"batch_id": "missing",
+                "task_id": task_id, "reason": "foreign control"})
+            assert missing == foreign
     assert (await BatchStore(world.db).get(visit.batch_id)).intent == "open"
 
 
@@ -3218,20 +3224,85 @@ async def test_train_eject_reports_unknown_batch_and_non_member(world, dry_run):
     assert (await BatchStore(world.db).get(visit.batch_id)).intent == "open"
 
 
-async def test_train_eject_missing_batch_reports_unknown_for_live_project_supervisor(world, monkeypatch):
+@pytest.mark.parametrize("project_id,outcome", [("p", "unauthorized"), (None, "unknown_batch")])
+async def test_train_eject_missing_batch_requires_global_authority(world, monkeypatch,
+                                                                 project_id, outcome):
     from src.commands.integration_commands import IntegrationCommandsMixin
     from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
     from src.profiles.capabilities import DENY_ALL
 
     handler = IntegrationCommandsMixin()
     handler.db = world.db
+    legacy_get = AsyncMock(wraps=world.db.get_integration_batch)
+    monkeypatch.setattr(world.db, "get_integration_batch", legacy_get)
     monkeypatch.setattr(world.db, "get_session", AsyncMock(return_value=SimpleNamespace(
         id="supervisor", profile_id="supervisor", lifecycle="named", state="running",
-        desired_state="running", project_id="p")))
+        desired_state="running", project_id=project_id)))
     with principal_context(ExecutionPrincipal(kind=PrincipalKind.SESSION, policy=DENY_ALL,
-            session_id="supervisor", elevated=True, project_id="p")):
+            session_id="supervisor", elevated=True, project_id=project_id)):
         result = await handler._cmd_integration_eject({"batch_id": "missing", "task_id": "a"})
-    assert result["outcome"] == "unknown_batch" and not result["success"]
+    assert result["outcome"] == outcome and not result["success"]
+    if project_id is None:
+        legacy_get.assert_awaited_once_with("missing")
+    else:
+        legacy_get.assert_not_awaited()
+
+
+@pytest.mark.parametrize("kind,elevated", [("session", False), ("session", True),
+                                         ("playbook", True), ("service", False)])
+async def test_train_eject_authorizes_before_batch_lookup(monkeypatch, kind, elevated):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import DENY_ALL
+
+    handler = IntegrationCommandsMixin()
+    handler.db = SimpleNamespace(get_session=AsyncMock(return_value=None),
+                                 get_integration_batch=AsyncMock())
+    get = AsyncMock()
+    monkeypatch.setattr(BatchStore, "get", get)
+    with principal_context(ExecutionPrincipal(kind=PrincipalKind(kind), policy=DENY_ALL,
+            session_id="session", elevated=elevated, project_id="p")):
+        result = await handler._cmd_integration_eject({"batch_id": "batch", "task_id": "a"})
+    assert result["outcome"] == "unauthorized" and not result["success"]
+    get.assert_not_awaited()
+    handler.db.get_integration_batch.assert_not_awaited()
+
+
+@pytest.mark.parametrize("batch_id", [None, "", "   "])
+async def test_train_eject_empty_batch_id_is_invalid_before_lookup(monkeypatch, batch_id):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+
+    handler = IntegrationCommandsMixin()
+    handler.db = SimpleNamespace(get_integration_batch=AsyncMock())
+    get = AsyncMock()
+    monkeypatch.setattr(BatchStore, "get", get)
+    result = await handler._cmd_integration_eject({"batch_id": batch_id, "task_id": "a"})
+    assert result["outcome"] == "invalid_state" and not result["success"]
+    get.assert_not_awaited()
+    handler.db.get_integration_batch.assert_not_awaited()
+
+
+@pytest.mark.parametrize("project_id", ["p", None])
+async def test_train_eject_preview_admits_live_own_project_and_global_supervisors(world, monkeypatch,
+                                                                              project_id):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import DENY_ALL
+
+    await completed(world, "a")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    visit = await train.visit(MAIN)
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    handler.orchestrator = SimpleNamespace(integration_train=train)
+    monkeypatch.setattr(world.db, "get_session", AsyncMock(return_value=SimpleNamespace(
+        id="supervisor", profile_id="supervisor", lifecycle="named", state="running",
+        desired_state="running", project_id=project_id)))
+    with principal_context(ExecutionPrincipal(kind=PrincipalKind.SESSION, policy=DENY_ALL,
+            session_id="supervisor", elevated=True, project_id=project_id)):
+        result = await handler._cmd_integration_eject({"batch_id": visit.batch_id, "task_id": "a"})
+    assert result["success"] and result["outcome"] == "preview", result
+    assert (await BatchStore(world.db).get(visit.batch_id)).intent == "open"
 
 
 async def test_train_seal_now_with_only_epic_targets_refuses(world):

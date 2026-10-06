@@ -463,6 +463,12 @@ transitions refuse. Pause, resume, eject and seal-now default to preview and rem
 operator/supervisor controls scoped to the owning project. Eject returns
 `not_a_member` or `unknown_batch` for those refusals. Seal-now returns
 `existing_batch` when a frozen batch already owns the target.
+Eject checks caller authority before reading batches and rejects an empty batch
+ID with `invalid_state`. A project supervisor receives the same `unauthorized`
+refusal for foreign and missing batch IDs; an unknown ID has no project binding
+to authorize. Only the local operator or global supervisor may observe
+`unknown_batch`. The exact active root-policy ejection retains its existing
+transactional authority checks.
 
 Persist reviewed-file guard failures against the exact current revision in the
 repair dossier. Both `integration.reviewed_file_guard` and `stall.sweep` report the

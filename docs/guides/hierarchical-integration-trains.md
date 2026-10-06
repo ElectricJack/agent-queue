@@ -99,7 +99,10 @@ member, operator and reason. It survives member archival and deletion. Task
 metadata cannot release an aborted batch: the `integration_train_ejection`
 prefix is reserved, and legacy markers are ignored. The additive migration
 does not adopt those untrusted markers. Ejecting a task outside the frozen
-membership returns `not_a_member`; a missing batch returns `unknown_batch`.
+membership returns `not_a_member`. A missing batch returns `unknown_batch` to
+the local operator or global supervisor. A project supervisor gets the same
+`unauthorized` refusal for foreign and missing IDs, which have no authorized
+project binding. An empty batch ID returns `invalid_state`.
 
 These four supervisor controls default to preview; `--dry-run` explicitly
 requests it. Applying an ejection requires a nonblank reason. Paused batches

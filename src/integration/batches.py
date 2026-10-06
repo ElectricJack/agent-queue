@@ -29,9 +29,6 @@ from src.integration.provenance import CompletionIdentity, GitProvenance
 
 logger = logging.getLogger(__name__)
 
-EJECTION_KEY_PREFIX = "integration_train_ejection:"
-
-
 def ejection_instruction(batch_identity):
     """Only a batch-owned eject record for its frozen member releases inputs.
 

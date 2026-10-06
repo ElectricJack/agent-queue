@@ -1418,7 +1418,7 @@
       ]
     }
   },
-  "digest": "sha256:edc911ad352a505182a2560571da188957dd77882d9b0ad7edfb8aa02e2a89f7",
+  "digest": "sha256:f5ef5cb0e3a0a3bbd8d0f1c68b93c91880a3356f417293c7fb6c65a3eff2fb67",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7584,13 +7584,18 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.cli.exceptions",
         "src.cli.integration",
         "src.database.tables",
         "src.integration.repair",
         "src.integration.scheduler",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Manual ejection preserves review approval and restores future eligibility."
     },
     "tests/test_integration_epics.py": {

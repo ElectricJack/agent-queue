@@ -1200,14 +1200,27 @@ class IntegrationCommandsMixin:
     async def _cmd_integration_eject(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationEjectArgs
         from src.integration.batches import BatchStore
+        from src.integration.engine import current_policy_ejection
         from src.integration.train_controls import TrainControlError, TrainControls
 
-        batch = await BatchStore(self.db).get(str(args.get("batch_id") or ""))
+        batch_id = str(args.get("batch_id") or "")
+        task_id = str(args.get("task_id") or "")
+        reason = str(args.get("reason") or "")
+        if not batch_id.strip():
+            return _failure("invalid_state", "batch_id is required")
+        policy_ejection = current_policy_ejection(self.db, batch_id, task_id, reason)
+        if policy_ejection is None:
+            principal = current_principal() or TRUSTED_LOCAL
+            _operator, refusal = await integration_operator(self.db, principal.project_id)
+            if refusal:
+                return _failure("unauthorized", refusal)
+
+        batch = await BatchStore(self.db).get(batch_id)
         if batch is not None:
-            request = IntegrationEjectArgs.model_validate(args)
             operator, refusal = await integration_operator(self.db, batch.project_id)
             if refusal:
                 return _failure("unauthorized", refusal)
+            request = IntegrationEjectArgs.model_validate(args)
             if request.task_id not in {m.task_id for m in await BatchStore(self.db).members(batch.id)}:
                 return _failure("not_a_member", "task is not a frozen batch member")
             train = getattr(self.orchestrator, "integration_train", None)
@@ -1229,22 +1242,18 @@ class IntegrationCommandsMixin:
                 return _failure("refused", str(exc))
             return {"success": True, **result}
 
-        from src.integration.engine import current_policy_ejection
-
-        batch_id = str(args.get("batch_id") or "")
-        task_id = str(args.get("task_id") or "")
-        reason = str(args.get("reason") or "")
-        if not await self.db.get_integration_batch(batch_id):
-            principal = current_principal() or TRUSTED_LOCAL
-            _operator, refusal = await integration_operator(self.db, principal.project_id)
+        if policy_ejection is None:
+            # An absent Git-first batch has no project binding. A project's
+            # supervisor must get the same refusal for foreign and missing IDs.
+            _operator, refusal = await integration_operator(self.db, None)
             if refusal:
                 return _failure("unauthorized", refusal)
+        if not await self.db.get_integration_batch(batch_id):
             return _failure("unknown_batch", "batch is missing")
         if not batch_id or not task_id or not reason.strip():
             return _failure("invalid_state", "batch_id, task_id and reason are required")
         if args.get("dry_run"):
             return _failure("invalid_state", "legacy batch ejection does not support preview")
-        policy_ejection = current_policy_ejection(self.db, batch_id, task_id, reason)
         if policy_ejection is None:
             return _failure("unauthorized", "ejection requires the active root policy visit")
         operator_id = "service:root-reconciler"
