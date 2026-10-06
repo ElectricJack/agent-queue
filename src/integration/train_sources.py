@@ -413,6 +413,11 @@ class DatabaseBatches:
             request, base = requests.get(task_id), bases.get(task_id)
             if request is None or not is_valid_git_oid(base or ""):
                 continue
+            evidence = await snapshot.is_delivered(request, source_base=base)
+            if evidence.satisfied:
+                delivered.add(task_id)
+                continue
+            # Epic readiness gates new batching; it cannot undo proven delivery.
             if task_id in epics:
                 async with self.db._engine.connect() as conn:
                     current = await self._epic_current_on(conn, task_id, request.completion_id)
@@ -421,7 +426,6 @@ class DatabaseBatches:
                         blockers.append({"code": "epic_completion_pending", "ref": task_id,
                             "task_id": task_id, "detail": "epic needs a current collected completion"})
                     continue
-            evidence = await snapshot.is_delivered(request, source_base=base)
             if task_id in epics and evidence.source_oid != snapshot.for_target(
                     _branch(epics[task_id])).target_oid:
                 if blockers is not None:
@@ -437,9 +441,6 @@ class DatabaseBatches:
                     "detail": detail,
                     "repository_id": target.repository_id, "target_ref": target.target_ref,
                 })
-            if evidence.satisfied:
-                delivered.add(task_id)
-                continue
             source = evidence.source_oid
             if (evidence.state is not DeliveryState.PENDING
                     or evidence.reason != "source_not_delivered"
