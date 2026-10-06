@@ -207,8 +207,10 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
     }
 )
 LOCAL_TEST_SELECTION_CONTROLS = frozenset({"test_selection_promote", "test_selection_revoke"})
+#: ``promote_approve`` posts its review with the daemon host's own gh login,
+#: so only the human at that host may run it.
 LOCAL_REVIEW_CONTROLS = frozenset({
-    "review_delegate", "review_import_edits", "approve_pull_request",
+    "review_delegate", "review_import_edits", "approve_pull_request", "promote_approve",
 })
 #: ``edit_project`` fields that bind or change a project's integration
 #: configuration.  An elevated supervisor session reaches the handler, which

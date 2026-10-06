@@ -8,32 +8,38 @@ from __future__ import annotations
 
 import copy
 import fnmatch
-import re
 import json
 import logging
+import re
 import time
 import uuid
 from collections import deque
 from dataclasses import dataclass
-from typing import Any
 from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import quote
 
 from jsonschema import Draft202012Validator
-
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from src.database.tables import (
-    integration_batch_members, integration_batches, task_context, task_metadata, tasks,
+    integration_batch_members,
+    integration_batches,
     integration_review_evidence,
+    task_context,
+    task_metadata,
+    tasks,
 )
-from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.git.github_contracts import GitHubAccessError
+from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.integration.batches import BatchObservation, BatchService
 from src.integration.ci import (
-    AttestationPayload, AuthenticatedGitHubObserver, IntegrationTrustManifest,
-    PromotionAttestationPayload, TrustedCIObservation,
+    AttestationPayload,
+    AuthenticatedGitHubObserver,
+    IntegrationTrustManifest,
+    PromotionAttestationPayload,
+    TrustedCIObservation,
 )
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.subjects import HeadIdentity
@@ -41,6 +47,7 @@ from src.integration.subjects import HeadIdentity
 log = logging.getLogger(__name__)
 PROMOTION_CONTEXT = "promotion_intent"
 PROMOTION_RESULT = "promotion_result"
+PROMOTION_PUBLISH = "promotion_publish_intent"
 
 DEFAULT_ATTESTATION = "Agent Queue Integration Attestation"
 STEP_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}\Z")
@@ -870,36 +877,49 @@ class StepPullRequestGate:
                 # A newer dismissal or review on another head invalidates the
                 # reviewer's old approval; comments alone do not replace it.
                 latest[login.casefold()] = review
-            if any(r.get("commit_id") == meta["source_sha"] and r["state"] == "CHANGES_REQUESTED"
-                   for r in latest.values()):
-                return "promotion_pr_changes_requested"
-            approved = [r["user"]["login"] for r in latest.values()
-                        if r["state"] == "APPROVED" and r.get("commit_id") == meta["source_sha"]]
+            # Only a reviewer who could approve this step can block it with
+            # CHANGES_REQUESTED; anyone else's review on S is advisory.
+            current = [r for r in latest.values() if r.get("commit_id") == meta["source_sha"]
+                       and r["state"] in {"APPROVED", "CHANGES_REQUESTED"}]
             if approval == "requester":
                 requester = meta["requester"]
                 login = requester.get("github_login") if isinstance(requester, dict) else None
                 if not login:
                     return "promotion_requester_identity_missing"
-                return (None if login.casefold() in {name.casefold() for name in approved}
-                        else "promotion_requester_approval_missing")
+                own = {r["state"] for r in current
+                       if r["user"]["login"].casefold() == login.casefold()}
+                if "CHANGES_REQUESTED" in own:
+                    return "promotion_pr_changes_requested"
+                return None if "APPROVED" in own else "promotion_requester_approval_missing"
             if approval == "operator":
                 allowed = meta["step"]["gate"].get("operator_logins")
-                for login in approved:
-                    if allowed is not None and login.casefold() not in {
-                        name.casefold() for name in allowed
-                    }:
+                allowed = None if allowed is None else {name.casefold() for name in allowed}
+                unknown = False
+                # Blockers first: an unverifiable blocker fails closed, and a
+                # failed lookup for one approver does not hide another's approval.
+                for review in sorted(current, key=lambda r: r["state"] != "CHANGES_REQUESTED"):
+                    login = review["user"]["login"]
+                    if allowed is not None and login.casefold() not in allowed:
                         continue
                     try:
                         operator = await self.is_operator(login)
                     except GitHubAccessError as exc:
                         if exc.category == "rate_limited":
                             raise
-                        return "promotion_operator_permission_unavailable"
+                        operator = None
                     except (OSError, ValueError, TypeError):
-                        return "promotion_operator_permission_unavailable"
-                    if operator:
+                        operator = None
+                    if review["state"] == "CHANGES_REQUESTED":
+                        if operator is None:
+                            return "promotion_operator_permission_unavailable"
+                        if operator:
+                            return "promotion_pr_changes_requested"
+                    elif operator:
                         return None
-                return "promotion_operator_approval_missing"
+                    elif operator is None:
+                        unknown = True
+                return ("promotion_operator_permission_unavailable" if unknown
+                        else "promotion_operator_approval_missing")
             return "promotion_intent_invalid"
         except GitHubAccessError as exc:
             if exc.category == "rate_limited":
@@ -926,15 +946,45 @@ def step_required_checks(trust: IntegrationTrustManifest, step: dict):
     return RequiredChecksManifest(version=trust.required_checks.version, names=names)
 
 
+def frozen_required_checks(meta: dict):
+    """The check set the request froze from committed trust; S's tree never supplies it (I3)."""
+    from pydantic import ValidationError
+
+    from src.integration.ci import RequiredChecksManifest
+
+    names = meta.get("check_names")
+    if not isinstance(names, list):
+        raise PromotionIntentInvalid("promotion check set is not frozen in its request")
+    try:
+        return RequiredChecksManifest(version=meta["checks_version"], names=tuple(names))
+    except (KeyError, ValidationError) as exc:
+        raise PromotionIntentInvalid("promotion frozen check set is invalid") from exc
+
+
 async def cache_promotion_review(conn, repository_id, member, tree, reason, evidence):
-    """Cache an observed PR verdict for readers; admission always re-observes GitHub."""
+    """Cache an observed PR verdict for readers; admission always re-observes GitHub.
+
+    Review evidence is append-only, so an observation identical to the member's latest
+    row writes nothing: rows accrue per change on GitHub, not per gate visit.
+    """
+    evidence = {**evidence, "reason": reason}
+    current = {"source_base": member.base_sha, "reviewed_head_sha": member.source_sha,
+               "reviewed_tree_sha": tree, "verdict": "approved" if reason is None else "rejected"}
+    latest = (await conn.execute(select(integration_review_evidence).where(
+        integration_review_evidence.c.source_task_id == member.task_id,
+        integration_review_evidence.c.repository_id == repository_id,
+        integration_review_evidence.c.review_kind == "promotion_pr",
+    ).order_by(integration_review_evidence.c.created_at.desc(),
+               integration_review_evidence.c.id.desc()).limit(1))).mappings().first()
+    if latest and all(latest[key] == value for key, value in current.items()) and (
+        json.dumps(latest["evidence"], sort_keys=True) == json.dumps(evidence, sort_keys=True)
+    ):
+        return
     await conn.execute(insert(integration_review_evidence).values(
         id="promotion-review-" + uuid.uuid4().hex, source_task_id=member.task_id,
-        repository_id=repository_id, source_base=member.base_sha,
-        reviewed_head_sha=member.source_sha, reviewed_tree_sha=tree,
-        reviewer_identity="service:promotion-pr", review_kind="promotion_pr", generation=0,
-        verdict="approved" if reason is None else "rejected",
-        evidence={**evidence, "reason": reason}, created_at=time.time(),
+        repository_id=repository_id, reviewer_identity="service:promotion-pr",
+        review_kind="promotion_pr", generation=0, evidence=evidence, created_at=time.time(),
+        **current,
     ))
 
 
@@ -1001,12 +1051,14 @@ class PromotionChecks:
 
 
 async def publish_step_attestation(admission, batch, members, trust, client) -> str:
-    """Publish and read back only this admitted step's canonical proof, outside locks."""
+    """Publish and read back only this admitted step's canonical proof, outside locks.
+
+    ``trust`` supplies only identity; the request validated the step's
+    attestation name against committed trust and froze its check set.
+    """
     meta = await admission.load(batch, members)
     step = meta["step"]
-    required = step_required_checks(trust, step)
-    if meta["checks_version"] != required.version:
-        raise PromotionIntentInvalid("promotion check version differs from the pinned request")
+    required = frozen_required_checks(meta)
     selected = trust.model_copy(update={"required_checks": required})
     observer = AuthenticatedGitHubObserver(client, expected_event="push")
     observed = await observer.observe(selected, meta["source_sha"])
@@ -1028,7 +1080,8 @@ async def publish_step_attestation(admission, batch, members, trust, client) -> 
     })
     if not await admission.eligible(batch, members):
         return "promotion_intent_invalid"
-    record_id = await observer.publish(trust, payload)
+    # Validate against the frozen set; committed trust may have gained a check since.
+    record_id = await observer.publish(selected, payload)
     from urllib.parse import quote
 
     records = await client.paged_items(
@@ -1204,6 +1257,34 @@ class PromotionVisit(BatchService):
             log.warning("promotion %s tag publication failed: %s", batch.id, exc)
         return await self._tag_state(repo, tag, meta, member)
 
+    async def _record_publish(self, batch, meta, member, expected):
+        """Record, before the target write, that this request's gated and attested S may land.
+
+        Write-once per task: a later batch of the same request proves the same thing.
+        """
+        record = {"request_id": meta["request_id"], "batch_id": batch.id,
+                  "source_sha": member.source_sha, "target_ref": batch.target_ref,
+                  "expected_old_oid": expected}
+        async with self.store.db.immediate() as conn:
+            await conn.execute(insert(task_metadata).values(
+                task_id=member.task_id, key=PROMOTION_PUBLISH,
+                value=json.dumps(record, sort_keys=True),
+            ).on_conflict_do_nothing(index_elements=["task_id", "key"]))
+
+    async def _publish_recorded(self, batch, meta, member):
+        async with self.store.db._engine.connect() as conn:
+            value = await conn.scalar(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == member.task_id,
+                task_metadata.c.key == PROMOTION_PUBLISH,
+            ))
+        try:
+            record = json.loads(value) if value else {}
+        except ValueError:
+            return False
+        return isinstance(record, dict) and (
+            record.get("request_id"), record.get("source_sha"), record.get("target_ref"),
+        ) == (meta["request_id"], member.source_sha, batch.target_ref)
+
     async def visit(self, batch, members, snapshot):
         from src.operator_decisions import OperatorDecisions
 
@@ -1248,8 +1329,13 @@ class PromotionVisit(BatchService):
             await self.gitops.exact(repo, source)
             tree = await self.gitops.git.atree_sha(str(repo.store), source)
             if proof:
-                # The target write already passed the step gate. Finish only the
-                # missing immutable tag and read-back after a crash (§3.3 4b/4c).
+                # Finish only the missing immutable tag and read-back after a crash
+                # (§3.3 4b/4c), and only when this request's own gated, attested write
+                # was recorded. The PR reads merged once S is on the target however it
+                # got there, so a live gate cannot tell a manual push from ours.
+                if not await self._publish_recorded(batch, meta, member):
+                    return BatchObservation("held", source, target, tree,
+                                            detail={"reason": "promotion_recovery_unproven"})
                 tag_state, tag_oid = await self._create_tag(
                     batch, repo, tag, meta, member,
                     lambda: self._authorized(batch, members),
@@ -1293,6 +1379,7 @@ class PromotionVisit(BatchService):
 
             # Each ref has its own exact lease/read-back; no atomicity is claimed.
             if not proof:
+                await self._record_publish(batch, meta, member, target)
                 state = await self._transfer(batch, repo, batch.target_ref, source, target, authorize)
                 if state != "published":
                     return BatchObservation(state, source, target, tree)

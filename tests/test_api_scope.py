@@ -163,8 +163,9 @@ class TestCheckCommandScope:
         assert "local operator or supervisor" in check_command_scope(
             "edit_project", {"integration_repository_id": "repo"}, SESSION
         )
-        for command in ("review_delegate", "review_import_edits"):
+        for command in ("review_delegate", "review_import_edits", "promote_approve"):
             assert "local operator" in check_command_scope(command, {}, elevated)
+            assert "local operator" in check_command_scope(command, {}, SESSION)
 
     def test_review_decision_commands_remain_outside_worker_scope(self):
         """Only a held dispatch task can comment; no worker may decide."""
@@ -222,7 +223,10 @@ class TestCheckCommandScope:
             assert "no assigned project" in check_command_scope(
                 command, {}, RequestScope(kind="session", session_id="idle")
             )
-        for command in ("promote_request", "promote_approve", "promote_cancel"):
+        assert check_command_scope("promote_approve", {}, SESSION) == (
+            "out of scope: review control requires local operator"
+        )
+        for command in ("promote_request", "promote_cancel"):
             assert check_command_scope(command, {}, SESSION) == f"out of scope: {command}"
 
     def test_task_id_mismatch_blocked(self):

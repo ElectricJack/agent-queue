@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
-import hashlib
 import re
 import time
 from datetime import UTC, datetime
@@ -14,20 +14,24 @@ from sqlalchemy import func, insert, select, update
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 from src.commands.supervisor_authority import integration_operator
 from src.database.tables import (
-    projects,
-    tasks,
-    task_context,
-    task_metadata,
-    integration_batches,
     integration_batch_members,
+    integration_batches,
     integration_check_evidence,
     integration_review_evidence,
+    projects,
+    task_context,
+    task_metadata,
+    tasks,
 )
+from src.git.github_contracts import GitHubAccessError, rate_limit_cause
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
-from src.git.github_contracts import GitHubAccessError
 from src.integration.batches import Batch, BatchMember, BatchStore
-from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, promotion_ref
-from src.integration.promotion_steps import FlowSchema
+from src.integration.promotion_steps import (
+    PROMOTION_CONTEXT,
+    PROMOTION_RESULT,
+    FlowSchema,
+    promotion_ref,
+)
 
 
 class PromoteCommandsMixin:
@@ -240,8 +244,8 @@ class PromoteCommandsMixin:
 
     async def _cmd_promote_request(self, args):
         from src.commands.contracts.promote import PromoteRequestArgs
-        from src.integration.promotion_steps import StepAdmission, step_required_checks
         from src.integration.ci import IntegrationTrustManifest
+        from src.integration.promotion_steps import StepAdmission, step_required_checks
 
         request = PromoteRequestArgs.model_validate(args)
         try:
@@ -261,7 +265,7 @@ class PromoteCommandsMixin:
             if trust.canonical_repository_id != repository.id:
                 raise PromotionRefusal("promotion_flow_invalid", "Trust names another repository.")
             required = step_required_checks(trust, step)
-            lane, ops, repo, client = await self._promotion_runtime(project, repository, step)
+            _lane, ops, repo, client = await self._promotion_runtime(project, repository, step)
             if (trust.repository_id, trust.full_name) != (
                 repo.binding.repository_id,
                 repo.binding.full_name,
@@ -272,7 +276,9 @@ class PromoteCommandsMixin:
             requester = await self._promotion_requester(repo.binding, step["gate"]["approval"])
             target_ref = "refs/heads/" + step["target"]
             async with self.db.immediate() as conn:
-                # Same lock as prepare; serialize idempotency and competing versions.
+                # Serialize idempotency and competing versions for this target.
+                # Only promotion requests take this lock; the project row stays
+                # unlocked until the provider calls are done.
                 await conn.execute(
                     select(
                         func.pg_advisory_xact_lock(
@@ -282,24 +288,7 @@ class PromoteCommandsMixin:
                         )
                     )
                 )
-                current = (
-                    (
-                        await conn.execute(
-                            select(projects)
-                            .where(
-                                projects.c.id == project.id,
-                            )
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one()
-                )
-                if (
-                    current["promotion_flow"] != raw
-                    or current["integration_repository_id"] != repository.id
-                ):
-                    raise PromotionRefusal("promotion_flow_changed", "Flow changed; request again.")
+                await _check_flow(conn, project.id, raw, repository.id)
                 source_tip = await ops.remote(repo, "refs/heads/" + step["source"])
                 source = request.source_sha or source_tip
                 if not source or not is_valid_git_oid(source):
@@ -328,6 +317,15 @@ class PromoteCommandsMixin:
                     .first()
                 )
                 if existing:
+                    if existing["intent"] == "aborted" or existing["lifecycle"] in (
+                        "aborted",
+                        "failed",
+                    ):
+                        raise PromotionRefusal(
+                            "promotion_not_open",
+                            f"Request {request_id} was {existing['lifecycle']} and its identity "
+                            "cannot be reused; pin another source commit or version.",
+                        )
                     return _intent_response("already_requested", existing)
                 active = (
                     (
@@ -372,6 +370,8 @@ class PromoteCommandsMixin:
                     "step": step,
                     "version": version,
                     "checks_version": required.version,
+                    # Frozen from committed trust so the lane never reads S's own set.
+                    "check_names": list(required.names),
                     "requested_at": now,
                     "requester": requester,
                     "notes_sha256": notes_sha,
@@ -425,6 +425,9 @@ class PromoteCommandsMixin:
                 # this transaction is rolled back after an ambiguous provider response.
                 await StepAdmission(self.db, ops, step).retain(batch, member, request_id)
                 tree = await ops.git.atree_sha(str(repo.store), source)
+                # Held only for the writes: a flow edit waits for this intent or
+                # this intent sees the edit and rolls back.
+                await _check_flow(conn, project.id, raw, repository.id, lock=True)
                 await conn.execute(
                     insert(tasks).values(
                         id=member.task_id,
@@ -460,7 +463,7 @@ class PromoteCommandsMixin:
                     )
                     .values(pr_url=pr_url)
                 )
-                return {
+                return self._woken({
                     "success": True,
                     "outcome": "requested",
                     "project_id": project.id,
@@ -470,11 +473,18 @@ class PromoteCommandsMixin:
                     "intent": "open",
                     "promotion": meta,
                     "pr_url": pr_url,
-                }
+                }, project.id, repository.id, target_ref)
         except PromotionRefusal as exc:
             return exc.response()
         except (GitError, GitHubAccessError, OSError, ValueError) as exc:
             return _unavailable(exc)
+
+    def _woken(self, result, project_id, repository_id, target_ref):
+        """Let the train revisit a promotion target this command just changed."""
+        train = getattr(self.orchestrator, "integration_train", None)
+        if train is not None and result.get("success"):
+            train.wake(project_id, repository_id, target_ref)
+        return result
 
     async def _promotion_intent(self, project_id, request_id):
         async with self.db._engine.connect() as conn:
@@ -508,13 +518,15 @@ class PromoteCommandsMixin:
             project, repository, _, _ = await self._promotion_inputs(request.project_id, read=True)
             row, meta = await self._promotion_intent(project.id, request.request_id)
             principal = current_principal() or TRUSTED_LOCAL
+            # The review is posted with this host's gh login, so only the human
+            # at this host may approve; every other principal is refused.
+            if principal.kind is not PrincipalKind.LOCAL:
+                raise PromotionRefusal(
+                    "unauthorized", "Approval requires the local human operator."
+                )
             approval = meta["step"]["gate"]["approval"]
             if approval == "none":
                 raise PromotionRefusal("approval_not_required", "Step requires checks alone.")
-            if approval == "operator" and principal.kind is not PrincipalKind.LOCAL:
-                raise PromotionRefusal(
-                    "unauthorized", "Operator approval requires the local human operator."
-                )
             if (
                 approval == "requester"
                 and _requester_identity(principal) != meta["requester"]["identity"]
@@ -613,7 +625,7 @@ class PromoteCommandsMixin:
                     reason,
                     {**gate.evidence, "posted_by": login},
                 )
-            return {
+            return self._woken({
                 "success": True,
                 "outcome": "already_approved" if already else "approved",
                 "project_id": project.id,
@@ -621,7 +633,7 @@ class PromoteCommandsMixin:
                 "batch_id": row["id"],
                 "pr_url": meta["pr_url"],
                 "review": review,
-            }
+            }, project.id, row["repository_id"], row["target_ref"])
         except PromotionRefusal as exc:
             return exc.response()
         except (GitError, GitHubAccessError, OSError, ValueError) as exc:
@@ -639,11 +651,13 @@ class PromoteCommandsMixin:
             )
             row, meta = await self._promotion_intent(project.id, request.request_id)
             principal = current_principal() or TRUSTED_LOCAL
-            _, operator_refusal = await integration_operator(self.db, project.id)
-            if operator_refusal is not None and meta["requester"][
-                "identity"
-            ] != _requester_identity(principal):
-                raise PromotionRefusal("unauthorized", "Only the operator or requester may cancel.")
+            if (
+                principal.kind is not PrincipalKind.LOCAL
+                and meta["requester"]["identity"] != _requester_identity(principal)
+            ):
+                raise PromotionRefusal(
+                    "unauthorized", "Only the local operator or the requester may cancel."
+                )
             if row["intent"] == "aborted":
                 return _intent_response("already_cancelled", row)
             lane, ops, repo, client = await self._promotion_runtime(
@@ -710,14 +724,14 @@ class PromoteCommandsMixin:
                     .where(tasks.c.id == members[0].task_id, tasks.c.status == "IN_PROGRESS")
                     .values(status="FAILED", updated_at=now)
                 )
-            return {
+            return self._woken({
                 "success": True,
                 "outcome": "cancelled",
                 "project_id": project.id,
                 "request_id": request.request_id,
                 "batch_id": row["id"],
                 "pr_url": meta["pr_url"],
-            }
+            }, project.id, row["repository_id"], row["target_ref"])
         except PromotionRefusal as exc:
             return exc.response()
         except (GitError, GitHubAccessError, OSError, ValueError) as exc:
@@ -859,6 +873,14 @@ class PromotionRefusal(ValueError):
 
 
 def _unavailable(exc):
+    limit = rate_limit_cause(exc)
+    if limit is not None:
+        return {
+            "success": False,
+            "outcome": "rate_limited",
+            "error": str(limit),
+            "retry_at": limit.retry_at,
+        }
     return {"success": False, "outcome": "unavailable", "error": str(exc)}
 
 
@@ -1017,6 +1039,17 @@ async def _check_pull(client, binding, meta, *, allow_closed=False):
             "promotion_pr_identity_mismatch", "PR is no longer the pinned open step PR."
         )
     return pull
+
+
+async def _check_flow(conn, project_id, raw, repository_id, *, lock=False):
+    query = select(projects.c.promotion_flow, projects.c.integration_repository_id).where(
+        projects.c.id == project_id
+    )
+    if lock:
+        query = query.with_for_update(read=True)
+    current = (await conn.execute(query)).mappings().one()
+    if current["promotion_flow"] != raw or current["integration_repository_id"] != repository_id:
+        raise PromotionRefusal("promotion_flow_changed", "Flow changed; request again.")
 
 
 def _intent_response(outcome, row):

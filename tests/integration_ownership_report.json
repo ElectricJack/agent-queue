@@ -9247,9 +9247,6 @@
     "src/commands/promote_commands.py::import from src.commands.supervisor_authority import integration_operator": {
       "reason": "Promotion validation uses project-scoped integration operator authority."
     },
-    "src/commands/promote_commands.py::import from src.integration.promotion_steps import FlowSchema": {
-      "reason": "Promotion commands depend on the integration-owned flow schema."
-    },
     "src/commands/contracts/promote.py::register_promote_contracts": {
       "reason": "Registers the promotion intent request, approval, cancellation and cached-read contracts through the integration operational contract adapter."
     },
@@ -9280,14 +9277,29 @@
     "src/commands/promote_commands.py::_intent_response": {
       "reason": "Projects a promotion batch row and its request identity into the command response."
     },
-    "src/commands/promote_commands.py::import from src.database.tables import projects, tasks, task_context, task_metadata, integration_batches, integration_batch_members, integration_check_evidence, integration_review_evidence": {
-      "reason": "Promotion intent commands read and write integration batch, member and evidence storage alongside the daemon-authored task."
-    },
     "src/commands/promote_commands.py::import from src.integration.batches import Batch, BatchMember, BatchStore": {
       "reason": "Promotion requests freeze an integration batch for the step's exact source."
     },
-    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, promotion_ref": {
+    "src/commands/promote_commands.py::import from src.database.tables import integration_batch_members, integration_batches, integration_check_evidence, integration_review_evidence, projects, task_context, task_metadata, tasks": {
+      "reason": "Promotion intent commands read and write integration batch, member and evidence storage alongside the daemon-authored task."
+    },
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, promotion_ref": {
       "reason": "Promotion intents use the integration-owned step identity, result and private request ref."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._woken": {
+      "reason": "Wakes the integration train target when a promotion request, approval or cancellation changes its admission inputs."
+    },
+    "src/commands/promote_commands.py::_check_flow": {
+      "reason": "Rechecks the bound integration repository and promotion policy; holds a shared project-row lock only during intent writes to prevent a concurrent policy edit."
+    },
+    "src/git/github_contracts.py::rate_limit_cause": {
+      "reason": "Preserves GitHub rate-limit identity and retry timing across wrapped failures in promotion admission and train observation."
+    },
+    "src/commands/promote_commands.py::_unavailable": {
+      "reason": "Converts promotion GitHub failures into unavailable or rate-limited command outcomes while preserving provider retry timing."
+    },
+    "src/commands/promote_commands.py::import from src.git.github_contracts import GitHubAccessError, rate_limit_cause": {
+      "reason": "Promotion commands preserve integration GitHub error categories and rate-limit retry timing across wrapped failures."
     }
   },
   "shared_state": {

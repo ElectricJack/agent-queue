@@ -9,7 +9,8 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.database.tables import (
-    agent_profiles, integration_batches, projects, repos, task_context, task_metadata, tasks,
+    agent_profiles, integration_batches, integration_review_evidence, projects, repos,
+    task_context, task_metadata, tasks,
 )
 from src.git.manager import GitError
 from src.git.github_contracts import GitHubAccessError
@@ -18,9 +19,10 @@ from src.integration.git_truth import GitTruth
 from src.integration.ci import ATTESTATION_CHECK_NAME, IntegrationTrustManifest
 from src.integration.provenance import CompletionIdentity
 from src.integration.promotion_steps import (
-    FlowSchema, PromotionChecks, PromotionIntentInvalid, PromotionVisit, StepAdmission,
+    PROMOTION_PUBLISH, FlowSchema, PromotionChecks, PromotionIntentInvalid, PromotionVisit,
+    StepAdmission,
     StepPullRequestGate,
-    promotion_ref, settle_promotion,
+    frozen_required_checks, promotion_ref, settle_promotion,
 )
 from tests.test_integration_gitops import commit, git, setup as setup
 from tests.test_integration_train_sources import HostedGitHub
@@ -102,7 +104,7 @@ async def promotion(setup, request):
         "request_id": "promotion:r:release:1.2.3", "repository_id": "r",
         "target_ref": batch.target_ref, "source_sha": source, "base_sha": base,
         "step": step, "version": None if step["versioning"]["kind"] == "none" else "1.2.3",
-        "checks_version": "checks-v1",
+        "checks_version": "checks-v1", "check_names": ["unit"],
         "requested_at": batch.created_at,
         "requester": {"identity": "human:local-operator", "github_login": "operator"},
         "notes_sha256": None,
@@ -208,6 +210,27 @@ async def test_cached_source_checks_publish_exact_source_and_annotated_tag(promo
     pushes = e.ops.git.pushes
     assert (await visit(e)).state == "delivered"
     assert e.ops.git.pushes == pushes
+
+
+async def test_second_settlement_with_another_tag_is_refused_and_first_kept(promotion):
+    e = promotion
+    result = await visit(e)
+    assert result.state == "delivered", result
+    await settle_promotion(e.db, e.batch, result)
+    await settle_promotion(e.db, e.batch, result)  # the same settlement again is a no-op
+
+    async def recorded():
+        async with e.db._engine.connect() as conn:
+            return (await conn.execute(select(task_metadata.c.value).where(
+                task_metadata.c.key == "promotion_result"))).scalars().all()
+
+    [first] = await recorded()
+    forged = SimpleNamespace(state="delivered", candidate_sha=result.candidate_sha,
+                             detail={**result.detail, "tag_oid": "f" * 40})
+    with pytest.raises(PromotionIntentInvalid, match="differs from its recorded result"):
+        await settle_promotion(e.db, e.batch, forged)
+    assert await recorded() == [first]
+    assert json.loads(first)["tag_oid"] == result.detail["tag_oid"] != "f" * 40
 
 
 async def test_pinned_pr_waits_for_source_checks_then_resumes(promotion):
@@ -323,6 +346,73 @@ async def test_operator_permission_lookup_failure_is_a_named_blocker(promotion, 
     e.service.attest.assert_not_awaited()
 
 
+def fail_permission_lookup(e, *logins):
+    request = e.github.request_json
+
+    async def unavailable(method, path, **kwargs):
+        if any(f"/collaborators/{login}/" in path for login in logins):
+            raise OSError("permission lookup unavailable")
+        return await request(method, path, **kwargs)
+
+    e.github.request_json = unavailable
+
+
+async def test_changes_requested_by_a_non_operator_does_not_block(promotion):
+    e = promotion
+    e.github.reviews.append(e.github.review(2, e.source, login="outsider",
+                                            state="CHANGES_REQUESTED"))
+    assert (await visit(e)).state == "delivered"
+
+
+@pytest.mark.parametrize("promotion", [{"gate": {"operator_logins": ["operator"]}}],
+                         indirect=True)
+async def test_changes_requested_by_an_admin_outside_the_allowlist_does_not_block(promotion):
+    e = promotion
+    e.github.admins.add("other-admin")
+    e.github.reviews.append(e.github.review(2, e.source, login="other-admin",
+                                            state="CHANGES_REQUESTED"))
+    assert (await visit(e)).state == "delivered"
+
+
+async def test_unverifiable_changes_request_fails_closed(promotion):
+    e = promotion
+    e.github.reviews.append(e.github.review(2, e.source, login="unknown",
+                                            state="CHANGES_REQUESTED"))
+    fail_permission_lookup(e, "unknown")
+    result = await visit(e)
+    assert result.detail["reason"] == "promotion_operator_permission_unavailable"
+    e.service.attest.assert_not_awaited()
+
+
+async def test_failed_lookup_for_one_approver_does_not_hide_an_operator_approval(promotion):
+    e = promotion
+    e.github.reviews = [e.github.review(1, e.source, login="flaky"),
+                        e.github.review(2, e.source)]
+    fail_permission_lookup(e, "flaky")
+    assert (await visit(e)).state == "delivered"
+
+
+@pytest.mark.parametrize("promotion", [{"gate": {"approval": "requester"}, "intent": {
+    "requester": {"identity": "session:requester", "github_login": "requester"},
+}}], indirect=True)
+async def test_requester_gate_blocks_only_on_the_requesters_own_changes_request(promotion):
+    e = promotion
+    make = e.github.review
+    e.github.reviews = [make(1, e.source, login="requester"),
+                        make(2, e.source, state="CHANGES_REQUESTED")]
+    assert (await visit(e)).state == "delivered"
+
+
+@pytest.mark.parametrize("promotion", [{"gate": {"approval": "requester"}, "intent": {
+    "requester": {"identity": "session:requester", "github_login": "requester"},
+}}], indirect=True)
+async def test_requester_changes_request_blocks_the_requester_gate(promotion):
+    e = promotion
+    e.github.reviews = [e.github.review(3, e.source, login="Requester",
+                                        state="CHANGES_REQUESTED")]
+    assert (await visit(e)).detail["reason"] == "promotion_pr_changes_requested"
+
+
 async def test_operator_permission_is_observed_again_before_publication(promotion):
     e = promotion
 
@@ -414,6 +504,31 @@ async def test_none_approval_needs_green_pr_without_a_human_review(promotion):
 async def test_green_source_without_a_request_pr_is_held(promotion):
     result = await visit(promotion)
     assert result.state == "held" and result.detail["reason"] == "promotion_pr_missing"
+
+
+async def test_gate_refresh_writes_review_evidence_only_on_change(promotion):
+    e = promotion
+
+    async def rows():
+        async with e.db._engine.connect() as conn:
+            return (await conn.execute(select(integration_review_evidence).where(
+                integration_review_evidence.c.source_task_id == e.member.task_id,
+                integration_review_evidence.c.review_kind == "promotion_pr",
+            ).order_by(integration_review_evidence.c.created_at))).mappings().all()
+
+    e.github.reviews = []
+    for _ in range(3):
+        await e.checks.refresh_gate(e.batch, e.source)
+    [first] = await rows()
+    assert first["verdict"] == "rejected"
+    assert first["evidence"]["reason"] == "promotion_operator_approval_missing"
+    e.github.reviews = [e.github.review(1, e.source)]
+    await e.checks.refresh_gate(e.batch, e.source)
+    await e.checks.refresh_gate(e.batch, e.source)
+    # Append-only: the change adds one row and the earlier observation stays.
+    [kept, second] = await rows()
+    assert kept["id"] == first["id"] and second["verdict"] == "approved"
+    assert second["evidence"]["reason"] is None
 
 
 async def test_review_change_during_attestation_withdraws_publication(promotion):
@@ -536,15 +651,69 @@ async def test_crash_after_tag_write_before_response_reads_back_success(promotio
 
 async def test_missing_tag_recovers_after_target_advances_and_pr_closes(promotion):
     e = promotion
+    original = e.service.publish_tag
+    e.service.publish_tag = AsyncMock(side_effect=GitError("lost connection before tag write"))
+    assert (await visit(e)).state == "unknown"
+    assert git(e.ops.git.remote_path, "rev-parse", "main") == e.source
     tree = git(e.repo.store, "rev-parse", f"{e.source}^{{tree}}")
     advanced = git(e.repo.store, "commit-tree", tree, "-p", e.source, "-m", "later target work")
     git(e.repo.store, "push", "origin", f"{advanced}:refs/heads/main")
     e.github.pull["state"] = "closed"
     e.github.reviews = []
+    e.service.publish_tag = original
+    e.service.attest = AsyncMock(side_effect=AssertionError("must not repeat attestation"))
     assert (await visit(e)).state == "delivered"
     assert git(e.ops.git.remote_path, "rev-parse", "main") == advanced
     assert git(e.ops.git.remote_path, "rev-parse", "v1.2.3^{}") == e.source
+
+
+@pytest.mark.parametrize("pr_state", ["open", "closed"])
+async def test_source_reaching_target_another_way_never_earns_a_tag(promotion, pr_state):
+    e = promotion
+    tree = git(e.repo.store, "rev-parse", f"{e.source}^{{tree}}")
+    advanced = git(e.repo.store, "commit-tree", tree, "-p", e.source, "-m", "manual push")
+    git(e.repo.store, "push", "origin", f"{advanced}:refs/heads/main")
+    e.github.pull["state"] = pr_state
+    result = await visit(e)
+    assert result.state == "held" and result.detail["reason"] == "promotion_recovery_unproven"
+    assert not git(e.ops.git.remote_path, "for-each-ref", "refs/tags/")
     e.service.attest.assert_not_awaited()
+
+
+async def test_publish_record_precedes_the_target_write_and_names_the_request(promotion):
+    e = promotion
+    seen = []
+    original = e.service.publish
+
+    async def publish(*args, **kwargs):
+        async with e.db._engine.connect() as conn:
+            seen.append(await conn.scalar(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == e.member.task_id,
+                task_metadata.c.key == PROMOTION_PUBLISH,
+            )))
+        await original(*args, **kwargs)
+
+    e.service.publish = publish
+    assert (await visit(e)).state == "delivered"
+    record = json.loads(seen[0])
+    assert record == {"request_id": e.meta["request_id"], "batch_id": e.batch.id,
+                      "source_sha": e.source, "target_ref": e.batch.target_ref,
+                      "expected_old_oid": e.base}
+
+
+async def test_publish_record_for_another_request_does_not_prove_recovery(promotion):
+    e = promotion
+    async with e.db._engine.begin() as conn:
+        await conn.execute(insert(task_metadata).values(
+            task_id=e.member.task_id, key=PROMOTION_PUBLISH, value=json.dumps({
+                "request_id": "another-request", "batch_id": e.batch.id,
+                "source_sha": e.source, "target_ref": e.batch.target_ref,
+            }),
+        ))
+    git(e.repo.store, "push", "origin", f"{e.source}:refs/heads/main")
+    result = await visit(e)
+    assert result.state == "held" and result.detail["reason"] == "promotion_recovery_unproven"
+    assert not git(e.ops.git.remote_path, "for-each-ref", "refs/tags/")
 
 
 async def test_equivalent_patch_does_not_substitute_for_the_pinned_source(promotion):
@@ -696,7 +865,10 @@ async def test_settlement_requires_git_truth_even_with_source_and_tag_present(pr
         assert await conn.scalar(select(tasks.c.status)) == "IN_PROGRESS"
 
 
-async def test_daemon_lane_reuses_source_checks_and_isolates_step_proofs(promotion):
+@pytest.mark.parametrize("current_names", [["unit"], ["unit", "lint"]])
+async def test_daemon_lane_reuses_source_checks_and_isolates_step_proofs(
+    promotion, current_names,
+):
     from src.integration.train import TrainTarget
     from src.integration.train_sources import DaemonLanes, DatabaseBatches
 
@@ -715,7 +887,8 @@ async def test_daemon_lane_reuses_source_checks_and_isolates_step_proofs(promoti
         full_name=client.full_name, ci_producer_app_id=15368, attestation_app_id=101,
         attestation_name=ATTESTATION_CHECK_NAME,
         promotion_attestation_names=(e.meta["step"]["gate"]["attestation"],),
-        required_checks={"version": "checks-v1", "names": ["unit"]},
+        # Trust that gained a check after the request still runs the frozen set.
+        required_checks={"version": "checks-v1", "names": current_names},
     )
 
     async def load_trust(state):
@@ -725,7 +898,9 @@ async def test_daemon_lane_reuses_source_checks_and_isolates_step_proofs(promoti
     orchestrator = SimpleNamespace(
         db=e.db, git=e.ops.git,
         integration_attestation_service=SimpleNamespace(
-            _load_trust=load_trust, _subject_manifest=AsyncMock(return_value=manifest),
+            # The check set is frozen in the request; S's own tree never selects it.
+            _load_trust=load_trust,
+            _subject_manifest=AsyncMock(side_effect=AssertionError("lane read S's manifest")),
         ),
     )
     lanes = DaemonLanes(orchestrator, batches=DatabaseBatches(e.db))
@@ -741,12 +916,62 @@ async def test_daemon_lane_reuses_source_checks_and_isolates_step_proofs(promoti
     checks = await lane.checks.for_candidate(e.batch, e.source)
     assert (await checks.refresh(await lane.checks.head(e.batch, e.source))).green
     e.service = lane.service
-    assert (await visit(e)).state == "delivered"
+    observed = await visit(e)
+    assert observed.state == "delivered", observed
     assert not git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/")
     [record] = [r for r in client.records if r["id"] > 2]
     assert record["name"] == e.meta["step"]["gate"]["attestation"]
     proof = json.loads(record["output"]["text"])
     assert proof["step"] == "release" and proof["source_sha"] == e.source
+
+
+async def test_daemon_lane_reuses_subject_trust_until_its_key_or_ttl_changes():
+    """grand-lantern-78.4: a held promotion does not refetch S's manifest every visit."""
+    from src.integration.train_sources import PROMOTION_RESOLUTION_TTL_SECONDS, DaemonLanes
+
+    clock, loads = [100.0], []
+
+    async def load_trust(state):
+        loads.append(state)
+        return f"trust-{len(loads)}", "client"
+
+    attestation = SimpleNamespace(_load_trust=load_trust)
+    lanes = DaemonLanes(SimpleNamespace(db=None, git=None), batches=None,
+                        clock=lambda: clock[0])
+    batch = SimpleNamespace(id="b-1")
+    state = {"candidate_sha": "a" * 40, "revision": 0, "policy_snapshot": {"root": {}}}
+    assert await lanes._promotion_trust(attestation, batch, state) == ("trust-1", "client")
+    for _ in range(2):
+        # Each use keeps the entry; S is immutable, so only memory bounds it.
+        clock[0] += PROMOTION_RESOLUTION_TTL_SECONDS - 1
+        assert (await lanes._promotion_trust(attestation, batch, dict(state)))[0] == "trust-1"
+    assert len(loads) == 1
+    # A repair revision or a policy change reloads, and so does an idle lane.
+    changed = {**state, "policy_snapshot": {"root": {"required_checks": {"names": ["lint"]}}}}
+    assert (await lanes._promotion_trust(attestation, batch, {**state, "revision": 1}))[0] \
+        == "trust-2"
+    assert (await lanes._promotion_trust(attestation, batch, changed))[0] == "trust-3"
+    clock[0] += PROMOTION_RESOLUTION_TTL_SECONDS
+    assert (await lanes._promotion_trust(attestation, batch, changed))[0] == "trust-4"
+
+    async def refuse(state):
+        raise PromotionIntentInvalid("subject trust manifest names another identity")
+
+    with pytest.raises(PromotionIntentInvalid):
+        await lanes._promotion_trust(SimpleNamespace(_load_trust=refuse),
+                                     SimpleNamespace(id="b-2"), state)
+    assert set(lanes._promotion_trust_cache) == {"b-1"}
+
+
+@pytest.mark.parametrize("frozen", [
+    {"check_names": None}, {"check_names": "unit"}, {"check_names": []},
+    {"checks_version": ""},
+])
+def test_frozen_check_set_refuses_request_without_a_valid_one(frozen):
+    meta = {"checks_version": "checks-v1", "check_names": ["unit"]}
+    assert frozen_required_checks(meta).names == ("unit",)
+    with pytest.raises(PromotionIntentInvalid):
+        frozen_required_checks({**meta, **frozen})
 
 
 async def test_publish_command_refuses_worker_then_settles_via_service(promotion):

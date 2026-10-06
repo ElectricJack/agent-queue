@@ -41,7 +41,12 @@ from src.database.tables import (
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, is_valid_git_oid
 from src.integration.batches import (
-    Batch, BatchMember, BatchObservation, BatchService, BatchStore, candidate_ref,
+    Batch,
+    BatchMember,
+    BatchObservation,
+    BatchService,
+    BatchStore,
+    candidate_ref,
 )
 from src.integration.candidate_baseline import CandidateBaselineService
 from src.integration.ci import (
@@ -57,8 +62,8 @@ from src.integration.git_truth import GitTruth, GitTruthSnapshot
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
-from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.promotion_steps import flow_status, flow_targets
+from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
 from src.integration.subjects import Subject
@@ -78,6 +83,10 @@ TRAIN_HOLDER = "service:integration-train"
 # detached validation clone sees it. Never pushed.
 RETAINED_CANDIDATE_PREFIX = "refs/heads/aq/train-candidate/"
 MEMBER_LIMIT = 200
+#: A promotion lane is rebuilt on every visit; its subject trust and App client
+#: are kept per batch this long after last use, so a held request does not
+#: refetch S's manifest each time. S is immutable; the key carries the policy.
+PROMOTION_RESOLUTION_TTL_SECONDS = 900.0
 
 
 def _push_branch_allowed(push: dict, ref: str) -> bool | None:
@@ -894,6 +903,8 @@ class DaemonLanes:
         self.truth = GitTruth(orchestrator.git)
         self.store = BatchStore(self.db, clock=clock)
         self.publish = LeasedPublish(self.db, self.git, clock=clock)
+        #: batch id -> (key, expires_at, trust, client); see _promotion_trust.
+        self._promotion_trust_cache: dict[str, tuple[str, float, Any, Any]] = {}
 
     async def __call__(self, target: TrainTarget) -> TrainLane:
         from src.integration.development_runtime import development_repository
@@ -1159,9 +1170,13 @@ class DaemonLanes:
         from src.integration.ci import IntegrationTrustManifest
         from src.integration.ci_producers import HostedCIProducer
         from src.integration.promotion_steps import (
-            PromotionChecks, PromotionIntentInvalid, PromotionVisit, StepAdmission,
+            PromotionChecks,
+            PromotionIntentInvalid,
+            PromotionVisit,
+            StepAdmission,
             StepPullRequestGate,
-            publish_step_attestation, step_required_checks,
+            frozen_required_checks,
+            publish_step_attestation,
         )
 
         admission = StepAdmission(self.db, gitops, target.step)
@@ -1181,17 +1196,15 @@ class DaemonLanes:
                 "revision": batch.repair_attempt_count,
                 "policy_snapshot": {"root": policy.get("root") or {}},
             }
-            # Load the exact source manifest using the existing App identity checks;
-            # check selection comes from the frozen step, independently of root policy.
-            trust, client = await attestation._load_trust(state)
+            # The App identity checks refuse a subject naming another identity;
+            # the check set is the one the request froze from committed trust,
+            # never S's own manifest (attestation I3).
+            trust, client = await self._promotion_trust(attestation, batch, state)
             if not isinstance(trust, IntegrationTrustManifest):
                 raise PromotionIntentInvalid("promotion requires App-mode trust")
-            manifest = await attestation._subject_manifest(state, binding)
-            required = step_required_checks(manifest, meta["step"])
-            if required.version != meta["checks_version"]:
-                raise PromotionIntentInvalid("promotion check version differs from request")
-            resolved[batch.id] = manifest, client, StepPullRequestGate(client, binding)
-            selected = manifest.model_copy(update={"required_checks": required})
+            required = frozen_required_checks(meta)
+            resolved[batch.id] = trust, client, StepPullRequestGate(client, binding)
+            selected = trust.model_copy(update={"required_checks": required})
             return ExactChecks(self.db, HostedChecks(HostedCIProducer(client, selected)))
 
         checks = PromotionChecks(admission, resolve, pull_request=lambda batch: resolved[batch.id][2])
@@ -1209,6 +1222,22 @@ class DaemonLanes:
         )
         await service.reconcile_cleanup(target)
         return TrainLane(snapshot=snapshot, service=service, checks=checks)
+
+    async def _promotion_trust(self, attestation, batch, state):
+        """The visit's subject trust, reused while S, revision and policy are unchanged."""
+        key = json.dumps([state["candidate_sha"], state["revision"],
+                          state["policy_snapshot"]], sort_keys=True, default=str)
+        now = self.clock()
+        cache = self._promotion_trust_cache
+        for batch_id in [b for b, entry in cache.items() if entry[1] <= now]:
+            del cache[batch_id]
+        cached = cache.get(batch.id)
+        if cached is not None and cached[0] == key:
+            trust, client = cached[2], cached[3]
+        else:
+            trust, client = await attestation._load_trust(state)
+        cache[batch.id] = (key, now + PROMOTION_RESOLUTION_TTL_SECONDS, trust, client)
+        return trust, client
 
     async def _policy(self, project_id: str) -> dict:
         async with self.db._engine.connect() as conn:

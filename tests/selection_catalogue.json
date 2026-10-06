@@ -1423,7 +1423,7 @@
       ]
     }
   },
-  "digest": "sha256:da762d07fef54e7aa46a4caca4223bf6fd92f057f0ef4bd8d3f4eeba940cd583",
+  "digest": "sha256:e3953236cee98e7a6cd8ca79cb5ec562337486556e3ce56c09d820b75a22f4d7",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -12495,6 +12495,7 @@
         "src.commands.promote_commands",
         "src.database.tables",
         "src.git.github_contracts",
+        "src.integration.batches",
         "src.integration.ci",
         "src.integration.delivery_observer",
         "src.integration.lock",

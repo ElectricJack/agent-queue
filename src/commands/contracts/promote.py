@@ -64,11 +64,13 @@ class PromoteValue(CommandValue):
     flow: list[dict[str, Any]] | None = None
     promotions: list[dict[str, Any]] = Field(default_factory=list)
     evidence_source: str | None = None
+    retry_at: float | None = None
 
 
 REFUSALS = (
     "not_found",
     "unavailable",
+    "rate_limited",
     "promotion_flow_empty",
     "promotion_flow_invalid",
     "step_not_found",
