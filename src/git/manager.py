@@ -3507,6 +3507,128 @@ class GitManager:
             oid=oid, destination_ref=destination_ref,
         )
 
+    async def als_remote_qualified_refs(
+        self, checkout_path: str, refs: Sequence[str], *, remote: str = "origin",
+        repository_url: str | None = None,
+    ) -> dict[str, RemoteRefResult]:
+        """Read exact branch/tag refs, including a tag's peeled commit, with read authority."""
+        for ref in refs:
+            plain = ref.removesuffix("^{}")
+            if not plain.startswith(("refs/heads/", "refs/tags/")):
+                raise GitError("qualified ref must be a branch or tag")
+            _validate_ref(plain)
+        try:
+            destination, token = await self._apush_destination(
+                checkout_path, remote, repository_url=repository_url,
+            )
+            if destination is None:
+                result = await self.arun_git_result(
+                    ["ls-remote", remote, *refs], cwd=checkout_path,
+                )
+                if result.returncode:
+                    raise GitError(result.stderr or "qualified remote read failed")
+                output = result.stdout
+            else:
+                with tempfile.TemporaryDirectory(prefix="aq-app-ref-") as temporary:
+                    home = Path(temporary)
+                    home.chmod(0o700)
+                    output = (await self._arun_authenticated_git(
+                        ["ls-remote", destination, *refs], home=home,
+                        repository_url=destination, token=token,
+                        deadline=asyncio.get_running_loop().time() + self._GIT_TIMEOUT,
+                        budget_seconds=self._GIT_TIMEOUT,
+                    )).decode("ascii")
+            found = {ref: [] for ref in refs}
+            for line in output.splitlines():
+                oid, separator, ref = line.partition("\t")
+                if separator and ref in found:
+                    if not is_valid_git_oid(oid):
+                        raise GitError("remote returned malformed OID")
+                    found[ref].append(oid)
+            if any(len(values) > 1 for values in found.values()):
+                raise GitError("remote returned duplicate qualified refs")
+            return {ref: RemoteRefResult(
+                RemoteRefState.PRESENT if values else RemoteRefState.ABSENT,
+                oid=values[0] if values else None,
+            ) for ref, values in found.items()}
+        except (GitError, GitHubAccessError, TimeoutError, UnicodeDecodeError) as exc:
+            return {ref: RemoteRefResult(RemoteRefState.ERROR, error=str(exc)) for ref in refs}
+
+    async def afetch_repository_tag_oid(
+        self, destination_git_dir: str, *, repository: GitHubRepositoryBinding,
+        oid: str, destination_ref: str,
+    ) -> str:
+        """Import an exact annotated tag in isolation, preserving its object identity."""
+        token = await self._atoken_for_repository(repository)
+        return await self._afetch_exact_oid_with_app_auth_to_url(
+            destination_git_dir, destination_url=f"https://github.com/{repository.full_name}.git",
+            token=token, oid=oid, destination_ref=destination_ref, _object_type="tag",
+        )
+
+    async def apush_qualified_ref(
+        self, checkout_path: str, *, ref: str, tip_oid: str,
+        expected_old_oid: str, repository: GitHubRepositoryBinding | None = None,
+        authority_deadline: float | None = None,
+    ) -> str:
+        """Publish a commit or annotated tag by exact lease; empty old means create-only.
+
+        Branch updates must fast-forward. Existing tags are immutable, including
+        lightweight tags. An uncertain transfer is settled by authenticated read-back.
+        """
+        if not ref.startswith(("refs/heads/", "refs/tags/")):
+            raise GitError("qualified ref must be a branch or tag")
+        _validate_ref(ref)
+        if not is_valid_git_oid(tip_oid) or (
+            expected_old_oid not in ("", _ZERO_OID) and not is_valid_git_oid(expected_old_oid)
+        ):
+            raise GitError("qualified push requires exact OIDs")
+        old = "" if expected_old_oid == _ZERO_OID else expected_old_oid
+        kind = await self._arun(["cat-file", "-t", tip_oid], cwd=checkout_path)
+        if ref.startswith("refs/tags/"):
+            if old or kind != "tag":
+                raise GitError("tag publication requires an annotated object and an absent ref")
+        elif kind != "commit" or (old and not await self._apush_is_ancestor(
+            checkout_path, old, tip_oid,
+        )):
+            raise GitError("qualified branch push must fast-forward an exact commit")
+        deadline = asyncio.get_running_loop().time() + APP_AUTH_PUSH_TIMEOUT_SECONDS
+        if authority_deadline is not None:
+            if (isinstance(authority_deadline, bool)
+                    or not isinstance(authority_deadline, (int, float))
+                    or not math.isfinite(authority_deadline)):
+                raise GitError("invalid authenticated Git authority deadline")
+            deadline = min(deadline, authority_deadline)
+        try:
+            self._remaining_app_push_budget(deadline)
+        except TimeoutError as exc:
+            raise GitError("authenticated Git push authority deadline expired") from exc
+        url = f"https://github.com/{repository.full_name}.git" if repository else None
+        if repository:
+            destination, token = url, await self._atoken_for_repository(repository)
+        else:
+            destination, token = await self._apush_destination(checkout_path, "origin")
+        failure = None
+        try:
+            async with asyncio.timeout_at(deadline):
+                if destination is None:
+                    await self._arun(
+                        ["push", "origin", f"--force-with-lease={ref}:{old}", f"{tip_oid}:{ref}"],
+                        cwd=checkout_path,
+                    )
+                else:
+                    await self._apush_refs_with_app_auth_to_url(
+                        checkout_path, destination_url=destination, token=token,
+                        updates=((tip_oid, ref, old),), _deadline=deadline, _qualified_refs=True,
+                    )
+        except (GitError, TimeoutError) as exc:
+            failure = exc
+        observed = (await self.als_remote_qualified_refs(
+            checkout_path, [ref], repository_url=url,
+        ))[ref]
+        if observed.state is RemoteRefState.PRESENT and observed.oid == tip_oid:
+            return tip_oid
+        raise GitError("qualified transfer read-back failed") from failure
+
     async def apush_repository_oid(
         self, checkout_path: str, *, repository: GitHubRepositoryBinding,
         tip_oid: str, branch: str, expected_old_oid: str,
@@ -4123,6 +4245,7 @@ class GitManager:
         oid: str,
         destination_ref: str,
         timeout_seconds: float | None = None,
+        _object_type: str = "commit",
     ) -> str:
         """Fetch an exact commit in isolation, then import only that OID locally.
 
@@ -4141,6 +4264,8 @@ class GitManager:
         """
         if _OID_RE.fullmatch(oid) is None:
             raise GitError("invalid exact fetch OID")
+        if _object_type not in {"commit", "tag"}:
+            raise GitError("invalid exact fetch object type")
         if not destination_ref.startswith("refs/aq/"):
             raise GitError("exact fetch destination must be daemon recovery namespace")
         destination_ref = "refs/" + _validate_ref(destination_ref.removeprefix("refs/"))
@@ -4216,11 +4341,16 @@ class GitManager:
                 imported, home=home, deadline=deadline
             )
             verified = await self._run_isolated_import_git(
-                [f"--git-dir={imported}", "rev-parse", "refs/aq/exact^{commit}"],
+                [f"--git-dir={imported}", "rev-parse", "refs/aq/exact"],
                 home=home, deadline=deadline,
             )
             if verified.decode("ascii", errors="replace") != oid:
                 raise GitError("authenticated exact Git fetch returned another object")
+            kind = await self._run_isolated_import_git(
+                [f"--git-dir={imported}", "cat-file", "-t", oid], home=home, deadline=deadline,
+            )
+            if kind.decode("ascii") != _object_type:
+                raise GitError("authenticated exact Git fetch returned another object type")
             await self._run_isolated_import_git(
                 ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
                  f"--git-dir={destination}", "fetch", "--no-tags", "--force",
@@ -4228,7 +4358,7 @@ class GitManager:
                 home=home, deadline=deadline,
             )
             local = await self._run_isolated_import_git(
-                [f"--git-dir={destination}", "rev-parse", f"{destination_ref}^{{commit}}"],
+                [f"--git-dir={destination}", "rev-parse", destination_ref],
                 home=home, deadline=deadline,
             )
             if local.decode("ascii", errors="replace") != oid:
@@ -4707,6 +4837,7 @@ class GitManager:
         token: str | None,
         updates: Sequence[tuple[str | None, str, str]],
         _deadline: float | None = None,
+        _qualified_refs: bool = False,
     ) -> None:
         """One isolated transfer of several ``(tip, branch, expected_old)`` updates.
 
@@ -4723,8 +4854,12 @@ class GitManager:
         validated: list[tuple[str | None, str, str]] = []
         for tip_oid, branch, expected_old_oid in updates:
             branch = _validate_ref(branch)
+            if _qualified_refs and not branch.startswith(("refs/heads/", "refs/tags/")):
+                raise GitError("qualified ref must be a branch or tag")
             for label, oid in (("expected target", expected_old_oid),):
-                if not isinstance(oid, str) or _OID_RE.fullmatch(oid) is None:
+                if not (_qualified_refs and oid == "") and (
+                    not isinstance(oid, str) or _OID_RE.fullmatch(oid) is None
+                ):
                     raise GitError(f"invalid {label} OID")
             if tip_oid is not None and (
                 not isinstance(tip_oid, str) or _OID_RE.fullmatch(tip_oid) is None
@@ -4789,12 +4924,20 @@ class GitManager:
                 )
                 for tip_oid, ref in imports:
                     imported = await self._run_isolated_import_git(
-                        [f"--git-dir={repository}", "rev-parse", ref + "^{commit}"],
+                        [f"--git-dir={repository}", "rev-parse", ref],
                         home=home,
                         deadline=_deadline,
                     )
                     if imported.decode("ascii", errors="replace") != tip_oid:
                         raise GitError("authenticated Git push preparation failed")
+                    target = next(branch for tip, branch, _old in validated if tip == tip_oid)
+                    kind = await self._run_isolated_import_git(
+                        [f"--git-dir={repository}", "cat-file", "-t", tip_oid],
+                        home=home, deadline=_deadline,
+                    )
+                    expected_kind = "tag" if _qualified_refs and target.startswith("refs/tags/") else "commit"
+                    if kind.decode("ascii") != expected_kind:
+                        raise GitError("authenticated Git push preparation has wrong object type")
 
             topology = (
                 None
@@ -4863,13 +5006,14 @@ class GitManager:
                     "--no-verify",
                     destination_url,
                     *(
-                        f"--force-with-lease=refs/heads/{branch}:{expected_old_oid}"
+                        f"--force-with-lease={branch if _qualified_refs else 'refs/heads/' + branch}:"
+                        f"{expected_old_oid}"
                         for _tip, branch, expected_old_oid in validated
                     ),
                     *(
-                        f"{tip_oid}:refs/heads/{branch}"
+                        f"{tip_oid}:{branch if _qualified_refs else 'refs/heads/' + branch}"
                         if tip_oid is not None
-                        else f":refs/heads/{branch}"
+                        else f":{branch if _qualified_refs else 'refs/heads/' + branch}"
                         for tip_oid, branch, _old in validated
                     ),
                 ]

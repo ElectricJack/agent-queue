@@ -63,7 +63,6 @@ from src.database.tables import (
 )
 from src.git.manager import GitError, RemoteRefState
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
-from src.integration.promotion_steps import flow_targets
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -420,6 +419,9 @@ async def remote_heads(run_git, store) -> dict[str, str]:
 
 def protected_branches(default_branch: str, promotion_flow=None) -> frozenset[str]:
     """All flow targets stay protected, including ones in the ``aq/`` namespace."""
+    # The promotion lane builds on gitops -> development -> this module.
+    from src.integration.promotion_steps import flow_targets
+
     return (PROTECTED_BRANCHES | {branch_of(default_branch)} | {
         branch_of(target) for target in flow_targets(promotion_flow)
     }) - {None}

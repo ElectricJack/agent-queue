@@ -620,7 +620,8 @@ class IntegrationTrain:
             # observes again. None of these is a member's content conflict, so
             # none allocates a repair.
             return self._visit(target, observation.state, batch, observation)
-        head = candidate_head(batch, observation.candidate_sha)
+        head = (await lane.checks.head(batch, observation.candidate_sha)
+                if target.kind == "promotion" else candidate_head(batch, observation.candidate_sha))
         _progress("resolve_checks")
         checks = await lane.checks.for_candidate(batch, observation.candidate_sha)
         result = None if checks is None else await self._checks(checks, head)
@@ -633,6 +634,10 @@ class IntegrationTrain:
                 await self.batches.settle(batch, published)
             return self._visit(target, published.state, batch, published, result)
         if result.state == ChecksState.RED:
+            if target.kind == "promotion":
+                return self._visit(target, "held", batch, replace(observation, detail={
+                    "reason": "promotion_checks_failed",
+                }), result)
             return await self._red(
                 target, lane, batch, members, observation, result, head, checks, snapshot
             )
@@ -645,7 +650,8 @@ class IntegrationTrain:
                     **diagnostic.detail, "reason": diagnostic.reason,
                 },
             })
-            return await self._repair(target, lane, batch, members, observation, result)
+            if target.kind != "promotion":
+                return await self._repair(target, lane, batch, members, observation, result)
         return self._visit(target, "testing", batch, observation, result)
 
     async def _red(

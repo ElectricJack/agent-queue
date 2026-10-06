@@ -14279,6 +14279,15 @@
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Operator audit of committed subtree removal, disposition, aborted batches and cancelled operations with actor/reason; branches remain intact and the event is never ref replay authority."
+    },
+    "src/integration/promotion_steps.py::settle_promotion::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "line": 1286,
+      "owner": "settle_promotion",
+      "call": "insert",
+      "owner_fingerprint": "eb88834bdab7f4de65363755e369e43d19143010ddb220eda5001d9c0f3d4b7c",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Write-once result of a promotion task (source SHA, tag OID and batch id), separate from the immutable request intent. Git ancestry and annotated-tag read-back are always reobserved; this result never authorizes ref replay or substitutes for delivery truth."
     }
   },
   "generic_dependencies": {

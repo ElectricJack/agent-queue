@@ -557,6 +557,7 @@
         "tests/test_integration_stranded_children.py",
         "tests/test_parent_ci_publication.py",
         "tests/test_promotion_flow.py",
+        "tests/test_promotion_steps.py",
         "tests/test_repair_checkout_refs.py"
       ]
     },
@@ -1420,7 +1421,7 @@
       ]
     }
   },
-  "digest": "sha256:9a8473a962ad18886a6d43219ad09d227660090e85f638ca10dde43d475bc557",
+  "digest": "sha256:769fb29d4a07ad75bb52ad4326e7cbc7d512cac0901d48b0e5f14caffd90b20a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -12498,6 +12499,32 @@
         "parametrize"
       ],
       "summary": "Dev-branch releases §3.1/§3.11: pure validation and its command surfaces."
+    },
+    "tests/test_promotion_steps.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.ci",
+        "src.integration.git_truth",
+        "src.integration.models",
+        "src.integration.promotion_steps",
+        "src.integration.provenance",
+        "src.integration.train",
+        "src.integration.train_sources",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real Git/PostgreSQL promotion crash matrix (dev-branch releases §3.3)."
     },
     "tests/test_prompt_builder.py": {
       "areas": [
