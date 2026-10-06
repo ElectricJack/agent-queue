@@ -1417,7 +1417,7 @@
       ]
     }
   },
-  "digest": "sha256:129c948849163be4a6acd8e921f0219ccac66a32ab90eafa35ed5aa081290bba",
+  "digest": "sha256:eeb05bd1c6f9e0a1e5be020d1a17e103c4c6cfabcf0218cd22dbcf206a2c8c7f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3915,7 +3915,9 @@
         "command-dispatch"
       ],
       "default_arm": true,
-      "imports": [],
+      "imports": [
+        "src.git.github_cli"
+      ],
       "markers": [
         "parametrize"
       ],
@@ -6419,10 +6421,12 @@
         "src.git.github_app",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration.github_review_poll",
         "src.models"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Process-backed, private-repository workflow contract for both auth modes."
     },
@@ -6455,7 +6459,8 @@
         "src.git.github_contracts"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": ""
     },
@@ -6469,6 +6474,7 @@
         "src.git.github",
         "src.git.github_app",
         "src.git.github_auth",
+        "src.git.github_cli",
         "src.git.github_contracts",
         "src.integration.ci"
       ],
@@ -6545,7 +6551,8 @@
         "src.git.github_contracts"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": ""
     },
@@ -7384,6 +7391,7 @@
       "imports": [
         "src.database.tables",
         "src.git.github_contracts",
+        "src.git.manager",
         "src.integration.checks",
         "src.integration.ci_producers",
         "src.integration.root_runtime",
@@ -12632,7 +12640,9 @@
         "src.sessions.launch",
         "src.sessions.provider"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "In-flight provider failures: requeue instead of pausing into a dead provider."
     },
     "tests/test_provider_intent.py": {

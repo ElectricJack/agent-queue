@@ -186,6 +186,7 @@ class HostedCIProducer:
                 state=state,
                 classification=exc.classification,
                 reason=str(exc),
+                details=exc.details,
             )
         except (AttestationError, ValueError) as exc:
             return ProducerObservation(

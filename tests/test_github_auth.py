@@ -70,12 +70,16 @@ class FakeRunner:
         *,
         payloads: dict[GitHubRepositoryBinding, dict[str, Any]] | None = None,
         reject_generations: set[int] | None = None,
+        reject_tokens: set[str] | None = None,
         reject_all: bool = False,
+        failure: GitHubAccessError | None = None,
     ) -> None:
         self.credential_identity = identity
         self.payloads = payloads or {}
         self.reject_generations = reject_generations or set()
+        self.reject_tokens = reject_tokens or set()
         self.reject_all = reject_all
+        self.failure = failure
         self.calls: list[tuple[GitHubRepositoryBinding, Any]] = []
         self.availability_checks = 0
 
@@ -94,8 +98,14 @@ class FakeRunner:
         del args, kwargs
         self.calls.append((repository, credential))
         await asyncio.sleep(0)
+        if self.failure is not None:
+            raise self.failure
         generation = getattr(credential, "generation", 0)
-        if self.reject_all or generation in self.reject_generations:
+        if (
+            self.reject_all
+            or generation in self.reject_generations
+            or credential.token in self.reject_tokens
+        ):
             raise GitHubAccessError("credentials", "candidate credential was rejected")
         payload = self.payloads.get(
             repository,
@@ -295,6 +305,122 @@ async def test_binding_fences_trusted_identity_and_rejects_api_identity_mismatch
         access.validate_pr_url(WIDGETS, "https://evil.example/acme/widgets/pull/17")
     with pytest.raises(GitHubAccessError, match="invalid"):
         access.validate_pr_url(WIDGETS, "https://[invalid/acme/widgets/pull/17")
+
+
+@pytest.mark.asyncio
+async def test_binding_retries_one_rejected_bootstrap_candidate() -> None:
+    clock = Clock()
+    provider = FakeProvider(clock)
+    auth = GitHubAuth(CONFIG, app_provider=provider, clock=clock)
+    runner = FakeRunner(auth.credential_identity, reject_tokens={"secret-303-1"})
+    access = GitHubAccess(auth, runner)
+
+    assert await access.bind_repository("acme/widgets", expected_binding=WIDGETS) == WIDGETS
+
+    assert provider.bind_calls == ["acme/widgets", "acme/widgets"]
+    assert [credential.token for _, credential in runner.calls] == [
+        "secret-303-1", "secret-303-2",
+    ]
+    assert (await auth.credential_for(WIDGETS)).token == "secret-303-2"
+    assert provider.mint_calls == []
+
+
+@pytest.mark.asyncio
+async def test_binding_rejection_retry_is_bounded_and_discards_both_candidates() -> None:
+    clock = Clock()
+    provider = FakeProvider(clock)
+    auth = GitHubAuth(CONFIG, app_provider=provider, clock=clock)
+    runner = FakeRunner(auth.credential_identity, reject_all=True)
+    access = GitHubAccess(auth, runner)
+
+    with pytest.raises(GitHubAccessError, match="rejected"):
+        await access.bind_repository("acme/widgets")
+    assert len(runner.calls) == 2
+    assert len(provider.bind_calls) == 2
+
+    runner.reject_all = False
+    assert await access.bind_repository("acme/widgets") == WIDGETS
+    assert provider.bind_calls == ["acme/widgets"] * 3
+    assert (await auth.credential_for(WIDGETS)).token == "secret-303-3"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("category", ["permission", "not_found_or_hidden", "transient"])
+async def test_binding_never_refreshes_on_non_authentication_failure(category: str) -> None:
+    clock = Clock()
+    provider = FakeProvider(clock)
+    auth = GitHubAuth(CONFIG, app_provider=provider, clock=clock)
+    runner = FakeRunner(auth.credential_identity, failure=GitHubAccessError(category, "denied"))
+    access = GitHubAccess(auth, runner)
+
+    with pytest.raises(GitHubAccessError, match="denied") as caught:
+        await access.bind_repository("acme/widgets")
+    assert caught.value.category == category
+    assert len(runner.calls) == 1
+    assert provider.bind_calls == ["acme/widgets"]
+
+
+@pytest.mark.asyncio
+async def test_existing_login_binding_never_retries_authentication_failure() -> None:
+    auth = GitHubAuth()
+    runner = FakeRunner(auth.credential_identity, reject_all=True)
+    access = GitHubAccess(auth, runner)
+
+    with pytest.raises(GitHubAccessError, match="rejected"):
+        await access.bind_repository("acme/widgets")
+    assert len(runner.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_rebinding_uses_ready_generation_and_recovers_auth_rejection() -> None:
+    clock = Clock()
+    provider = FakeProvider(clock)
+    auth = GitHubAuth(CONFIG, app_provider=provider, clock=clock)
+    runner = FakeRunner(auth.credential_identity)
+    access = GitHubAccess(auth, runner)
+    assert await access.bind_repository("acme/widgets") == WIDGETS
+
+    runner.reject_generations = {1}
+    assert await access.bind_repository("https://github.com/acme/widgets.git") == WIDGETS
+    assert await access.bind_repository("acme/widgets", expected_binding=WIDGETS) == WIDGETS
+
+    assert provider.bind_calls == ["acme/widgets"]
+    assert provider.mint_calls == [WIDGETS]
+    assert [getattr(credential, "generation", 0) for _, credential in runner.calls] == [0, 1, 2, 2]
+
+    before = len(runner.calls)
+    with pytest.raises(GitHubAccessError, match="identity"):
+        await access.bind_repository(
+            "acme/widgets", expected_binding=GitHubRepositoryBinding(999, "acme/widgets"),
+        )
+    assert len(runner.calls) == before
+
+    runner.payloads[WIDGETS] = {"id": 999, "full_name": "acme/widgets"}
+    with pytest.raises(GitHubAccessError, match="identity"):
+        await access.bind_repository("acme/widgets")
+    assert len(runner.calls) == before + 1
+    assert provider.mint_calls == [WIDGETS]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("advance", [3300, 3601])
+async def test_rebinding_refreshes_at_window_and_after_expiry(advance: int) -> None:
+    clock = Clock()
+    provider = FakeProvider(clock)
+    auth = GitHubAuth(CONFIG, app_provider=provider, clock=clock)
+    runner = FakeRunner(auth.credential_identity)
+    access = GitHubAccess(auth, runner)
+    assert await access.bind_repository("acme/widgets") == WIDGETS
+    first = await auth.credential_for(WIDGETS)
+
+    clock.now += advance
+    results = await asyncio.gather(*(access.bind_repository("acme/widgets") for _ in range(8)))
+
+    assert results == [WIDGETS] * 8
+    assert provider.bind_calls == ["acme/widgets"]
+    assert provider.mint_calls == [WIDGETS]
+    assert {credential.generation for _, credential in runner.calls[1:]} == {first.generation + 1}
+    assert all(credential.expires_at > clock() + 300 for _, credential in runner.calls[1:])
 
 
 @pytest.mark.asyncio

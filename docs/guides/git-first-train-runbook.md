@@ -56,6 +56,14 @@ recorded stall's Git, check, tree-review and task-transition evidence.
   files are regenerated, never hand-merged. A repaired head is published to the target
   only once it proves every frozen member's source, so a member is never dropped by a
   partial repair.
+  A candidate with no authenticated push workflow run on its exact SHA gets
+  five minutes from the first missing-run observation. The deadline survives
+  daemon restarts. After that, `ci_not_triggered` names its workflow filters
+  and files an ordinary repair. The worker brings the needed workflow changes
+  from the repository's default branch into a normal candidate commit and
+  publishes it under the managed lease. Only a push run on the repaired exact
+  head can satisfy the required checks and attestation. An existing push run
+  that is still executing remains pending.
 - **No replay.** The scheduler, outbox dispatch and green continuations stop.
   Progress comes from Git, cached check evidence, review evidence and batch intent
   at visit time, so a restart or missed notification is repaired by the next visit.
@@ -78,7 +86,9 @@ recorded stall's Git, check, tree-review and task-transition evidence.
 3. **Development pin.** Every development-mode project has a
    `hierarchical_integration_policy.development.route.artifact` pin whose artifact
    loads. Without one, its default branch is checked by hosted CI instead.
-4. **CI triggers.** The repository's workflows run on pushes to `aq/batches/**`. In
+4. **CI triggers.** Each candidate's own tree must carry workflows that run on
+   pushes to `aq/batches/**`; updating only the default branch does not update
+   older epic branches. In
    this repository `.github/workflows/tests.yml` and `train-candidate.yml` do
    (`tests/test_ci_trigger_policy.py`).
 5. **Quiet point.** No repair writer is mid-push. Writers keep their branch leases
@@ -118,6 +128,7 @@ recorded stall's Git, check, tree-review and task-transition evidence.
 |---|---|---|
 | `awaiting_visit` | No visit since the daemon started | Wait one tick |
 | `checks_pending` | Required checks not yet green on the exact candidate | Wait; check the producer if it stays |
+| `ci_not_triggered` | No push workflow run on the exact candidate after five minutes | Follow the ordinary repair; its brief names workflow filters and how to bring needed changes from the default branch into the candidate. A manual dispatch does not count |
 | `checks_red` | Red on the exact candidate | A repair task is filed; follow it |
 | `checks_preexisting` | Every failing required check also fails on the target commit, or the target has not decided it. No repair is filed and the candidate's suites are re-requested under backoff | Fix the target's own failure, or let the batch move; `candidate_pre_existing_failure` in `detail.re_request.blocker` means three consecutive observations were unrepairable |
 | `candidate_pre_existing_failure` | The bounded re-request of an unrepairable red candidate is spent | A person owns this batch: fix the target's required checks, or abort the batch |

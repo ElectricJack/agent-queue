@@ -27,6 +27,7 @@ from src.git.github_contracts import (
     GitHubRepositoryBinding,
 )
 from src.git.manager import GitManager
+from src.integration.github_review_poll import GitHubReviewPoller
 from src.models import (
     Agent, AgentProfile, AgentState, Project, RepoSourceType, SessionRecord,
     Task, TaskStatus, Workspace,
@@ -62,7 +63,10 @@ event = {"argv": argv, "kind": kind, "generation": generation, "repo": repo,
 with log_path.open("a") as log:
     log.write(json.dumps(event) + "\n")
 
-if kind == "none" or (kind == "app" and state.get("deny_app")):
+if kind == "app" and generation in state.get("reject_app_generations", []):
+    sys.stderr.write("gh: Bad credentials (HTTP 401)\n")
+    status, payload = 401, {"message": "Bad credentials"}
+elif kind == "none" or (kind == "app" and state.get("deny_app")):
     if argv[0] != "api":
         sys.stderr.write("permission denied\n")
         sys.exit(4)
@@ -318,6 +322,63 @@ async def test_app_expiry_and_simultaneous_repositories_keep_tokens_separate(wor
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reject_refreshed", [False, True])
+async def test_review_poll_and_push_destination_refresh_after_expiry(workflow, reject_refreshed):
+    access, provider, now, env, state_path, log_path, mode = workflow
+    if mode == "existing_login":
+        pytest.skip("App token expiry/rejection is the subject")
+    original_env = dict(env)
+    git = GitManager(github_access=access)
+    poller = GitHubReviewPoller(None, None, git)
+    url = "https://github.com/acme/widgets.git"
+    first = await poller._repository(url)
+    assert first.binding == REPOSITORY
+
+    now[0] += 3601
+    if reject_refreshed:
+        state = json.loads(state_path.read_text())
+        state["reject_app_generations"] = ["2"]
+        state_path.write_text(json.dumps(state))
+    poller._repositories.clear()  # A new poll tick binds the repository again.
+    refreshed = await poller._repository(url)
+    assert await refreshed.client.exact_head_ref("main") == BASE
+
+    # This is the credential-selection path used by guarded worker Git pushes.
+    destination, token = await git._apush_destination("unused", url, repository_url=url)
+    generation = 3 if reject_refreshed else 2
+    assert destination == url
+    assert token == f"app-303-{generation}"
+    assert provider.calls == [REPOSITORY] * generation
+    events = _events(log_path)
+    assert [event["generation"] for event in events] == (
+        ["1", "2", "3", "3", "3"] if reject_refreshed else ["1", "2", "2", "2"]
+    )
+    assert all(event["kind"] == "app" and event["config_isolated"] for event in events)
+    assert all(not event["has_secondary_token"] for event in events)
+    assert env == original_env
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_401_retries_with_a_new_app_candidate(workflow):
+    access, provider, _, env, state_path, log_path, mode = workflow
+    if mode == "existing_login":
+        pytest.skip("App bootstrap rejection is the subject")
+    original_env = dict(env)
+    state = json.loads(state_path.read_text())
+    state["reject_app_generations"] = ["1"]
+    state_path.write_text(json.dumps(state))
+
+    assert await access.bind_repository("acme/widgets", expected_binding=REPOSITORY) == REPOSITORY
+
+    assert provider.calls == [REPOSITORY, REPOSITORY]
+    events = _events(log_path)
+    assert [event["generation"] for event in events] == ["1", "2"]
+    assert all(event["kind"] == "app" and event["config_isolated"] for event in events)
+    assert all(not event["has_secondary_token"] for event in events)
+    assert env == original_env
+
+
+@pytest.mark.asyncio
 async def test_integration_audit_publication_reconciles_by_idempotency_key(workflow):
     access, _, _, _, state_path, log_path, mode = workflow
     state = json.loads(state_path.read_text())
@@ -353,7 +414,7 @@ async def test_prime_worker_push_and_pr_use_held_branch_and_shared_credential(
     workflow, tmp_path, internal_plugins_handler,
 ):
     """Drive the command plugin as a worker against local Git and fake gh."""
-    access, _, _, _, state_path, log_path, mode = workflow
+    access, provider, now, _, state_path, log_path, mode = workflow
     remote = tmp_path / "private.git"
     remote.mkdir()
     _git(remote, "init", "--bare", "--initial-branch=main")
@@ -368,6 +429,7 @@ async def test_prime_worker_push_and_pr_use_held_branch_and_shared_credential(
     _git(checkout, "remote", "add", "origin", str(remote))
     _git(checkout, "push", "origin", "main")
     _git(checkout, "fetch", "origin", "main")
+    _git(checkout, "remote", "set-url", "origin", "https://github.com/acme/widgets.git")
     _git(checkout, "checkout", "-b", "aq/task")
     (checkout / "file.txt").write_text("delivery\n")
     _git(checkout, "commit", "-am", "delivery")
@@ -408,6 +470,8 @@ async def test_prime_worker_push_and_pr_use_held_branch_and_shared_credential(
         ))
         git = GitManager(github_access=access)
         transfers = []
+        transfer_tokens = []
+        await git.bind_github_repository("https://github.com/acme/widgets.git")
 
         async def local_transfer(work_dir, base_ref, source, target, **kwargs):
             transfers.append((work_dir, base_ref, source, target, kwargs))
@@ -415,6 +479,11 @@ async def test_prime_worker_push_and_pr_use_held_branch_and_shared_credential(
             assert base_ref == "refs/remotes/origin/main"
             assert (source, target) == ("aq/task", "aq/task")
             assert kwargs["repository_url"] == "https://github.com/acme/widgets.git"
+            destination, token = await git._apush_destination(
+                work_dir, "origin", repository_url=kwargs["repository_url"],
+            )
+            assert destination == "https://github.com/acme/widgets.git"
+            transfer_tokens.append(token)
             expected = kwargs["expected_remote_oid"]
             if expected is not None:
                 assert _git(remote, "rev-parse", f"refs/heads/{target}") == expected
@@ -446,6 +515,7 @@ async def test_prime_worker_push_and_pr_use_held_branch_and_shared_credential(
         refused = await handler.execute("git_push", {**scoped, "branch": "aq/foreign"})
         assert "error" in refused
         assert transfers == []
+        now[0] += 3601  # Expire the token minted before the worker claimed publication.
         pushed = await handler.execute("git_push", dict(scoped))
         assert pushed["oid"] == tip
         assert _git(remote, "rev-parse", "refs/heads/aq/task") == tip
@@ -463,6 +533,12 @@ async def test_prime_worker_push_and_pr_use_held_branch_and_shared_credential(
         assert created["pr_url"] == PR_URL
         assert any(e["argv"][:2] == ["pr", "create"] for e in _events(log_path))
         assert all(e["kind"] == ("app" if mode != "existing_login" else "login") for e in _events(log_path))
+        if mode != "existing_login":
+            assert provider.calls == [REPOSITORY, REPOSITORY]
+            assert transfer_tokens == ["app-303-2", "app-303-2"]
+        else:
+            assert provider.calls == []
+            assert transfer_tokens == [None, None]
     finally:
         await db.close()
 

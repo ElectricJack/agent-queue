@@ -117,6 +117,40 @@ async def test_execute_plugin_exception_records_failure_and_returns_error(
     assert payloads[0]["error"] == "Plugin command failed: RuntimeError"
 
 
+async def test_execute_github_plugin_failure_preserves_safe_details_in_logs_and_event(
+    command_handler_factory, caplog
+):
+    from src.git.github_cli import _cli_error
+
+    handler = await command_handler_factory()
+
+    async def _plugin_command(args: dict) -> dict:
+        raise _cli_error(
+            1,
+            b"raw-private-diagnostic (HTTP 401)\nAuthorization: Bearer opaque-secret\n"
+            b"https://user:password@github.com/acme/widgets GH_TOKEN=ghs_private_token",
+        )
+
+    registry = _StubPluginRegistry("git_push", _plugin_command)
+    handler.orchestrator.plugin_registry = registry
+    handler.orchestrator.bus.emit.reset_mock()
+    caplog.set_level(logging.ERROR, logger="src.commands.handler")
+
+    result = await handler.execute("git_push", {})
+
+    safe_error = "GitHub CLI request failed (credentials, HTTP 401)"
+    assert result == {"error": f"Plugin command failed: {safe_error}"}
+    assert registry.failures == [("git_push", safe_error)]
+    payload = _invoked_payloads(handler.orchestrator.bus.emit)[0]
+    assert payload["ok"] is False
+    assert payload["error"] == result["error"]
+    assert safe_error in caplog.text
+    for private_text in (
+        "raw-private-diagnostic", "opaque-secret", "password", "ghs_private_token",
+    ):
+        assert private_text not in caplog.text
+
+
 async def test_execute_returns_unknown_command_when_no_handler_or_plugin(
     command_handler_factory,
 ):

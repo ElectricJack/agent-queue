@@ -70,6 +70,7 @@ class GitHubAccess:
             raise ValueError("GitHub auth and runner credential identities do not match")
         self.auth = auth
         self.runner = runner
+        self._bindings: dict[str, GitHubRepositoryBinding] = {}
 
     @classmethod
     def from_config(
@@ -326,6 +327,31 @@ class GitHubAccess:
                 "GitHub repository reference did not match the authorized repository",
             )
 
+        binding = self._bindings.get(full_name)
+        if binding is not None:
+            if expected_binding is not None and binding != expected_binding:
+                raise GitHubAccessError(
+                    "credentials", "authenticated repository identity did not match",
+                )
+            # Retain identity only, never a selected token. Every verification
+            # goes through the same expiry/401 recovery as other repository reads.
+            result = await self.run_read(
+                ["api", "--method", "GET", f"repos/{full_name}"],
+                repository=binding,
+            )
+            return self._verified_binding(
+                result, full_name=full_name, expected_binding=binding,
+            )
+
+        return await self._bind_new_repository(full_name, expected_binding=expected_binding)
+
+    async def _bind_new_repository(
+        self,
+        full_name: str,
+        *,
+        expected_binding: GitHubRepositoryBinding | None,
+    ) -> GitHubRepositoryBinding:
+        """Verify an unbound candidate; only a CLI authentication rejection is replayable."""
         candidate: AppTokenCandidate | None = None
         selected: AppTokenCandidate | GitHubCredential
         if self.auth.mode is GitHubCredentialMode.APP:
@@ -344,11 +370,26 @@ class GitHubAccess:
 
         verification_binding = binding if candidate is not None else expected_binding
         try:
-            result = await self.runner.run(
-                ["api", "--method", "GET", f"repos/{full_name}"],
-                repository=binding,
-                credential=selected,
-            )
+            try:
+                result = await self.runner.run(
+                    ["api", "--method", "GET", f"repos/{full_name}"],
+                    repository=binding,
+                    credential=selected,
+                )
+            except GitHubAccessError as exc:
+                if candidate is None or exc.category != "credentials":
+                    raise
+                await self.auth.discard_candidate(candidate)
+                candidate = await self.auth.candidate_for_repository(full_name)
+                if candidate.repository != binding:
+                    raise GitHubAccessError(
+                        "credentials", "authenticated repository identity did not match",
+                    )
+                result = await self.runner.run(
+                    ["api", "--method", "GET", f"repos/{full_name}"],
+                    repository=binding,
+                    credential=candidate,
+                )
             verified = self._verified_binding(
                 result,
                 full_name=full_name,
@@ -361,6 +402,8 @@ class GitHubAccess:
                         "authenticated repository identity did not match",
                     )
                 await self.auth.accept_candidate(candidate)
+            if candidate is not None:
+                self._bindings[full_name] = verified
             return verified
         except asyncio.CancelledError:
             if candidate is not None:
@@ -485,7 +528,9 @@ class GitHubAccess:
         try:
             selected = await self.auth.credential_for(repository)
         except GitHubAccessError as exc:
-            raise GitHubWriteNotStarted(exc.category, str(exc), retry_at=exc.retry_at) from exc
+            raise GitHubWriteNotStarted(
+                exc.category, str(exc), retry_at=exc.retry_at, http_status=exc.http_status
+            ) from exc
         try:
             return await self._run(
                 args,
@@ -525,7 +570,7 @@ class GitHubAccess:
             check=check_result is None,
         )
         if check_result is not None:
-            check_result(result)
+            _validate_cli_result(self.runner, repository, result, check_result)
         return result
 
     @staticmethod
@@ -728,8 +773,26 @@ class GitHubRunnerAccess:
             check=check_result is None,
         )
         if check_result is not None:
-            check_result(result)
+            _validate_cli_result(self.runner, repository, result, check_result)
         return result
+
+
+def _validate_cli_result(
+    runner: GhRunnerLike,
+    repository: GitHubRepositoryBinding,
+    result: GhResultLike,
+    check_result: Callable[[GhResultLike], None],
+) -> None:
+    """Report actual API failures after decoding status and expected outcomes."""
+    try:
+        check_result(result)
+    except GitHubAccessError as exc:
+        # Injected runners may implement only the execution seam. Production
+        # uses GhRunner's shared warning cache for both checked and API calls.
+        warn_failure = getattr(runner, "warn_failure", None)
+        if callable(warn_failure):
+            warn_failure(exc, repository=repository)
+        raise
 
 
 @dataclass(frozen=True, slots=True)
@@ -1898,7 +1961,10 @@ def _http_error(status: int, headers: Mapping[str, str], now: float) -> GitHubAc
             except ValueError:
                 pass
         return GitHubAccessError(
-            "rate_limited", "GitHub request was rate limited", retry_at=retry_at
+            "rate_limited",
+            f"GitHub request was rate limited (rate_limited, HTTP {status})",
+            retry_at=retry_at,
+            http_status=status,
         )
     category = {
         401: "credentials",
@@ -1907,7 +1973,9 @@ def _http_error(status: int, headers: Mapping[str, str], now: float) -> GitHubAc
         409: "conflict_or_invalid",
         422: "conflict_or_invalid",
     }.get(status, "transient" if status >= 500 else "conflict_or_invalid")
-    return GitHubAccessError(category, f"GitHub request failed ({category})")
+    return GitHubAccessError(
+        category, f"GitHub request failed ({category}, HTTP {status})", http_status=status
+    )
 
 
 def _command_error(returncode: int, diagnostic: str) -> GitHubAccessError:
@@ -1919,13 +1987,16 @@ def _command_error(returncode: int, diagnostic: str) -> GitHubAccessError:
         category = "not_found_or_hidden"
     elif status in {409, 422}:
         category = "conflict_or_invalid"
-    elif status in {403, 429} and "rate limit" in diagnostic.lower():
+    elif status == 429 or (status == 403 and "rate limit" in diagnostic.lower()):
         category = "rate_limited"
     elif status == 403:
         category = "permission"
     else:
         category = "transient"
-    return GitHubAccessError(category, "GitHub CLI request failed")
+    detail = category if status is None else f"{category}, HTTP {status}"
+    return GitHubAccessError(
+        category, f"GitHub CLI request failed ({detail})", http_status=status
+    )
 
 
 def _strict_positive_int(value: Any) -> int | None:

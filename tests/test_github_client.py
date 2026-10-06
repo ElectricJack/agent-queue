@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -10,6 +11,7 @@ from src.config import GitHubAppConfig
 from src.git.github import GitHubAccess, GitHubClient, MAX_HEADER_BYTES
 from src.git.github_app import AppTokenCandidate
 from src.git.github_auth import GitHubAuth
+from src.git.github_cli import GhRunner
 from src.git.github_contracts import (
     GitHubAccessError,
     GitHubCredentialIdentity,
@@ -201,7 +203,85 @@ async def test_rate_limit_headers_produce_bounded_structured_retry_time(credenti
 
     assert caught.value.category == "rate_limited"
     assert caught.value.retry_at == 1_700_000_123.0
+    assert caught.value.http_status == 403
+    assert str(caught.value) == "GitHub request was rate limited (rate_limited, HTTP 403)"
     assert "secret diagnostic" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("status", "category"),
+    [
+        (401, "credentials"), (403, "permission"), (404, "not_found_or_hidden"),
+        (409, "conflict_or_invalid"), (422, "conflict_or_invalid"),
+        (429, "rate_limited"), (503, "transient"),
+    ],
+)
+async def test_framed_http_failure_retains_safe_category_and_status(
+    credential_identity, status, category
+):
+    runner = FakeRunner(
+        credential_identity,
+        [_response(status, {"message": "raw-private-diagnostic ghp_private"}, returncode=1)],
+    )
+    client = GitHubClient(REPOSITORY, runner=runner)
+
+    with pytest.raises(GitHubAccessError) as caught:
+        await client.request_json("POST", "/repositories/303/issues", json_body={"title": "test"})
+
+    assert caught.value.category == category
+    assert caught.value.http_status == status
+    assert f"({category}, HTTP {status})" in str(caught.value)
+    assert "raw-private-diagnostic" not in repr(caught.value)
+    assert "ghp_private" not in repr(caught.value)
+
+
+@pytest.mark.parametrize("composed_access", [True, False])
+async def test_api_warning_uses_validated_category_and_ignores_expected_status(
+    credential_identity, composed_access, tmp_path, caplog
+):
+    executable = tmp_path / "gh"
+    executable.write_text(
+        "#!/usr/bin/python3\nimport os, sys\n"
+        "status = 404 if sys.argv[-1].endswith('/absent') else 403\n"
+        "sys.stdout.write(f'HTTP/2.0 {status} Failure\\r\\n'"
+        " + 'X-RateLimit-Remaining: 0\\r\\n\\r\\n'"
+        " + '{\"message\":\"raw-private-diagnostic\"}')\n"
+        "sys.stderr.write('Authorization: Bearer opaque-secret\\n'"
+        " + os.environ.get('GH_TOKEN', '') + '\\nhttps://user:password@github.com')\n"
+        "sys.exit(1)\n"
+    )
+    executable.chmod(0o700)
+    app = credential_identity.mode.value == "app"
+    auth = GitHubAuth(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem") if app else None,
+        app_provider=FakeTokenProvider() if app else None,
+        clock=lambda: 1_800_000_000.0,
+    )
+    runner = GhRunner(auth, executable=str(executable), env={}, cwd=tmp_path)
+    client = (
+        GitHubClient(REPOSITORY, access=GitHubAccess(auth, runner)) if composed_access
+        else GitHubClient(REPOSITORY, runner=runner)
+    )
+    caplog.set_level(logging.WARNING, logger="src.git.github_cli")
+
+    response = await client.request(
+        "GET", "/repositories/303/git/ref/heads/absent", expected_statuses={404}
+    )
+    assert response.status == 404
+    assert caplog.records == []
+
+    for _ in range(2):
+        with pytest.raises(GitHubAccessError) as caught:
+            await client.request_json("GET", "/repositories/303")
+        assert caught.value.category == "rate_limited"
+        assert caught.value.http_status == 403
+    assert len(caplog.records) == 1
+    assert "rate_limited, HTTP 403" in caplog.text
+    assert f"credential_mode={credential_identity.mode.value} repository=acme/widgets" in caplog.text
+    for private_text in (
+        "raw-private-diagnostic", "opaque-secret", "installation-secret", "password", "https://",
+    ):
+        assert private_text not in caplog.text
 
 
 @pytest.mark.asyncio

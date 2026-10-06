@@ -214,6 +214,16 @@ expiry. Cache entries and secrets live only in daemon memory. Select a fresh
 credential immediately before each network operation, not once per task or
 worker session.
 
+After a binding has been verified, retain its immutable repository identity in
+the startup-owned access service. Repeated binding still verifies that identity
+through `gh`, selecting the current token from the same ready credential cache
+as other repository reads. It must not retain a token in the binding or mint a
+separate bootstrap candidate on every poll tick or push. An authentication
+rejection during initial candidate verification discards that candidate and
+retries the verification once with a new candidate, fenced to the same numeric
+repository identity. Identity mismatches and permission failures do not trigger
+that retry. Neither binding path consults the operator's login in App mode.
+
 Installation tokens expire after approximately one hour and support GitHub
 REST, GraphQL and HTTP Git access subject to permissions. See
 [GitHub installation authentication](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation).
@@ -235,6 +245,16 @@ Git operation implementation, not duplicate PR or API implementations.
 Preserve structured categories for missing CLI, credentials, permission,
 not-found-or-hidden, conflict/invalid input, rate limiting and transient errors.
 Expose the selected mode, repository and remedy without exposing secrets.
+
+CLI failure messages include the structured category and, when detected, the
+numeric HTTP status (for example, `GitHub CLI request failed (credentials,
+HTTP 401)`). Framed API failures retain the same details. Plugin command errors
+and command event evidence preserve this safe text; they never include stderr
+excerpts. The shared runner warns on a classified CLI or API failure with the
+effective credential mode and repository, then suppresses warnings for that same
+mode/repository/category for five minutes. Different categories or repositories
+warn independently; the in-memory warning cache is bounded to 256 keys. An
+explicitly expected API status, such as a ref lookup's 404, does not warn.
 
 A read that is rejected for authentication may invalidate the rejected App
 token and retry once with a fresh token. If another request already refreshed

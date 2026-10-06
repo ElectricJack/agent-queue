@@ -14056,10 +14056,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
     },
     "src/sessions/reconciler.py::SessionReconciler._apply_verdict::d0667d61d923ef69bf1ebe2b78426b134485aee6cccd32b75095d7e45a868885": {
-      "line": 1210,
+      "line": 1249,
       "owner": "SessionReconciler._apply_verdict",
       "call": "set_task_meta",
-      "owner_fingerprint": "5e0cce5f83ae12fb98730fc8f0d6fdd260e9bd1c855c7ddf65d7858dbfd2cae5",
+      "owner_fingerprint": "2ab7c9b3d12036e362d4c3902fe3318516ffcbaf1b1c96f151666027317d0204",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
@@ -14074,19 +14074,19 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'session_resume_key'"
     },
     "src/sessions/reconciler.py::SessionReconciler._exit_usage_limit_screen::2fc410e5e6cb875696994311109b55067ff1da9123f3889244bb579af7fdf5d0": {
-      "line": 1937,
+      "line": 1977,
       "owner": "SessionReconciler._exit_usage_limit_screen",
       "call": "set_task_meta",
-      "owner_fingerprint": "927739764ae2515e30a8d6a674b8d8c79a9bbe351693c0de983731c5a43e8cbe",
+      "owner_fingerprint": "468f0e119ba2443bb0e18f5656b126a0b15491cb959b634d55715d6e4045ef7f",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_NUDGES"
     },
     "src/sessions/reconciler.py::SessionReconciler._exit_usage_limit_screen::6732ef9f714e4fd40a44bc09eb86d98df200c62ed9943329ff0c3deb8ca6103f": {
-      "line": 1938,
+      "line": 1978,
       "owner": "SessionReconciler._exit_usage_limit_screen",
       "call": "set_task_meta",
-      "owner_fingerprint": "927739764ae2515e30a8d6a674b8d8c79a9bbe351693c0de983731c5a43e8cbe",
+      "owner_fingerprint": "468f0e119ba2443bb0e18f5656b126a0b15491cb959b634d55715d6e4045ef7f",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_LAST_ACTION"
@@ -14128,28 +14128,28 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
     },
     "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::2fc410e5e6cb875696994311109b55067ff1da9123f3889244bb579af7fdf5d0": {
-      "line": 2111,
+      "line": 2177,
       "owner": "SessionReconciler._step_stall_ladder",
       "call": "set_task_meta",
-      "owner_fingerprint": "1f01ebd6fc3388f88426b5c01048bd9af4ae4bbb12466f8bf9c992a6a7b5efbf",
+      "owner_fingerprint": "85005561fc2866163c19779960ee2d14403a450bdce31cc871f3b49dc39aa231",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_NUDGES"
     },
     "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::6732ef9f714e4fd40a44bc09eb86d98df200c62ed9943329ff0c3deb8ca6103f": {
-      "line": 2067,
+      "line": 2133,
       "owner": "SessionReconciler._step_stall_ladder",
       "call": "set_task_meta",
-      "owner_fingerprint": "1f01ebd6fc3388f88426b5c01048bd9af4ae4bbb12466f8bf9c992a6a7b5efbf",
+      "owner_fingerprint": "85005561fc2866163c19779960ee2d14403a450bdce31cc871f3b49dc39aa231",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_LAST_ACTION"
     },
     "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::675fd05fe0efd918ede8974d1c8788d12fe7f5b20d28d4ef5e184db913b1f27e": {
-      "line": 2066,
+      "line": 2132,
       "owner": "SessionReconciler._step_stall_ladder",
       "call": "set_task_meta",
-      "owner_fingerprint": "1f01ebd6fc3388f88426b5c01048bd9af4ae4bbb12466f8bf9c992a6a7b5efbf",
+      "owner_fingerprint": "85005561fc2866163c19779960ee2d14403a450bdce31cc871f3b49dc39aa231",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_NUDGES"
