@@ -885,6 +885,32 @@ class ClaimQueryMixin:
         )
         return slot
 
+    async def lock_claim_for_activation(self, conn, session_id, task_id, *, epoch: int):
+        """Lock session then task before a caller acquires managed ref exclusion.
+
+        Task identity is immutable here, so FOR NO KEY UPDATE excludes status
+        changes while permitting the slot reset's separate salvage transaction
+        to take FK key-share locks when inserting task context or metadata.
+        """
+        holder = (await conn.execute(
+            select(sessions.c.id).where(
+                sessions.c.id == session_id,
+                sessions.c.task_id == task_id,
+                sessions.c.claim_phase == "preparing",
+                sessions.c.desired_state == "running",
+                sessions.c.state == "running",
+            ).with_for_update()
+        )).scalar_one_or_none()
+        if holder is None:
+            return None
+        return (await conn.execute(
+            select(tasks.c.id, tasks.c.branch_name).where(
+                tasks.c.id == task_id,
+                tasks.c.status == TaskStatus.IN_PROGRESS.value,
+                tasks.c.claim_epoch == epoch,
+            ).with_for_update(key_share=True)
+        )).fetchone()
+
     async def activate_claim(
         self, session_id, task_id, *, epoch: int, now: float, conn=None,
         branch_name: str | None = None,
@@ -925,30 +951,9 @@ class ClaimQueryMixin:
         async def _run(c):
             # Claims and release acquire the session before the task. Keep
             # activation in that order as well to avoid a PostgreSQL deadlock.
-            holder = (
-                await c.execute(
-                    select(sessions.c.id)
-                    .where(
-                        sessions.c.id == session_id,
-                    )
-                    .with_for_update()
-                )
-            ).scalar_one_or_none()
-            if holder is None:
-                return None
             # Share the task row lock with pause. An EXISTS predicate alone
             # can observe a pre-pause PostgreSQL statement snapshot.
-            claim = (
-                await c.execute(
-                    select(tasks.c.id, tasks.c.branch_name)
-                    .where(
-                        tasks.c.id == task_id,
-                        tasks.c.status == TaskStatus.IN_PROGRESS.value,
-                        tasks.c.claim_epoch == epoch,
-                    )
-                    .with_for_update()
-                )
-            ).fetchone()
+            claim = await self.lock_claim_for_activation(c, session_id, task_id, epoch=epoch)
             if claim is None:
                 return None
             if admission is not None and (

@@ -26,6 +26,19 @@ logger = logging.getLogger(__name__)
 #: "argument not supplied", for parameters whose ``None`` is a real value.
 _UNSET = object()
 
+_PREPARATION_RETRY_DELAYS = (0.05, 0.1)
+
+
+def _retryable_preparation_error(exc: Exception) -> bool:
+    """Recognize PostgreSQL transaction conflicts through driver/SQLAlchemy wrappers."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if getattr(exc, "sqlstate", None) in {"40P01", "40001"}:
+            return True
+        exc = getattr(exc, "orig", None) or exc.__cause__
+    return False
+
 __all__ = [
     "CLAIM_FILE",
     "ClaimCommandsMixin",
@@ -912,20 +925,50 @@ class ClaimCommandsMixin:
             # window old, and the value taken from it decides whether this
             # claim attaches a hierarchy branch fence.  What this drops is
             # the second pooled connection, not the freshness.
-            async with self.db.immediate() as conn:
-                current = await self.db.claim_preparation_is_current(
-                    session.id, task.id, task.claim_epoch, conn=conn
-                )
-                project = (
-                    await self.db.get_project(task.project_id, conn=conn) if current else _UNSET
-                )
-            if not current:
-                self._resolve_claim_waiters(session.id, task.claim_epoch, "prepare_failed")
-                return self._simple(
-                    ClaimResult.PREPARE_FAILED, "claim changed before preparation", row, cap
-                )
-            return await self._prepare_and_activate_locked(
-                session, row, task, cap, slot=slot, project=project, admission=admission
+            for attempt in range(len(_PREPARATION_RETRY_DELAYS) + 1):
+                try:
+                    async with self.db.immediate() as conn:
+                        current = await self.db.claim_preparation_is_current(
+                            session.id, task.id, task.claim_epoch, conn=conn
+                        )
+                        project = (
+                            await self.db.get_project(task.project_id, conn=conn)
+                            if current else _UNSET
+                        )
+                    if not current:
+                        self._resolve_claim_waiters(session.id, task.claim_epoch, "prepare_failed")
+                        return self._simple(
+                            ClaimResult.PREPARE_FAILED, "claim changed before preparation", row, cap
+                        )
+                    return await self._prepare_and_activate_locked(
+                        session, row, task, cap, slot=slot, project=project, admission=admission
+                    )
+                except Exception as exc:
+                    if not _retryable_preparation_error(exc):
+                        raise
+                    active = await self.db.get_session(session.id)
+                    if (active is not None and active.task_id == task.id
+                            and active.last_claim_epoch == task.claim_epoch
+                            and active.claim_phase == "active"):
+                        # Event delivery follows the committed activation.
+                        # Its transaction conflict must not reset/retry an
+                        # already active checkout or report preparation failed.
+                        self._resolve_claim_waiters(session.id, task.claim_epoch, "claimed")
+                        return await self._claimed_response(task, task.claim_epoch, active, cap)
+                    # Every immediate()/mutation_exclusion transaction has
+                    # rolled back before this catch. Keep the claim and ref
+                    # reservation: releasing either would strand a delegate
+                    # outside the materialized-origin claim frontier.
+                    logger.info(
+                        "claim %s/%s: transient database conflict during preparation (%s/%s)",
+                        session.id, task.id, attempt + 1, len(_PREPARATION_RETRY_DELAYS) + 1,
+                    )
+                    if attempt < len(_PREPARATION_RETRY_DELAYS):
+                        await asyncio.sleep(_PREPARATION_RETRY_DELAYS[attempt])
+            remove_claim_file_if_matches(row.work_dir, task.id, task.claim_epoch)
+            self._resolve_claim_waiters(session.id, task.claim_epoch, "no_ready_work")
+            return self._simple(
+                ClaimResult.NO_READY_WORK, "claim preparation database contention", row, cap
             )
 
     async def _prepare_and_activate_locked(
@@ -1054,15 +1097,36 @@ class ClaimCommandsMixin:
                         expected_role=owner_role,
                     )
                 hierarchy_attached = True
-                async with ownership.mutation_exclusion(
-                    fence, state="attached", expected_role=owner_role
-                ) as conn:
-                    fresh = await prepare_and_activate(
-                        conn=conn, base_branch=base_sha, target_branch=fence.target.branch
-                    )
+                if previous_owner and previous_owner.get("fence") is not None:
+                    # Managed recovery/filing takes task before ref. Holding
+                    # ref while activate_claim locks session/task reverses
+                    # that order, including FK key-share locks from filing.
+                    async with self.db.immediate() as conn:
+                        claim = await self.db.lock_claim_for_activation(
+                            conn, session.id, task.id, epoch=epoch
+                        )
+                        if claim is not None:
+                            async with ownership.mutation_exclusion_on(
+                                conn, fence, state="attached", expected_role=owner_role
+                            ):
+                                fresh = await prepare_and_activate(
+                                    conn=conn, base_branch=base_sha,
+                                    target_branch=fence.target.branch,
+                                )
+                else:
+                    async with ownership.mutation_exclusion(
+                        fence, state="attached", expected_role=owner_role
+                    ) as conn:
+                        fresh = await prepare_and_activate(
+                            conn=conn, base_branch=base_sha, target_branch=fence.target.branch
+                        )
             else:
                 fresh = await prepare_and_activate()
         except Exception as exc:
+            if _retryable_preparation_error(exc):
+                # Retry only after the failed transaction unwinds; never run
+                # permanent failure cleanup for a database conflict.
+                raise
             logger.warning("claim %s/%s: prepare failed: %s", session.id, task.id, exc)
             remove_claim_file(row.work_dir)
             from src.integration.repair import UnpublishedRepairTarget
