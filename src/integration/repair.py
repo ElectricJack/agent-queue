@@ -108,7 +108,8 @@ class OrdinaryRepairService:
 
         if not target_ref.startswith("refs/heads/") or not is_valid_git_oid(head_sha):
             raise ValueError("repair requires a full target ref and exact observed head")
-        # Same order as BatchStore.publication: batch intent, then managed ref.
+        # Batch intent, existing task, then managed ref. Preparation also
+        # takes task before ref; recovery must never reverse that order.
         async with self.db.immediate() as conn:
             batch = (await conn.execute(select(integration_batches).where(
                 integration_batches.c.id == batch_id,
@@ -129,14 +130,17 @@ class OrdinaryRepairService:
             if held or review_rejected:
                 return answer("held" if held else "rejected")
             target = BranchKey(repository_id=batch["repository_id"], branch=target_ref)
-            owner = await self.locks.lock_on(conn, target)
-            live_lease = bool(owner and owner.get("holder")
-                              and owner.get("fence") is not None
-                              and owner.get("expires_at") is not None
-                              and owner["expires_at"] > self.clock())
+
+            def lease_is_live(owner):
+                return bool(owner and owner.get("holder")
+                            and owner.get("fence") is not None
+                            and owner.get("expires_at") is not None
+                            and owner["expires_at"] > self.clock())
+
             # Green is settled before querying tasks, counters or stop proofs.
             if green_sha == head_sha:
-                return answer("busy" if live_lease else "green")
+                owner = await self.locks.lock_on(conn, target)
+                return answer("busy" if lease_is_live(owner) else "green")
 
             current = None
             if attempt:
@@ -144,14 +148,18 @@ class OrdinaryRepairService:
                 for table in (tasks, archived_tasks):
                     current = (await conn.execute(select(
                         table.c.id, table.c.status, table.c.dedup_key,
-                        table.c.retry_count, table.c.max_retries, table.c.assigned_agent_id,
+                        table.c.retry_count, table.c.max_retries,
                     ).where(
                         table.c.id == current_id,
-                    ))).mappings().one_or_none()
+                    ).with_for_update())).mappings().one_or_none()
                     if current is not None:
                         break
                 if current and current["dedup_key"] != f"repair:{batch_id}:{attempt}":
                     raise ValueError("ordinary repair filing identity collision")
+
+            owner = await self.locks.lock_on(conn, target)
+            live_lease = lease_is_live(owner)
+            if current:
                 terminal = bool(current and (
                     current["status"] == "COMPLETED"
                     or current["status"] == "FAILED"
@@ -175,17 +183,22 @@ class OrdinaryRepairService:
                     # ordinary claim recovery owns requeue/retry and unsaved work.
                     if live_lease and owner["holder"] != current_id:
                         return answer("busy")
-                    if (not live_lease and current["status"] in {"DEFINED", "READY"}
-                            and current["assigned_agent_id"] is None):
-                        # A failed claim preparation releases the lease and
-                        # returns the task to READY; the claim frontier admits
-                        # an ordinary repair only on a live fence it holds, so
-                        # nothing would ever claim it. Unclaimed, there is no
-                        # writer to fence out: reserve it again.
-                        await self.locks.acquire_on(
-                            conn, target, current_id, ttl_seconds=ttl_seconds, role="repair",
-                        )
-                        return answer("exists", task_id=current_id, lease_restored=True)
+                    if not live_lease and current["status"] in {"DEFINED", "READY", "PAUSED",
+                                                               "BLOCKED"}:
+                        # The previous prepare/recovery may have released the
+                        # lease. Restore this exact filing, never a new attempt.
+                        # The task lock excludes a new claim while we grant it;
+                        # claimed writers keep their original expired fence.
+                        from src.integration.lock import CRITICAL_SECTION_SECONDS
+
+                        async with asyncio.timeout(CRITICAL_SECTION_SECONDS):
+                            confirmed = authorize is not None and await authorize()
+                        if confirmed:
+                            await self.locks.acquire_on(
+                                conn, target, current_id,
+                                ttl_seconds=ttl_seconds, role="repair",
+                            )
+                            live_lease = True
                     return answer("exists", task_id=current_id,
                                   lease_expired=not live_lease)
             if live_lease:

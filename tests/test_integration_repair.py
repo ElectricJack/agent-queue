@@ -9,6 +9,7 @@ from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import asyncpg
 import pytest
 from sqlalchemy import insert, select, update
 
@@ -64,6 +65,7 @@ from src.models import (
     SessionRecord,
     Task,
     TaskStatus,
+    Workspace,
 )
 from src.profiles.capabilities import CapabilityPolicy
 from src.scheduler import AssignAction
@@ -2258,6 +2260,55 @@ async def _ordinals(db) -> list[int]:
         return (await conn.execute(select(integration_repair_stages.c.ordinal).order_by(
             integration_repair_stages.c.ordinal
         ))).scalars().all()
+
+
+async def test_transient_prepare_preserves_legacy_stage_attempts_and_fence(db, tmp_path, monkeypatch):
+    from src.commands.claim_commands import ClaimCommandsMixin
+
+    _service, delegate = await _continuous_parent_stage(db)
+    await _claimed_writer(db, delegate, epoch=1, live=True, sid="preparing-writer")
+    await db.update_session("preparing-writer", claim_phase="preparing", work_dir=str(tmp_path))
+    slot = Workspace(id="repair-slot", project_id="p", workspace_path=str(tmp_path),
+                     source_type=RepoSourceType.LINK, locked_by_task_id=delegate)
+    await db.create_workspace(slot)
+    target = BranchKey(repository_id="repo", branch="aq/parent")
+    ownership = BranchOwnership(db)
+    fence = ownership._fence(await ownership.get_owner(target))
+    before = await _repair_stage(db, "operation", 0)
+    commands = ClaimCommandsMixin()
+    commands.db = db
+    commands.orchestrator = SimpleNamespace(
+        _task_control_lock=lambda _task_id: asyncio.Lock(), claim_waiters={},
+        _worktree_slots=lambda: SimpleNamespace(reset_slot_for_task=AsyncMock(return_value="aq/parent")),
+        _hierarchy_origin_and_fence=AsyncMock(return_value=({"base_sha": STARTING_SHA}, fence, "repair")),
+        _hierarchy_repair_start=AsyncMock(return_value=STARTING_SHA),
+        _emit_task_event=AsyncMock(), bus=SimpleNamespace(emit=AsyncMock()),
+    )
+    activate = db.activate_claim
+    calls = 0
+
+    async def conflict_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise asyncpg.DeadlockDetectedError("deadlock detected")
+        return await activate(*args, **kwargs)
+
+    monkeypatch.setattr(db, "activate_claim", conflict_once)
+    session = await db.get_session("preparing-writer")
+    result = await commands._prepare_and_activate(
+        session, session, await db.get_task(delegate), slot=slot,
+    )
+    assert result["result"] == "claimed", result
+    assert calls == 2
+    after = await _repair_stage(db, "operation", 0)
+    assert (after["attempts"], after["repair_task_id"]) == (before["attempts"], delegate)
+    assert await _ordinals(db) == [0]
+    owner = await ownership.get_owner(target)
+    assert (owner["owner_id"], owner["fence_token"], owner["session_id"]) == (
+        delegate, fence.token, session.id,
+    )
+    assert await db.get_task_meta(delegate, "needs_attention") is None
 
 
 async def test_never_claimed_delegate_extends_its_stage_and_notices_once(db):
@@ -7876,6 +7927,84 @@ async def test_ordinary_repair_next_allocation_counts_once_and_has_no_ceiling(or
     assert (await env.store.get("ordinary")).repair_attempt_count == 101
 
 
+@pytest.mark.parametrize("lost", ["released", "expired"])
+async def test_ordinary_repair_replay_restores_detached_reservation_without_allocation(
+    ordinary_env, lost,
+):
+    from src.database.queries.claim_queries import _frontier_where
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+    from src.integration.repair import OrdinaryRepairService
+
+    env = ordinary_env
+    first = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+                                       authorize=AsyncMock(return_value=True), ttl_seconds=10)
+    task_id = first["task_id"]
+    await env.db.update_task(task_id, status=TaskStatus.READY)
+    original = await env.service.input(task_id)
+    old = (await env.locks.get(env.target)).grant()
+    if lost == "released":
+        await env.locks.release(old)
+        assert not await env.db.is_hierarchy_task_runnable(task_id)
+    else:
+        env.now += 10
+
+    restarted = OrdinaryRepairService(env.db, locks=env.locks, clock=lambda: env.now)
+    replay = await restarted.allocate("ordinary", target_ref=env.ref, head_sha="c" * 40,
+                                      authorize=AsyncMock(return_value=True))
+    assert (replay["outcome"], replay["task_id"], replay["attempt_count"],
+            replay["lease_expired"]) == ("exists", task_id, 1, False)
+    lease = await env.locks.get(env.target)
+    assert (lease.holder, lease.fence) == (task_id, old.token + 1)
+    assert lease.expires_at > env.now
+    assert await restarted.input(task_id) == original
+    assert (await env.store.get("ordinary")).repair_attempt_count == 1
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.id).where(
+            tasks.c.id == task_id, _frontier_where("p", ProjectIntegrationMode(True, "repo")),
+        )) == task_id
+        assert not (await conn.execute(select(integration_repair_stages))).first()
+
+
+@pytest.mark.parametrize("status", [TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS])
+async def test_ordinary_repair_replay_never_regrants_claimed_expired_writer(ordinary_env, status):
+    env = ordinary_env
+    first = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+                                       authorize=AsyncMock(return_value=True), ttl_seconds=10)
+    await env.db.update_task(first["task_id"], status=status)
+    old = await env.locks.get(env.target)
+    env.now += 10
+    replay = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+                                        authorize=AsyncMock(return_value=True))
+    assert replay["outcome"] == "exists" and replay["lease_expired"] is True
+    assert await env.locks.get(env.target) == old
+    assert (await env.store.get("ordinary")).repair_attempt_count == 1
+
+
+@pytest.mark.parametrize("blocked_by", ["other_writer", "held", "unconfirmed", "target_changed"])
+async def test_ordinary_repair_reservation_recovery_honors_current_authority(ordinary_env, blocked_by):
+    env = ordinary_env
+    first = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+                                       authorize=AsyncMock(return_value=True))
+    await env.db.update_task(first["task_id"], status=TaskStatus.READY)
+    old = (await env.locks.get(env.target)).grant()
+    await env.locks.release(old)
+    kwargs = {"target_ref": env.ref, "held": blocked_by == "held"}
+    authorize = AsyncMock(return_value=blocked_by != "unconfirmed")
+    if blocked_by == "other_writer":
+        await env.locks.acquire(env.target, "another-writer")
+    if blocked_by == "target_changed":
+        kwargs["target_ref"] = "refs/heads/aq/epic"
+    before = await env.locks.get(env.target)
+    replay = await env.service.allocate("ordinary", head_sha=STARTING_SHA,
+                                        authorize=authorize, **kwargs)
+    assert replay["outcome"] == {
+        "other_writer": "busy", "held": "held", "unconfirmed": "exists",
+        "target_changed": "exists",
+    }[blocked_by]
+    assert await env.locks.get(env.target) == before
+    assert (await env.store.get("ordinary")).repair_attempt_count == 1
+
+
 @pytest.mark.parametrize("authorize", [None, AsyncMock(return_value=False)])
 async def test_ordinary_repair_refuses_unconfirmed_publication(ordinary_env, authorize):
     env = ordinary_env
@@ -8136,24 +8265,3 @@ async def test_ordinary_repair_keeps_normal_recovery_task_after_lease_expiry(ord
     assert {r["outcome"] for r in results} == {"exists"}
     assert (await env.store.get("ordinary")).repair_attempt_count == 1
 
-
-async def test_ordinary_repair_restores_a_released_lease_for_an_unclaimed_repair(ordinary_env):
-    """A failed claim preparation releases the lease and leaves the repair READY."""
-    env = ordinary_env
-    filed = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True),
-                                       target_ref=env.ref, head_sha=STARTING_SHA, ttl_seconds=10)
-    first = await env.locks.get(env.target)
-    assert first.holder == filed["task_id"]
-    assert await env.locks.release(first.grant())
-    assert (await env.locks.get(env.target)).holder is None
-    replay = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA)
-    assert (replay["outcome"], replay["task_id"], replay.get("lease_restored")) == (
-        "exists", filed["task_id"], True)
-    restored = await env.locks.get(env.target)
-    assert restored.holder == filed["task_id"] and restored.fence > first.fence
-    # A claimed repair is never re-fenced behind its writer's back.
-    assert await env.locks.release(restored.grant())
-    await env.db.update_task(filed["task_id"], status=TaskStatus.IN_PROGRESS)
-    claimed = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA)
-    assert (claimed["outcome"], claimed.get("lease_expired")) == ("exists", True)
-    assert (await env.locks.get(env.target)).holder is None

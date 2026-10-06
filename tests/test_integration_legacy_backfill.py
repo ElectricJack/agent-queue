@@ -209,3 +209,18 @@ async def test_backfill_never_answers_an_epic_by_its_branch(world):
             creation_generation=0, reserved=True, materialized=True, created_at=time.time()))
     preview = await backfill_legacy_deliveries(db, "p")
     assert "fresh" not in {r["task_id"] for r in preview["results"] + preview["unproven"]}
+
+
+async def test_backfill_proves_an_epic_whose_collected_branch_is_on_main(world):
+    db, origin = world.db, world.origin
+    base = git(origin.clone, "rev-parse", "origin/main")
+    await epic_with_child(world, "landed", "part", epic_status=TaskStatus.COMPLETED)
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="landed-origin", task_id="landed", repository_id="r", branch_name="aq/landed",
+            base_sha=base, creation_generation=0, reserved=True, materialized=True,
+            created_at=time.time()))
+    origin.land("landed")
+    preview = await backfill_legacy_deliveries(db, "p")
+    proven = {r["task_id"]: r["via"] for r in preview["results"]}
+    assert proven["landed"] == "branch_tip" and "part" in proven
