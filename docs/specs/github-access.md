@@ -236,6 +236,16 @@ Preserve structured categories for missing CLI, credentials, permission,
 not-found-or-hidden, conflict/invalid input, rate limiting and transient errors.
 Expose the selected mode, repository and remedy without exposing secrets.
 
+CLI failure messages include the structured category and, when detected, the
+numeric HTTP status (for example, `GitHub CLI request failed (credentials,
+HTTP 401)`). Framed API failures retain the same details. Plugin command errors
+and command event evidence preserve this safe text; they never include stderr
+excerpts. The shared runner warns on a classified CLI or API failure with the
+effective credential mode and repository, then suppresses warnings for that same
+mode/repository/category for five minutes. Different categories or repositories
+warn independently; the in-memory warning cache is bounded to 256 keys. An
+explicitly expected API status, such as a ref lookup's 404, does not warn.
+
 A read that is rejected for authentication may invalidate the rejected App
 token and retry once with a fresh token. If another request already refreshed
 it, reuse the newer generation. Do not refresh repeatedly on permission errors

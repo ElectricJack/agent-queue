@@ -1118,7 +1118,14 @@ class CommandHandler(
                                 exc_info=True,
                             )
                             _emit_ok = False
-                            _emit_error = f"Plugin command failed: {e.__class__.__name__}"
+                            from src.git.github_contracts import GitHubAccessError
+
+                            # GitHub errors carry safe classification/status text,
+                            # which is also needed in the command event evidence.
+                            detail = (
+                                str(e) if isinstance(e, GitHubAccessError) else e.__class__.__name__
+                            )
+                            _emit_error = f"Plugin command failed: {detail}"
                             return {"error": f"Plugin command failed: {e}"}
 
                 logger.warning(

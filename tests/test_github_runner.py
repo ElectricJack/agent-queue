@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,10 +15,43 @@ from src.git.github_contracts import (
     GitHubCredentialIdentity,
     GitHubRepositoryBinding,
 )
-from src.git.github_cli import ExistingLoginCredentials, GhRunner
+from src.git.github_cli import ExistingLoginCredentials, GhRunner, _cli_error
 
 
 REPOSITORY = GitHubRepositoryBinding(303, "acme/widgets")
+
+
+@pytest.mark.parametrize(
+    ("returncode", "diagnostic", "category", "http_status"),
+    [
+        (1, "Bad credentials (HTTP 401)", "credentials", 401),
+        (4, "Authentication required", "credentials", None),
+        (1, "Hidden repository (HTTP 404)", "not_found_or_hidden", 404),
+        (1, "Conflict (HTTP 409)", "conflict_or_invalid", 409),
+        (1, "Invalid request (HTTP 422)", "conflict_or_invalid", 422),
+        (1, "API rate limit exceeded (HTTP 403)", "rate_limited", 403),
+        (1, "Too many requests (HTTP 429)", "rate_limited", 429),
+        (1, "Forbidden (http 403)", "permission", 403),
+        (1, "Server failure (HTTP 503)", "transient", 503),
+        (1, "Unrecognized diagnostic", "transient", None),
+    ],
+)
+def test_cli_failure_exposes_only_category_and_http_status(
+    returncode, diagnostic, category, http_status
+):
+    stderr = (
+        f"{diagnostic}\nraw-private-diagnostic\nAuthorization: Bearer opaque-secret\n"
+        "GH_TOKEN=ghs_private_token\nhttps://user:password@github.com/acme/widgets"
+    ).encode()
+
+    error = _cli_error(returncode, stderr)
+
+    detail = category if http_status is None else f"{category}, HTTP {http_status}"
+    assert str(error) == f"GitHub CLI request failed ({detail})"
+    assert error.category == category
+    assert error.http_status == http_status
+    for private_text in ("raw-private-diagnostic", "opaque-secret", "ghs_private_token", "password"):
+        assert private_text not in repr(error)
 
 
 @dataclass
@@ -62,6 +96,62 @@ def _capture_executable(tmp_path: Path) -> Path:
         "}\n"
         "sys.stdout.write(json.dumps(payload))\n",
     )
+
+
+@pytest.mark.parametrize("mode", ["app", "existing_login"])
+async def test_failure_warning_is_safe_and_throttled_across_calls(
+    tmp_path, monkeypatch, caplog, mode
+):
+    now = [1000.0]
+    monkeypatch.setattr("src.git.github_cli.monotonic", lambda: now[0])
+    executable = _write_executable(
+        tmp_path / "gh",
+        "import os, sys\n"
+        "status = 403 if sys.argv[-1].endswith('/pulls') else 401\n"
+        "sys.stderr.write(f'raw-private-diagnostic (HTTP {status})\\n'"
+        " + os.environ['GH_TOKEN'] + '\\nAuthorization: Bearer opaque-secret\\n'"
+        " + 'https://user:password@github.com/acme/widgets')\n"
+        "sys.exit(1)\n",
+    )
+    other = GitHubRepositoryBinding(404, "acme/other")
+    credentials = (
+        FakeAppCredentials({REPOSITORY.full_name: "selected-secret", other.full_name: "other-secret"})
+        if mode == "app" else ExistingLoginCredentials()
+    )
+    runner = GhRunner(
+        credentials, executable=str(executable), env={"GH_TOKEN": "ambient-secret"}, cwd=tmp_path
+    )
+    caplog.set_level(logging.WARNING, logger="src.git.github_cli")
+
+    async def fail(repository=REPOSITORY, suffix=""):
+        args = ["api", f"repos/{repository.full_name}{suffix}"]
+        with pytest.raises(GitHubAccessError) as caught:
+            await runner.run(args, repository=repository)
+        assert "HTTP" in str(caught.value)
+
+    await fail()
+    await fail()
+    await fail()
+    assert len(caplog.records) == 1
+    assert "credentials, HTTP 401" in caplog.text
+    assert f"credential_mode={mode} repository=acme/widgets" in caplog.text
+
+    await fail(suffix="/pulls")  # A new category warns immediately.
+    await fail(other)  # Another repository has its own cooldown.
+    assert len(caplog.records) == 3
+    assert "permission, HTTP 403" in caplog.text
+    assert "repository=acme/other" in caplog.text
+    now[0] += 299
+    await fail()
+    assert len(caplog.records) == 3
+    now[0] += 1
+    await fail()
+    assert len(caplog.records) == 4
+    for private_text in (
+        "raw-private-diagnostic", "selected-secret", "other-secret", "ambient-secret",
+        "opaque-secret", "password", "Authorization", "https://",
+    ):
+        assert private_text not in caplog.text
 
 
 def _pid_exists(pid: int) -> bool:
