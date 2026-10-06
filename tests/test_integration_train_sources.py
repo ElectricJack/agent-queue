@@ -56,6 +56,7 @@ from src.integration.train_sources import (
     train_for,
     _pending_tasks,
 )
+from src.integration.reviews import ReviewRequirements, TreeReviews
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
 from src.test_selection import catalogue as Catalogue
 from tests.db_fixtures import lease_dsn
@@ -903,7 +904,7 @@ async def hosted_train(world, *, retained_store=None):
             repository_id=state["repository_numeric_id"],
             full_name=state["repository_full_name"], ci_producer_app_id=15368,
             attestation_app_id=101, attestation_name=ATTESTATION_CHECK_NAME,
-            required_checks=required,
+            required_checks={key: required[key] for key in ("version", "names")},
         ), github
 
     async def binding(repo_row):
@@ -928,6 +929,216 @@ async def hosted_train(world, *, retained_store=None):
         lane_for=DaemonLanes(orchestrator, batches=batches), repair=OrdinaryRepairService(db),
     )
     return train, github, trusts
+
+
+@pytest.fixture
+async def collected_epic(world):
+    """Two ordinary completions collected through the daemon's actual epic lane."""
+    db, origin = world.db, world.origin
+    base = git(origin.url, "rev-parse", "main")
+    await db.create_task(Task(id="epic", project_id="p", repo_id="r", title="epic",
+                              description="", branch_name="aq/epic",
+                              status=TaskStatus.IN_PROGRESS))
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="epic-origin", task_id="epic", repository_id="r", branch_name="aq/epic",
+            base_sha=base, creation_generation=0, reserved=True, materialized=True,
+            created_at=time.time(),
+        ))
+    children = [await completed(world, tid, parent="epic") for tid in ("child-a", "child-b")]
+    await db.transition_task("epic", TaskStatus.COMPLETED)
+    train, github, trusts = await hosted_train(world)
+    required = {"version": "v1", "names": ["unit"], "producer_id": "15368"}
+    async with db._engine.begin() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_policy={
+                "parent": {"required_checks": required, "admission": "authorized"},
+                "root": {"required_checks": required, "admission": "reviewed"},
+            },
+        ))
+    return SimpleNamespace(world=world, db=db, origin=origin, train=train, github=github,
+                           trusts=trusts, base=base, children=children,
+                           target=TrainTarget("p", "r", "refs/heads/aq/epic", "epic"))
+
+
+async def collect_epic(case):
+    testing = await case.train.visit(case.target)
+    assert testing.state == "testing", testing
+    case.github.runs[testing.candidate_sha] = "success"
+    delivered = await case.train.visit(case.target)
+    assert delivered.state == "delivered", delivered
+    assert await case.db.get_task_completion("epic") is None
+    return delivered.target_sha
+
+
+async def review_epic(case, *, verdict="approved", decision="approve"):
+    subject, head = await TreeReviews.observe(await snapshot(case.world, case.target),
+                                            "epic", case.target.target_ref)
+    async with case.db.immediate() as conn:
+        await TreeReviews(case.db).record_on(conn, subject,
+            ReviewRequirements(True, frozenset({"github:jack"})), reviewer="github:jack",
+            verdict=verdict, decision_id=decision, reviewed_head_sha=head,
+            source_base=case.base, provenance={})
+
+
+async def test_collected_two_child_epic_gets_completion_and_lands_via_root(collected_epic):
+    case = collected_epic
+    # A completed container's uncollected branch tip never enters a root batch.
+    before = await case.train.visit(MAIN)
+    assert before.state == "blocked" and before.batch_id is None
+    assert await case.db.get_task_completion("epic") is None
+    head = await collect_epic(case)
+    waiting = await case.train.visit(case.target)
+    assert waiting.state == "blocked"
+    assert "review_missing" in {b["code"] for b in waiting.detail["blockers"]}
+    await review_epic(case)
+    assert (await case.train.visit(case.target)).state == "idle"
+    completion = await case.db.get_task_completion("epic")
+    assert completion.outcome == "pass" and completion.commits == [head]
+    assert completion.branch == "aq/epic"
+    # A new lane/visit replays the exact generation without appending rows.
+    assert (await case.train.visit(case.target)).state == "idle"
+    assert len(await case.db.get_task_completions("epic")) == 1
+    testing = await case.train.visit(MAIN)
+    assert testing.state == "testing", testing
+    assert testing.candidate_sha != head
+    assert git(case.origin.url, "rev-parse", "main") == case.base
+    # Green epic checks do not authorize the distinct root merge candidate.
+    assert (await case.train.visit(MAIN)).state == "testing"
+    case.github.runs[testing.candidate_sha] = "success"
+    delivered = await case.train.visit(MAIN)
+    assert delivered.state == "delivered", delivered
+    tip = git(case.origin.url, "rev-parse", "main")
+    for source in [head, *case.children]:
+        git(case.origin.url, "merge-base", "--is-ancestor", source, tip)
+    assert (await case.train.visit(MAIN)).state == "idle"
+
+
+@pytest.mark.parametrize("blocker", ["open_child", "checks", "rejection", "hold"])
+async def test_epic_completion_preserves_readiness_constraints(collected_epic, blocker):
+    case = collected_epic
+    head = await collect_epic(case)
+    await review_epic(case)
+    if blocker == "open_child":
+        await case.db.transition_task("child-b", TaskStatus.READY)
+    elif blocker == "checks":
+        del case.github.runs[head]
+    elif blocker == "rejection":
+        await review_epic(case, verdict="rejected", decision="reject")
+    else:
+        await case.db.add_task_label("epic", "hold:operator")
+    visit = await case.train.visit(case.target)
+    assert visit.state == "blocked", visit
+    assert await case.db.get_task_completion("epic") is None
+    root = await case.train.visit(MAIN)
+    assert root.batch_id is None
+    assert git(case.origin.url, "rev-parse", "main") == case.base
+
+
+async def test_epic_completion_revalidates_after_provenance_and_replays(collected_epic, monkeypatch):
+    from src.integration.provenance import GitProvenance
+
+    case = collected_epic
+    head = await collect_epic(case)
+    await review_epic(case)
+    original = GitProvenance.write_completion
+
+    async def changed(store, source, **kwargs):
+        await original(store, source, **kwargs)
+        await case.db.add_task_label("epic", "hold:operator")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(GitProvenance, "write_completion", changed)
+        visit = await case.train.visit(case.target)
+    assert visit.state == "blocked"
+    assert visit.detail["blockers"][0]["code"] == "epic_changed"
+    assert await case.db.get_task_completion("epic") is None
+    await case.db.remove_task_label("epic", "hold:operator")
+    assert (await case.train.visit(case.target)).state == "idle"
+    assert (await case.db.get_task_completion("epic")).commits == [head]
+
+
+async def test_uncollected_epic_checkpoint_cannot_enter_root_batch(collected_epic):
+    case = collected_epic
+    checkpoint = case.origin.work("epic", "checkpoint")
+    await close(case.db, "epic", [checkpoint], origin=case.origin)
+    visit = await case.train.visit(MAIN)
+    assert visit.state == "blocked" and visit.batch_id is None
+    assert visit.detail["blockers"][0]["code"] == "epic_completion_pending"
+    assert git(case.origin.url, "rev-parse", "main") == case.base
+
+
+async def test_closed_epic_retries_after_child_origins_retire(collected_epic):
+    case = collected_epic
+    await collect_epic(case)
+    async with case.db._engine.begin() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id.in_(("child-a", "child-b")),
+        ).values(retired_at=time.time()))
+    assert case.target in await DatabaseTargets(case.db).targets(time.time())
+    await review_epic(case)
+    # Retiring an origin removes a child's base hint, but ancestry still proves
+    # the exact retained sources in the collected branch.
+    assert (await case.train.visit(case.target)).state == "idle"
+    assert await case.db.get_task_completion("epic") is not None
+
+
+@pytest.mark.parametrize("change", ["child", "review", "checks", "hold", "policy", "completion"])
+async def test_frozen_epic_rechecks_readiness_before_root_publication(collected_epic, change):
+    case = collected_epic
+    head = await collect_epic(case)
+    await review_epic(case)
+    assert (await case.train.visit(case.target)).state == "idle"
+    testing = await case.train.visit(MAIN)
+    assert testing.state == "testing"
+    case.github.runs[testing.candidate_sha] = "success"
+    if change == "child":
+        # Normal reopening is already refused by the frozen ancestor guard.
+        # Inject changed graph input to exercise the publication fence itself.
+        async with case.db._engine.begin() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "child-b").values(status="READY"))
+    elif change == "review":
+        await review_epic(case, verdict="rejected", decision="later-rejection")
+    elif change == "checks":
+        # A provider rerun overwrites the cache of the epic's exact head.
+        case.github.runs[head] = "failure"
+        await case.train.visit(case.target)
+    elif change == "hold":
+        await case.db.add_task_label("epic", "hold:operator")
+    elif change == "completion":
+        later_head = case.origin.work("epic", "later")
+        case.github.runs[later_head] = "success"
+        await review_epic(case, decision="later-approval")
+        assert (await case.train.visit(case.target)).state == "idle"
+        assert (await case.db.get_task_completion("epic")).commits == [later_head]
+    else:
+        project = await case.db.get_project("p")
+        policy = dict(project.hierarchical_integration_policy)
+        policy["parent"] = {**policy["parent"], "required_checks": {
+            **policy["parent"]["required_checks"], "version": "v2"}}
+        await case.db.update_project("p", hierarchical_integration_policy=policy)
+    refused = await case.train.visit(MAIN)
+    assert refused.state == "held", refused
+    assert git(case.origin.url, "rev-parse", "main") == case.base
+
+
+async def test_epic_recompletes_same_head_when_check_policy_changes(collected_epic):
+    case = collected_epic
+    head = await collect_epic(case)
+    await review_epic(case)
+    await case.train.visit(case.target)
+    first = await case.db.get_task_completion("epic")
+    project = await case.db.get_project("p")
+    policy = dict(project.hierarchical_integration_policy)
+    policy["parent"] = {**policy["parent"], "required_checks": {
+        **policy["parent"]["required_checks"], "version": "v2"}}
+    await case.db.update_project("p", hierarchical_integration_policy=policy)
+    assert (await case.train.visit(MAIN)).batch_id is None
+    assert (await case.train.visit(case.target)).state == "idle"
+    second = await case.db.get_task_completion("epic")
+    assert first.id != second.id and first.commits == second.commits == [head]
+    assert (await case.train.visit(MAIN)).state == "testing"
 
 
 async def test_ordinary_train_completion_with_large_history_in_fresh_retained_store(world, tmp_path):

@@ -182,6 +182,31 @@ resource-job provider; both are proven separately in the disposable smoke run,
 and the project's actual configured mode is proven only by the live evidence
 above.
 
+For an epic canary, finish two children and observe both delivery boundaries.
+The child batch first collects their exact completion sources onto the epic
+branch. The train then evaluates recursive readiness: all required child work
+is complete and contained, the exact collected epic head has green required
+checks, and any required review approves its tree. Only then does it retain
+Git provenance and append the container's ordinary completion record with
+that head as its source. A completed task status or an uncollected branch tip
+does not supply this record.
+
+The root lane batches that epic completion and checks its own merge candidate
+before landing it on the default branch. Record the child sources, collected
+epic head, epic completion id, review evidence (when required), root candidate
+and final default-branch OID. Verify that the final OID contains the epic and
+both child sources. Green checks on the epic head alone do not authorize the
+different root candidate.
+
+If the child batch has landed but a head check or tree review is pending, the
+epic target reports readiness blockers in `aq integration status`. Idle epic
+visits retry readiness, including after a restart; repeated visits reuse the
+same completion identity while its inputs are unchanged. Root admission and
+publication recheck the current task graph, required checks and tree review;
+changed readiness inputs require a fresh collected completion. No operator
+completion record or manual merge is needed. The two-child regression fixture
+is `tests/test_integration_train_sources.py::test_collected_two_child_epic_gets_completion_and_lands_via_root`.
+
 ## 6. Confirm old-event isolation
 
 Under `active` the scheduler, the outbox and the green continuations are stopped
