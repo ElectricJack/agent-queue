@@ -82,6 +82,7 @@ def _revision(review_id="rev-bright-harbor", revision=1, content="# Body\n", **o
         "revision": revision,
         "content": content,
         "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "spec_kind": None,
         "submitted_by": "session:author",
         "submitted_task_id": "author-task",
         "changes_note": None,
@@ -572,6 +573,25 @@ def _run(migration, *steps: str):
                 getattr(migration, step)()
 
     return _apply
+
+
+@pytest.mark.migration
+async def test_spec_kind_migration_upgrades_replays_and_checks_values(db):
+    migration = _load_migration("a00000000081_review_spec_kind")
+
+    async with db._engine.begin() as conn:
+        await conn.run_sync(_run(migration, "downgrade", "downgrade", "upgrade", "upgrade"))
+        columns = await conn.execute(text(
+            "SELECT column_name, is_nullable FROM information_schema.columns "
+            "WHERE table_name = 'doc_review_revisions' AND column_name = 'spec_kind'"
+        ))
+        assert columns.one() == ("spec_kind", "YES")
+    async with db.immediate() as conn:
+        await db.insert_review(review=_review(), revision=_revision(spec_kind="design"), conn=conn)
+    assert (await db.get_review_revision("rev-bright-harbor", 1))["spec_kind"] == "design"
+    with pytest.raises(IntegrityError):
+        async with db._engine.begin() as conn:
+            await conn.execute(text("UPDATE doc_review_revisions SET spec_kind = 'typo'"))
 
 
 @pytest.mark.migration

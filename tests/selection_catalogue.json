@@ -1419,7 +1419,7 @@
       ]
     }
   },
-  "digest": "sha256:d979e915fcec8ab304911f6d0fe23b0c11a129720412e8fde18d5bc7257a9b06",
+  "digest": "sha256:792e05475ba1270b32a8dad0d4ff4e7dd5d01f281104c8e128d7b0d4d93712b2",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4746,10 +4746,13 @@
         "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.database.queries.proposal_queries",
+        "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
-        "src.playbooks.run_state"
+        "src.playbooks.run_state",
+        "src.reviews.service",
+        "src.vault"
       ],
       "markers": [
         "parametrize"
@@ -14996,6 +14999,8 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.auth",
+        "src.api.scope",
         "src.commands",
         "src.commands.contracts.builtin",
         "src.commands.proposal_commands",

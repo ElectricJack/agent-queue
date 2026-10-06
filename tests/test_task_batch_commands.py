@@ -5,11 +5,17 @@ Phase 6 Tasks 2 + 3 (design §8, spec ingestion).
 from __future__ import annotations
 
 import time
+from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 
-from src.database.queries.proposal_queries import detect_cycles, get_proposal
-from src.models import AgentProfile
+from src.database.queries.proposal_queries import detect_cycles, existing_graph_edges, get_proposal
+from src.api.auth import RequestScope
+from src.api.scope import check_request_scope
+from src.models import (
+    Agent, AgentProfile, AgentState, SessionRecord, Task, TaskStatus, TaskType,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -608,3 +614,209 @@ def test_commit_outcomes_are_typed():
         "task_batch_commit", {"success": False, "not_approved": True, "error": "no gate"}
     ) == "not_approved"
     assert _outcome_of("task_batch_commit", {"success": False, "error": "cycle"}) == "rejected"
+
+
+async def _ingest_assignment(handler, spec_kind="implementation"):
+    from src.vault import ensure_default_intelligence_classes
+
+    ensure_default_intelligence_classes(handler.config.data_dir)
+    handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
+    await handler.execute("create_project", {"id": "p1", "name": "p1"})
+    path = Path(handler.config.vault_root) / "projects/p1/specs/approved.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\nstatus: approved\nspec_kind: {spec_kind}\n---\n# Approved spec\n")
+    await handler.db.create_profile(AgentProfile(
+        id="spec-ingest", name="Spec Ingest", harness="codex",
+        aq_commands=["task_batch_propose", "task_batch_commit", "list_tasks"],
+    ))
+    await handler.db.create_agent(Agent(id="ingester", name="Ingester", profile_id="spec-ingest"))
+    await handler.db.create_task(Task(
+        id="ingest", project_id="p1", title="Ingest approved spec", description=str(path),
+        status=TaskStatus.IN_PROGRESS, profile_id="spec-ingest", route_source="role",
+        assigned_agent_id="ingester", dedup_key=f"spec-ingest:{path}",
+    ))
+    await handler.db.update_agent("ingester", state=AgentState.BUSY, current_task_id="ingest")
+    await handler.db.create_session(SessionRecord(
+        id="s-ingest", task_id="ingest", project_id="p1", agent_id="ingester",
+        profile_id="spec-ingest", harness="codex", provider="fake", name="ingest",
+        lifecycle="task", state="running", desired_state="running", work_dir=str(path.parent),
+        epoch="test", instance_token="instance", started_at=time.time(), last_claim_epoch=0,
+    ))
+    scope = RequestScope(
+        kind="session", session_id="s-ingest", session_instance_token="instance",
+        project_id="p1", task_id="ingest",
+    )
+    return path, scope
+
+
+def _implementation_graph(path):
+    return {
+        "project_id": "p1", "source": f"spec:{path}",
+        "tasks": [
+            {"tempId": "core", "title": "Core epic", "description": str(path)},
+            {"tempId": "api", "title": "API", "description": f"{path}: API files and tests",
+             "task_type": "feature", "intelligence_class": "standard-high"},
+            {"tempId": "ui", "title": "UI", "description": f"{path}: UI files and tests",
+             "task_type": "feature", "intelligence_class": "standard-high"},
+            {"tempId": "docs", "title": "Docs epic", "description": str(path)},
+            {"tempId": "draft", "title": "Draft docs", "description": f"{path}: early draft",
+             "task_type": "docs", "intelligence_class": "standard-high"},
+            {"tempId": "final", "title": "Finalize docs",
+             "description": f"{path}: waits for API output to document final behavior",
+             "task_type": "docs", "intelligence_class": "standard-high"},
+        ],
+        "edges": [
+            {"from": child, "to": parent, "dep_type": "parent-child"}
+            for child, parent in [("api", "core"), ("ui", "core"),
+                                  ("draft", "docs"), ("final", "docs")]
+        ] + [{"from": "final", "to": "api", "dep_type": "blocks"}],
+    }
+
+
+async def _ingest_propose(handler, path, scope, graph=None):
+    args = graph or _implementation_graph(path)
+    assert await check_request_scope("task_batch_propose", args, scope, db=handler.db) is None
+    result = await handler.execute("task_batch_propose", {**args, "_scope": asdict(scope)})
+    assert result["success"], result
+    return result["proposal_id"]
+
+
+async def _ingest_commit(handler, proposal_id, scope):
+    args = {"proposal_id": proposal_id}
+    assert await check_request_scope("task_batch_commit", args, scope, db=handler.db) is None
+    return await handler.execute("task_batch_commit", {**args, "_scope": asdict(scope)})
+
+
+async def test_design_ingestion_only_files_implementation_spec_for_review(handler):
+    path, scope = await _ingest_assignment(handler, "design")
+    # Even a recorded implementation graph cannot implement an explicit design.
+    proposal_id = await _ingest_propose(handler, path, scope)
+    assert not [event for event in _emitted(handler) if event[0] == "proposal.ready"]
+    result = await _ingest_commit(handler, proposal_id, scope)
+    assert result["success"], result
+    epic, child = [await handler.db.get_task(tid) for tid in result["task_ids"]]
+    assert child.parent_task_id == epic.id
+    assert child.task_type == TaskType.DESIGN
+    assert child.class_hint == "deep-high"
+    assert child.profile_id is None
+    assert child.deliverables == [{"id": "implementation_review", "kind": "review", "target": "spec"}]
+    assert "spec_kind: implementation" in child.description
+    assert "aq review submit" in child.description
+    assert str(path) in child.description
+    assert len(await handler.db.list_tasks(project_id="p1")) == 3
+
+
+async def test_implementation_ingestion_commits_epics_and_leaf_dependencies_without_gate(handler):
+    path, scope = await _ingest_assignment(handler)
+    proposal_id = await _ingest_propose(handler, path, scope)
+    result = await _ingest_commit(handler, proposal_id, scope)
+    assert result["success"], result
+    ids = dict(zip(["core", "api", "ui", "docs", "draft", "final"], result["task_ids"], strict=True))
+    for leaf, parent in [("api", "core"), ("ui", "core"), ("draft", "docs"), ("final", "docs")]:
+        task = await handler.db.get_task(ids[leaf])
+        assert task.parent_task_id == ids[parent]
+        assert task.class_hint == "standard-high"
+        assert task.profile_id is None
+    edges = await existing_graph_edges(handler.db, "p1")
+    nonstructural = [(frm, to) for frm, to, kind in edges if kind != "parent-child"]
+    assert nonstructural == [(ids["final"], ids["api"])]
+    assert not ({ids["core"], ids["docs"]} & {endpoint for edge in nonstructural for endpoint in edge})
+    assert detect_cycles(edges, [], []) == []
+    # Promotion releases containers before it promotes their independent children.
+    await handler.orchestrator._check_defined_tasks()
+    await handler.orchestrator._check_defined_tasks()
+    assert {task.id for task in await handler.db.list_tasks(project_id="p1")
+            if task.status == TaskStatus.READY} == {ids["api"], ids["ui"], ids["draft"]}
+    assert not (await handler.db.get_task(ids["api"])).is_blocked
+    assert not (await handler.db.get_task(ids["ui"])).is_blocked
+    assert not (await handler.db.get_task(ids["draft"])).is_blocked
+    assert (await handler.db.get_task(ids["final"])).is_blocked
+    replay = await _ingest_commit(handler, proposal_id, scope)
+    assert replay["already_committed"]
+    assert replay["task_ids"] == result["task_ids"]
+
+
+async def test_ingest_transaction_hides_partial_graph_and_rolls_back_every_row(handler, monkeypatch):
+    path, scope = await _ingest_assignment(handler)
+    proposal_id = await _ingest_propose(handler, path, scope)
+    original = handler.db.create_task
+    original_dependency = handler.db.add_dependency
+    calls = 0
+
+    async def fail_during_creation(task, **kwargs):
+        nonlocal calls
+        await original(task, **kwargs)
+        calls += 1
+        # A separate connection cannot see the inserted task or commit claim.
+        assert {task.id for task in await handler.db.list_tasks(project_id="p1")} == {"ingest"}
+        assert (await get_proposal(handler.db, proposal_id))["status"] == "ready"
+
+    async def fail_after_dependency(*args, **kwargs):
+        await original_dependency(*args, **kwargs)
+        raise RuntimeError("injected failure after dependency insertion")
+
+    monkeypatch.setattr(handler.db, "create_task", fail_during_creation)
+    monkeypatch.setattr(handler.db, "add_dependency", fail_after_dependency)
+    result = await _ingest_commit(handler, proposal_id, scope)
+    assert not result["success"] and "injected failure" in result["error"]
+    assert {task.id for task in await handler.db.list_tasks(project_id="p1")} == {"ingest"}
+    assert calls == 6
+    assert await existing_graph_edges(handler.db, "p1") == []
+    assert (await get_proposal(handler.db, proposal_id))["status"] == "ready"
+    assert not [event for event in _emitted(handler) if event[0] == "proposal.status_changed"]
+    monkeypatch.setattr(handler.db, "create_task", original)
+    monkeypatch.setattr(handler.db, "add_dependency", original_dependency)
+    assert (await _ingest_commit(handler, proposal_id, scope))["success"]
+
+
+@pytest.mark.parametrize("invalid", ["flat", "container-edge", "duplicate-parent", "profile"])
+async def test_ingestion_refuses_invalid_graph_before_publishing(handler, invalid):
+    path, scope = await _ingest_assignment(handler)
+    graph = _implementation_graph(path)
+    if invalid == "flat":
+        graph["edges"] = []
+    elif invalid == "container-edge":
+        graph["edges"].append({"from": "docs", "to": "api", "dep_type": "blocks"})
+    elif invalid == "duplicate-parent":
+        graph["edges"].append({"from": "api", "to": "docs", "dep_type": "parent-child"})
+    else:
+        graph["tasks"][1]["profile_id"] = "standard-high-codex"
+    result = await handler.execute("task_batch_propose", {**graph, "_scope": asdict(scope)})
+    assert not result["success"], result
+    assert len(await handler.db.list_tasks(project_id="p1")) == 1
+
+
+async def test_source_text_cannot_grant_ungated_authority(handler):
+    path, scope = await _ingest_assignment(handler)
+    ordinary = await handler.execute("task_batch_propose", _implementation_graph(path))
+    refused = await handler.execute("task_batch_commit", {"proposal_id": ordinary["proposal_id"]})
+    assert refused["not_approved"]
+    assert await check_request_scope(
+        "task_batch_commit", {"proposal_id": ordinary["proposal_id"]}, scope, db=handler.db,
+    ) == "out of scope: proposal does not belong to held ingestion task"
+    await handler.db.update_agent("ingester", state=AgentState.IDLE, current_task_id=None)
+    refused = await handler.execute(
+        "task_batch_propose", {**_implementation_graph(path), "_scope": asdict(scope)},
+    )
+    assert not refused["success"]
+    assert "live role assignment" in refused["error"]
+
+
+async def test_ingestion_scope_pins_project_session_and_approved_source(handler):
+    path, scope = await _ingest_assignment(handler)
+    assert await check_request_scope("list_tasks", {}, scope, db=handler.db) is None
+    assert await check_request_scope(
+        "list_tasks", {"project_id": "other"}, scope, db=handler.db,
+    ) == "out of scope: project_id mismatch"
+    assert await check_request_scope(
+        "task_batch_propose", {"session_id": "other"}, scope, db=handler.db,
+    ) == "out of scope: session_id mismatch"
+    graph = _implementation_graph(path)
+    graph["source"] = "spec:another-path"
+    refused = await handler.execute("task_batch_propose", {**graph, "_scope": asdict(scope)})
+    assert not refused["success"] and "source must match" in refused["error"]
+    path.write_text("---\nstatus: draft\nspec_kind: implementation\n---\n# Unapproved\n")
+    refused = await handler.execute(
+        "task_batch_propose", {**_implementation_graph(path), "_scope": asdict(scope)},
+    )
+    assert not refused["success"] and "approved document" in refused["error"]

@@ -68,18 +68,22 @@ def sync_detailed(
     """Atomically materialise an approved proposal into the live work graph: creates every task, then every
     dependency edge, stamping the proposal's source as provenance. Refused (``not_approved``) unless a
     resolved human gate in the proposal's project, awaiting this proposal, carries an approval
-    resolution (``approve`` or ``approved``). The ready→committed flip is a single conditional update,
-    so two concurrent commits cannot both win. Any failure unwinds every task and edge already created
-    and returns the proposal to ``ready`` for a retry. Committing an already committed proposal returns
-    its original task ids with ``already_committed: true``. Returns the created task ids.
+    resolution (``approve`` or ``approved``), or the server stamped approved-document authority from a
+    live spec-ingest role. Ingestion commits the full epic/child graph and routing gates in one
+    transaction. The ready→committed flip is a conditional update, so two concurrent commits cannot both
+    win. Any failure unwinds every task and edge already created and returns the proposal to ``ready``
+    for a retry. Committing an already committed proposal returns its original task ids with
+    ``already_committed: true``. Returns the created task ids.
 
      Atomically materialise an approved proposal into the live work graph: creates every task, then every
     dependency edge, stamping the proposal's source as provenance. Refused (``not_approved``) unless a
     resolved human gate in the proposal's project, awaiting this proposal, carries an approval
-    resolution (``approve`` or ``approved``). The ready→committed flip is a single conditional update,
-    so two concurrent commits cannot both win. Any failure unwinds every task and edge already created
-    and returns the proposal to ``ready`` for a retry. Committing an already committed proposal returns
-    its original task ids with ``already_committed: true``. Returns the created task ids.
+    resolution (``approve`` or ``approved``), or the server stamped approved-document authority from a
+    live spec-ingest role. Ingestion commits the full epic/child graph and routing gates in one
+    transaction. The ready→committed flip is a conditional update, so two concurrent commits cannot both
+    win. Any failure unwinds every task and edge already created and returns the proposal to ``ready``
+    for a retry. Committing an already committed proposal returns its original task ids with
+    ``already_committed: true``. Returns the created task ids.
 
     Args:
         body (TaskBatchCommitRequest):
@@ -111,18 +115,22 @@ def sync(
     """Atomically materialise an approved proposal into the live work graph: creates every task, then every
     dependency edge, stamping the proposal's source as provenance. Refused (``not_approved``) unless a
     resolved human gate in the proposal's project, awaiting this proposal, carries an approval
-    resolution (``approve`` or ``approved``). The ready→committed flip is a single conditional update,
-    so two concurrent commits cannot both win. Any failure unwinds every task and edge already created
-    and returns the proposal to ``ready`` for a retry. Committing an already committed proposal returns
-    its original task ids with ``already_committed: true``. Returns the created task ids.
+    resolution (``approve`` or ``approved``), or the server stamped approved-document authority from a
+    live spec-ingest role. Ingestion commits the full epic/child graph and routing gates in one
+    transaction. The ready→committed flip is a conditional update, so two concurrent commits cannot both
+    win. Any failure unwinds every task and edge already created and returns the proposal to ``ready``
+    for a retry. Committing an already committed proposal returns its original task ids with
+    ``already_committed: true``. Returns the created task ids.
 
      Atomically materialise an approved proposal into the live work graph: creates every task, then every
     dependency edge, stamping the proposal's source as provenance. Refused (``not_approved``) unless a
     resolved human gate in the proposal's project, awaiting this proposal, carries an approval
-    resolution (``approve`` or ``approved``). The ready→committed flip is a single conditional update,
-    so two concurrent commits cannot both win. Any failure unwinds every task and edge already created
-    and returns the proposal to ``ready`` for a retry. Committing an already committed proposal returns
-    its original task ids with ``already_committed: true``. Returns the created task ids.
+    resolution (``approve`` or ``approved``), or the server stamped approved-document authority from a
+    live spec-ingest role. Ingestion commits the full epic/child graph and routing gates in one
+    transaction. The ready→committed flip is a conditional update, so two concurrent commits cannot both
+    win. Any failure unwinds every task and edge already created and returns the proposal to ``ready``
+    for a retry. Committing an already committed proposal returns its original task ids with
+    ``already_committed: true``. Returns the created task ids.
 
     Args:
         body (TaskBatchCommitRequest):
@@ -149,18 +157,22 @@ async def asyncio_detailed(
     """Atomically materialise an approved proposal into the live work graph: creates every task, then every
     dependency edge, stamping the proposal's source as provenance. Refused (``not_approved``) unless a
     resolved human gate in the proposal's project, awaiting this proposal, carries an approval
-    resolution (``approve`` or ``approved``). The ready→committed flip is a single conditional update,
-    so two concurrent commits cannot both win. Any failure unwinds every task and edge already created
-    and returns the proposal to ``ready`` for a retry. Committing an already committed proposal returns
-    its original task ids with ``already_committed: true``. Returns the created task ids.
+    resolution (``approve`` or ``approved``), or the server stamped approved-document authority from a
+    live spec-ingest role. Ingestion commits the full epic/child graph and routing gates in one
+    transaction. The ready→committed flip is a conditional update, so two concurrent commits cannot both
+    win. Any failure unwinds every task and edge already created and returns the proposal to ``ready``
+    for a retry. Committing an already committed proposal returns its original task ids with
+    ``already_committed: true``. Returns the created task ids.
 
      Atomically materialise an approved proposal into the live work graph: creates every task, then every
     dependency edge, stamping the proposal's source as provenance. Refused (``not_approved``) unless a
     resolved human gate in the proposal's project, awaiting this proposal, carries an approval
-    resolution (``approve`` or ``approved``). The ready→committed flip is a single conditional update,
-    so two concurrent commits cannot both win. Any failure unwinds every task and edge already created
-    and returns the proposal to ``ready`` for a retry. Committing an already committed proposal returns
-    its original task ids with ``already_committed: true``. Returns the created task ids.
+    resolution (``approve`` or ``approved``), or the server stamped approved-document authority from a
+    live spec-ingest role. Ingestion commits the full epic/child graph and routing gates in one
+    transaction. The ready→committed flip is a conditional update, so two concurrent commits cannot both
+    win. Any failure unwinds every task and edge already created and returns the proposal to ``ready``
+    for a retry. Committing an already committed proposal returns its original task ids with
+    ``already_committed: true``. Returns the created task ids.
 
     Args:
         body (TaskBatchCommitRequest):
@@ -190,18 +202,22 @@ async def asyncio(
     """Atomically materialise an approved proposal into the live work graph: creates every task, then every
     dependency edge, stamping the proposal's source as provenance. Refused (``not_approved``) unless a
     resolved human gate in the proposal's project, awaiting this proposal, carries an approval
-    resolution (``approve`` or ``approved``). The ready→committed flip is a single conditional update,
-    so two concurrent commits cannot both win. Any failure unwinds every task and edge already created
-    and returns the proposal to ``ready`` for a retry. Committing an already committed proposal returns
-    its original task ids with ``already_committed: true``. Returns the created task ids.
+    resolution (``approve`` or ``approved``), or the server stamped approved-document authority from a
+    live spec-ingest role. Ingestion commits the full epic/child graph and routing gates in one
+    transaction. The ready→committed flip is a conditional update, so two concurrent commits cannot both
+    win. Any failure unwinds every task and edge already created and returns the proposal to ``ready``
+    for a retry. Committing an already committed proposal returns its original task ids with
+    ``already_committed: true``. Returns the created task ids.
 
      Atomically materialise an approved proposal into the live work graph: creates every task, then every
     dependency edge, stamping the proposal's source as provenance. Refused (``not_approved``) unless a
     resolved human gate in the proposal's project, awaiting this proposal, carries an approval
-    resolution (``approve`` or ``approved``). The ready→committed flip is a single conditional update,
-    so two concurrent commits cannot both win. Any failure unwinds every task and edge already created
-    and returns the proposal to ``ready`` for a retry. Committing an already committed proposal returns
-    its original task ids with ``already_committed: true``. Returns the created task ids.
+    resolution (``approve`` or ``approved``), or the server stamped approved-document authority from a
+    live spec-ingest role. Ingestion commits the full epic/child graph and routing gates in one
+    transaction. The ready→committed flip is a conditional update, so two concurrent commits cannot both
+    win. Any failure unwinds every task and edge already created and returns the proposal to ``ready``
+    for a retry. Committing an already committed proposal returns its original task ids with
+    ``already_committed: true``. Returns the created task ids.
 
     Args:
         body (TaskBatchCommitRequest):

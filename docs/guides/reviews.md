@@ -48,12 +48,44 @@ is [the document review design spec](../../superpowers/specs/2026-09-21-document
 - `changes_requested` — a decision with feedback; the daemon files one new
   revision task carrying that feedback (§ What happens when you reject).
 - `approved` — the gate is resolved and dependent tasks become routable.
+  For kind `spec` or `plan`, approval also sets the vault status to `approved`
+  and emits `spec.approved`, starting one deep-high spec-ingest task per path
+  (`spec-ingest:<absolute vault path>`). Other documents do not ingest.
 - `withdrawn` — the review is closed with no decision; the gate is kept open
   so nothing downstream is released, and the authoring task is put back to a
   state where it can resubmit.
 
 Every transition checks the review's state and the revision it was issued
 for, so two decisions racing on different revisions cannot both succeed.
+
+## Design and implementation documents
+
+Use `spec_kind: design | implementation` in the submitted YAML frontmatter;
+this is separate from review kind `spec | plan | other`. The classification
+is stored on each revision and survives vault status rewrites and recovery.
+A body-only revision retains its previous classification. Invalid values
+are refused. Legacy documents may omit it; the ingestion agent checks their
+content before deciding whether they are ready for implementation.
+
+A design spec approves goals and architecture. Its ingest creates one epic
+containing one deep-high design task to write an implementation spec grounded
+in the current repository: files, functions, tests, rollout and chosen defaults.
+That task submits the implementation document to Jack's review queue, with
+`spec_kind: implementation`; approval starts ingestion again. Design approval
+creates no implementation work.
+
+An implementation spec creates phase/deliverable epics with self-contained
+children, maximizing safe parallelism by file/module ownership. Dependencies
+connect children only; structural parent-child edges connect children to epics.
+Spec ingestion validates and commits the whole graph atomically without a
+human proposal gate. Ordinary task-batch proposals retain their approval gate.
+Until transactional change sets ship, existing-task updates requiring the same
+atomic step wait for that surface or go to the supervisor.
+
+Start from the [spec template](../templates/spec.md). On an existing install,
+the operator must reconcile the shipped spec-ingest Role and commit grant;
+profile seeding does not overwrite local copies. Preserve the installed
+harness when updating it.
 
 ## The commands in one table
 

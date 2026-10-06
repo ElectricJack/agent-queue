@@ -6415,7 +6415,9 @@ _ALL_TOOL_DEFINITIONS = [
             "rejected up front if the shape is wrong, if it references tasks "
             "that do not exist, or if it would introduce a dependency cycle "
             "against the project's current graph. Returns a proposal_id for "
-            "task_batch_update / _commit / _discard."
+            "task_batch_update / _commit / _discard. A live spec-ingest role "
+            "holding the matching approved vault path may commit immediately; "
+            "those batches require epics with children and leaf dependency edges."
         ),
         "input_schema": {
             "type": "object",
@@ -6486,6 +6488,10 @@ _ALL_TOOL_DEFINITIONS = [
                                     "required": ["id", "kind", "target"],
                                 },
                             },
+                            "task_type": {
+                                "type": "string",
+                                "description": "Work-kind hint for mandatory routing (CLI --type).",
+                            },
                             "intelligence_class": {
                                 "type": "string",
                                 "description": (
@@ -6555,7 +6561,9 @@ _ALL_TOOL_DEFINITIONS = [
             "the proposal's source as provenance. Refused (``not_approved``) "
             "unless a resolved human gate in the proposal's project, awaiting "
             "this proposal, carries an approval resolution (``approve`` or "
-            "``approved``). The ready→committed flip is a single conditional "
+            "``approved``), or the server stamped approved-document authority "
+            "from a live spec-ingest role. Ingestion commits the full epic/child "
+            "graph and routing gates in one transaction. The ready→committed flip is a conditional "
             "update, so two concurrent commits cannot both win. Any failure "
             "unwinds every task and edge already created and returns the "
             "proposal to ``ready`` for a retry. Committing an already "

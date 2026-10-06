@@ -8,7 +8,8 @@ Registers four CommandHandler commands:
   and no approval gate awaits the proposal yet.
 - ``task_batch_discard`` — soft-drop the proposal.
 - ``task_batch_commit`` — atomically materialize the batch into the live
-  work graph, only under a human gate that approves this exact proposal.
+  work graph under human approval, or approved-document authority stamped
+  by a live spec-ingest assignment.
   A replay of an already committed proposal returns the original receipt.
 """
 from __future__ import annotations
@@ -16,13 +17,19 @@ from __future__ import annotations
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import and_, select, update
 
 from src.database.queries import proposal_queries
 from src.database.tables import TASK_DEP_TYPES, task_metadata, task_proposals, tasks
-from src.models import DepType, Task, TaskStatus
+from src.models import DepType, Task, TaskStatus, TaskType
+from src.api.auth import RequestScope
+from src.api.scope import spec_ingest_task_for_session
+from src.commands.principal import PrincipalKind, current_principal
+from src.reviews.vault import spec_kind_from_content, split_frontmatter
+from ruamel.yaml import YAML
 from src.routing.filing import choice_forbidden, refused_spec_keys
 
 logger = logging.getLogger(__name__)
@@ -37,11 +44,85 @@ APPROVAL_RESOLUTIONS = frozenset({"approve", "approved"})
 #: replayed commit can report the original receipt.
 PROPOSAL_ID_META = "proposal_id"
 
+SPEC_INGEST_META = "spec_ingest"
+
 
 class TaskProposalCommandsMixin:
     """Mount on CommandHandler alongside the other command mixins."""
 
     # ----- helpers -------------------------------------------------------
+
+    async def _spec_ingest_context(self, project_id: str, source: str) -> dict | None:
+        principal = current_principal()
+        if (principal is None or principal.kind is not PrincipalKind.SESSION
+                or principal.profile_id != "spec-ingest"):
+            return None
+        task = await spec_ingest_task_for_session(self.db, RequestScope(
+            kind="session", session_id=principal.session_id,
+            session_instance_token=principal.session_instance_token,
+            project_id=principal.project_id, task_id=principal.task_id,
+        ))
+        if task is None or task.project_id != project_id:
+            raise ValueError("spec ingestion requires a live role assignment in this project")
+        path = Path(task.dedup_key.removeprefix("spec-ingest:")).resolve()
+        root = (Path(self.config.vault_root) / "projects" / project_id).resolve()
+        if not any(path.is_relative_to(root / directory) for directory in ("specs", "plans")):
+            raise ValueError("spec ingestion path is outside the project's specs/plans")
+        if source != f"spec:{path}":
+            raise ValueError("proposal source must match the held ingestion task's spec path")
+        raw = path.read_text(encoding="utf-8")
+        spec_kind = spec_kind_from_content(raw)
+        frontmatter, _ = split_frontmatter(raw)
+        if not frontmatter or (YAML(typ="safe").load(frontmatter) or {}).get("status") != "approved":
+            raise ValueError("spec ingestion requires an approved document")
+        return {"task_id": task.id, "spec_path": str(path), "spec_kind": spec_kind}
+
+    @staticmethod
+    def _design_spec_batch(path: str) -> tuple[list[dict], list[dict]]:
+        """Design approval schedules its implementation document, never implementation work."""
+        return ([
+            {"tempId": "implementation_spec", "title": "Implementation specification",
+             "description": f"Implementation planning for approved design {path}.",
+             "task_type": "design", "intelligence_class": "deep-high"},
+            {"tempId": "write_spec", "title": f"Write implementation spec for {Path(path).name}",
+             "task_type": "design", "intelligence_class": "deep-high",
+             "description": (
+                 f"Read approved design spec {path} and inspect the current repository. "
+                 "Write an implementation spec grounded in files, functions, tests and rollout. "
+                 "Choose defaults for open questions. Include spec_kind: implementation in "
+                 "frontmatter. File no implementation work. Submit the document to Jack with "
+                 "aq review submit --task-id <held-task> --file <draft> --kind spec --title "
+                 "<title>; do not commit the review draft. Its approval triggers ingestion."
+             ),
+             "deliverables": [{"id": "implementation_review", "kind": "review", "target": "spec"}]},
+        ], [{"from": "write_spec", "to": "implementation_spec", "dep_type": "parent-child"}])
+
+    async def _validate_ingest_graph(self, tasks_in: list[dict], edges_in: list[dict]) -> str | None:
+        specs = {spec["tempId"] for spec in tasks_in}
+        parents: dict[str, str] = {}
+        for edge in edges_in:
+            if edge.get("dep_type", "blocks") != "parent-child":
+                continue
+            child, parent = edge["from"], edge["to"]
+            if child not in specs or parent not in specs:
+                return "spec-ingest parents and children must be in the same batch"
+            if child in parents:
+                return "spec-ingest child has multiple parent edges"
+            parents[child] = parent
+        containers = set(parents.values())
+        if not containers or (specs - parents.keys()) - containers:
+            return "spec-ingest root tasks must be epics with children"
+        for edge in edges_in:
+            if edge.get("dep_type", "blocks") == "parent-child":
+                continue
+            for endpoint in (edge["from"], edge["to"]):
+                if endpoint in containers:
+                    return "spec-ingest dependency edges must connect children, never containers"
+                if endpoint not in specs:
+                    async with self.db._engine.begin() as conn:
+                        if await self.db.is_container(endpoint, conn=conn):
+                            return "spec-ingest dependency edges must not connect existing containers"
+        return None
 
     @staticmethod
     def _validate_shape(
@@ -63,6 +144,8 @@ class TaskProposalCommandsMixin:
                 return f"tasks[{i}].title is required"
             if "description" not in t:
                 return f"tasks[{i}].description is required"
+            if t.get("task_type") and t["task_type"] not in {kind.value for kind in TaskType}:
+                return f"tasks[{i}].task_type is unknown"
         if not isinstance(edges_in, list):
             return "edges must be a list"
         for i, e in enumerate(edges_in):
@@ -128,12 +211,21 @@ class TaskProposalCommandsMixin:
         if not source:
             return {"success": False, "error": "source is required"}
 
+        try:
+            ingest = await self._spec_ingest_context(project_id, source)
+        except (ValueError, OSError) as exc:
+            return {"success": False, "error": str(exc)}
+        if ingest and ingest["spec_kind"] == "design":
+            tasks_in, edges_in = self._design_spec_batch(ingest["spec_path"])
+
         shape_err = self._validate_shape(tasks_in, edges_in)
         if shape_err:
             return {"success": False, "error": shape_err}
         refused = refused_spec_keys(tasks_in)
         if refused:
             return choice_forbidden("task_batch_propose", refused)
+        if ingest and (error := await self._validate_ingest_graph(tasks_in, edges_in)):
+            return {"success": False, "error": error}
 
         ref_err = await self._validate_existing_refs(project_id, tasks_in, edges_in)
         if ref_err:
@@ -148,6 +240,8 @@ class TaskProposalCommandsMixin:
             }
 
         payload = {"tasks": tasks_in, "edges": edges_in}
+        if ingest:
+            payload[SPEC_INGEST_META] = ingest
         proposal_id = await proposal_queries.insert_proposal(
             self.db, project_id=project_id, source=source, payload=payload
         )
@@ -155,10 +249,11 @@ class TaskProposalCommandsMixin:
             self.db, proposal_id, status="ready"
         )
 
-        await self._emit_proposal_event(
-            "proposal.ready",
-            {"project_id": project_id, "proposal_id": proposal_id},
-        )
+        if not ingest:
+            await self._emit_proposal_event(
+                "proposal.ready",
+                {"project_id": project_id, "proposal_id": proposal_id},
+            )
         return {"success": True, "proposal_id": proposal_id}
 
     async def _cmd_task_batch_update(self, args: dict) -> dict:
@@ -185,6 +280,10 @@ class TaskProposalCommandsMixin:
         refused = refused_spec_keys(tasks_in)
         if refused:
             return choice_forbidden("task_batch_update", refused)
+        # This stamp is server-owned, never accepted from replacement payloads.
+        payload.pop(SPEC_INGEST_META, None)
+        if row["payload"].get(SPEC_INGEST_META):
+            return {"success": False, "error": "propose a new spec-ingest batch instead of updating it"}
         ref_err = await self._validate_existing_refs(
             row["project_id"], tasks_in, edges_in
         )
@@ -245,7 +344,7 @@ class TaskProposalCommandsMixin:
     async def _proposal_approval_error(
         self, row: dict, *, gate_id: str | None, project_id: str | None
     ) -> str | None:
-        """Why no human decision approves this exact proposal, or ``None``.
+        """Why this proposal lacks approval authority, or ``None``.
 
         Materialisation is the authority boundary.  An event filter narrows
         which resolutions reach the pipeline's commit rule, but any caller can
@@ -254,11 +353,15 @@ class TaskProposalCommandsMixin:
         proposal id, resolved with one of :data:`APPROVAL_RESOLUTIONS`.  With
         no ``gate_id`` the newest such gate is the decision of record.  The
         payload is frozen once that gate exists (``task_batch_update``), so the
-        gate approves exactly the revision being committed.
+        gate approves exactly the revision being committed. Spec-ingest
+        authority is stamped only by ``_spec_ingest_context``, never parsed
+        from caller payloads; those immutable batches need no second decision.
         """
         proposal_id, owner = row["id"], row["project_id"]
         if project_id and project_id != owner:
             return f"proposal '{proposal_id}' belongs to project '{owner}', not '{project_id}'"
+        if row["payload"].get(SPEC_INGEST_META):
+            return None
         if gate_id:
             gate = await self.db.get_gate(str(gate_id))
             if gate is None:
@@ -318,13 +421,10 @@ class TaskProposalCommandsMixin:
         creating any tasks — this closes the double-commit race the
         prior check-then-write pattern had.
 
-        Failure atomicity: created task ids AND created dep edges are
-        tracked and unwound in reverse order on any exception, so no
-        orphan tasks or leaked edges survive a partial failure.  A
-        single DB transaction across create_task / add_dependency
-        would be nicer but those helpers open their own sessions.  On
-        rollback the proposal row is flipped back to ``ready`` so the
-        caller can retry after fixing the underlying issue.
+        Spec-ingest and hierarchical proposals commit their claim, tasks,
+        routing gates, metadata and edges in one transaction. Legacy ordinary
+        proposals retain compensating rollback. Failures restore ``ready``
+        so the caller can retry without a partial spec-ingest graph.
         """
         proposal_id = args.get("proposal_id")
         if not proposal_id:
@@ -343,16 +443,20 @@ class TaskProposalCommandsMixin:
         if approval_error:
             return {"success": False, "not_approved": True, "error": approval_error}
         if row["status"] == "committed":
+            receipt = (row["payload"].get(SPEC_INGEST_META) or {}).get("task_ids")
             return {
                 "success": True,
                 "already_committed": True,
-                "task_ids": await self._proposal_task_ids(proposal_id),
+                "task_ids": receipt if receipt is not None else await self._proposal_task_ids(proposal_id),
             }
 
         project_id: str = row["project_id"]
         payload: dict[str, Any] = row["payload"]
         tasks_in = payload["tasks"]
         edges_in = payload["edges"]
+        ingest = payload.get(SPEC_INGEST_META)
+        if ingest and (error := await self._validate_ingest_graph(tasks_in, edges_in)):
+            return {"success": False, "error": error}
 
         # Re-validate against the current DB state (source of truth is the
         # stored payload, but referenced task ids may have vanished).
@@ -383,16 +487,19 @@ class TaskProposalCommandsMixin:
         for spec in tasks_in:
             if error := self._validate_routing_class(spec.get("intelligence_class")):
                 return {"success": False, "error": error}
-        if project is not None and project.hierarchical_integration_mode in {
+        hierarchical = project is not None and project.hierarchical_integration_mode in {
             "hierarchy",
             "train",
-        }:
+        }
+        if ingest or hierarchical:
             return await self._commit_hierarchical_proposal(
                 proposal_id=proposal_id,
                 project_id=project_id,
                 source=row["source"],
                 tasks_in=tasks_in,
                 edges_in=edges_in,
+                hierarchical=hierarchical,
+                ingest_payload=payload if ingest else None,
             )
 
         # Claim: single conditional flip. Only one concurrent caller
@@ -492,8 +599,10 @@ class TaskProposalCommandsMixin:
         source: str,
         tasks_in: list[dict],
         edges_in: list[dict],
+        hierarchical: bool = True,
+        ingest_payload: dict | None = None,
     ) -> dict:
-        """Claim and materialize an enabled-project proposal in one transaction."""
+        """Claim and materialize a hierarchical or ingestion graph in one transaction."""
         parent_by_temp = {
             edge["from"]: edge["to"]
             for edge in edges_in
@@ -515,7 +624,7 @@ class TaskProposalCommandsMixin:
 
         from src.playbooks.routing import requires_routing_gate
 
-        service = self._hierarchy_integration_service()
+        service = self._hierarchy_integration_service() if hierarchical else None
         routing_manager = getattr(self.orchestrator, "playbook_manager", None)
 
         def routing_policy(task) -> bool:
@@ -556,9 +665,16 @@ class TaskProposalCommandsMixin:
                         raise RuntimeError("hierarchical proposal has an unresolved parent cycle")
                     for temp_id in roots:
                         task = self._proposal_task(project_id, specs[temp_id])
-                        created = await service.file_root_on(
-                            conn, task, routing_policy=routing_policy
-                        )
+                        if service is not None:
+                            created = await service.file_root_on(
+                                conn, task, routing_policy=routing_policy
+                            )
+                        else:
+                            from src.task_names import fresh_root_id
+
+                            task.id = await fresh_root_id(conn)
+                            await self.db.create_task(task, conn=conn, routing_policy=routing_policy)
+                            created = {"task_id": task.id, "gate_id": task.is_blocked}
                         temp_to_real[temp_id] = created["task_id"]
                         if created.get("gate_id"):
                             routing_task_ids.append(created["task_id"])
@@ -577,12 +693,29 @@ class TaskProposalCommandsMixin:
                             self._proposal_task(project_id, specs[temp_id])
                             for temp_id in child_temps
                         ]
-                        created = await service.file_prepared_children_on(
-                            conn,
-                            temp_to_real[parent_temp],
-                            task_models,
-                            routing_policy=routing_policy,
-                        )
+                        if service is not None:
+                            created = await service.file_prepared_children_on(
+                                conn, temp_to_real[parent_temp], task_models,
+                                routing_policy=routing_policy,
+                            )
+                        else:
+                            from src.task_names import child_task_id
+
+                            created = []
+                            for task in task_models:
+                                task.id, capped = await child_task_id(conn, temp_to_real[parent_temp])
+                                if capped:
+                                    raise ValueError("spec-ingest hierarchy exceeds naming depth")
+                                await self.db.create_task(task, conn=conn)
+                                await self.db.set_parent(task.id, temp_to_real[parent_temp], conn=conn)
+                                task.parent_task_id = temp_to_real[parent_temp]
+                                if routing_policy(task):
+                                    await self.db.create_gate(
+                                        project_id, "routing", "Route task",
+                                        waiter_task_ids=[task.id], conn=conn,
+                                    )
+                                    routing_task_ids.append(task.id)
+                                created.append({"task_id": task.id})
                         for temp_id, item in zip(child_temps, created, strict=True):
                             temp_to_real[temp_id] = item["task_id"]
                             if item.get("gate_id"):
@@ -605,6 +738,19 @@ class TaskProposalCommandsMixin:
                         dep_type,
                         conn=conn,
                     )
+                if ingest_payload is not None:
+                    # The receipt preserves caller order even though parents
+                    # must be inserted before their children. It commits with
+                    # the graph and cannot be supplied by a batch caller.
+                    provenance = {
+                        **ingest_payload[SPEC_INGEST_META],
+                        "task_ids": [temp_to_real[spec["tempId"]] for spec in tasks_in],
+                    }
+                    await conn.execute(update(task_proposals).where(
+                        task_proposals.c.id == proposal_id,
+                    ).values(payload=json.dumps({
+                        **ingest_payload, SPEC_INGEST_META: provenance,
+                    })))
         except Exception as exc:
             logger.exception("hierarchical task_batch_commit failed: %s", exc)
             return {"success": False, "error": f"commit failed: {exc}"}
@@ -641,6 +787,7 @@ class TaskProposalCommandsMixin:
             deliverables=spec.get("deliverables", []),
             # The class is the filer's hint; the router writes the route.
             class_hint=spec.get("intelligence_class"),
+            task_type=TaskType(spec["task_type"]) if spec.get("task_type") else None,
             status=TaskStatus.DEFINED,
         )
 
@@ -661,6 +808,7 @@ async def _create_one_task(
             "priority": spec.get("priority", 100),
             "deliverables": spec.get("deliverables", []),
             "intelligence_class": spec.get("intelligence_class"),
+            "task_type": spec.get("task_type"),
             "metadata": {"proposal_source": source},
         },
     )

@@ -1,7 +1,7 @@
 ---
 playbook_id: default-pipeline
-artifact_sha256: sha256:353884316b314f57e765845c4bb6fcdcba40b8bbebd3b5c463265198880c4f94
-source_sha256: sha256:2f6b6e830b40507896e94a9924a468bce41fa1e0449c9955cec0dd5f74f07cb8
+artifact_sha256: sha256:bc83878f23100a59f55844ec6d4391c3fa5c2d90ee48fd49dd667741011c0a25
+source_sha256: sha256:59ac4a8a4752d9623263419bd06b2c7e23f8f89fdc7366a77bc98e90364a2f96
 contract_fingerprint: sha256:82a81a1588d65c999b24e78bbf360fd2aa86f5f0612c65a74806262c4fa07fcd
 questions_resolved: 0
 capabilities_granted:
@@ -27,6 +27,6 @@ supervisor-corrected live source. The commit rule dispatches only for a `human`
 gate resolved `approve` or `approved` that names a proposal, and hands the gate
 and project to `task_batch_commit`, which re-checks the exact decision. Every
 `not_approved`, `rejected` or `runtime_error` outcome reaches a `failed`
-terminal. Spec ingest is a role task; its `standard-high` input is a class hint,
+terminal. Spec ingest is a role task; its `deep-high` input is a class hint,
 and the role profile supplies its execution class. Supersedes the
 integration-only artifact `sha256:7881d3089a34…`.
