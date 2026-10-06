@@ -292,6 +292,28 @@
       "type": "string",
       "x-reload": "restart"
     },
+    "deploy": {
+      "additionalProperties": false,
+      "default": {
+        "tag_glob": null,
+        "target": "main"
+      },
+      "properties": {
+        "tag_glob": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "default": "main",
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "discord": {
       "additionalProperties": false,
       "default": {
@@ -3453,6 +3475,7 @@
       "archive",
       "auto_task",
       "dashboard_server",
+      "deploy",
       "docs",
       "git_identity",
       "global_token_budget_daily",

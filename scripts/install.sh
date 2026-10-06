@@ -141,15 +141,60 @@ if [[ -e "$checkout_dir" && ! -d "$checkout_dir/.git" ]]; then
     exit 20
 fi
 
-if [[ ! -d "$checkout_dir/.git" ]] && command -v aq >/dev/null; then
+if [[ ! -d "$checkout_dir/.git" && -z "${AQ_REF:-}" && -z "${AQ_TAG_GLOB:-}" ]] && command -v aq >/dev/null; then
     # An `aq` from somewhere else -- typically a contributor's own checkout,
     # built with ./setup.sh.  It is not this script's to update or replace.
     aq_command="$(command -v aq)"
     printf 'Using the aq already on PATH at %s.\n' "$aq_command"
 else
+    # Tag selection is opt-in until the operator configures a release family.
+    # AQ_REF accepts an exact tag or branch; no selection keeps the main install.
+    selected_ref="${AQ_REF:-}"
+    selected_tag=""
+    if [[ -n "$selected_ref" || -n "${AQ_TAG_GLOB:-}" ]]; then
+        refs="$(git ls-remote --heads --tags "$repository")"
+        selected_ref="$(printf '%s\n' "$refs" | "$python_bin" -c '
+import fnmatch, os, re, sys
+tags = [line.split()[1][10:] for line in sys.stdin if "refs/tags/" in line
+        and not line.rstrip().endswith("^{}")]
+ref = os.environ.get("AQ_REF", "")
+if not ref:
+    versions = []
+    for tag in tags:
+        version = re.search(r"(?:^|[^0-9])(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$", tag)
+        if version and fnmatch.fnmatchcase(tag, os.environ["AQ_TAG_GLOB"]):
+            versions.append((tuple(map(int, version.groups())), tag))
+    ref = max(versions)[1] if versions else ""
+print(ref.removeprefix("refs/tags/"))
+')"
+        if [[ -z "$selected_ref" ]]; then
+            printf 'No release tag matches AQ_TAG_GLOB; unreleased install from main.\n' >&2
+            selected_ref="main"
+        fi
+        if printf '%s\n' "$refs" | awk '{print $2}' | grep -Fxq "refs/tags/$selected_ref"; then
+            selected_tag="$selected_ref"
+            if ! printf '%s\n' "$refs" | awk '{print $2}' | grep -Fxq "refs/tags/$selected_tag^{}"; then
+                printf 'Refusing lightweight release tag %s.\n' "$selected_tag" >&2
+                exit 20
+            fi
+        elif ! printf '%s\n' "$refs" | awk '{print $2}' | grep -Fxq "refs/heads/$selected_ref"; then
+            printf 'Selected tag or branch %s is missing.\n' "$selected_ref" >&2
+            exit 20
+        else
+            printf 'Unreleased install from branch %s.\n' "$selected_ref" >&2
+        fi
+    fi
     if [[ ! -d "$checkout_dir/.git" ]]; then
         mkdir -p "$(dirname "$checkout_dir")"
-        git clone --depth 1 "$repository" "$checkout_dir"
+        git clone --depth 1 --branch "${selected_ref:-main}" "$repository" "$checkout_dir"
+    elif [[ -n "$selected_ref" ]]; then
+        # Reuse the updater's deploy preflight for an existing install. It
+        # rejects edits, local commits, sideways moves and unapproved rollbacks.
+        if [[ ! -x "$checkout_dir/.venv/bin/aq" ]]; then
+            printf 'Existing checkout needs aq update before selecting a release.\n' >&2
+            exit 20
+        fi
+        "$checkout_dir/.venv/bin/aq" update --yes --ref "$selected_ref"
     elif [[ -n "$(git -C "$checkout_dir" status --porcelain --untracked-files=no)" ]]; then
         # Somebody edited tracked files in the installer's checkout.  Never
         # discard that; run what is there and say so.
@@ -172,6 +217,50 @@ else
         else
             printf 'Could not update %s (offline?); continuing with %s.\n' "$checkout_dir" "$before" >&2
         fi
+    fi
+
+    if [[ -n "$selected_tag" ]]; then
+        target="${AQ_PROMOTION_TARGET:-main}"
+        git -C "$checkout_dir" check-ref-format "refs/heads/$target"
+        history=()
+        if [[ "$(git -C "$checkout_dir" rev-parse --is-shallow-repository)" == true ]]; then
+            history+=(--unshallow)
+        fi
+        git -C "$checkout_dir" fetch --quiet "${history[@]}" origin \
+            "+refs/heads/$target:refs/remotes/origin/$target" \
+            "refs/tags/$selected_tag:refs/tags/$selected_tag"
+        if [[ "$(git -C "$checkout_dir" cat-file -t "refs/tags/$selected_tag")" != tag ]]; then
+            printf 'Refusing lightweight release tag %s.\n' "$selected_tag" >&2
+            exit 20
+        fi
+        tag_oid="$(git -C "$checkout_dir" rev-parse "refs/tags/$selected_tag")"
+        commit="$(git -C "$checkout_dir" rev-parse "refs/tags/$selected_tag^{commit}")"
+        expected_tag="$(printf '%s\n' "$refs" | awk -v ref="refs/tags/$selected_tag" '$2 == ref {print $1}')"
+        if [[ "$tag_oid" != "$expected_tag" ]] || \
+            ! git -C "$checkout_dir" merge-base --is-ancestor "$commit" "refs/remotes/origin/$target"; then
+            printf 'Release tag changed or is not reachable from %s.\n' "$target" >&2
+            exit 20
+        fi
+        git -C "$checkout_dir" checkout --quiet --detach "$commit"
+        state_dir="${AQ_INSTALL_STATE_DIR:-${AQ_HOME:-$HOME/.agent-queue}}"
+        "$python_bin" - "$state_dir" "$selected_tag" "$tag_oid" "$commit" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+state_dir, selector, tag_oid, commit = sys.argv[1:]
+path = Path(state_dir) / "deploy.json"
+# An existing install's updater already wrote its previous_commit and timestamp.
+if not path.exists():
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = dict(selector=selector, tag=selector, tag_oid=tag_oid, commit=commit, previous_commit=None,
+                  installed_at=datetime.now(timezone.utc).isoformat(), kind="release")
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+PY
+        printf 'Installing release %s at %s.\n' "$selected_tag" "$commit"
     fi
 
     if [[ ! -x "$checkout_dir/.venv/bin/python" ]]; then

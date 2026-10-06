@@ -1,7 +1,6 @@
 """Unit tests for system command handlers."""
 
-import os
-import signal
+import sys
 from pathlib import Path
 
 import pytest
@@ -71,57 +70,76 @@ class TestGetStatusGraphLayoutFlag:
 
 
 class TestUpdateAndRestart:
-    async def test_regenerates_dashboard_client_from_committed_spec_before_restart(
-        self, handler, monkeypatch
+    async def test_uses_shared_preflight_and_launches_the_operator_updater(
+        self, handler, monkeypatch, tmp_path
     ):
         from src.commands import system_commands
+        from src.install import update
+        from src.install.update import UpdatePlan
 
-        calls = []
-
-        async def fake_run(*command, cwd, timeout):
-            calls.append((command, Path(cwd), timeout))
-            return 0, "updated", ""
-
-        kills = []
-        monkeypatch.setattr(system_commands, "_run_subprocess", fake_run)
-        monkeypatch.setattr(system_commands.os, "kill", lambda pid, sig: kills.append((pid, sig)))
-        handler.orchestrator._emit_text_notify = AsyncMock()
-
-        result = await handler._cmd_update_and_restart({"reason": "test update"})
-
+        handler.config.data_dir = str(tmp_path)
+        handler.config.deploy.tag_glob = "v*"
+        handler.config.deploy.target = "production"
         repo_root = Path(system_commands.__file__).resolve().parents[2]
-        assert calls == [
-            (("git", "pull", "--ff-only"), repo_root, 30),
-            (("pip", "install", "-e", "."), repo_root, 120),
-            (
-                ("npm", "run", "generate:ts-client", "--", "--from-file"),
-                repo_root,
-                120,
-            ),
-        ]
-        assert result["status"] == "updating"
-        assert kills == [(os.getpid(), signal.SIGTERM)]
+        planning = []
 
-    async def test_does_not_restart_when_dashboard_client_generation_fails(
-        self, handler, monkeypatch
-    ):
-        from src.commands import system_commands
+        def fake_plan(checkout, **kwargs):
+            planning.append((checkout, kwargs))
+            return UpdatePlan(checkout, "", "v0.2.0", "a" * 40, "b" * 40, False)
 
-        async def fake_run(*command, cwd, timeout):
-            if command[0] == "npm":
-                return 1, "", "generator failed"
-            return 0, "updated", ""
-
-        kills = []
-        monkeypatch.setattr(system_commands, "_run_subprocess", fake_run)
-        monkeypatch.setattr(system_commands.os, "kill", lambda pid, sig: kills.append((pid, sig)))
+        launch = AsyncMock(return_value=MagicMock(pid=42))
+        monkeypatch.setattr(update, "plan_update", fake_plan)
+        monkeypatch.setattr(system_commands.asyncio, "create_subprocess_exec", launch)
         handler.orchestrator._emit_text_notify = AsyncMock()
 
         result = await handler._cmd_update_and_restart({"reason": "test update"})
 
-        assert result == {"error": "TypeScript client generation failed: generator failed"}
-        assert kills == []
+        assert planning == [(repo_root, dict(
+            state_dir=tmp_path, tag_glob="v*", promotion_target="production"
+        ))]
+        assert launch.call_args.args == (
+            sys.executable, "-m", "src.cli.app", "update", "--yes"
+        )
+        assert launch.call_args.kwargs["start_new_session"] is True
+        assert launch.call_args.kwargs["cwd"] == str(repo_root)
+        assert launch.call_args.kwargs["env"]["AQ_INSTALL_STATE_DIR"] == str(tmp_path)
+        assert result["status"] == "updating" and result["pid"] == 42
+        assert result["selector"] == "v0.2.0"
+        assert result["commit"] == "b" * 40
+        assert (tmp_path / "update.log").exists()
+
+    async def test_does_not_launch_or_restart_when_release_preflight_refuses(
+        self, handler, monkeypatch
+    ):
+        from src.commands import system_commands
+        from src.install import update
+        from src.install.update import UpdateRefused
+
+        def refuse(*args, **kwargs):
+            raise UpdateRefused("deploy_tag_invalid: lightweight tag", "Select an annotated tag.")
+
+        launch = AsyncMock()
+        monkeypatch.setattr(update, "plan_update", refuse)
+        monkeypatch.setattr(system_commands.asyncio, "create_subprocess_exec", launch)
+        handler.orchestrator._emit_text_notify = AsyncMock()
+        result = await handler._cmd_update_and_restart({"reason": "test update"})
+        assert result["success"] is False
+        assert "lightweight tag" in result["error"]
+        launch.assert_not_awaited()
         handler.orchestrator._emit_text_notify.assert_not_awaited()
+
+    async def test_up_to_date_deploy_does_not_start_another_update(self, handler, monkeypatch):
+        from src.commands import system_commands
+        from src.install import update
+        from src.install.update import UpdatePlan
+
+        monkeypatch.setattr(update, "plan_update", lambda checkout, **kwargs:
+                            UpdatePlan(checkout, "", "v0.2.0", "a" * 40, "a" * 40, False))
+        launch = AsyncMock()
+        monkeypatch.setattr(system_commands.asyncio, "create_subprocess_exec", launch)
+        result = await handler._cmd_update_and_restart({})
+        assert result["status"] == "up_to_date"
+        launch.assert_not_awaited()
 
 
 class TestRunCommand:
