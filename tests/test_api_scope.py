@@ -98,6 +98,8 @@ EXPECTED_AGENT_COMMANDS = {
     # Promotion validation is read-only and pinned to the worker's project.
     "promote_schema",
     "promote_validate",
+    "promote_status",
+    "promote_list",
     "integration_resolve_candidate_member",
     "review_submit",
     "review_show",
@@ -161,8 +163,9 @@ class TestCheckCommandScope:
         assert "local operator or supervisor" in check_command_scope(
             "edit_project", {"integration_repository_id": "repo"}, SESSION
         )
-        for command in ("review_delegate", "review_import_edits"):
+        for command in ("review_delegate", "review_import_edits", "promote_approve"):
             assert "local operator" in check_command_scope(command, {}, elevated)
+            assert "local operator" in check_command_scope(command, {}, SESSION)
 
     def test_review_decision_commands_remain_outside_worker_scope(self):
         """Only a held dispatch task can comment; no worker may decide."""

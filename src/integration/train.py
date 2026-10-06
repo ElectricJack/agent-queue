@@ -39,7 +39,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
-from src.git.github_contracts import GitHubAccessError
+from src.git.github_contracts import GitHubAccessError, rate_limit_cause
 from src.integration.batches import (
     Batch,
     BatchMember,
@@ -395,18 +395,6 @@ class _RateLimitPause:
     probe: tuple[str, str, str] | None = None
 
 
-def _rate_limit(exc: BaseException) -> GitHubAccessError | None:
-    """The ``rate_limited`` GitHub failure anywhere in *exc*'s cause chain."""
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, GitHubAccessError) and current.category == "rate_limited":
-            return current
-        current = current.__cause__ or current.__context__
-    return None
-
-
 class IntegrationTrain:
     """Level-triggered visits, one isolated task per target."""
 
@@ -505,7 +493,7 @@ class IntegrationTrain:
             logger.warning("integration train visit timed out for %s", target.key)
         except Exception as exc:  # one target's failure never stops the train
             lane.errors += 1
-            limit = _rate_limit(exc)
+            limit = rate_limit_cause(exc)
             if limit is not None:
                 visit = self._defer_rate_limited(target, lane, exc, limit)
             else:

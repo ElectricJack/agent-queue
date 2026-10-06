@@ -213,11 +213,13 @@ async def test_approve_posts_human_review_without_mutating_frozen_intent(promote
         assert (await e.handler._cmd_promote_approve(args))["outcome"] == "unauthorized"
 
 
-@pytest.mark.parametrize("change", ["app", "bot", "permission", "moved"])
+@pytest.mark.parametrize("change", ["app", "bot", "permission", "moved", "no_login"])
 async def test_approve_refuses_wrong_credentials_permissions_or_head(promote_env, change):
     e = promote_env
     created = await request(e)
-    if change == "app":
+    if change == "no_login":
+        e.human.login = None
+    elif change == "app":
         e.human.credential_identity = e.github.credential_identity
     elif change == "bot":
         e.human.kind = "Bot"
@@ -229,6 +231,8 @@ async def test_approve_refuses_wrong_credentials_permissions_or_head(promote_env
         {"project_id": "p", "request_id": created["request_id"]}
     )
     assert not result["success"] and e.human.posts == 0, result
+    if change == "no_login":
+        assert result["outcome"] == "unauthorized", result
 
 
 async def test_cache_read_includes_veto_and_never_calls_github(promote_env):
@@ -468,29 +472,205 @@ async def test_requester_gate_binds_authenticated_principal_and_human_login(prom
     requester = ExecutionPrincipal(
         kind=PrincipalKind.SESSION, policy=policy, session_id="requester", project_id="p"
     )
+    with principal_context(requester):
+        # No verified GitHub binding for the session: nothing is opened.
+        missing = await request(e)
+        assert missing["outcome"] == "promotion_requester_identity_missing", missing
+        assert e.github.created == 0
     e.handler.orchestrator.promotion_requester_login = AsyncMock(return_value="operator")
     with principal_context(requester):
         created = await request(e)
         assert created["success"], created
         assert created["promotion"]["requester"]["identity"] == requester.describe()
+        # Approval posts with this host's gh login, so even the requester's
+        # own session is refused; only the local human may approve.
         result = await e.handler._cmd_promote_approve(
             {"project_id": "p", "request_id": created["request_id"]}
         )
-        assert result["success"], result
+        assert result["outcome"] == "unauthorized", result
+    # The local operator is not this step's requester.
+    assert (
+        await e.handler._cmd_promote_approve(
+            {"project_id": "p", "request_id": created["request_id"]}
+        )
+    )["outcome"] == "unauthorized"
+    assert e.human.posts == 0
     other = ExecutionPrincipal(
         kind=PrincipalKind.SESSION, policy=policy, session_id="other", project_id="p"
     )
     with principal_context(other):
         assert (
-            await e.handler._cmd_promote_approve(
-                {"project_id": "p", "request_id": created["request_id"]}
-            )
-        )["outcome"] == "unauthorized"
-        assert (
             await e.handler._cmd_promote_cancel(
                 {"project_id": "p", "request_id": created["request_id"]}
             )
         )["outcome"] == "unauthorized"
+    with principal_context(requester):
+        cancelled = await e.handler._cmd_promote_cancel(
+            {"project_id": "p", "request_id": created["request_id"]}
+        )
+        assert cancelled["outcome"] == "cancelled", cancelled
+
+
+async def test_local_requester_approves_requester_step(promote_env):
+    e = promote_env
+    step = copy.deepcopy(e.meta["step"])
+    step["gate"]["approval"] = "requester"
+    async with e.db._engine.begin() as conn:
+        await conn.execute(update(projects).values(promotion_flow=[step]))
+    created = await request(e)
+    assert created["promotion"]["requester"] == {
+        "identity": "human:local-operator",
+        "github_login": "operator",
+    }
+    result = await e.handler._cmd_promote_approve(
+        {"project_id": "p", "request_id": created["request_id"]}
+    )
+    assert result["outcome"] == "approved", result
+    e.human.login = "someone-else"
+    assert (
+        await e.handler._cmd_promote_approve(
+            {"project_id": "p", "request_id": created["request_id"]}
+        )
+    )["outcome"] == "unauthorized"
+
+
+def _supervisor(project_id=None, session_id="supervisor"):
+    from src.profiles.capabilities import CapabilityPolicy
+
+    policy = CapabilityPolicy.from_namespaces(
+        aq_commands=["promote_request", "promote_cancel", "promote_status", "promote_list"],
+        harness_tools=[],
+        plugin_tools=[],
+    )
+    return ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=policy,
+        session_id=session_id,
+        project_id=project_id,
+        profile_id="supervisor",
+        elevated=True,
+    )
+
+
+@pytest.mark.parametrize("project_id", [None, "p"])
+async def test_live_supervisor_cannot_cancel_or_approve_another_request(
+    promote_env, monkeypatch, project_id
+):
+    e = promote_env
+    # Admit the session as a live supervisor exactly as a running one is.
+    monkeypatch.setattr(
+        "src.commands.promote_commands.integration_operator",
+        AsyncMock(return_value=("supervisor session:supervisor", None)),
+    )
+    created = await request(e)
+    args = {"project_id": "p", "request_id": created["request_id"]}
+    with principal_context(_supervisor(project_id)):
+        cancelled = await e.handler._cmd_promote_cancel(args)
+        approved = await e.handler._cmd_promote_approve(args)
+    assert cancelled["outcome"] == "unauthorized", cancelled
+    assert approved["outcome"] == "unauthorized", approved
+    assert e.github.pull["state"] == "open" and e.human.posts == 0
+    assert (await e.store.get(created["batch_id"])).intent == "open"
+
+
+async def test_supervisor_cancels_its_own_request_and_operator_cancels_any(promote_env):
+    e = promote_env
+    supervisor = _supervisor("p")
+    with principal_context(supervisor):
+        created = await request(e)
+        assert created["promotion"]["requester"]["identity"] == supervisor.describe()
+        cancelled = await e.handler._cmd_promote_cancel(
+            {"project_id": "p", "request_id": created["request_id"]}
+        )
+    assert cancelled["outcome"] == "cancelled", cancelled
+    # A request opened by another session is still the local operator's to cancel.
+    other = commit(
+        e.repo.store, {"pyproject.toml": '[project]\nversion = "0.2.1"\n'}, base=e.source
+    )
+    git(e.repo.store, "push", "origin", other + ":refs/heads/dev")
+    e.github.created = 0
+    e.github.pull["state"] = "open"
+    with principal_context(_supervisor("p", session_id="another")):
+        second = await request(e, source_sha=other)
+    assert second["success"], second
+    result = await e.handler._cmd_promote_cancel(
+        {"project_id": "p", "request_id": second["request_id"]}
+    )
+    assert result["outcome"] == "cancelled", result
+
+
+async def test_request_after_cancel_refuses_reused_identity(promote_env):
+    e = promote_env
+    created = await request(e)
+    args = {"project_id": "p", "request_id": created["request_id"]}
+    assert (await e.handler._cmd_promote_cancel(args))["outcome"] == "cancelled"
+    again = await request(e)
+    assert again["success"] is False and again["outcome"] == "promotion_not_open", again
+    assert created["request_id"] in again["error"]
+    assert e.github.created == 1
+
+
+@pytest.mark.parametrize("command", ["request", "approve", "cancel"])
+async def test_rate_limits_keep_category_and_retry_at(promote_env, command):
+    e = promote_env
+    limited = GitHubAccessError("rate_limited", "secondary rate limit", retry_at=1234.5)
+    if command == "request":
+        e.github.create_pull_request = AsyncMock(side_effect=limited)
+        result = await request(e)
+    else:
+        created = await request(e)
+        args = {"project_id": "p", "request_id": created["request_id"]}
+        if command == "approve":
+            e.human.authenticated_user = AsyncMock(side_effect=limited)
+        else:
+            e.github.close_pull_request = AsyncMock(side_effect=limited)
+        result = await getattr(e.handler, "_cmd_promote_" + command)(args)
+    assert result == {
+        "success": False,
+        "outcome": "rate_limited",
+        "error": "secondary rate limit",
+        "retry_at": 1234.5,
+    }
+
+
+async def test_request_holds_no_project_row_lock_across_provider_calls(promote_env):
+    e = promote_env
+    create = e.github.create_pull_request
+    observed = []
+
+    async def create_while_probing(**kwargs):
+        # Any project-row lock taken by the request would make NOWAIT fail here.
+        async with e.db._engine.begin() as conn:
+            observed.append(
+                await conn.scalar(
+                    select(projects.c.id).where(projects.c.id == "p").with_for_update(nowait=True)
+                )
+            )
+        return await create(**kwargs)
+
+    e.github.create_pull_request = create_while_probing
+    result = await request(e)
+    assert result["outcome"] == "requested", result
+    assert observed == ["p"]
+
+
+async def test_flow_edit_during_provider_calls_rolls_request_back(promote_env):
+    e = promote_env
+    create = e.github.create_pull_request
+
+    async def create_then_edit(**kwargs):
+        url = await create(**kwargs)
+        step = copy.deepcopy(e.meta["step"])
+        step["gate"]["approval"] = "none"
+        async with e.db._engine.begin() as conn:
+            await conn.execute(update(projects).values(promotion_flow=[step]))
+        return url
+
+    e.github.create_pull_request = create_then_edit
+    result = await request(e)
+    assert result["outcome"] == "promotion_flow_changed", result
+    async with e.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.id)) is None
 
 
 async def test_worker_without_request_capability_cannot_open_intent(promote_env):

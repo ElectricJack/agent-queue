@@ -24,7 +24,7 @@ from src.database.tables import (
     integration_review_evidence,
 )
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
-from src.git.github_contracts import GitHubAccessError
+from src.git.github_contracts import GitHubAccessError, rate_limit_cause
 from src.integration.batches import Batch, BatchMember, BatchStore
 from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, promotion_ref
 from src.integration.promotion_steps import FlowSchema
@@ -272,7 +272,9 @@ class PromoteCommandsMixin:
             requester = await self._promotion_requester(repo.binding, step["gate"]["approval"])
             target_ref = "refs/heads/" + step["target"]
             async with self.db.immediate() as conn:
-                # Same lock as prepare; serialize idempotency and competing versions.
+                # Serialize idempotency and competing versions for this target.
+                # Only promotion requests take this lock; the project row stays
+                # unlocked until the provider calls are done.
                 await conn.execute(
                     select(
                         func.pg_advisory_xact_lock(
@@ -282,24 +284,7 @@ class PromoteCommandsMixin:
                         )
                     )
                 )
-                current = (
-                    (
-                        await conn.execute(
-                            select(projects)
-                            .where(
-                                projects.c.id == project.id,
-                            )
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one()
-                )
-                if (
-                    current["promotion_flow"] != raw
-                    or current["integration_repository_id"] != repository.id
-                ):
-                    raise PromotionRefusal("promotion_flow_changed", "Flow changed; request again.")
+                await _check_flow(conn, project.id, raw, repository.id)
                 source_tip = await ops.remote(repo, "refs/heads/" + step["source"])
                 source = request.source_sha or source_tip
                 if not source or not is_valid_git_oid(source):
@@ -328,6 +313,15 @@ class PromoteCommandsMixin:
                     .first()
                 )
                 if existing:
+                    if existing["intent"] == "aborted" or existing["lifecycle"] in (
+                        "aborted",
+                        "failed",
+                    ):
+                        raise PromotionRefusal(
+                            "promotion_not_open",
+                            f"Request {request_id} was {existing['lifecycle']} and its identity "
+                            "cannot be reused; pin another source commit or version.",
+                        )
                     return _intent_response("already_requested", existing)
                 active = (
                     (
@@ -425,6 +419,9 @@ class PromoteCommandsMixin:
                 # this transaction is rolled back after an ambiguous provider response.
                 await StepAdmission(self.db, ops, step).retain(batch, member, request_id)
                 tree = await ops.git.atree_sha(str(repo.store), source)
+                # Held only for the writes: a flow edit waits for this intent or
+                # this intent sees the edit and rolls back.
+                await _check_flow(conn, project.id, raw, repository.id, lock=True)
                 await conn.execute(
                     insert(tasks).values(
                         id=member.task_id,
@@ -509,13 +506,15 @@ class PromoteCommandsMixin:
             project, repository, _, _ = await self._promotion_inputs(request.project_id, read=True)
             row, meta = await self._promotion_intent(project.id, request.request_id)
             principal = current_principal() or TRUSTED_LOCAL
+            # The review is posted with this host's gh login, so only the human
+            # at this host may approve; every other principal is refused.
+            if principal.kind is not PrincipalKind.LOCAL:
+                raise PromotionRefusal(
+                    "unauthorized", "Approval requires the local human operator."
+                )
             approval = meta["step"]["gate"]["approval"]
             if approval == "none":
                 raise PromotionRefusal("approval_not_required", "Step requires checks alone.")
-            if approval == "operator" and principal.kind is not PrincipalKind.LOCAL:
-                raise PromotionRefusal(
-                    "unauthorized", "Operator approval requires the local human operator."
-                )
             if (
                 approval == "requester"
                 and _requester_identity(principal) != meta["requester"]["identity"]
@@ -640,11 +639,13 @@ class PromoteCommandsMixin:
             )
             row, meta = await self._promotion_intent(project.id, request.request_id)
             principal = current_principal() or TRUSTED_LOCAL
-            _, operator_refusal = await integration_operator(self.db, project.id)
-            if operator_refusal is not None and meta["requester"][
-                "identity"
-            ] != _requester_identity(principal):
-                raise PromotionRefusal("unauthorized", "Only the operator or requester may cancel.")
+            if (
+                principal.kind is not PrincipalKind.LOCAL
+                and meta["requester"]["identity"] != _requester_identity(principal)
+            ):
+                raise PromotionRefusal(
+                    "unauthorized", "Only the local operator or the requester may cancel."
+                )
             if row["intent"] == "aborted":
                 return _intent_response("already_cancelled", row)
             lane, ops, repo, client = await self._promotion_runtime(
@@ -860,6 +861,14 @@ class PromotionRefusal(ValueError):
 
 
 def _unavailable(exc):
+    limit = rate_limit_cause(exc)
+    if limit is not None:
+        return {
+            "success": False,
+            "outcome": "rate_limited",
+            "error": str(limit),
+            "retry_at": limit.retry_at,
+        }
     return {"success": False, "outcome": "unavailable", "error": str(exc)}
 
 
@@ -1018,6 +1027,17 @@ async def _check_pull(client, binding, meta, *, allow_closed=False):
             "promotion_pr_identity_mismatch", "PR is no longer the pinned open step PR."
         )
     return pull
+
+
+async def _check_flow(conn, project_id, raw, repository_id, *, lock=False):
+    query = select(projects.c.promotion_flow, projects.c.integration_repository_id).where(
+        projects.c.id == project_id
+    )
+    if lock:
+        query = query.with_for_update(read=True)
+    current = (await conn.execute(query)).mappings().one()
+    if current["promotion_flow"] != raw or current["integration_repository_id"] != repository_id:
+        raise PromotionRefusal("promotion_flow_changed", "Flow changed; request again.")
 
 
 def _intent_response(outcome, row):
