@@ -2,12 +2,18 @@
 """Operator tool: record git-proven delivery of pre-provenance completions.
 
 Preview (default) lists what git proves and what it cannot; ``--apply`` writes
-``integration_legacy_deliveries`` rows for the proven ones only. See
+``integration_legacy_deliveries`` rows for the proven ones only. Where git can
+prove nothing and the work must not be delivered now either, ``--abandon-task``
+(one completed task, leaf or container) and ``--abandon-epic`` (a container by
+name) record an explicit, reasoned ``abandoned`` decision instead. See
 :mod:`src.integration.legacy_backfill` and docs/guides/git-first-cutover-runbook.md.
 
     .venv/bin/python scripts/backfill-legacy-deliveries.py agent-queue
     .venv/bin/python scripts/backfill-legacy-deliveries.py agent-queue --apply \
         --reason "git-first cutover: legacy work already on main"
+    .venv/bin/python scripts/backfill-legacy-deliveries.py agent-queue \
+        --abandon-task amber-apex --abandon-task azure-falcon --apply \
+        --reason "superseded by later work on main"
 """
 
 from __future__ import annotations
@@ -34,6 +40,10 @@ async def main(argv=None) -> int:
                         help="record an operator decision that this completed epic (and its "
                              "undelivered descendants) is superseded and must not be "
                              "delivered; repeatable, instead of the backfill")
+    parser.add_argument("--abandon-task", action="append", default=[], metavar="TASK_ID",
+                        help="the same decision for one completed task, leaf or container: "
+                             "git can no longer prove it and it must not now be delivered, "
+                             "so without this it blocks its target for good; repeatable")
     args = parser.parse_args(argv)
     if args.apply and not args.reason.strip():
         parser.error("--apply needs a nonblank --reason")
@@ -43,7 +53,11 @@ async def main(argv=None) -> int:
     from src.git.manager import GitManager
     from src.integration.delivery_observer import DeliveryObserver
     from src.integration.git_truth import GitTruth
-    from src.integration.legacy_backfill import abandon_epic, backfill_legacy_deliveries
+    from src.integration.legacy_backfill import (
+        abandon_epic,
+        abandon_task,
+        backfill_legacy_deliveries,
+    )
 
     config = load_config(args.config)
     db = create_database(config)
@@ -54,23 +68,31 @@ async def main(argv=None) -> int:
         data_dir = Path(config.data_dir) / "legacy-backfill"
         db.set_delivery_observer(DeliveryObserver(db, git=truth.git, data_dir=data_dir,
                                                   truth=truth))
-        if args.abandon_epic:
-            report = {"epics": [await abandon_epic(
-                db, args.project_id, epic, dry_run=not args.apply, operator_id=args.operator,
-                reason=args.reason) for epic in args.abandon_epic]}
-            print(json.dumps(report, indent=1))
-            return 0
-        report = await backfill_legacy_deliveries(
-            db, args.project_id, dry_run=not args.apply, operator_id=args.operator,
-            reason=args.reason,
-        )
+        if args.abandon_epic or args.abandon_task:
+            report = {}
+            if args.abandon_epic:
+                report["epics"] = [await abandon_epic(
+                    db, args.project_id, epic, dry_run=not args.apply,
+                    operator_id=args.operator, reason=args.reason) for epic in args.abandon_epic]
+            if args.abandon_task:
+                report["tasks"] = [await abandon_task(
+                    db, args.project_id, task, dry_run=not args.apply,
+                    operator_id=args.operator, reason=args.reason) for task in args.abandon_task]
+        else:
+            report = await backfill_legacy_deliveries(
+                db, args.project_id, dry_run=not args.apply, operator_id=args.operator,
+                reason=args.reason,
+            )
     finally:
         await db.close()
     if args.output:
         Path(args.output).write_text(json.dumps(report, indent=1))
-    summary = {k: v for k, v in report.items() if k not in {"results", "unproven"}}
-    summary["unproven"] = [item["task_id"] for item in report["unproven"]]
-    print(json.dumps(summary, indent=1))
+    if "unproven" in report:
+        summary = {k: v for k, v in report.items() if k not in {"results", "unproven"}}
+        summary["unproven"] = [item["task_id"] for item in report["unproven"]]
+        print(json.dumps(summary, indent=1))
+    else:
+        print(json.dumps(report, indent=1))
     return 0
 
 
