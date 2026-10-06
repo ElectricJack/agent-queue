@@ -41,7 +41,12 @@ from src.database.tables import (
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, is_valid_git_oid
 from src.integration.batches import (
-    Batch, BatchMember, BatchObservation, BatchService, BatchStore, candidate_ref,
+    Batch,
+    BatchMember,
+    BatchObservation,
+    BatchService,
+    BatchStore,
+    candidate_ref,
 )
 from src.integration.candidate_baseline import CandidateBaselineService
 from src.integration.ci import (
@@ -68,6 +73,7 @@ from src.integration.train import (
     TrainLane,
     TrainTarget,
 )
+from src.projects.github import GitHubError
 
 logger = logging.getLogger(__name__)
 
@@ -308,8 +314,10 @@ class DatabaseTargets:
 class DatabaseBatches:
     """The open batch of a target, frozen from exact undelivered completions."""
 
-    def __init__(self, db, *, limit: int = MEMBER_LIMIT, clock: Callable[[], float] = time.time):
+    def __init__(self, db, *, limit: int = MEMBER_LIMIT, clock: Callable[[], float] = time.time,
+                 pr_gate: Callable | None = None):
         self.db, self.limit, self.clock = db, limit, clock
+        self.pr_gate = pr_gate
 
     async def open_batch(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, service: BatchService
@@ -319,7 +327,8 @@ class DatabaseBatches:
         blockers: list[dict[str, Any]] = []
         pending = None
         if not snapshot.error and snapshot.target_oid:
-            pending = await self.pending(target, snapshot, blockers=blockers)
+            pending = await self.pending(target, snapshot, blockers=blockers,
+                                         gate_pr=current is None)
         if current is not None:
             members = await service.store.members(current.id)
             # Old frozen inputs also stay out of duplicate epic publication.
@@ -357,6 +366,7 @@ class DatabaseBatches:
     async def pending(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, *,
         blockers: list[dict[str, Any]] | None = None,
+        gate_pr: bool = True,
     ):
         """Exact pending inputs; report unknown delivery that prevents batching."""
         async with self.db._engine.connect() as conn:
@@ -420,7 +430,9 @@ class DatabaseBatches:
             # Epic readiness gates new batching; it cannot undo proven delivery.
             if task_id in epics:
                 async with self.db._engine.connect() as conn:
-                    current = await self._epic_current_on(conn, task_id, request.completion_id)
+                    current = await self._epic_current_on(conn, task_id, request.completion_id,
+                                                         snapshot=snapshot,
+                                                         source=evidence.source_oid)
                 if not current:
                     if blockers is not None:
                         blockers.append({"code": "epic_completion_pending", "ref": task_id,
@@ -446,7 +458,17 @@ class DatabaseBatches:
                     or evidence.reason != "source_not_delivered"
                     or not is_valid_git_oid(source or "") or (task_id, source) in withheld):
                 continue
-            members[task_id] = BatchMember(task_id, source, base)
+            member = BatchMember(task_id, source, base)
+            if gate_pr and target.kind != "epic":
+                refusal = (await self.pr_gate(target, member) if self.pr_gate else {
+                    "code": "unknown", "ref": task_id, "task_id": task_id,
+                    "detail": "root PR admission observer is unavailable",
+                })
+                if refusal:
+                    if blockers is not None:
+                        blockers.append(refusal)
+                    continue
+            members[task_id] = member
         # A member never lands ahead of undelivered work it depends on that
         # this batch does not carry; it waits for a later batch instead.
         blocked = set(ids) - members.keys() - delivered
@@ -554,7 +576,8 @@ class DatabaseBatches:
             requests[child.task_id] = request
         return (members, requests) if members else None
 
-    async def _epic_current_on(self, conn, task_id, generation, *, source=None) -> bool:
+    async def _epic_current_on(self, conn, task_id, generation, *, source=None,
+                               snapshot=None) -> bool:
         """Recheck ordinary inputs and cached head/review verdicts at admission."""
         record = (await conn.execute(select(task_completion_records).where(
             task_completion_records.c.task_id == task_id,
@@ -563,11 +586,32 @@ class DatabaseBatches:
         if record is None or record["outcome"] != "pass":
             return False
         try:
+            graph = await EpicGraphReader(policy_on=epic_policy_on,
+                source_base_on=epic_source_base_on).read_on(conn, task_id)
+            if snapshot is not None:
+                # The completion row describes a decision; it cannot prove
+                # today's children are in today's epic branch.
+                async def cached_checks(repository_id, head, policy):
+                    if not policy.check_names:
+                        return HeadChecks(repository_id, head, (), policy.check_trust, "green")
+                    rows = (await conn.execute(select(integration_check_evidence).where(
+                        integration_check_evidence.c.repository_id == repository_id,
+                        integration_check_evidence.c.sha == head,
+                        integration_check_evidence.c.producer_id == policy.check_trust,
+                        integration_check_evidence.c.required_check_version == policy.check_version,
+                        integration_check_evidence.c.check_name.in_(policy.check_names),
+                    ))).mappings().all()
+                    green = {row["check_name"] for row in rows if row["conclusion"] == "success"}
+                    return HeadChecks(repository_id, head, policy.check_names, policy.check_trust,
+                                      "green" if set(policy.check_names) <= green else "unknown")
+
+                readiness = await EpicReadinessEvaluator(self.db, EpicGraphReader(
+                    policy_on=epic_policy_on, source_base_on=epic_source_base_on,
+                ), TreeReviews(self.db), checks=cached_checks).evaluate(graph, snapshot)
+                return readiness.ready and readiness.head_sha == source
             notes = json.loads(record["notes"])
             if source is not None and json.loads(record["commits"]) != [source]:
                 return False
-            graph = await EpicGraphReader(policy_on=epic_policy_on,
-                source_base_on=epic_source_base_on).read_on(conn, task_id)
             if notes["graph_sha256"] != epic_graph_digest(graph):
                 return False
             for subject_id, head, tree in notes["heads"]:
@@ -662,8 +706,10 @@ class EpicCompletions:
     """
 
     def __init__(self, db, evaluator: EpicReadinessEvaluator, *, refresh: Callable,
+                 pull_requests=None,
                  clock: Callable[[], float] = time.time):
         self.db, self.evaluator, self.refresh, self.clock = db, evaluator, refresh, clock
+        self.pull_requests = pull_requests
 
     async def settle(self, target: TrainTarget, snapshot: GitTruthSnapshot) -> tuple[dict, ...]:
         if target.kind != "epic":
@@ -721,7 +767,7 @@ class EpicCompletions:
             latest = await conn.scalar(select(task_completion_records.c.completed_at).where(
                 task_completion_records.c.task_id == node.task_id,
             ).order_by(task_completion_records.c.completed_at.desc()).limit(1))
-            await conn.execute(insert(task_completion_records).values(
+            recorded = await conn.execute(insert(task_completion_records).values(
                 id=generation, task_id=node.task_id, outcome="pass",
                 branch=node.branch_ref.removeprefix("refs/heads/"),
                 commits=json.dumps([readiness.head_sha]),
@@ -730,13 +776,22 @@ class EpicCompletions:
                 summary="Collected epic: required children contained, head checks green, "
                         "required tree review satisfied.",
                 completed_at=max(self.clock(), (latest or 0) + 0.000001),
-            ).on_conflict_do_nothing(index_elements=["id"]))
+            ).on_conflict_do_nothing(index_elements=["id"]).returning(task_completion_records.c.id))
+            first = recorded.scalar_one_or_none() is not None
             from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
 
             marker = insert(task_metadata).values(task_id=node.task_id,
                 key=DEVELOPMENT_COMPLETION_ID_KEY, value=json.dumps(generation))
             await conn.execute(marker.on_conflict_do_update(
                 index_elements=["task_id", "key"], set_={"value": marker.excluded.value}))
+        if first and node.parent_id is None and self.pull_requests is not None:
+            try:
+                opened = await self.pull_requests.open_for_epic(
+                    node.task_id, expected_head_sha=readiness.head_sha)
+            except (GitError, GitHubError, GitHubAccessError, OSError, ValueError) as exc:
+                opened = {"outcome": "unknown", "reason": str(exc)}
+            return ({"code": "epic_pr", "task_id": node.task_id, "ref": node.task_id,
+                     "head_sha": readiness.head_sha, "blocking": False, **opened},)
         return ()
 
 
@@ -798,6 +853,22 @@ class DaemonLanes:
         self.truth = GitTruth(orchestrator.git)
         self.store = BatchStore(self.db, clock=clock)
         self.publish = LeasedPublish(self.db, self.git, clock=clock)
+        if self.batches.pr_gate is None:
+            from src.integration.github_review_poll import RootPullRequestGate
+
+            async def repository(target):
+                repo = await self.db.get_repo(target.repository_id)
+                binding = await self.orchestrator.github_repository_binding_resolver(repo)
+                return binding, self.git._github_client(binding)
+
+            async def pr_checks(target, member, policy, binding):
+                batch = Batch("pr-admission-" + member.task_id, target.project_id,
+                              target.repository_id, target.target_ref)
+                return await self._hosted(policy, binding, target, batch, member.source_sha,
+                                          expected_event="pull_request")
+
+            self.batches.pr_gate = RootPullRequestGate(
+                self.db, repository=repository, checks=pr_checks, clock=clock)
 
     async def __call__(self, target: TrainTarget) -> TrainLane:
         from src.integration.development_runtime import development_repository
@@ -1048,7 +1119,10 @@ class DaemonLanes:
         evaluator = EpicReadinessEvaluator(self.db, EpicGraphReader(
             policy_on=epic_policy_on, source_base_on=epic_source_base_on,
         ), TreeReviews(self.db), checks=head_checks)
-        completions = EpicCompletions(self.db, evaluator, refresh=refresh, clock=self.clock)
+        from src.integration.root_pull_requests import EpicPullRequestService
+
+        completions = EpicCompletions(self.db, evaluator, refresh=refresh, clock=self.clock,
+            pull_requests=EpicPullRequestService(self.db, git_manager=self.git, clock=self.clock))
 
         async def complete(snapshot):
             return await completions.settle(target, snapshot)
@@ -1098,7 +1172,8 @@ class DaemonLanes:
         )
         return ExactChecks(self.db, LocalChecks(producer, project_id=target.project_id))
 
-    async def _hosted(self, policy, binding, target, batch, candidate_sha, *, retained=None):
+    async def _hosted(self, policy, binding, target, batch, candidate_sha, *, retained=None,
+                      expected_event="push"):
         from src.integration.checks import ExactChecks, HostedChecks
         from src.integration.ci_producers import HostedCIProducer
 
@@ -1124,7 +1199,8 @@ class DaemonLanes:
             return await self._workflow_diagnostic(retained, head)
 
         return ExactChecks(self.db, HostedChecks(
-            HostedCIProducer(client, trust), diagnose=diagnose if retained is not None else None,
+            HostedCIProducer(client, trust, expected_event=expected_event),
+            diagnose=diagnose if retained is not None else None,
         ), clock=self.clock)
 
     async def _workflow_diagnostic(self, retained, head):

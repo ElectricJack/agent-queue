@@ -234,6 +234,12 @@ class HostedChecks:
     ) -> None:
         self.producer, self.diagnose = producer, diagnose
         self.required = RequiredChecks.from_trust(producer.trust)
+        if producer.observer.expected_event == "pull_request":
+            # A PR run tests the merge ref. It must never satisfy bare-head
+            # candidate checks, even when the source OID and names are identical.
+            self.required = self.required.model_copy(update={
+                "producer_id": self.required.producer_id + ":pull_request",
+            })
 
     async def request(self, head: HeadIdentity) -> ProducerRequest:
         return ProducerRequest(outcome="already_running", reason="candidate_push_triggers_checks")

@@ -7,6 +7,7 @@ builds, gates and fast-forwards a target through the ref lease.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import shutil
@@ -22,10 +23,16 @@ from sqlalchemy import insert, select, update
 
 from src.database import Database
 from src.database.tables import (
-    events, integration_batches, integration_legacy_deliveries, projects, task_branch_origins, tasks,
+    events,
+    integration_batches,
+    integration_legacy_deliveries,
+    projects,
+    task_branch_origins,
+    tasks,
 )
 from src.git.github_contracts import GitHubCredentialIdentity, GitHubRepositoryBinding
 from src.git.manager import GitManager
+from src.integration.attestation import IntegrationAttestationService
 from src.integration.batches import (
     Batch,
     BatchMember,
@@ -33,7 +40,6 @@ from src.integration.batches import (
     BatchStore,
     candidate_ref,
 )
-from src.integration.attestation import IntegrationAttestationService
 from src.integration.candidate_baseline import BASELINE_BLOCKER, CandidateBaselineService
 from src.integration.ci import ATTESTATION_CHECK_NAME, IntegrationTrustManifest
 from src.integration.delivery_observer import DeliveryObserver
@@ -44,6 +50,7 @@ from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.repair import OrdinaryRepairService
+from src.integration.reviews import ReviewRequirements, TreeReviews
 from src.integration.status import IntegrationStatusService
 from src.integration.train import CandidateChecks, IntegrationTrain, TrainLane, TrainTarget
 from src.integration.train_controls import TrainControls
@@ -53,12 +60,11 @@ from src.integration.train_sources import (
     DatabaseTargets,
     LeasedPublish,
     _never_trusted,
-    batch_id,
-    train_for,
     _pending_tasks,
     _push_branch_allowed,
+    batch_id,
+    train_for,
 )
-from src.integration.reviews import ReviewRequirements, TreeReviews
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
 from src.test_selection import catalogue as Catalogue
 from tests.db_fixtures import lease_dsn
@@ -68,6 +74,14 @@ from tests.test_jobs import finish, job_rows, jobs_handler, pin_development
 
 MAIN = TrainTarget("p", "r", "refs/heads/main", "root")
 ROOT = Path(__file__).resolve().parents[1]
+
+
+async def green_pr(target, member):
+    """Other train-mechanism tests supply an already-satisfied PR observer."""
+
+
+def fixture_batches(db, **kwargs):
+    return DatabaseBatches(db, pr_gate=green_pr, **kwargs)
 
 
 def catalogue_repository(origin: Origin) -> None:
@@ -168,6 +182,12 @@ async def completed(world, tid, *, parent=None, needs=(), land=False, done=True,
         ))
     if done:
         await close(db, tid, [head], origin=origin)
+        if parent is None:
+            url = f"https://github.com/acme/widgets/pull/{sum(tid.encode()) + 100}"
+            await db.update_task(tid, pr_url=url)
+            if hasattr(world, "github"):
+                world.github.pulls[url] = f"aq/{tid}"
+                world.github.pr_runs[head] = "success"
     if land:
         origin.land(tid)
     return head
@@ -233,7 +253,7 @@ async def test_pending_members_are_exact_undelivered_sources(world):
                        trees={"withheld": tree(world, withheld)})
     await store.set_intent("old", "aborted")
 
-    members, requests, dependencies = await DatabaseBatches(db).pending(
+    members, requests, dependencies = await fixture_batches(db).pending(
         MAIN, await snapshot(world)
     )
     base = world.origin.clone
@@ -268,7 +288,7 @@ async def test_root_delivered_legacy_epic_children_create_no_epic_target_or_batc
     assert root.target_ref == "refs/heads/development"
     epic = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
     # Even a direct stale epic visit has no inputs to freeze or repair.
-    selection = await DatabaseBatches(db).open_batch(epic, await snapshot(world, epic),
+    selection = await fixture_batches(db).open_batch(epic, await snapshot(world, epic),
                                                      SimpleNamespace(store=BatchStore(db)))
     assert selection.batch is None and not selection.blockers
     async with db._engine.connect() as conn:
@@ -295,7 +315,7 @@ async def test_scoped_legacy_delivery_attestation_suppresses_missing_provenance(
     await legacy_delivery(world, "child", source)
     assert [t.target_ref for t in await DatabaseTargets(db).targets(time.time())] == [MAIN.target_ref]
     epic = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
-    assert await DatabaseBatches(db).pending(epic, await snapshot(world, epic)) is None
+    assert await fixture_batches(db).pending(epic, await snapshot(world, epic)) is None
     # A new close never inherits the old delivery attestation.
     await close(db, "child", [source], close_id="reopened-generation", origin=origin)
     assert "refs/heads/aq/epic" in {
@@ -309,7 +329,7 @@ async def test_legacy_delivery_for_another_repository_or_ref_does_not_suppress_w
 ):
     source = await completed(world, "a")
     await legacy_delivery(world, "a", source, repository_id=repository_id, target_ref=target_ref)
-    members, _, _ = await DatabaseBatches(world.db).pending(MAIN, await snapshot(world))
+    members, _, _ = await fixture_batches(world.db).pending(MAIN, await snapshot(world))
     assert [m.task_id for m in members] == ["a"]
 
 
@@ -325,7 +345,7 @@ async def test_existing_epic_batch_with_root_delivered_inputs_is_held(world):
     await store.freeze(Batch("wrong", "p", "r", epic.target_ref),
                        (BatchMember("child", source, base),), trees={"child": tree(world, source)})
     origin.land("child")
-    selection = await DatabaseBatches(db).open_batch(
+    selection = await fixture_batches(db).open_batch(
         epic, await snapshot(world, epic), SimpleNamespace(store=store),
     )
     assert selection.batch is None
@@ -341,7 +361,7 @@ async def test_delivered_work_does_not_consume_the_pending_member_limit(world):
     await completed(world, "newer-delivered", land=True)
     targets = await DatabaseTargets(db, limit=1).targets(time.time())
     [epic] = [t for t in targets if t.kind == "epic"]
-    members, _, _ = await DatabaseBatches(db, limit=1).pending(epic, await snapshot(world, epic))
+    members, _, _ = await fixture_batches(db, limit=1).pending(epic, await snapshot(world, epic))
     assert [m.task_id for m in members] == ["owed"]
 
 
@@ -390,7 +410,7 @@ async def test_unavailable_root_probe_keeps_epic_work_owed(world):
     assert {t.target_ref for t in targets} == {MAIN.target_ref, "refs/heads/aq/epic"}
     # The visit has its own fetched root evidence and never batches the child.
     [epic] = [t for t in targets if t.kind == "epic"]
-    assert await DatabaseBatches(db).pending(epic, await snapshot(world, epic)) is None
+    assert await fixture_batches(db).pending(epic, await snapshot(world, epic)) is None
 
 
 @pytest.mark.parametrize("kind", ["service", "playbook", "session"])
@@ -434,7 +454,7 @@ async def test_abort_batch_preview_apply(world):
         [audit] = (await conn.execute(select(events.c.payload).where(
             events.c.event_type == "integration.batch_intent"))).scalars().all()
     assert "duplicate work" in audit
-    assert await DatabaseBatches(db).pending(MAIN, await snapshot(world)) is None
+    assert await fixture_batches(db).pending(MAIN, await snapshot(world)) is None
 
 
 async def test_abort_first_member_conflict_at_target_releases_member(world):
@@ -600,7 +620,7 @@ async def test_aborted_candidate_cleanup_defers_to_repair_lease_and_preserves_so
     assert not git(Path(origin.url), "for-each-ref", "--format=%(refname)", ref)
     assert git(Path(origin.url), "rev-parse", "refs/heads/aq/rework") == source
     assert (await db.get_integration_batch(batch.id))["cleanup_state"] == "complete"
-    assert await DatabaseBatches(db).pending(MAIN, await snapshot(world)) is None
+    assert await fixture_batches(db).pending(MAIN, await snapshot(world)) is None
     await cleanup.reconcile_aborted(time.time())
     assert transport.deletes == 1
 
@@ -739,7 +759,7 @@ async def test_eligible_tracks_project_and_task_state(world):
     db = world.db
     await completed(world, "a")
     store = BatchStore(db)
-    batches = DatabaseBatches(db)
+    batches = fixture_batches(db)
     members, _, _ = await batches.pending(MAIN, await snapshot(world))
     batch = Batch(batch_id(MAIN, members), "p", "r", MAIN.target_ref, created_at=1.0)
     await store.freeze(batch, members, trees={"a": tree(world, members[0].source_sha)})
@@ -789,7 +809,7 @@ def lane(world, transport, *, regenerate=DEFAULT_REGENERATE_COMMAND):
         assert batch.repository_id == "r"
         return retained(command())
 
-    batches = DatabaseBatches(db)
+    batches = fixture_batches(db)
     checks = GreenWhen()
     candidates = CandidateChecks.fixed(checks)
     service = BatchService(
@@ -1081,35 +1101,67 @@ class HostedGitHub:
     def __init__(self):
         self.credential_identity = GitHubCredentialIdentity.app(101, 202)
         self.runs: dict[str, str] = {}
+        self.pr_runs: dict[str, str] = {}
+        self.reviews = []
+        self.pulls = {}
+        self.origin = None
+        self.unavailable = False
         self.observed: list[str] = []
         self.records: list[dict] = []
 
-    def _rows(self, sha):
-        n = list(self.runs).index(sha) + 1
-        done = {"head_sha": sha, "status": "completed", "conclusion": self.runs[sha]}
+    def _rows(self, sha, event="push"):
+        runs = self.runs if event == "push" else self.pr_runs
+        n = list(runs).index(sha) + 1 + (100 if event == "pull_request" else 0)
+        done = {"head_sha": sha, "status": "completed", "conclusion": runs[sha]}
         repo = {"id": 123, "full_name": self.full_name}
         return (
             {"id": 10 + n, "name": "unit", "app": {"id": 15368},
              "check_suite": {"id": 20 + n}, **done},
             {"id": 30 + n, "workflow_id": 301, "run_attempt": 1, "check_suite_id": 20 + n,
-             "event": "push", "repository": repo, "head_repository": repo, **done},
+             "event": event, "repository": repo, "head_repository": repo, **done},
             {"id": 50 + n, "name": "unit", "run_id": 30 + n, "run_attempt": 1,
              "check_run_url": f"https://api.github.com/repos/{self.full_name}/check-runs/"
                               f"{10 + n}", **done},
         )
 
+    async def pull_request(self, url):
+        from src.git.github_contracts import GitHubAccessError
+
+        if self.unavailable:
+            raise GitHubAccessError("transport_unavailable", "fixture outage")
+        if url not in self.pulls:
+            raise ValueError("fixture PR missing")
+        branch = self.pulls[url]
+        head = git(self.origin.url, "rev-parse", branch)
+        main = git(self.origin.url, "rev-parse", "main")
+        merged = (await asyncio.to_thread(subprocess.run,
+            ["git", "merge-base", "--is-ancestor", head, main],
+            cwd=self.origin.url, check=False)).returncode == 0
+        return {"state": "closed" if merged else "open", "merged": merged,
+                "merge_commit_sha": main if merged else None,
+                "head": {"ref": branch, "sha": head, "repo": {"id": 123}},
+                "base": {"ref": "main", "repo": {"id": 123}}}
+
+    async def paged_list(self, path):
+        return self.reviews
+
     async def paged_items(self, path, *, key):
         if key == "jobs":
             run = int(re.search(r"/actions/runs/(\d+)/", path).group(1))
-            return [self._rows(list(self.runs)[run - 31])[2]]
+            for event, runs in (("push", self.runs), ("pull_request", self.pr_runs)):
+                for sha in runs:
+                    rows = self._rows(sha, event)
+                    if rows[1]["id"] == run:
+                        return [rows[2]]
+            return []
         sha = re.search(r"[0-9a-f]{40}", path).group(0)
         self.observed.append(sha)
         if "check_name=Agent%20Queue%20Integration%20Attestation" in path:
             return [record for record in self.records if record["head_sha"] == sha]
-        if sha not in self.runs:
-            return []
-        check, run, _ = self._rows(sha)
-        return [check] if key == "check_runs" else [run]
+        rows = [self._rows(sha, event)[0 if key == "check_runs" else 1]
+                for event, runs in (("push", self.runs), ("pull_request", self.pr_runs))
+                if sha in runs]
+        return rows
 
     async def request_json(self, method, path, *, json_body, expected_statuses):
         assert method == "POST" and expected_statuses == {201}
@@ -1124,10 +1176,19 @@ async def hosted_train(world, *, retained_store=None, clock=time.time):
     async with db._engine.begin() as conn:
         await conn.execute(update(projects).where(projects.c.id == "p").values(
             hierarchical_integration_policy={
-                "root": {"required_checks": {"version": "v1", "names": ["unit"]}},
+                "root": {"required_checks": {"version": "v1", "names": ["unit"]},
+                         "admission": "authorized"},
             },
         ))
     github, trusts = HostedGitHub(), []
+    github.origin = origin
+    world.github = github
+    async with db._engine.connect() as conn:
+        for tid, branch, url in (await conn.execute(select(
+                tasks.c.id, tasks.c.branch_name, tasks.c.pr_url))).all():
+            if url:
+                github.pulls[url] = branch
+                github.pr_runs[git(origin.url, "rev-parse", branch)] = "success"
 
     async def load_trust(state, *, boundary):
         required = state["policy_snapshot"][boundary]["required_checks"]
@@ -1157,6 +1218,18 @@ async def hosted_train(world, *, retained_store=None, clock=time.time):
         development_integration=SimpleNamespace(store=store),
         integration_attestation_service=attestation,
     )
+    orchestrator.git._github_client = lambda binding: github
+    orchestrator.git.bind_github_repository = AsyncMock(return_value=GitHubRepositoryBinding(
+        123, github.full_name))
+    orchestrator.git.acommits_ahead_of_base = AsyncMock(return_value=1)
+
+    async def create_pr(checkout, **kwargs):
+        url = f"https://github.com/{github.full_name}/pull/{700 + len(github.pulls)}"
+        github.pulls[url] = kwargs["branch"]
+        github.pr_runs[git(origin.url, "rev-parse", kwargs["branch"])] = "success"
+        return url
+
+    orchestrator.git.acreate_pr = AsyncMock(side_effect=create_pr)
     batches = DatabaseBatches(db)
     train = IntegrationTrain(
         targets=DatabaseTargets(db), batches=batches,
@@ -1215,6 +1288,10 @@ async def review_epic(case, *, verdict="approved", decision="approve"):
             ReviewRequirements(True, frozenset({"github:jack"})), reviewer="github:jack",
             verdict=verdict, decision_id=decision, reviewed_head_sha=head,
             source_base=case.base, provenance={})
+    case.github.pr_runs[head] = "success"
+    case.github.reviews.append({"id": len(case.github.reviews) + 1,
+        "state": "APPROVED" if verdict == "approved" else "CHANGES_REQUESTED",
+        "commit_id": head, "user": {"login": "jack", "type": "User"}})
 
 
 async def test_collected_two_child_epic_gets_completion_and_lands_via_root(collected_epic):
@@ -1362,7 +1439,7 @@ async def test_delivered_epic_with_stale_completion_does_not_block_root(collecte
     assert evidence.satisfied
     assert evidence.reason in {"whole_source_patch", "full_tree", "merge_noop"}
     blockers = []
-    batches = DatabaseBatches(case.db)
+    batches = fixture_batches(case.db)
     assert await batches.pending(MAIN, observed, blockers=blockers) is None
     assert blockers == []
     assert (await case.train.visit(MAIN)).state == "idle"
@@ -1492,6 +1569,8 @@ async def test_ordinary_train_completion_with_large_history_in_fresh_retained_st
         str(origin.clone), "ordinary-close", commit=head,
     ) == head
     await close(db, tid, [head], close_id="ordinary-close")
+    # The session-close PR side effect, observed separately from completion provenance.
+    await db.update_task(tid, pr_url="https://github.com/acme/widgets/pull/600")
     request = (await load_delivery_requests(
         db, [tid], repository_id="r", target_ref=MAIN.target_ref, reduced=True,
     ))[tid]
@@ -1530,7 +1609,7 @@ async def test_hosted_lane_publishes_only_the_exact_candidate_github_passed(worl
     assert git(origin.url, "rev-parse", candidate_ref(testing.batch_id)) == candidate
     assert git(origin.url, "rev-parse", "refs/heads/main") == main
     assert candidate in github.observed
-    assert trusts[0] == ("root", candidate, {"version": "v1", "names": ["unit"]})
+    assert ("root", candidate, {"version": "v1", "names": ["unit"]}) in trusts
 
     github.runs[main] = "success"  # A green target says nothing about the candidate.
     assert (await train.visit(MAIN)).state == "testing"
@@ -1665,11 +1744,18 @@ async def test_old_epic_workflow_files_repair_and_exact_push_then_delivers(colle
         git(case.origin.url, "merge-base", "--is-ancestor", source, repaired)
 
 
+def approve_pr(github, head, *, reviewer="default-fix-reviewer"):
+    """Supply the human review required by a reviewed root boundary."""
+    github.reviews.append({"id": len(github.reviews) + 1, "state": "APPROVED",
+        "commit_id": head, "user": {"login": reviewer, "type": "User"}})
+
+
 async def preexisting_epic_with_default_fix(case, *, provenance="train_candidate"):
     """Deliver a default fix through the real train while the epic stays on its old base."""
     case.train.baseline = CandidateBaselineService(case.db)
     case.github.rerequest_check_suite = AsyncMock()
-    await completed(case.world, "default-fix")
+    head = await completed(case.world, "default-fix")
+    approve_pr(case.github, head)
     root = await case.train.visit(MAIN)
     assert root.state == "testing", root
     case.github.runs[root.candidate_sha] = "success"
@@ -1851,7 +1937,9 @@ async def test_closed_epic_sync_after_abort_hands_code_conflicts_to_worker(colle
     old = commit(case.origin.clone, {path: "epic code\n" for path in files}, base=collected)
     git(case.origin.clone, "push", "origin", f"{old}:aq/epic")
     fix = commit(case.origin.clone, {path: "default code\n" for path in files}, base=case.base)
+    git(case.origin.clone, "push", "origin", f"{fix}:refs/heads/aq/default-fix")
     await completed(case.world, "default-fix", head=fix)
+    approve_pr(case.github, fix)
     root = await case.train.visit(MAIN)
     assert root.state == "testing", root
     case.github.runs[root.candidate_sha] = "success"
@@ -1884,8 +1972,8 @@ async def test_closed_epic_sync_after_abort_hands_code_conflicts_to_worker(colle
 
     # An ordinary worker merges and resolves the named source conflicts.
     git(case.origin.clone, "checkout", "--detach", old)
-    merge = subprocess.run(["git", "merge", "--no-ff", main], cwd=case.origin.clone,
-                           capture_output=True, text=True)
+    merge = await asyncio.to_thread(subprocess.run, ["git", "merge", "--no-ff", main],
+        cwd=case.origin.clone, capture_output=True, text=True, check=False)
     assert merge.returncode == 1
     assert set(git(case.origin.clone, "diff", "--name-only", "--diff-filter=U").splitlines()) == set(files)
     for path in files:
@@ -1920,7 +2008,8 @@ async def test_closed_epic_sync_after_abort_hands_code_conflicts_to_worker(colle
 async def test_closed_epic_sync_remains_bounded_and_respects_holds(collected_epic, reason):
     case = collected_epic
     collected = await collect_epic(case)
-    await completed(case.world, "default-fix")
+    head = await completed(case.world, "default-fix")
+    approve_pr(case.github, head)
     root = await case.train.visit(MAIN)
     case.github.runs[root.candidate_sha] = "success"
     main = (await case.train.visit(MAIN)).target_sha
@@ -1995,7 +2084,7 @@ async def development_train(world, tmp_path, monkeypatch, validation: str):
         github_repository_binding_resolver=binding, development_integration=SimpleNamespace(),
         integration_attestation_service=SimpleNamespace(publish=AsyncMock()),
     )
-    batches = DatabaseBatches(db)
+    batches = fixture_batches(db)
     train = IntegrationTrain(
         targets=DatabaseTargets(db), batches=batches,
         lane_for=DaemonLanes(orchestrator, batches=batches), repair=OrdinaryRepairService(db),
@@ -2068,3 +2157,263 @@ async def test_train_status_still_publishes_the_configuration_generation(world):
     assert active["generation"] == shadow["generation"]
     assert active["effective_mode"] == shadow["effective_mode"]
     assert active["desired_mode"] == shadow["desired_mode"]
+
+
+@pytest.mark.parametrize("condition,code", [
+    ("missing_pr", "awaiting_pr"),
+    ("pending", "awaiting_pr_checks"),
+    ("push_green", "awaiting_pr_checks"),
+    ("red", "pr_checks_red"),
+    ("no_approval", "pr_review_missing"),
+    ("old_approval", "pr_review_missing"),
+    ("bot_approval", "pr_review_missing"),
+    ("dismissed", "pr_review_missing"),
+    ("changes", "pr_changes_requested"),
+    ("outage", "unknown"),
+])
+async def test_root_pr_gate_refuses_before_freeze_then_admits_exact_green_head(world, condition, code):
+    head = await completed(world, "leaf")
+    now = [1000.0]
+    train, github, _ = await hosted_train(world, clock=lambda: now[0])
+    url = (await world.db.get_task("leaf")).pr_url
+    if condition == "missing_pr":
+        await world.db.update_task("leaf", pr_url=None)
+    elif condition in {"pending", "push_green"}:
+        github.pr_runs.clear()
+        if condition == "push_green":
+            github.runs[head] = "success"
+    elif condition == "red":
+        github.pr_runs[head] = "failure"
+    elif condition in {"no_approval", "changes", "old_approval", "bot_approval", "dismissed"}:
+        project = await world.db.get_project("p")
+        policy = project.hierarchical_integration_policy
+        policy["root"]["admission"] = "reviewed"
+        await world.db.update_project("p", hierarchical_integration_policy=policy)
+        if condition == "changes":
+            github.reviews = [{"id": 1, "commit_id": head, "state": "APPROVED",
+                               "user": {"login": "alice", "type": "User"}},
+                              {"id": 2, "commit_id": head, "state": "CHANGES_REQUESTED",
+                               "user": {"login": "bob", "type": "User"}}]
+        elif condition != "no_approval":
+            github.reviews = [{"id": 1, "commit_id": "a" * 40 if condition == "old_approval" else head,
+                "state": "APPROVED", "user": {"login": "bob",
+                "type": "Bot" if condition == "bot_approval" else "User"}}]
+            if condition == "dismissed":
+                github.reviews.append({"id": 2, "commit_id": head, "state": "DISMISSED",
+                                       "user": {"login": "bob", "type": "User"}})
+    else:
+        github.unavailable = True
+    await train.tick()
+    await train.drain()
+    [visit] = train.status()
+    assert visit["batch_id"] is None
+    assert visit["detail"]["blockers"][0]["code"] == code
+    assert visit["state"] == ("unknown" if condition == "outage" else "blocked")
+    async with world.db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_batches.c.id))).first() is None
+    status = await IntegrationStatusService(world.db, git_first="active", train=train).control_status("p")
+    assert code in {blocker["code"] for blocker in status["blockers"]}
+    # An outage is cached with backoff and cannot inherit yesterday's green.
+    if condition == "outage":
+        github.unavailable = False
+        assert (await train.visit(MAIN)).state == "unknown"
+        now[0] += 61
+    await world.db.update_task("leaf", pr_url=url)
+    github.pr_runs[head] = "success"
+    github.reviews.append({"id": 3, "commit_id": head, "state": "APPROVED",
+                           "user": {"login": "bob", "type": "User"}})
+    admitted = await train.visit(MAIN)
+    assert admitted.state == "testing", admitted
+    members = await train.batches.current(MAIN)
+    frozen = await BatchStore(world.db).members(members.id)
+    assert [(m.task_id, m.source_sha) for m in frozen] == [("leaf", head)]
+    # Admission is a freeze-only gate: later PR failures do not undo sealing.
+    github.pr_runs[head] = "failure"
+    github.unavailable = True
+    github.runs[admitted.candidate_sha] = "success"
+    delivered = await train.visit(MAIN)
+    assert delivered.state == "delivered", delivered
+    github.unavailable = False
+    pull = await github.pull_request(url)
+    assert pull["merged"] and pull["state"] == "closed"
+    git(world.origin.url, "merge-base", "--is-ancestor", pull["merge_commit_sha"], "main")
+
+
+async def test_train_opens_three_child_epic_pr_from_completion_ref(collected_epic):
+    from src.integration.provenance import CompletionIdentity, GitProvenance
+
+    case = collected_epic
+    # Extend the ordinary graph before collecting it.
+    async with case.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic").values(status="IN_PROGRESS"))
+    third = await completed(case.world, "child-c", parent="epic")
+    case.children.append(third)
+    await case.db.transition_task("epic", TaskStatus.COMPLETED)
+    head = await collect_epic(case)
+    await review_epic(case)
+    visit = await case.train.visit(case.target)
+    [opened] = visit.detail["epic_completions"]
+    assert opened["outcome"] == "opened" and opened["head_sha"] == head
+    completion = await case.db.get_task_completion("epic")
+    observed = await snapshot(case.world, case.target)
+    record = await GitProvenance(observed.truth.git, observed.observation.store,
+        repository_url=case.origin.url).read_completion(CompletionIdentity(
+            "p", "r", "epic", completion.id), refs=observed.observation.source_heads)
+    assert record["source_oid"] == head
+    git_manager = case.train.lane_for.git
+    kwargs = git_manager.acreate_pr.await_args.kwargs
+    assert kwargs["base"] == "main" and kwargs["branch"] == "aq/epic"
+    for tid in ("child-a", "child-b", "child-c"):
+        assert f"`{tid}`" in kwargs["body"]
+    assert "AQ-Epic: epic" in kwargs["body"]
+    actual = set(git(case.origin.clone, "diff", "--name-only", f"{case.base}...{head}").splitlines())
+    union = set()
+    for child in case.children:
+        paths = git(case.origin.clone, "diff", "--name-only", f"{case.base}...{child}").splitlines()
+        union.update(paths)
+        for path in paths:
+            assert git(case.origin.clone, "show", f"{head}:{path}") == git(
+                case.origin.clone, "show", f"{child}:{path}")
+    assert actual == union
+    await case.train.visit(case.target)
+    git_manager.acreate_pr.assert_awaited_once()
+    first = await case.train.visit(MAIN)
+    case.github.runs[first.candidate_sha] = "success"
+    assert (await case.train.visit(MAIN)).state == "delivered"
+    pull = await case.github.pull_request(opened["pr_url"])
+    assert pull["merged"] and pull["merge_commit_sha"] == first.candidate_sha
+    # Batch rows are an audit: deleting them cannot undo git delivery.
+    from sqlalchemy import delete, text
+
+    from src.database.tables import integration_batch_members
+
+    async with case.db._engine.begin() as conn:
+        # Destructive audit-loss simulation in this disposable fixture only.
+        await conn.execute(text("ALTER TABLE integration_batch_members DISABLE TRIGGER USER"))
+        await conn.execute(text("ALTER TABLE integration_batches DISABLE TRIGGER USER"))
+        await conn.execute(delete(integration_batch_members))
+        await conn.execute(delete(integration_batches))
+        await conn.execute(text("ALTER TABLE integration_batch_members ENABLE TRIGGER USER"))
+        await conn.execute(text("ALTER TABLE integration_batches ENABLE TRIGGER USER"))
+    assert (await case.train.visit(MAIN)).state == "idle"
+    assert await case.train.batches.pending(MAIN, await snapshot(case.world)) is None
+    status = await IntegrationStatusService(case.db, git_first="active").control_status("p")
+    assert status["batches"] == [] and status["blockers"] == []
+    delivery = await case.db._delivery_observer.observe(["epic"])
+    async with case.db._engine.connect() as conn:
+        assert (await delivery.verified_on(conn, ["epic"]))["epic"].satisfied
+
+
+async def test_forged_promoted_audit_does_not_deliver_a_pending_member(world):
+    head = await completed(world, "leaf")
+    train, _, _ = await hosted_train(world)
+    batch = Batch("forged", "p", "r", MAIN.target_ref)
+    base = git(world.origin.clone, "rev-parse", f"{head}^")
+    await BatchStore(world.db).freeze(batch, (BatchMember("leaf", head, base),),
+                                    trees={"leaf": tree(world, head)})
+    async with world.db._engine.begin() as conn:
+        await conn.execute(update(integration_batches).where(integration_batches.c.id == batch.id)
+                           .values(lifecycle="promoted", tested_candidate_sha=head, final_main_sha=head))
+    # No corresponding ref movement happened; ordinary discovery still sees it.
+    pending = await train.batches.pending(MAIN, await snapshot(world))
+    assert [(member.task_id, member.source_sha) for member in pending[0]] == [("leaf", head)]
+    delivery = await world.db._delivery_observer.observe(["leaf"])
+    async with world.db._engine.connect() as conn:
+        assert not (await delivery.verified_on(conn, ["leaf"]))["leaf"].satisfied
+    assert (await train.visit(MAIN)).state == "testing"
+
+
+async def test_legacy_delivery_doctor_reports_unreachable_shas_without_writing(world):
+    from src.doctor.integration_checks import _BY_ID
+    from src.doctor.models import DoctorContext, Severity
+
+    pending = await completed(world, "pending")
+    delivered = await completed(world, "landed", land=True)
+    await legacy_delivery(world, "pending", pending)
+    await legacy_delivery(world, "landed", delivered)
+    async with world.db._engine.connect() as conn:
+        before = list((await conn.execute(select(integration_legacy_deliveries))).all())
+    check = _BY_ID["integration.legacy_deliveries"]
+    assert check.fix is None
+    result = await check.run(DoctorContext(config=None, db=world.db))
+    assert result.severity == Severity.WARN
+    assert [(row["task_id"], row["sha"]) for row in result.data["unreachable"]] == [
+        ("pending", pending)]
+    assert result.data["unknown"] == [] and not result.fixable
+    async with world.db._engine.connect() as conn:
+        assert list((await conn.execute(select(integration_legacy_deliveries))).all()) == before
+
+
+@pytest.mark.parametrize("mismatch", ["closed", "head", "branch", "base", "fork"])
+async def test_root_pr_gate_requires_exact_open_same_repository_identity(world, mismatch):
+    await completed(world, "leaf")
+    train, github, _ = await hosted_train(world)
+    url = (await world.db.get_task("leaf")).pr_url
+    pull = await github.pull_request(url)
+    if mismatch == "closed":
+        pull["state"] = "closed"
+    elif mismatch == "head":
+        pull["head"]["sha"] = "a" * 40
+    elif mismatch == "branch":
+        pull["head"]["ref"] = "aq/another"
+    elif mismatch == "base":
+        pull["base"]["ref"] = "another"
+    else:
+        pull["head"]["repo"]["id"] = 456
+    original = github.pull_request
+    github.pull_request = AsyncMock(return_value=pull)
+    blocked = await train.visit(MAIN)
+    assert blocked.batch_id is None and blocked.detail["blockers"][0]["code"] == "awaiting_pr"
+    assert github.observed == []  # Don't read CI for a different proposal.
+    github.pull_request = original
+    assert (await train.visit(MAIN)).state == "testing"
+
+
+async def test_failed_epic_pr_open_is_retried_from_completion_ref_without_checkpoint(collected_epic):
+    from src.git.manager import GitError
+    from src.integration.root_pull_requests import RootPullRequestReconciler
+
+    case = collected_epic
+    head = await collect_epic(case)
+    await review_epic(case)
+    manager = case.train.lane_for.git
+    create = manager.acreate_pr
+    manager.acreate_pr = AsyncMock(side_effect=GitError("fixture PR open outage"))
+    visit = await case.train.visit(case.target)
+    assert visit.state == "idle"
+    assert visit.detail["epic_completions"][0]["outcome"] == "unknown"
+    assert (await case.db.get_task_completion("epic")).commits == [head]
+    assert (await case.train.visit(MAIN)).detail["blockers"][0]["code"] == "awaiting_pr"
+    await case.train.visit(case.target)
+    manager.acreate_pr.assert_awaited_once()  # Only maintenance retries the failed open.
+    manager.acreate_pr = create
+    reconciler = RootPullRequestReconciler(case.db, manager)
+    assert "epic" in await reconciler._page(None)
+    await reconciler.tick(time.time())
+    create.assert_awaited_once()
+    assert (await case.db.get_task("epic")).pr_url
+    assert (await case.train.visit(MAIN)).state == "testing"
+
+
+async def test_epic_branch_move_resettles_completion_and_existing_pr(collected_epic):
+    case = collected_epic
+    old = await collect_epic(case)
+    await review_epic(case)
+    assert (await case.train.visit(case.target)).state == "idle"
+    old_completion = await case.db.get_task_completion("epic")
+    url = (await case.db.get_task("epic")).pr_url
+    git(case.origin.clone, "fetch", "-q", "origin")
+    git(case.origin.clone, "checkout", "-q", "-B", "aq/epic", "origin/aq/epic")
+    new = commit(case.origin.clone, {"followup.txt": "followup"})
+    git(case.origin.clone, "push", "-q", "origin", "aq/epic")
+    case.github.runs[new] = "success"
+    # Old completion cannot freeze the moved branch even though it retains all children.
+    assert (await case.train.visit(MAIN)).batch_id is None
+    await review_epic(case, decision="followup-approve")
+    visit = await case.train.visit(case.target)
+    assert visit.detail["epic_completions"][0]["outcome"] == "already_open"
+    completion = await case.db.get_task_completion("epic")
+    assert completion.id != old_completion.id and completion.commits == [new]
+    assert old != new and (await case.github.pull_request(url))["head"]["sha"] == new
+    case.train.lane_for.git.acreate_pr.assert_awaited_once()
+    assert (await case.train.visit(MAIN)).state == "testing"

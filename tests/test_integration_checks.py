@@ -578,3 +578,30 @@ async def test_local_cancelled_job_is_unknown_not_green(db):
     result = await checks.refresh(head())
     assert result.state is ChecksState.UNKNOWN
     assert result.checks[0].conclusion is Conclusion.CANCELLED
+
+
+async def test_pr_checks_are_separate_from_push_cache_and_share_one_listing_per_visit(db):
+    from src.integration.ci import hosted_observation_scope
+
+    client, trust = github(app=False, names=("unit",))
+    # No PR run exists: green push CI cannot satisfy PR admission.
+    push = ExactChecks(db, HostedChecks(HostedCIProducer(client, trust)))
+    pr = ExactChecks(db, HostedChecks(HostedCIProducer(client, trust, expected_event="pull_request")))
+    listed = []
+    original = client.paged_items
+
+    async def listing(path, *, key):
+        listed.append(key)
+        return await original(path, key=key)
+
+    client.paged_items = listing
+    with hosted_observation_scope():
+        assert (await push.refresh(head())).green
+        assert (await pr.refresh(head())).state is ChecksState.PENDING
+    assert listed.count("check_runs") == 1
+    assert listed.count("workflow_runs") == 1
+    assert (await push.read(head())).green
+    assert (await pr.read(head())).required.producer_id == "15368:pull_request"
+    with hosted_observation_scope():
+        await push.refresh(head())
+    assert listed.count("check_runs") == 2
