@@ -103,6 +103,7 @@ class OrdinaryRepairService:
         intelligence_class: str | None = None, priority: int = 100,
         brief: str = "", ttl_seconds: float = 480,
         authorize: Callable[[], Awaitable[bool]] | None = None,
+        completion_blocker: Callable[[str, str], Awaitable[dict | None]] | None = None,
     ) -> dict:
         from src.integration.batches import candidate_ref
 
@@ -208,6 +209,21 @@ class OrdinaryRepairService:
             # across this bounded observation and the ordinary filing.
             from src.integration.lock import CRITICAL_SECTION_SECONDS
 
+            if current and current["status"] == "COMPLETED" and completion_blocker:
+                original = (await conn.execute(select(task_context.c.content).where(
+                    task_context.c.id == current_id,
+                    task_context.c.label == "Repair input",
+                ))).scalar_one_or_none()
+                if original is None:
+                    return answer("blocked", reason="repair_input_unconfirmed", task_id=current_id)
+                async with asyncio.timeout(CRITICAL_SECTION_SECONDS):
+                    blocker = await completion_blocker(
+                        current_id, json.loads(original)["starting_sha"],
+                    )
+                if blocker:
+                    logger.warning("integration batch %s repair successor blocked: %s",
+                                   batch_id, blocker)
+                    return {**answer("blocked"), **blocker}
             async with asyncio.timeout(CRITICAL_SECTION_SECONDS):
                 confirmed = authorize is not None and await authorize()
             if not confirmed:
