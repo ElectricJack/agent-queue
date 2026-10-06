@@ -31,6 +31,7 @@ POLICY_PATH = REPO / "docs/config/agent-queue-train-policy.json"
 EXAMPLE_PATH = REPO / ".github/agent-queue-integration.example.json"
 MANIFEST_PATH = REPO / trust_manifest.TRUST_MANIFEST_PATH
 SHA = "a" * 40
+FLOW = [{"gate": {"attestation": "Agent Queue Promotion Attestation (release)"}}]
 
 #: Spec §9.2 step 3: agent-queue's committed manifest, the text
 #: ``aq integration trust-manifest agent-queue --policy
@@ -52,6 +53,7 @@ def _agent_queue_manifest(policy=None) -> dict:
         repository_id=1160639300,
         full_name="ElectricJack/agent-queue",
         attestation_app_id=5075923,
+        promotion_flow=FLOW,
     )
 
 
@@ -287,6 +289,7 @@ def _handler(client, *, bound_policy=None, designated="agent-queue2"):
         id="agent-queue",
         hierarchical_integration_policy=bound_policy,
         integration_repository_id=designated,
+        promotion_flow=FLOW,
     )
     repository = SimpleNamespace(
         id="agent-queue2",

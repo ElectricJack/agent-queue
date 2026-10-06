@@ -28,6 +28,7 @@ from src.integration.ci import (
     CIService,
     FailedCIObservation,
     ParentCISubject,
+    PromotionAttestationPayload,
     TrustedCIObservation,
     TrustedFixtureObserver,
     ci_trust_from_policy,
@@ -838,6 +839,45 @@ async def test_publish_attestation_uses_canonical_text_and_digest():
     assert body["name"] == ATTESTATION_CHECK_NAME
     assert body["external_id"] == payload.external_id
     assert body["output"]["text"].encode() == payload.canonical_bytes()
+
+
+async def test_step_publication_uses_its_own_name_and_never_reuses_default_proof():
+    lower = AttestationPayload.model_validate(payload_dict())
+    name = "Agent Queue Promotion Attestation (release)"
+    manifest = trust().model_copy(update={"promotion_attestation_names": (name,)})
+    payload = PromotionAttestationPayload(
+        schema="aq.promotion-attestation.v1",
+        repository={
+            "canonical_repository_id": manifest.canonical_repository_id,
+            "repository_id": manifest.repository_id, "full_name": manifest.full_name,
+            "ci_producer_app_id": manifest.ci_producer_app_id,
+            "attestation_app_id": manifest.attestation_app_id,
+        },
+        step="release", target_ref="refs/heads/main", attestation_name=name, version="1.2.3",
+        request_id="promotion:repo-config-1:release:1.2.3", batch_id="promotion-batch",
+        source_sha=SHA, base_sha="b" * 40, checks_version="checks-v1",
+        checks=lower.checks, workflow_runs=lower.workflow_runs,
+    )
+    client = FakeGitHubClient({"attestation": [check_record(71, lower.canonical_bytes())]}, [])
+    assert await AuthenticatedGitHubObserver(client).publish(manifest, payload) == 77
+    body = client.published[0][2]
+    assert body["name"] == name and body["external_id"] == payload.external_id
+    assert body["output"]["text"].encode() == payload.canonical_bytes()
+    with pytest.raises(AttestationError, match="invalid|identity"):
+        select_trusted_attestation([dict(body, id=77, app={"id": 101}, name=ATTESTATION_CHECK_NAME)],
+                                   manifest, expected_head_sha=SHA)
+    with pytest.raises(AttestationError, match="identity"):
+        await AuthenticatedGitHubObserver(client).publish(
+            manifest, payload.model_copy(update={"attestation_name": "Untrusted step"}),
+        )
+
+
+def test_step_check_sets_can_require_checks_the_source_lane_never_ran():
+    data = trust().model_dump(mode="json", by_alias=True)
+    data["check_sets"] = {"release": ["release-smoke"]}
+    data["promotion_attestation_names"] = ["Agent Queue Promotion Attestation (release)"]
+    manifest = IntegrationTrustManifest.model_validate(data)
+    assert manifest.check_sets["release"] == ("release-smoke",)
 
 
 @pytest.mark.asyncio

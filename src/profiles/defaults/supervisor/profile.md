@@ -186,6 +186,7 @@ start code work, tests or QA from a digest author turn.
     "integration_status",
     "integration_transfer_owner",
     "integration_trust_manifest",
+    "integration_promotion_publish",
     "integration_app_verify",
     "integration_resolve_candidate_member",
     "list_intelligence_classes",

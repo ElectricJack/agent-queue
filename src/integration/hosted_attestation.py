@@ -39,6 +39,8 @@ from typing import Any
 ATTESTATION_CHECK_NAME = "Agent Queue Integration Attestation"
 ATTESTATION_SCHEMA = "aq.integration-attestation.v1"
 EXTERNAL_ID_PREFIX = "aq-attestation-v1:"
+PROMOTION_SCHEMA = "aq.promotion-attestation.v1"
+PROMOTION_EXTERNAL_ID_PREFIX = "aq-promotion-attestation-v1:"
 APP_ID_VARIABLE = "AQ_INTEGRATION_ATTESTATION_APP_ID"
 CHECK_VERSION_VARIABLE = "AQ_INTEGRATION_REQUIRED_CHECK_VERSION"
 DEFAULT_API_URL = "https://api.github.com"
@@ -68,6 +70,15 @@ _CHECK_FIELDS = frozenset(
 _WORKFLOW_RUN_FIELDS = frozenset(
     {"workflow_run_id", "run_attempt", "check_suite_id", "head_sha", "conclusion"}
 )
+_PROMOTION_FIELDS = frozenset({
+    "schema", "repository", "step", "target_ref", "attestation_name", "version",
+    "request_id", "batch_id", "source_sha", "base_sha", "checks_version", "checks",
+    "workflow_runs",
+})
+_PROMOTION_REPOSITORY_FIELDS = frozenset({
+    "canonical_repository_id", "repository_id", "full_name", "ci_producer_app_id",
+    "attestation_app_id",
+})
 
 HttpGet = Callable[[str], tuple[bytes, Mapping[str, str]]]
 """GET an absolute URL; return the body and lower-cased response headers."""
@@ -117,11 +128,22 @@ def _verify_configured(environ: Mapping[str, str], http_get: HttpGet) -> str:
 
     listing = (
         f"{api}/repos/{repository}/commits/{sha}/check-runs"
-        f"?check_name={urllib.parse.quote(ATTESTATION_CHECK_NAME, safe='')}"
+        f"?check_name={urllib.parse.quote(environ.get('ATTESTATION_NAME', ATTESTATION_CHECK_NAME), safe='')}"
         "&filter=all&per_page=100"
     )
-    record_id, record = _newest_trusted(_paged_check_runs(http_get, api, listing), app_id, sha)
+    name = environ.get("ATTESTATION_NAME", ATTESTATION_CHECK_NAME)
+    record_id, record = _newest_trusted(_paged_check_runs(http_get, api, listing), app_id, sha, name)
     payload = _canonical_payload(record, record_id, sha)
+    promotion = payload.get("schema") == PROMOTION_SCHEMA
+    if promotion:
+        if (payload["attestation_name"] != name or not environ.get("STEP")
+                or payload["step"] != environ["STEP"] or not environ.get("TARGET_REF")
+                or payload["target_ref"] != environ["TARGET_REF"]
+                or payload["repository"]["full_name"] != repository):
+            raise VerificationError("promotion attestation belongs to another step or target")
+        payload = _promotion_evidence(payload)
+    elif name != ATTESTATION_CHECK_NAME:
+        raise VerificationError("a default attestation cannot satisfy a promotion step")
     _require_identity(
         payload, repository_id=repository_id, app_id=app_id, sha=sha, version=version
     )
@@ -152,11 +174,11 @@ def _paged_check_runs(http_get: HttpGet, api: str, url: str) -> list[dict[str, A
 
 
 def _newest_trusted(
-    records: list[dict[str, Any]], app_id: int, sha: str
+    records: list[dict[str, Any]], app_id: int, sha: str, name: str = ATTESTATION_CHECK_NAME,
 ) -> tuple[int, dict[str, Any]]:
     trusted: list[tuple[int, dict[str, Any]]] = []
     for record in records:
-        if record.get("name") != ATTESTATION_CHECK_NAME:
+        if record.get("name") != name:
             continue
         app = record.get("app")
         record_app = _strict_int(app.get("id")) if isinstance(app, dict) else None
@@ -198,10 +220,41 @@ def _canonical_payload(record: dict[str, Any], record_id: int, sha: str) -> dict
     ).encode("ascii")
     if canonical != data:
         raise VerificationError("attestation payload text is noncanonical")
-    if record.get("external_id") != EXTERNAL_ID_PREFIX + hashlib.sha256(data).hexdigest():
+    prefix = (PROMOTION_EXTERNAL_ID_PREFIX if payload.get("schema") == PROMOTION_SCHEMA
+              else EXTERNAL_ID_PREFIX)
+    if record.get("external_id") != prefix + hashlib.sha256(data).hexdigest():
         raise VerificationError("attestation external_id is not the payload digest")
-    _require_shape(payload)
+    if payload.get("schema") == PROMOTION_SCHEMA:
+        _require_promotion_shape(payload)
+    else:
+        _require_shape(payload)
     return payload
+
+
+def _promotion_evidence(payload):
+    repository = payload["repository"]
+    return {"schema": ATTESTATION_SCHEMA,
+            **{k: repository[k] for k in _PROMOTION_REPOSITORY_FIELDS if k != "full_name"},
+            "head_sha": payload["source_sha"],
+            "required_check_set_version": payload["checks_version"],
+            "checks": payload["checks"], "workflow_runs": payload["workflow_runs"]}
+
+
+def _require_promotion_shape(payload):
+    _require_fields(payload, _PROMOTION_FIELDS, "promotion payload")
+    _require_fields(payload["repository"], _PROMOTION_REPOSITORY_FIELDS, "repository")
+    if _REPOSITORY.fullmatch(payload["repository"]["full_name"]) is None:
+        raise VerificationError("promotion repository full_name is malformed")
+    if not isinstance(payload["step"], str) or re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", payload["step"]) is None:
+        raise VerificationError("promotion step is malformed")
+    for field in ("attestation_name", "request_id", "batch_id", "target_ref"):
+        _require_text(payload[field], field)
+    if not payload["target_ref"].startswith("refs/heads/"):
+        raise VerificationError("promotion target is not a branch ref")
+    if payload["version"] is not None:
+        _require_text(payload["version"], "version")
+    _require_sha(payload["base_sha"], "base_sha")
+    _require_shape(_promotion_evidence(payload))
 
 
 def _require_shape(payload: Any) -> None:

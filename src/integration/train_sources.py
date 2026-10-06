@@ -448,7 +448,15 @@ class DatabaseBatches:
         return True
 
     async def settle(self, batch: Batch, observation: BatchObservation) -> None:
+        async with self.db._engine.connect() as conn:
+            trigger = await conn.scalar(select(integration_batches.c.trigger).where(
+                integration_batches.c.id == batch.id,
+            ))
         async with self.db.immediate() as conn:
+            if trigger == "promotion":
+                from src.integration.promotion_steps import settle_promotion
+
+                await settle_promotion(self.db, batch, observation, clock=self.clock, conn=conn)
             await conn.execute(
                 update(integration_batches)
                 .where(integration_batches.c.id == batch.id,
@@ -484,6 +492,28 @@ class LeasedPublish:
                 fence, git=self.git, checkout_path=str(repo.store), repository=repo.binding,
                 tip_oid=new_oid, expected_old_oid=expected_old_oid, authorize=authorize,
             )
+        finally:
+            await self.locks.release(fence)
+
+    async def qualified(self, repo, target_ref, ref, *, expected_old_oid, new_oid, authorize):
+        """An immutable tag write shares the promotion target's branch fence."""
+        from src.integration.lock import CRITICAL_SECTION_SECONDS, PublishWithdrawn
+
+        fence = await self.locks.acquire(
+            BranchKey(repository_id=repo.repository_id, branch=target_ref), self.holder,
+            ttl_seconds=self.ttl_seconds, role="integration",
+        )
+        try:
+            async with self.locks.exclusion(fence) as row:
+                if not await authorize():
+                    raise PublishWithdrawn("promotion tag is no longer authorized")
+                remaining = min(CRITICAL_SECTION_SECONDS, row["expires_at"] - self.clock())
+                deadline = asyncio.get_running_loop().time() + remaining
+                async with asyncio.timeout(remaining):
+                    return await self.git.apush_qualified_ref(
+                        str(repo.store), repository=repo.binding, ref=ref, tip_oid=new_oid,
+                        expected_old_oid=expected_old_oid, authority_deadline=deadline,
+                    )
         finally:
             await self.locks.release(fence)
 
@@ -578,10 +608,6 @@ class DaemonLanes:
             )
             return (await attestation.publish(subject, producer=producer)).outcome
 
-        service = BatchService(self.store, gitops, publish=self.publish,
-                               eligible=self.batches.eligible, gate=checks.gate,
-                               attest=None if local else attest, require_attestation=not local)
-
         async def snapshot() -> GitTruthSnapshot:
             return await self.truth.snapshot(
                 str(retained.store), project_id=target.project_id,
@@ -589,6 +615,66 @@ class DaemonLanes:
                 target_ref=target.target_ref,
             )
 
+        if target.kind == "promotion":
+            return await self._promotion_lane(target, retained, binding, gitops, policy, snapshot)
+
+        service = BatchService(self.store, gitops, publish=self.publish,
+                               eligible=self.batches.eligible, gate=checks.gate,
+                               attest=None if local else attest, require_attestation=not local)
+
+        return TrainLane(snapshot=snapshot, service=service, checks=checks)
+
+    async def _promotion_lane(self, target, retained, binding, gitops, policy, snapshot):
+        from src.integration.checks import ExactChecks, HostedChecks
+        from src.integration.ci import IntegrationTrustManifest
+        from src.integration.ci_producers import HostedCIProducer
+        from src.integration.promotion_steps import (
+            PromotionChecks, PromotionIntentInvalid, PromotionVisit, StepAdmission,
+            publish_step_attestation, step_required_checks,
+        )
+
+        admission = StepAdmission(self.db, gitops, target.step)
+        resolved = {}
+
+        async def resolve(batch, sha):
+            members = await self.store.members(batch.id)
+            meta = await admission.load(batch, members)
+            attestation = getattr(self.orchestrator, "integration_attestation_service", None)
+            if attestation is None:
+                raise PromotionIntentInvalid("promotion requires hosted App attestation service")
+            state = {
+                "project_id": target.project_id, "canonical_repository_id": target.repository_id,
+                "repository_numeric_id": binding.repository_id,
+                "repository_full_name": binding.full_name, "candidate_sha": sha,
+                "batch_id": batch.id, "operation_id": batch.id,
+                "revision": batch.repair_attempt_count,
+                "policy_snapshot": {"root": policy.get("root") or {}},
+            }
+            # Load the exact source manifest using the existing App identity checks;
+            # check selection comes from the frozen step, independently of root policy.
+            trust, client = await attestation._load_trust(state)
+            if not isinstance(trust, IntegrationTrustManifest):
+                raise PromotionIntentInvalid("promotion requires App-mode trust")
+            manifest = await attestation._subject_manifest(state, binding)
+            required = step_required_checks(manifest, meta["step"])
+            if required.version != meta["checks_version"]:
+                raise PromotionIntentInvalid("promotion check version differs from request")
+            resolved[batch.id] = manifest, client
+            selected = manifest.model_copy(update={"required_checks": required})
+            return ExactChecks(self.db, HostedChecks(HostedCIProducer(client, selected)))
+
+        checks = PromotionChecks(admission, resolve)
+
+        async def attest(batch, sha):
+            trust, client = resolved[batch.id]
+            return await publish_step_attestation(
+                admission, batch, await self.store.members(batch.id), trust, client,
+            )
+
+        service = PromotionVisit(
+            self.store, gitops, admission=admission, checks=checks, publish=self.publish,
+            publish_tag=self.publish.qualified, attest=attest, snapshot=snapshot, clock=self.clock,
+        )
         return TrainLane(snapshot=snapshot, service=service, checks=checks)
 
     async def _policy(self, project_id: str) -> dict:
