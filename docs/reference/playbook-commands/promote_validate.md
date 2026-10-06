@@ -14,13 +14,15 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:47183d3a25da8268ff1557f4389596b9a34390f7c896fc10f929cb081d286613` |
+| Contract fingerprint | `sha256:fd3378ee5d384d8815d19d55d74e4c43a94811ff84088e62fa93a35412230d80` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `project_id` | `string` | yes | — | — |
+| `task_id` | `string \| null` | no | `null` | — |
+| `session_id` | `string \| null` | no | `null` | — |
 | `flow` | `any` | no | `null` | — |
 | `use_stored` | `boolean` | no | `true` | — |
 | `remote` | `boolean` | no | `false` | — |

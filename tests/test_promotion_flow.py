@@ -377,14 +377,32 @@ async def test_command_reads_manifest_from_exact_designated_default_sha():
     assert read.call_args.args[-1] == "a" * 40
 
 
-def test_worker_api_scope_admits_reads_only_in_its_project():
+async def test_worker_api_scope_admits_reads_only_in_its_project():
     from src.api.auth import RequestScope
     from src.api.scope import check_command_scope
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import DENY_ALL
 
     scope = RequestScope(kind="session", project_id="p", task_id="task", session_id="session")
     assert check_command_scope("promote_schema", {}, scope) is None
-    assert check_command_scope("promote_validate", {"project_id": "p"}, scope) is None
-    assert check_command_scope("promote_validate", {"project_id": "other"}, scope)
+    args = {"flow": {"promotion_flow": [release()]}, "use_stored": False}
+    assert check_command_scope("promote_validate", args, scope) is None
+    assert {key: args[key] for key in ("project_id", "task_id", "session_id")} == {
+        "project_id": "p", "task_id": "task", "session_id": "session"
+    }
+    value = handler()
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, policy=DENY_ALL,
+        project_id="p", task_id="task", session_id="session",
+    )
+    with principal_context(principal):
+        result = await value._cmd_promote_validate(args)
+    assert result["success"] and result["valid"] and result["project_id"] == "p"
+    value.db.get_project.assert_awaited_once_with("p")
+    for key in ("project_id", "task_id", "session_id"):
+        assert check_command_scope("promote_validate", {key: "other"}, scope) == (
+            f"out of scope: {key} mismatch"
+        )
 
 
 def test_contracts_are_registered_as_reads_without_changing_legacy_fields():

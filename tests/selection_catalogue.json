@@ -1415,7 +1415,7 @@
       ]
     }
   },
-  "digest": "sha256:d2d4a653e8a9ceacce148c662ce9c002455225c619da8e1c601fc553c4e89735",
+  "digest": "sha256:9a5d1aca3866940dfc5f4ca229140df61e1a55af5675937747b10559a1c2052f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -12360,9 +12360,11 @@
         "src.cli.app",
         "src.commands.contracts",
         "src.commands.contracts.models",
+        "src.commands.principal",
         "src.commands.promote_commands",
         "src.database.tables",
-        "src.integration.promotion_steps"
+        "src.integration.promotion_steps",
+        "src.profiles.capabilities"
       ],
       "markers": [
         "parametrize"

@@ -102,6 +102,9 @@ class PromoteSchemaValue(CommandValue):
 
 class PromoteValidateArgs(CommandArgs):
     project_id: str = Field(min_length=1)
+    #: The session scope gate injects these before the handler validates arguments.
+    task_id: str | None = None
+    session_id: str | None = None
     flow: Any = None
     #: False when flow supplies a document, including explicit null.
     use_stored: bool = True
