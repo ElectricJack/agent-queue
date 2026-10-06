@@ -12,6 +12,7 @@ import re
 import json
 import logging
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
@@ -25,6 +26,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from src.database.tables import (
     integration_batch_members, integration_batches, task_context, task_metadata, tasks,
+    integration_review_evidence,
 )
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.git.github_contracts import GitHubAccessError
@@ -806,6 +808,7 @@ class StepPullRequestGate:
     def __init__(self, client, binding, *, is_operator=None):
         self.client, self.binding = client, binding
         self.is_operator = is_operator or self._repository_operator
+        self.evidence = {}
 
     async def _repository_operator(self, login):
         permission = await self.client.request_json(
@@ -823,6 +826,7 @@ class StepPullRequestGate:
                 and permission.get("permission") == "admin")
 
     async def observe(self, batch, meta):
+        self.evidence = {}
         number = meta.get("pr_number")
         if type(number) is not int or number <= 0:
             return "promotion_pr_missing"
@@ -833,6 +837,7 @@ class StepPullRequestGate:
             pull = await self.client.request_json(
                 "GET", f"/repositories/{self.binding.repository_id}/pulls/{number}",
             )
+            self.evidence["pull"] = pull
             head, base = pull.get("head") or {}, pull.get("base") or {}
             identity = {"id": self.binding.repository_id, "full_name": self.binding.full_name}
             if (pull.get("number") != number or pull.get("html_url") != expected_url
@@ -852,6 +857,7 @@ class StepPullRequestGate:
             reviews = await self.client.paged_list(
                 f"/repositories/{self.binding.repository_id}/pulls/{number}/reviews?per_page=100",
             )
+            self.evidence["reviews"] = reviews
             latest = {}
             for review in sorted(reviews, key=lambda item: item.get("id", 0)):
                 if type(review.get("id")) is not int or review["id"] <= 0:
@@ -920,6 +926,18 @@ def step_required_checks(trust: IntegrationTrustManifest, step: dict):
     return RequiredChecksManifest(version=trust.required_checks.version, names=names)
 
 
+async def cache_promotion_review(conn, repository_id, member, tree, reason, evidence):
+    """Cache an observed PR verdict for readers; admission always re-observes GitHub."""
+    await conn.execute(insert(integration_review_evidence).values(
+        id="promotion-review-" + uuid.uuid4().hex, source_task_id=member.task_id,
+        repository_id=repository_id, source_base=member.base_sha,
+        reviewed_head_sha=member.source_sha, reviewed_tree_sha=tree,
+        reviewer_identity="service:promotion-pr", review_kind="promotion_pr", generation=0,
+        verdict="approved" if reason is None else "rejected",
+        evidence={**evidence, "reason": reason}, created_at=time.time(),
+    ))
+
+
 class PromotionChecks:
     """Resolve once outside the fence and reuse exact-SHA source-lane evidence."""
 
@@ -933,11 +951,18 @@ class PromotionChecks:
     async def refresh_gate(self, batch, sha):
         from src.integration.batches import BatchStore
 
-        meta = await self.admission.load(batch, await BatchStore(self.admission.db).members(batch.id))
+        members = await BatchStore(self.admission.db).members(batch.id)
+        meta = await self.admission.load(batch, members)
         if sha != meta["source_sha"]:
             raise PromotionIntentInvalid("promotion gate head differs from its intent")
         gate = self.pull_request(batch)
-        self._pr_reasons[(batch.id, sha)] = await gate.observe(batch, meta)
+        reason = await gate.observe(batch, meta)
+        self._pr_reasons[(batch.id, sha)] = reason
+        repo = await self.admission.gitops.repository(batch)
+        tree = await self.admission.gitops.git.atree_sha(str(repo.store), sha)
+        async with self.admission.db.immediate() as conn:
+            await cache_promotion_review(conn, batch.repository_id, members[0], tree,
+                                         reason, gate.evidence)
         checks = await self.for_candidate(batch, sha)
         await checks.refresh(await self.head(batch, sha))
 

@@ -371,6 +371,7 @@ async def record_worker_completion(
 ):
     """Verify and publish completion evidence before the task can become terminal."""
     from src.integration.hierarchy import resolve_workspace_checkpoint
+    from sqlalchemy import select
 
     repo = await db.get_repo(task.repo_id or project.integration_repository_id or "")
     if repo is None:
@@ -380,7 +381,14 @@ async def record_worker_completion(
     if commit and commit != source:
         raise ValueError("--commit must identify the exact final source, not an earlier commit")
     store = GitProvenance(git, checkout, repository_url=repo.url)
-    base = await store.run("rev-parse", "--verify", "refs/remotes/origin/" + repo.default_branch)
+    from src.database.tables import projects
+    from src.integration.promotion_routing import promotion_origin_target
+
+    origin = await db.get_task_branch_origin_for_promotion(task.id, repo.id)
+    async with db._engine.connect() as conn:
+        flow = await conn.scalar(select(projects.c.promotion_flow).where(projects.c.id == project.id))
+    target = promotion_origin_target(repo.default_branch, flow, origin, repo.id)
+    base = await store.run("rev-parse", "--verify", "refs/remotes/origin/" + target)
     await store.exact(base)
     identity = CompletionIdentity(project.id, repo.id, task.id, generation)
     await store.write_completion(CompletedSource(identity, source),
