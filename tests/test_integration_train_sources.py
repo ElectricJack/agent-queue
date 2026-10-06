@@ -442,7 +442,12 @@ async def test_train_control_handlers_refuse_non_supervisor_principals(world, ki
                                               elevated=True, project_id="p")):
         abort = await handler._cmd_integration_abort_batch({"batch_id": "batch"})
         retire = await handler._cmd_integration_retire_origin({"task_id": "a"})
+        pause = await handler._cmd_integration_pause_batch({"batch_id": "batch"})
+        resume = await handler._cmd_integration_resume_batch({"batch_id": "batch"})
+        eject = await handler._cmd_integration_eject({"batch_id": "batch", "task_id": "a"})
+        seal = await handler._cmd_integration_seal_now({"project_id": "p"})
     assert abort["outcome"] == retire["outcome"] == "unauthorized"
+    assert {r["outcome"] for r in (pause, resume, eject, seal)} == {"unauthorized"}
     assert (await store.get("batch")).intent == "open"
 
 
@@ -2885,3 +2890,190 @@ async def test_epic_branch_move_resettles_completion_and_existing_pr(collected_e
     assert old != new and (await case.github.pull_request(url))["head"]["sha"] == new
     case.train.lane_for.git.acreate_pr.assert_awaited_once()
     assert (await case.train.visit(MAIN)).state == "testing"
+
+
+async def test_train_pause_resume_controls_preview_and_fence_green_publication(world):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+
+    await completed(world, "a")
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)))
+    visit = await train.visit(MAIN)
+    store = BatchStore(world.db)
+    frozen = await store.members(visit.batch_id)
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    handler.orchestrator = SimpleNamespace(integration_train=train)
+    args = {"batch_id": visit.batch_id}
+    preview = await handler._cmd_integration_pause_batch(args)
+    assert preview["outcome"] == "preview" and preview["intent"] == "open"
+    assert (await store.get(visit.batch_id)).intent == "open"
+    paused = await handler._cmd_integration_pause_batch(args | {"dry_run": False})
+    assert paused["intent"] == "paused"
+    checks.green.add(visit.candidate_sha)
+    assert (await train.visit(MAIN)).state == "held"
+    status = await IntegrationStatusService(world.db, git_first="active").control_status("p")
+    assert status["batches"][0]["intent"] == "paused"
+    assert status["blockers"][0]["code"] == "batch_paused"
+    preview = await handler._cmd_integration_resume_batch(args)
+    assert preview["outcome"] == "preview" and (await store.get(visit.batch_id)).intent == "paused"
+    resumed = await handler._cmd_integration_resume_batch(args | {"dry_run": False})
+    assert resumed["intent"] == "open"
+    status = await IntegrationStatusService(world.db, git_first="active").control_status("p")
+    assert status["batches"][0]["intent"] == "open"
+    assert await store.members(visit.batch_id) == frozen
+    assert (await train.visit(MAIN)).state == "delivered"
+    assert (await handler._cmd_integration_pause_batch(args | {"dry_run": False}))["outcome"] == "refused"
+
+
+@pytest.mark.parametrize("paused", [False, True])
+async def test_train_eject_preserves_frozen_members_pr_and_readmits_after_cadence(world, paused):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+
+    now = [1000.0]
+    for tid in ("a", "b", "c"):
+        await completed(world, tid)
+    async with world.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "c").values(pr_url="https://example/pr/3"))
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0],
+                            settling=True)
+    visit = await train.visit(MAIN, seal_now=True)
+    store = BatchStore(world.db)
+    frozen = await store.members(visit.batch_id)
+    assert len(frozen) == 3
+    if paused:
+        await store.set_intent(visit.batch_id, "paused")
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    handler.orchestrator = SimpleNamespace(integration_train=train)
+    args = {"batch_id": visit.batch_id, "task_id": "c", "dry_run": True}
+    preview = await handler._cmd_integration_eject(args)
+    assert preview["outcome"] == "preview", preview
+    assert len(await store.members(visit.batch_id)) == 3
+    async with world.db._engine.connect() as conn:
+        assert len((await conn.execute(select(integration_batches.c.id))).all()) == 1
+    ejected = await handler._cmd_integration_eject(args | {"dry_run": False, "reason": "isolate c"})
+    assert ejected["outcome"] == "ejected", ejected
+    replacement = ejected["replacement_batch_id"]
+    assert replacement != visit.batch_id
+    assert await store.members(visit.batch_id) == frozen
+    assert (await store.get(visit.batch_id)).intent == "aborted"
+    assert [m.task_id for m in await store.members(replacement)] == ["a", "b"]
+    assert (await store.get(replacement)).intent == ("paused" if paused else "open")
+    task = await world.db.get_task("c")
+    assert task.pr_url == "https://example/pr/3" and task.status is TaskStatus.COMPLETED
+    pending = await train.batches.pending(MAIN, await snapshot(world))
+    assert "c" in {m.task_id for m in pending[0]}
+    status = await IntegrationStatusService(world.db, git_first="active").control_status("p")
+    old = next(b for b in status["batches"] if b["id"] == visit.batch_id)
+    assert old["member_disposition"] == "pending"
+    if paused:
+        assert (await train.visit(MAIN)).state == "held"
+        await store.set_intent(replacement, "open")
+    tested = await train.visit(MAIN)
+    assert tested.batch_id == replacement and tested.state == "testing", tested
+    checks.green.add(tested.candidate_sha)
+    assert (await train.visit(MAIN)).state == "delivered"
+    waiting = await train.visit(MAIN)
+    assert waiting.state == "settling" and waiting.detail["task_ids"] == ["c"]
+    now[0] += 300
+    readmitted = await train.visit(MAIN)
+    assert readmitted.state == "testing", readmitted
+    assert readmitted.batch_id not in {visit.batch_id, replacement}
+    assert [m.task_id for m in await store.members(readmitted.batch_id)] == ["c"]
+    assert (await world.db.get_task("c")).pr_url == "https://example/pr/3"
+
+
+async def test_train_ejected_singleton_gets_new_identity_on_readmission(world):
+    await completed(world, "a")
+    now = [1000.0]
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0], settling=True)
+    visit = await train.visit(MAIN, seal_now=True)
+    service = (await train.lane_for(MAIN)).service
+    result = await TrainControls(world.db).eject(visit.batch_id, "a", service=service,
+        dry_run=False, operator_id="operator", reason="retry alone")
+    assert result["replacement_batch_id"] is None
+    assert (await train.visit(MAIN)).state == "settling"
+    now[0] += 300
+    next_visit = await train.visit(MAIN)
+    assert next_visit.state == "testing" and next_visit.batch_id != visit.batch_id
+
+
+async def test_train_eject_rolls_back_abort_if_replacement_freeze_fails(world, monkeypatch):
+    from src.database.tables import task_metadata
+
+    await completed(world, "a")
+    await completed(world, "b")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    visit = await train.visit(MAIN)
+    service = (await train.lane_for(MAIN)).service
+    monkeypatch.setattr(service.store, "_freeze_on", AsyncMock(side_effect=ValueError("freeze failed")))
+    with pytest.raises(ValueError, match="freeze failed"):
+        await TrainControls(world.db).eject(visit.batch_id, "b", service=service,
+            dry_run=False, operator_id="operator", reason="isolate b")
+    assert (await service.store.get(visit.batch_id)).intent == "open"
+    async with world.db._engine.connect() as conn:
+        assert len((await conn.execute(select(integration_batches.c.id))).all()) == 1
+        assert not (await conn.execute(select(task_metadata).where(
+            task_metadata.c.key.like("integration_train_ejection:%"),
+        ))).first()
+
+
+async def test_train_eject_refuses_dependency_and_rolls_back_changed_source(world, monkeypatch):
+    await completed(world, "a")
+    await completed(world, "b", needs=("a",))
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    visit = await train.visit(MAIN)
+    service = (await train.lane_for(MAIN)).service
+    controls = TrainControls(world.db)
+    with pytest.raises(ValueError, match="undelivered prerequisite"):
+        await controls.eject(visit.batch_id, "a", service=service,
+            dry_run=False, operator_id="operator", reason="remove prerequisite")
+    monkeypatch.setattr("src.integration.git_truth.GitTruthSnapshot.is_fresh",
+                        AsyncMock(return_value=False))
+    with pytest.raises(ValueError, match="batch sources, target or candidate changed"):
+        await controls.eject(visit.batch_id, "b", service=service,
+            dry_run=False, operator_id="operator", reason="changed")
+    assert (await service.store.get(visit.batch_id)).intent == "open"
+    assert len(await service.store.members(visit.batch_id)) == 2
+
+
+async def test_train_seal_now_command_previews_and_bypasses_cadence_once(world):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.database.tables import task_metadata
+
+    await completed(world, "a")
+    now = [1000.0]
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0],
+                            settling=True)
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    handler.orchestrator = SimpleNamespace(integration_train=train)
+    preview = await handler._cmd_integration_seal_now({"project_id": "p"})
+    assert preview["outcome"] == "preview" and preview["members"] == ["a"]
+    async with world.db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_batches))).first()
+        assert not (await conn.execute(select(task_metadata))).first()
+    sealed = await handler._cmd_integration_seal_now({"project_id": "p", "dry_run": False})
+    assert sealed["outcome"] == "sealed", sealed
+    assert sealed["batch_id"] is not None
+    visit = await train.visit(MAIN)
+    assert visit.state == "testing"
+    checks.green.add(visit.candidate_sha)
+    assert (await train.visit(MAIN)).state == "delivered"
+    await completed(world, "next-leaf")
+    assert (await train.visit(MAIN)).state == "settling"
+
+
+async def test_train_seal_now_command_preserves_red_pr_gate(world):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+
+    train, github, _ = await hosted_train(world, settling=True)
+    source = await completed(world, "a")
+    github.pr_runs[source] = "failure"
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    handler.orchestrator = SimpleNamespace(integration_train=train)
+    result = await handler._cmd_integration_seal_now({"project_id": "p", "dry_run": False})
+    assert result["outcome"] == "no_ready_work", result
+    assert result["blockers"][0]["code"] == "pr_checks_red"
+    assert await train.batches.current(MAIN) is None

@@ -690,11 +690,14 @@ class IntegrationStatusService:
 
     async def _train_batches_on(self, conn: AsyncConnection, where) -> list[dict[str, Any]]:
         """Open git batches with their members, intent and open repair tasks."""
+        from src.integration.batches import candidate_ref, ejection_instruction
+
         table = integration_batches
         rows = await self._all(
             conn,
             select(table.c.id, table.c.project_id, table.c.repository_id, table.c.target_ref, table.c.intent,
-                   table.c.lifecycle, table.c.repair_attempt_count, table.c.created_at)
+                   table.c.lifecycle, table.c.repair_attempt_count, table.c.created_at,
+                   ejection_instruction(table.c.id).label("ejected"))
             .where(where, table.c.target_ref.is_not(None), table.c.lifecycle != "promoted")
             .order_by(table.c.created_at, table.c.id)
             .limit(100),
@@ -721,11 +724,15 @@ class IntegrationStatusService:
             )
             .order_by(tasks.c.id),
         )
-        from src.integration.batches import candidate_ref
-
         from src.operator_decisions import history_on, related_on
 
         for row in rows:
+            ejected = row.pop("ejected")
+            row["member_disposition"] = (
+                "pending" if row["intent"] == "aborted" and ejected
+                else "withheld" if row["intent"] == "aborted"
+                else row["intent"]
+            )
             row["operator_decisions"] = await history_on(
                 conn, row["project_id"], await related_on(conn, "batch", row["id"])
             )

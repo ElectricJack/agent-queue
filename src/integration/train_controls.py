@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from dataclasses import replace
@@ -14,10 +15,11 @@ from src.database.tables import (
     projects,
     repos,
     task_branch_origins,
+    task_dependencies,
     tasks,
 )
 from src.git.manager import RemoteRefState
-from src.integration.batches import BatchStore, candidate_ref
+from src.integration.batches import Batch, BatchStore, candidate_ref
 from src.integration.delivery_observer import delivery_targets
 from src.integration.delivery_truth import load_delivery_requests
 from src.integration.train import TrainTarget
@@ -31,6 +33,24 @@ class TrainControls:
     async def abort_batch(self, batch_id, *, dry_run, operator_id, reason):
         if not dry_run and not reason.strip():
             raise ValueError("abort requires a nonblank reason")
+        batch, snapshot, candidate, unchanged = await self._abort_observation(batch_id)
+        store = BatchStore(self.db, clock=self.clock)
+        await store.set_intent(
+            batch_id, "aborted", dry_run=dry_run, authorize=unchanged,
+            operator_id=operator_id, reason=reason,
+        )
+        return {
+            "outcome": "preview" if dry_run else "aborted",
+            "batch_id": batch_id,
+            "project_id": batch.project_id,
+            "target_ref": batch.target_ref,
+            "candidate_sha": candidate,
+            "target_sha": snapshot.target_oid,
+            "intent": batch.intent if dry_run else "aborted",
+            "dry_run": dry_run,
+        }
+
+    async def _abort_observation(self, batch_id):
         store = BatchStore(self.db, clock=self.clock)
         batch = await store.get(batch_id)
         if batch is None:
@@ -69,24 +89,102 @@ class TrainControls:
             )
             return remote.state is RemoteRefState.ABSENT
 
-        await store.set_intent(
-            batch_id,
-            "aborted",
-            dry_run=dry_run,
-            authorize=unchanged,
-            operator_id=operator_id,
-            reason=reason,
-        )
+        return batch, snapshot, candidate, unchanged
+
+    async def set_batch_intent(self, batch_id, intent, *, dry_run, operator_id, reason=""):
+        store = BatchStore(self.db, clock=self.clock)
+        batch = await store.get(batch_id)
+        if batch is None:
+            raise ValueError("Git-first batch is missing")
+        await store.set_intent(batch_id, intent, dry_run=dry_run,
+                               operator_id=operator_id, reason=reason)
         return {
-            "outcome": "preview" if dry_run else "aborted",
+            "outcome": "preview" if dry_run else "paused" if intent == "paused" else "resumed",
             "batch_id": batch_id,
             "project_id": batch.project_id,
             "target_ref": batch.target_ref,
-            "candidate_sha": candidate,
-            "target_sha": snapshot.target_oid,
-            "intent": batch.intent if dry_run else "aborted",
+            "intent": batch.intent if dry_run else intent,
             "dry_run": dry_run,
         }
+
+    async def eject(self, batch_id, task_id, *, service, dry_run, operator_id, reason):
+        if not dry_run and not reason.strip():
+            raise ValueError("ejection requires a nonblank reason")
+        batch, snapshot, candidate, unchanged = await self._abort_observation(batch_id)
+        if batch.epic_sync:
+            raise ValueError("epic sync membership cannot be ejected")
+        frozen = await service.store.members(batch_id)
+        if task_id not in {m.task_id for m in frozen}:
+            raise ValueError("task is not a frozen batch member")
+        requests = await load_delivery_requests(self.db, [m.task_id for m in frozen],
+            repository_id=batch.repository_id, target_ref=batch.target_ref, reduced=True)
+        _, trees = await service.freeze_inputs(batch, frozen, requests=requests, snapshot=snapshot)
+        members = tuple(replace(m, order=i) for i, m in enumerate(
+            m for m in frozen if m.task_id != task_id))
+        replacement = None
+        if members:
+            digest = hashlib.sha256(repr((batch_id, task_id, members)).encode()).hexdigest()
+            replacement = Batch("train-eject-" + digest[:32], batch.project_id,
+                batch.repository_id, batch.target_ref, intent=batch.intent, created_at=self.clock())
+            async with self.db._engine.connect() as conn:
+                dependent = await conn.scalar(select(task_dependencies.c.task_id).where(
+                    task_dependencies.c.task_id.in_([m.task_id for m in members]),
+                    task_dependencies.c.depends_on_task_id == task_id,
+                    task_dependencies.c.dep_type == "blocks",
+                ))
+            ejected = next(m for m in frozen if m.task_id == task_id)
+            if dependent and not await snapshot.contains_source(
+                    task_id, ejected.source_sha, ejected.base_sha):
+                raise ValueError("ejected member is an undelivered prerequisite of the remainder")
+
+        async def authorize():
+            current = await load_delivery_requests(self.db, list(requests),
+                repository_id=batch.repository_id, target_ref=batch.target_ref, reduced=True)
+            return (current == requests and await unchanged()
+                    and await service.eligible(batch, frozen))
+
+        await service.store.eject(batch, task_id, replacement, members, trees=trees,
+            authorize=authorize, dry_run=dry_run, operator_id=operator_id, reason=reason)
+        return {
+            "outcome": "preview" if dry_run else "ejected", "project_id": batch.project_id,
+            "batch_id": batch_id, "task_id": task_id, "dry_run": dry_run,
+            "replacement_batch_id": replacement.id if replacement else None,
+            "members": [m.task_id for m in members], "candidate_sha": candidate,
+            "target_sha": snapshot.target_oid, "target_ref": batch.target_ref,
+            "intent": batch.intent if dry_run else "aborted",
+        }
+
+    async def seal_now(self, project_id, *, train, dry_run):
+        if train is None:
+            raise ValueError("the integration train is not active")
+        targets = await train.targets.targets(self.clock())
+        roots = [t for t in targets if t.project_id == project_id and t.kind != "epic"]
+        if len(roots) != 1:
+            raise ValueError("project has no unique active root train target")
+        target = roots[0]
+        lane = await train.lane_for(target)
+        snapshot = await lane.snapshot()
+        if snapshot.error or not snapshot.target_oid:
+            raise ValueError("train target cannot be observed")
+        if dry_run:
+            batch = await train.batches.current(target)
+            blockers = []
+            if batch is not None:
+                members = await lane.service.store.members(batch.id)
+            else:
+                pending = await train.batches.pending(target, snapshot, blockers=blockers)
+                members = pending[0] if pending else ()
+            return {"outcome": "preview", "project_id": project_id, "dry_run": True,
+                "batch_id": batch.id if batch else None, "target_ref": target.target_ref,
+                "intent": batch.intent if batch else None,
+                "members": [m.task_id for m in members], "blockers": blockers}
+        selection = await train.batches.open_batch(target, snapshot, lane.service, seal_now=True)
+        return {"outcome": "sealed" if selection.batch else "no_ready_work",
+            "project_id": project_id, "dry_run": False,
+            "batch_id": selection.batch.id if selection.batch else None,
+            "intent": selection.batch.intent if selection.batch else None,
+            "target_ref": target.target_ref, "members": [m.task_id for m in selection.members],
+            "blockers": list(selection.blockers)}
 
     async def retire_origin(self, task_id, *, dry_run, origin_id, operator_id, reason):
         if not dry_run and (not origin_id or not reason.strip()):
