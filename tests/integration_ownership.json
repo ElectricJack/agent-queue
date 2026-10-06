@@ -2065,6 +2065,18 @@
         530
       ]
     },
+    "src/commands/task_changes.py::apply": {
+      "reason": "Applies reviewed task graph changes through hierarchical integration filing and guarded hierarchy/lifecycle writers in the proposal transaction; performs no Git publication."
+    },
+    "src/commands/task_changes.py::boundary": {
+      "reason": "Serializes proposal writes with routing and hierarchy writers and locks integration checkpoints to fence concurrent integration state changes."
+    },
+    "src/commands/task_changes.py::import from src.database.tables import gates, projects, sessions, task_dependencies, task_gates, task_integration_checkpoints, task_metadata, tasks": {
+      "reason": "Imports integration checkpoints for proposal version checks and transaction fencing alongside ordinary task graph tables."
+    },
+    "src/commands/task_changes.py::snapshot": {
+      "reason": "Reads integration checkpoints and project integration mode into the reviewed proposal read set so concurrent integration changes invalidate approval."
+    },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_create_task_graph": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -12898,13 +12910,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1537,
+      "line": 1684,
       "owner": "TaskQueryMixin._apply_transition",
       "call": "delete",
-      "owner_fingerprint": "50d9ac74245484c2c0d1e863304a61dac6994f2fe633bfee8d268de8f16192a2",
+      "owner_fingerprint": "720d89323646a3a50ca29b13d81d3f2ad1053ce90101e7e364cd038e4d5b4e33",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary lifecycle metadata cleanup when task status changes; proposal transactions may defer graph projection, while integration completion and wake guards retain authority. No ref replay state."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 1956,
@@ -12943,13 +12955,13 @@
       "reason": "Ordinary claim-ownership marker cleanup for a claim whose every holder session is proved stopped with matching claim epoch, instance token and desired state, and whose workspace and branch ownership are already released. Metadata key: 'claimed_by_session'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._resume_locked::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1036,
+      "line": 1178,
       "owner": "TaskQueryMixin._resume_locked",
       "call": "delete",
-      "owner_fingerprint": "d717b3b5493b9f12c572b3d756e1ce429128481a397cd5c276131957481fef3f",
+      "owner_fingerprint": "c3509903f9344bc47d9ec0ad03e8aa289a933f663272c29527def2f6248461ec",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Removes ordinary manual-pause and attention metadata on resume; proposal transactions may defer graph projection, while managed integration episodes remain paused without verifier wake authority. No ref replay state."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin.delete_task_meta::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 2208,
@@ -14255,6 +14267,15 @@
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "task.removed audit records the confirmed operator decision, removed subtree, disposition and cancelled operations/batches; preserves history without asserting ref or delivery truth."
+    },
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._cmd_task_batch_commit::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "line": 340,
+      "owner": "TaskProposalCommandsMixin._cmd_task_batch_commit",
+      "call": "insert",
+      "owner_fingerprint": "fd36e4cf244b34121b2749d8c8c5c04d2c46a1dd73224a418afb856dd1533a7f",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Immutable task change-set audit containing actor, source, reviewed diff and receipt in the proposal transaction; no ref replay or authoritative delivery lifecycle state."
     }
   },
   "generic_dependencies": {

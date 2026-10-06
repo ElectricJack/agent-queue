@@ -3133,6 +3133,18 @@
         530
       ]
     },
+    "src/commands/task_changes.py::apply": {
+      "reason": "Applies reviewed task graph changes through hierarchical integration filing and guarded hierarchy/lifecycle writers in the proposal transaction; performs no Git publication."
+    },
+    "src/commands/task_changes.py::boundary": {
+      "reason": "Serializes proposal writes with routing and hierarchy writers and locks integration checkpoints to fence concurrent integration state changes."
+    },
+    "src/commands/task_changes.py::import from src.database.tables import gates, projects, sessions, task_dependencies, task_gates, task_integration_checkpoints, task_metadata, tasks": {
+      "reason": "Imports integration checkpoints for proposal version checks and transaction fencing alongside ordinary task graph tables."
+    },
+    "src/commands/task_changes.py::snapshot": {
+      "reason": "Reads integration checkpoints and project integration mode into the reviewed proposal read set so concurrent integration changes invalidate approval."
+    },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_create_task_graph": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
