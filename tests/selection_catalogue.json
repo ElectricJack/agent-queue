@@ -481,6 +481,7 @@
     "install": {
       "description": "aq install, uninstall and update: the installer engine and resume, platform detection and adapters (WSL, macOS), PostgreSQL, Node toolchain, dashboard build, provider CLIs and logins, onboarding wizard, bootstraps and update rollback.",
       "modules": [
+        "tests/test_additive_migrations.py",
         "tests/test_install_cli.py",
         "tests/test_install_dashboard.py",
         "tests/test_install_engine.py",
@@ -503,6 +504,7 @@
         "tests/test_setup_script.py",
         "tests/test_uninstall_cli.py",
         "tests/test_update.py",
+        "tests/test_update_rollback.py",
         "tests/test_windows_bootstrap.py"
       ]
     },
@@ -816,6 +818,7 @@
         "tests/test_migration_retired_intelligence_classes.py",
         "tests/test_migration_review_playbook_pin.py",
         "tests/test_migration_root_main_promotion.py",
+        "tests/test_migration_schema_ahead.py",
         "tests/test_migration_session_hooks_provisioned.py",
         "tests/test_migration_single_head.py",
         "tests/test_migration_source_ci_infrastructure.py",
@@ -1417,7 +1420,7 @@
       ]
     }
   },
-  "digest": "sha256:f8cd35d085e3f75342b366e6172c1bb71dca2ccf3933e3b52ce6287d70c41c11",
+  "digest": "sha256:bb5c057e2a91e5c84d7e6b658fe6fe660e06cca4f08f22d9ad02226ecf84d762",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -1872,6 +1875,19 @@
         "parametrize"
       ],
       "summary": "``DatabaseActivationSource.ready_activations`` scope selection."
+    },
+    "tests/test_additive_migrations.py": {
+      "areas": [
+        "install"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.additive_migrations"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Release migration checks use literal source, never execute branch code."
     },
     "tests/test_agent_deletion_supply.py": {
       "areas": [
@@ -10675,6 +10691,23 @@
       ],
       "summary": "Current PostgreSQL schema contracts retained after migration squashing."
     },
+    "tests/test_migration_schema_ahead.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.database",
+        "src.database.engine",
+        "src.database.migration_guard",
+        "src.database.schema_key"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Startup accepts only evidenced additive descendants within rollback policy."
+    },
     "tests/test_migration_session_hooks_provisioned.py": {
       "areas": [
         "migrations"
@@ -15987,6 +16020,19 @@
       ],
       "markers": [],
       "summary": ""
+    },
+    "tests/test_update_rollback.py": {
+      "areas": [
+        "install"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.schema_key"
+      ],
+      "markers": [
+        "migration"
+      ],
+      "summary": "A tagged fixture proves A -> B -> A keeps the schema and durable rows."
     },
     "tests/test_usage_limit_screen.py": {
       "areas": [
