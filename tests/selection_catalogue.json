@@ -567,6 +567,7 @@
         "tests/test_integration_accepted_repair.py",
         "tests/test_integration_attestation.py",
         "tests/test_integration_batches.py",
+        "tests/test_integration_candidate_baseline.py",
         "tests/test_integration_candidates.py",
         "tests/test_integration_checks.py",
         "tests/test_integration_ci.py",
@@ -782,6 +783,7 @@
         "tests/test_migration_attestation_publications.py",
         "tests/test_migration_boolean_defaults.py",
         "tests/test_migration_candidate_authority.py",
+        "tests/test_migration_candidate_baseline.py",
         "tests/test_migration_candidate_mutation_claims.py",
         "tests/test_migration_capacity_spill.py",
         "tests/test_migration_collaboration_threads.py",
@@ -1415,7 +1417,7 @@
       ]
     }
   },
-  "digest": "sha256:8798f1c08ecd0796b77936e17ee04ddf84adedcb6b37fc5fcb0ee26189398411",
+  "digest": "sha256:129c948849163be4a6acd8e921f0219ccac66a32ab90eafa35ed5aa081290bba",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7328,6 +7330,27 @@
       ],
       "summary": "A parent collection cancelled mid-episode is reopened without stranding receipts."
     },
+    "tests/test_integration_candidate_baseline.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.integration.batches",
+        "src.integration.candidate_baseline",
+        "src.integration.checks",
+        "src.integration.ci_producers",
+        "src.integration.status",
+        "src.integration.subjects",
+        "src.integration.train",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "A red candidate is judged against the target's own checks, with real evidence rows."
+    },
     "tests/test_integration_candidates.py": {
       "areas": [
         "integration-trains"
@@ -7679,7 +7702,8 @@
         "src.models"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Git-proven backfill of pre-provenance completions (src/integration/legacy_backfill.py)."
     },
@@ -10172,6 +10196,18 @@
         "migration"
       ],
       "summary": "Current PostgreSQL schema contracts retained after migration squashing."
+    },
+    "tests/test_migration_candidate_baseline.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "Revision a00000000080: a red candidate's target baseline counters, additive."
     },
     "tests/test_migration_candidate_mutation_claims.py": {
       "areas": [

@@ -20,12 +20,17 @@ completion record goes through four steps:
 3. **Contain**: a candidate that is an ancestor of the target tip proves
    delivery (``development_delivery``).
 4. **Equivalent**: otherwise, a candidate whose merge into the tip changes
-   nothing (``git merge-tree --write-tree``) proves the work arrived under
-   other commits (``content_equivalent``).
+   only generated artifacts (``merge=aq-generated`` in the target's attributes)
+   proves the work arrived under other commits (``content_equivalent``).
 
 Anything unproven is listed with what was tried and left alone. A dry run
 fetches but writes nothing; apply rechecks that the task and its completion
 did not change since the proof and inserts with ``ON CONFLICT DO NOTHING``.
+
+Where git can prove nothing and the work must not be delivered now either, an
+operator records the decision instead: :func:`abandon_task` for one completed
+completion, :func:`abandon_epic` for a container by name. Both write the same
+audited ``abandoned`` row, and both refuse work git already proves.
 """
 
 from __future__ import annotations
@@ -49,6 +54,7 @@ from src.database.tables import (
 )
 from src.git.manager import GitError, is_valid_git_oid
 from src.integration.delivery_truth import load_delivery_requests
+from src.integration.git_truth import merge_noop
 from src.integration.provenance import CompletionIdentity, GitProvenance
 from src.integration.train import TrainTarget
 from src.integration.train_sources import _pending_tasks, project_delivered, project_snapshot
@@ -81,6 +87,13 @@ class Verdict:
 async def _git(observation, *args) -> tuple[int, str]:
     result = await observation.git.arun_git_result(list(args), cwd=str(observation.store))
     return result.returncode, (result.stdout or "").strip()
+
+
+async def _drop_pull_refs(observation) -> None:
+    """Delete every fetched pull-request head: this namespace is private."""
+    rc, pulled = await _git(observation, "for-each-ref", "--format=%(refname)", PULL_NAMESPACE)
+    for ref in pulled.splitlines() if rc == 0 else ():
+        await _git(observation, "update-ref", "-d", ref)
 
 
 async def _candidates(conn, task_id: str, branch: str | None, refs) -> list[tuple[str, str]]:
@@ -143,8 +156,7 @@ async def _prove(observation, target_oid: str, target_tree: str, verdict: Verdic
             verdict.outcome, verdict.proof, verdict.via, verdict.delivered_sha = (
                 "proven", CONTAINED_PROOF, kind, sha)
             return
-        rc, tree = await _git(observation, "merge-tree", "--write-tree", target_oid, sha)
-        if rc == 0 and tree.splitlines()[:1] == [target_tree]:
+        if await merge_noop(observation, sha, target_oid, target_tree=target_tree):
             verdict.outcome, verdict.proof, verdict.via, verdict.delivered_sha = (
                 "proven", EQUIVALENT_PROOF, kind, sha)
             return
@@ -238,10 +250,7 @@ async def backfill_legacy_deliveries(db, project_id: str, *, dry_run: bool = Tru
                 )
             verdicts.append(verdict)
     finally:
-        rc, pulled = await _git(observation, "for-each-ref", "--format=%(refname)",
-                                PULL_NAMESPACE)
-        for ref in pulled.splitlines() if rc == 0 else ():
-            await _git(observation, "update-ref", "-d", ref)
+        await _drop_pull_refs(observation)
     proven = [v for v in verdicts if v.outcome in {"proven", "recorded"}]
     return {
         "outcome": "preview" if dry_run else "recorded",
@@ -298,46 +307,86 @@ async def abandon_epic(db, project_id: str, epic_id: str, *, dry_run: bool = Tru
                        snapshot=project_snapshot, clock=time.time) -> dict:
     """Preview or record an explicit decision that a completed epic is superseded.
 
-    For an old completed epic whose branch never reached the default branch
+    For an old completed container whose branch never reached the default branch
     and must not now (its work arrived by other means or was replaced), the
     train would otherwise keep the epic target blocked or merge a stale branch.
-    This writes an ``abandoned`` row, an audited operator decision rather than
-    a proof, for the epic and each completed descendant with a live origin and
-    no row yet. Refused when the epic branch is already contained (then the
-    ordinary backfill proves it) or the epic is not completed. Nothing is deleted.
+    This writes an ``abandoned`` row, an audited operator decision rather than a
+    proof, for the container and each completed descendant with a live origin
+    and no row yet; a container that never had a branch of its own is decided
+    the same way. Refused when git already proves the work on the default branch
+    (then the ordinary backfill records that proof), when the container is not
+    completed, or when it has no children. Nothing is deleted.
     """
+    return await _abandon(db, project_id, epic_id, dry_run=dry_run, operator_id=operator_id,
+                          reason=reason, snapshot=snapshot, clock=clock, require_children=True)
+
+
+async def abandon_task(db, project_id: str, task_id: str, *, dry_run: bool = True,
+                       operator_id: str = "operator", reason: str = "",
+                       snapshot=project_snapshot, clock=time.time) -> dict:
+    """Preview or record an explicit decision that one completion is superseded.
+
+    A leaf or branchless completion the train can never prove, and that must not
+    now be delivered, stays an unknown blocker on its target for good: no proof
+    of it exists, so every dependent stays held out of every batch and each
+    visit re-evaluates it. This records the same audited ``abandoned`` row
+    :func:`abandon_epic` records for that one completed task, and, when the task
+    is a container, for its undelivered descendants. Refused when git already
+    proves the work on the default branch or the task is not completed.
+    """
+    return await _abandon(db, project_id, task_id, dry_run=dry_run, operator_id=operator_id,
+                          reason=reason, snapshot=snapshot, clock=clock, require_children=False)
+
+
+async def _abandon(db, project_id: str, task_id: str, *, dry_run: bool, operator_id: str,
+                   reason: str, snapshot, clock, require_children: bool) -> dict:
+    """The audited decision behind both abandon surfaces, one named task wide."""
     if not dry_run and not reason.strip():
-        raise ValueError("abandoning an epic requires a nonblank reason")
+        raise ValueError("abandoning undelivered work requires a nonblank reason")
     project = await db.get_project(project_id)
-    epic = await db.get_task(epic_id)
-    if project is None or epic is None or epic.project_id != project_id:
-        raise ValueError("epic is not a task of this project")
-    if getattr(epic.status, "value", epic.status) != "COMPLETED" or not epic.branch_name:
-        raise ValueError("only a completed epic with a branch can be abandoned")
+    task = await db.get_task(task_id)
+    if project is None or task is None or task.project_id != project_id:
+        raise ValueError("task is not a task of this project")
+    if getattr(task.status, "value", task.status) != "COMPLETED":
+        raise ValueError("only a completed task can be abandoned")
+    if not project.integration_repository_id:
+        raise ValueError("project has no integration repository")
     async with db._engine.connect() as conn:
         default = await conn.scalar(select(repos.c.default_branch).where(
             repos.c.id == project.integration_repository_id))
+    if not default:
+        raise ValueError("integration repository has no default branch")
     target = TrainTarget(project_id, project.integration_repository_id,
                          "refs/heads/" + default.removeprefix("refs/heads/"))
     snap = await snapshot(db, target)
     if snap is None or snap.observation.error or not snap.target_oid:
         raise ValueError("root target cannot be observed")
-    tip = snap.observation.source_heads.get("refs/remotes/origin/" + epic.branch_name)
-    if tip and (await _git(snap.observation, "merge-base", "--is-ancestor", tip,
-                           snap.target_oid))[0] == 0:
-        raise ValueError("epic branch is on the default branch; use the ordinary backfill")
-    ids, frontier = [epic_id], [epic_id]
+    observation = snap.observation
+    rc, target_tree = await _git(observation, "rev-parse", snap.target_oid + "^{tree}")
+    if rc:
+        raise ValueError("root target tree cannot be read")
+    branch = task.branch_name
+    tip = observation.source_heads.get("refs/remotes/origin/" + branch) if branch else None
+    ids, frontier = [task_id], [task_id]
     async with db._engine.connect() as conn:
         while frontier:
             children = list((await conn.execute(select(tasks.c.id).where(
                 tasks.c.parent_task_id.in_(frontier)))).scalars().all())
             ids += children
             frontier = children
-        if len(ids) == 1:
-            raise ValueError("only a completed epic with a branch can be abandoned")
+        if require_children and len(ids) == 1:
+            raise ValueError("only a completed epic with children can be abandoned")
+        candidates = await _candidates(conn, task_id, branch, observation.source_heads)
+        bases = list((await conn.execute(select(task_branch_origins.c.base_sha).where(
+            task_branch_origins.c.task_id == task_id,
+            task_branch_origins.c.retired_at.is_(None)))).scalars())
         pending = set(await _pending_tasks(conn, project_id, target.repository_id, limit=None))
         recorded = set((await conn.execute(select(integration_legacy_deliveries.c.task_id).where(
             integration_legacy_deliveries.c.task_id.in_(ids)))).scalars().all())
+    await _refuse_if_proven(
+        db, observation, task_id, candidates, container=len(ids) > 1, tip=tip, bases=bases,
+        target_oid=snap.target_oid, target_tree=target_tree,
+    )
     delivered = await project_delivered(
         db, ids, project_id=project_id, repository_id=target.repository_id,
         target_ref=target.target_ref, snapshot=snap)
@@ -345,19 +394,46 @@ async def abandon_epic(db, project_id: str, epic_id: str, *, dry_run: bool = Tru
     requests = await load_delivery_requests(db, chosen, repository_id=target.repository_id,
                                             target_ref=target.target_ref, reduced=True)
     results = []
-    for task_id in chosen:
-        request = requests.get(task_id)
-        verdict = Verdict(task_id, "proven", "abandoned", "operator_decision", None)
+    for chosen_id in chosen:
+        request = requests.get(chosen_id)
+        verdict = Verdict(chosen_id, "proven", "abandoned", "operator_decision", None)
         if request is None or not _answered_by_row(request):
             verdict.outcome = "unproven"
         elif not dry_run:
             verdict.outcome = await _record(
                 db, request, target, snap.target_oid, verdict, operator_id=operator_id,
-                reason=f"abandon epic {epic_id}: {reason}", now=clock())
+                reason=f"abandon {task_id}: {reason}", now=clock())
         results.append(verdict.as_dict())
-    return {"outcome": "preview" if dry_run else "recorded", "epic_id": epic_id,
-            "epic_tip": tip, "target_sha": snap.target_oid, "dry_run": dry_run,
+    return {"outcome": "preview" if dry_run else "recorded", "task_id": task_id,
+            "branch_tip": tip, "target_sha": snap.target_oid, "dry_run": dry_run,
             "results": results}
+
+
+async def _refuse_if_proven(db, observation, task_id, candidates, *, container: bool,
+                            tip: str | None, bases, target_oid: str, target_tree: str) -> None:
+    """Refuse a decision for work git already proves, so no two answers disagree.
+
+    A proof is the better answer than an operator decision, so a decision that
+    contradicts one never lands: run the ordinary backfill instead. A container
+    whose branch still equals its origin base carries no collected work, which is
+    exactly what the row backfill declines to read as delivery, so nothing it
+    could record contradicts the decision and the check is skipped.
+    """
+    if container and not any(tip and base and tip != base for base in bases):
+        return
+    verdict = Verdict(task_id, "unproven")
+    try:
+        await _prove(observation, target_oid, target_tree, verdict, candidates)
+        if verdict.outcome != "proven" and not container:
+            await _prove_on_open_epic(db, observation, task_id, verdict, candidates)
+    finally:
+        await _drop_pull_refs(observation)
+    if verdict.outcome == "proven":
+        where = ("its parent epic's branch" if verdict.proof == EPIC_PROOF
+                 else f"the default branch at {target_oid[:12]}")
+        raise ValueError(
+            f"git already proves {task_id} on {where} ({verdict.proof} via "
+            f"{verdict.via}); use the ordinary backfill")
 
 
 def _answered_by_row(request) -> bool:
@@ -391,4 +467,4 @@ async def _record(db, request, target, target_oid, verdict, *, operator_id, reas
 
 
 __all__ = ["CONTAINED_PROOF", "EPIC_PROOF", "EQUIVALENT_PROOF", "abandon_epic",
-           "backfill_legacy_deliveries"]
+           "abandon_task", "backfill_legacy_deliveries"]

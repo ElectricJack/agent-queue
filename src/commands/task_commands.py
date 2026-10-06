@@ -5310,6 +5310,13 @@ class TaskCommandsMixin:
                                f"(attempt {failure.get('attempt')}; "
                                f"{failure.get('retry', 'automatic')} retry). "
                                f"After fixing the cause: aq task resume --task-id {task_id}")
+            elif needs_attention == "branch_fenced":
+                fenced = await self.db.get_task_meta(str(task_id), "branch_fenced")
+                if isinstance(fenced, dict):
+                    detail += (f": {fenced.get('reason', 'branch is fenced')} on "
+                               f"{fenced.get('branch')}. The claim retries on its own; "
+                               f"aq integration release-owner releases the writer if it "
+                               f"is gone")
             reasons.append(Reason(
                 code="needs_attention", detail=detail, ref=str(task_id),
             ))

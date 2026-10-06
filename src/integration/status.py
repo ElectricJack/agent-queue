@@ -43,6 +43,7 @@ TERMINAL_TASK_STATES = ("COMPLETED", "FAILED", "CANCELLED")
 # What a train visit's state asks of whoever reads the status.
 TRAIN_VISIT_BLOCKERS = {
     "conflict": ("merge_conflict", "the batch does not merge onto its target"),
+    
     "no_regenerator": (
         "no_regenerator",
         "no regenerate command is configured, so generated artifacts cannot be rebuilt",
@@ -838,9 +839,20 @@ class IntegrationStatusService:
             blockers.append(_blocker(
                 code, f"required checks are {visit.get('checks') or 'not requested'} "
                 "on the exact candidate", ref, candidate_sha=visit.get("candidate_sha")))
+        elif visit["state"] == "preexisting":
+            detail = visit.get("detail") or {}
+            re_request = detail.get("re_request") or {}
+            # The bound is spent: a person owns this batch until the target's own
+            # required checks pass, the batch is aborted, or the head moves.
+            blockers.append(_blocker(
+                re_request.get("blocker") or "checks_preexisting",
+                "no repair is filed while the candidate's failing checks also fail on the "
+                "target or the target has not decided them",
+                ref, candidate_sha=visit.get("candidate_sha"),
+                evidence=detail.get("baseline")))
         elif visit["state"] in TRAIN_VISIT_BLOCKERS:
-            code, detail = TRAIN_VISIT_BLOCKERS[visit["state"]]
-            blockers.append(_blocker(code, detail, ref, evidence=visit.get("detail")))
+            code, detail_text = TRAIN_VISIT_BLOCKERS[visit["state"]]
+            blockers.append(_blocker(code, detail_text, ref, evidence=visit.get("detail")))
         return blockers
 
     @staticmethod

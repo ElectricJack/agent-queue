@@ -13,8 +13,9 @@ one short transaction afterwards, so a slow provider never holds a ref lock.
 
 from __future__ import annotations
 
+import logging
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
@@ -33,6 +34,8 @@ from src.integration.ci_producers import (
     digest,
 )
 from src.integration.subjects import CIState, HeadIdentity
+
+logger = logging.getLogger(__name__)
 
 
 class Conclusion(StrEnum):
@@ -169,10 +172,16 @@ def evaluate(
 
 class ChecksProvider(Protocol):
     required: RequiredChecks
+    #: Whether a target commit's own checks are an available baseline. Local
+    #: validation jobs exist only for candidates, so their lane keeps filing
+    #: repairs exactly as before and never claims a pre-existing failure.
+    compares_targets: bool
 
     async def request(self, head: HeadIdentity) -> ProducerRequest: ...
 
     async def observe(self, head: HeadIdentity, *, now: float) -> tuple[CommitCheck, ...]: ...
+
+    async def rerequest(self, head: HeadIdentity, suites: tuple[int, ...]) -> tuple[int, ...]: ...
 
 
 def _check(required: RequiredChecks, head: HeadIdentity, name: str, now: float, **values):
@@ -208,12 +217,35 @@ class HostedChecks:
     is nothing to request.
     """
 
+    compares_targets = True
+
     def __init__(self, producer: HostedCIProducer) -> None:
         self.producer = producer
         self.required = RequiredChecks.from_trust(producer.trust)
 
     async def request(self, head: HeadIdentity) -> ProducerRequest:
         return ProducerRequest(outcome="already_running", reason="candidate_push_triggers_checks")
+
+    async def rerequest(self, head: HeadIdentity, suites: tuple[int, ...]) -> tuple[int, ...]:
+        """Re-run this head's own check suites; never raise.
+
+        A re-run is what a candidate whose failures are not its own needs: the
+        head has not moved, so only a suite re-request produces new evidence.
+        Every suite id here was read from this repository's own cached rows for
+        this exact commit, so a re-request cannot reach another repository, commit
+        or check. An outage is the expected failure, not a defect: the caller is
+        bounded and ends at a named blocker instead of asking forever.
+        """
+        addressed = []
+        for suite in suites:
+            try:
+                await self.producer.client.rerequest_check_suite(suite)
+            except Exception:  # an outage is the expected failure, not a defect
+                logger.warning("check suite re-request failed for suite %s of %s",
+                               suite, head.sha[:12], exc_info=True)
+                continue
+            addressed.append(suite)
+        return tuple(addressed)
 
     def _run_url(self, run: dict[str, Any]) -> str:
         return (
@@ -290,9 +322,13 @@ _LOCAL_CONCLUSIONS = {
 class LocalChecks:
     """Per-command rows from the detached-snapshot ``LocalCIProducer`` jobs.
 
-    The required check names are the plan's commands; every job is keyed by
-    the exact head and plan, and its result must name the same snapshot SHA.
+    The required check names are the plan's commands; every job is keyed by the
+    exact head and plan, and its result must name the same snapshot SHA. A
+    development target's own validation jobs are never requested, so there is no
+    target baseline to compare against and nothing to re-run for an unmoved head.
     """
+
+    compares_targets = False
 
     def __init__(self, producer: LocalCIProducer, *, project_id: str) -> None:
         self.producer, self.project_id = producer, project_id
@@ -308,6 +344,10 @@ class LocalChecks:
 
     async def request(self, head: HeadIdentity) -> ProducerRequest:
         return await self.producer.request(self._owner(head), head)
+
+    async def rerequest(self, head: HeadIdentity, suites: tuple[int, ...]) -> tuple[int, ...]:
+        """Nothing to re-run: a local job is keyed to its exact head and plan."""
+        return ()
 
     async def observe(self, head: HeadIdentity, *, now: float) -> tuple[CommitCheck, ...]:
         plan = self.producer.plan
@@ -336,6 +376,14 @@ class LocalChecks:
 _KEY = ("repository_id", "sha", "check_name", "producer_id")
 
 
+def _suite_id(check: CommitCheck) -> int | None:
+    """The check suite this cached row belongs to, when its producer named one."""
+    detail = check.detail.get("check_suite_id")
+    if isinstance(detail, bool) or not isinstance(detail, int) or detail <= 0:
+        return None
+    return detail
+
+
 class ExactChecks:
     """Read, refresh and request the cached required checks of exact commits."""
 
@@ -354,6 +402,11 @@ class ExactChecks:
     @property
     def required(self) -> RequiredChecks:
         return self.provider.required
+
+    @property
+    def compares_targets(self) -> bool:
+        """Whether a target commit's own checks are an available baseline."""
+        return bool(getattr(self.provider, "compares_targets", False))
 
     async def read(self, head: HeadIdentity) -> ChecksResult:
         """The cached verdict for *head*, without contacting the provider."""
@@ -374,6 +427,23 @@ class ExactChecks:
 
     async def request(self, head: HeadIdentity) -> ProducerRequest:
         return await self.provider.request(head)
+
+    async def rerequest(self, head: HeadIdentity, names: Sequence[str]) -> tuple[int, ...]:
+        """Re-run the named required checks of this exact head, outside every lock.
+
+        Only rows this cache already holds for ``head`` name the suites, so the
+        re-request cannot reach another commit, repository or check, and it
+        returns what it actually addressed rather than what it intended.
+        """
+        wanted = set(names)
+        rows = (await self.read(head)).checks
+        suites = sorted({
+            suite
+            for check in rows if check.name in wanted
+            for suite in [_suite_id(check)]
+            if suite is not None
+        })
+        return await self.provider.rerequest(head, tuple(suites))
 
     async def refresh(self, head: HeadIdentity) -> ChecksResult:
         """Observe the provider, overwrite each check's row, and return the verdict.

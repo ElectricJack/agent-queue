@@ -321,6 +321,8 @@ the next reader can act on it:
 | `slot_reset_failure` | same — carries reason, attempt, workspace, session, timestamp, and whether the retry is automatic or manual | same |
 | `claim_prepare_backoff_until` / `_attempts` | any failed preparation | same |
 | `needs_attention: integration_prepare_failed` | the branch fence, not the filesystem, blocked preparation | same |
+| `needs_attention: branch_fenced` | the task's branch is fenced by a writer the owner-recovery sweep releases | same |
+| `branch_fenced` | same — carries reason, branch, repository, workspace, session and timestamp | same |
 | `manual_pause_checkpoint` | a task was explicitly paused | preparation next succeeds |
 
 All of them are cleared together by one delete

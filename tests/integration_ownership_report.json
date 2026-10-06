@@ -9183,6 +9183,9 @@
     },
     "src/api/target_scope.py::CONTEXT_TARGET_RESOLVERS[('decision_list', 'object_id')]": {
       "reason": "Registers tagged integration operator decision read ownership."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed": {
+      "reason": "Branch-fence refusal classified as a wait rather than a workspace fault: releases the claim to READY under the ordinary preparation backoff while the owner-recovery sweep frees the retained owner row, and never BLOCKS or writes the slot_reset_failure record whose resume recovery would be the wrong repair. Claim preparation policy only; no ref, publication or integration lifecycle write."
     }
   },
   "shared_state": {
