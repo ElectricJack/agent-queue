@@ -12274,28 +12274,28 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: REPAIR_RECORD_META"
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::2142606549fbb7fc55f12062ec13ac7e0c300036166e68b70a945ed44a752050": {
-      "line": 1140,
+      "line": 1204,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "5ba7c914e37316a951e47f0c0432a16e6d300799ce05ccd3642db78df5f43bd8",
+      "owner_fingerprint": "27c7480617aa6aa2658becc1ca09bfc874f0db379086a3c1b7ad85b981174fa5",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'slot_reset_failure'"
+      "reason": "Ordinary slot-reset failure diagnostics after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: 'slot_reset_failure'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
-      "line": 1130,
+      "line": 1194,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "5ba7c914e37316a951e47f0c0432a16e6d300799ce05ccd3642db78df5f43bd8",
+      "owner_fingerprint": "27c7480617aa6aa2658becc1ca09bfc874f0db379086a3c1b7ad85b981174fa5",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
+      "reason": "Ordinary attention marker when permanent preparation failure cannot safely detach an attached writer; PostgreSQL contention bypasses this write. Metadata key: 'needs_attention'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
-      "line": 1083,
+      "line": 1147,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "5ba7c914e37316a951e47f0c0432a16e6d300799ce05ccd3642db78df5f43bd8",
+      "owner_fingerprint": "27c7480617aa6aa2658becc1ca09bfc874f0db379086a3c1b7ad85b981174fa5",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary claim-preparation attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: 'needs_attention'; records repair_target_unpublished without remote OIDs, publication intent or ref replay authority."
@@ -12733,13 +12733,13 @@
       "reason": "Audit of an exact stopped pool claim release: session id, claim epoch and prior task status only; no git ref replay or duplicate integration lifecycle authority."
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin.activate_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 806,
+      "line": 1007,
       "owner": "ClaimQueryMixin.activate_claim",
       "call": "delete",
-      "owner_fingerprint": "cf8e2144f219e5923e2ce2a270c6612de8c0553ed04c579a66e13b3bef5ba513",
+      "owner_fingerprint": "c8eeea9f8d0cc5c3800b39cd142757f23accd1871fc5e55c4f4c1554d3c8459e",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary deletion of stale attention and preparation-backoff metadata after guarded claim activation; session/task locks still precede activation and cleanup. Contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/database/queries/event_queries.py::EventQueryMixin._insert_event_row::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
       "line": 50,
