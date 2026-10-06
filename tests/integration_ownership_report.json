@@ -9225,6 +9225,18 @@
     },
     "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_task_on": {
       "reason": "Transaction-local subtree archive enforces integration ownership and delivery guards, retires branch origins and preserves audit identity before deleting active rows."
+    },
+    "src/commands/task_changes.py::apply": {
+      "reason": "Atomic task change-set application delegates hierarchical filing, reparenting, archive guards and container settlement to their existing integration-aware writers on the proposal connection."
+    },
+    "src/commands/task_changes.py::boundary": {
+      "reason": "Proposal transaction locks integration checkpoints together with task, dependency and gate state so concurrent integration changes cannot straddle validation and commit."
+    },
+    "src/commands/task_changes.py::import from src.database.tables import gates, projects, sessions, task_dependencies, task_gates, task_integration_checkpoints, task_metadata, tasks": {
+      "reason": "Imports integration checkpoints for the proposal transaction lock and reviewed read set; the generic task, dependency, gate and metadata tables retain their own storage ownership."
+    },
+    "src/commands/task_changes.py::snapshot": {
+      "reason": "Includes integration checkpoints, hierarchy scope, gates and integration mode in the reviewed proposal read set to refuse commits after concurrent integration or task-graph changes."
     }
   },
   "shared_state": {
