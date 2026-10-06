@@ -342,6 +342,8 @@ class ProjectIntegrationMode:
     integration_repository_id: str | None
     # None preserves legacy admission; a supplied set is one revalidated Git view.
     delivered_prerequisite_ids: frozenset[str] | None = None
+    stacked: bool = False
+    stackable_prerequisite_ids: frozenset[str] = frozenset()
 
     @classmethod
     def of(cls, project) -> ProjectIntegrationMode | None:
@@ -352,7 +354,10 @@ class ProjectIntegrationMode:
         """
         if project is None:
             return None
+        from src.integration.stacked_branches import stacked_policy
+
         return cls(
+            stacked=stacked_policy(project),
             hierarchical=getattr(project, "hierarchical_integration_mode", None)
             in HIERARCHY_MODES,
             integration_repository_id=getattr(project, "integration_repository_id", None),
@@ -587,6 +592,8 @@ def delivered_same_parent_prerequisites_when_hierarchical(
     )
     if mode is not None and mode.delivered_prerequisite_ids is not None:
         delivered = prerequisite.c.id.in_(mode.delivered_prerequisite_ids)
+    if mode is not None and mode.stacked:
+        delivered = or_(delivered, prerequisite.c.id.in_(mode.stackable_prerequisite_ids))
     prerequisite_is_undelivered = exists(
         select(literal(1))
         .select_from(

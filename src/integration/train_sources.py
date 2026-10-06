@@ -326,6 +326,21 @@ class DatabaseBatches:
         seal_now: bool = False,
     ) -> BatchSelection:
         await service.store.reconcile_aborted(target=target)
+        from src.integration.stacked_branches import StackedBranches
+
+        stacks = StackedBranches(self.db, clock=self.clock)
+        async with self.db._engine.connect() as conn:
+            stacked_ids = (await conn.execute(select(task_branch_origins.c.task_id).join(
+                tasks, tasks.c.id == task_branch_origins.c.task_id,
+            ).where(tasks.c.project_id == target.project_id, tasks.c.status == "COMPLETED",
+                    task_branch_origins.c.repository_id == target.repository_id,
+                    task_branch_origins.c.retired_at.is_(None),
+                    task_branch_origins.c.stack_snapshot.is_not(None)))).scalars().all()
+        for task_id in stacked_ids:
+            outcome = await stacks.refresh(task_id, service.gitops)
+            if outcome in {"refreshed", "changed", "repair_filed"}:
+                return BatchSelection(blockers=({"code": "stack_" + outcome, "task_id": task_id,
+                    "ref": task_id, "detail": "Prerequisite stack changed; take a fresh Git view"},))
         current = await self.current(target)
         blockers: list[dict[str, Any]] = []
         pending = None
@@ -377,14 +392,33 @@ class DatabaseBatches:
         return BatchSelection(frozen, await service.store.members(frozen.id), tuple(blockers))
 
     async def current(self, target: TrainTarget) -> Batch | None:
+        from src.integration.stacked_branches import StackedBranches
+
+        stacks = StackedBranches(self.db)
         async with self.db._engine.connect() as conn:
-            row = (await conn.execute(
+            rows = (await conn.execute(
                 _open_batch_rows(target.project_id, target.repository_id)
                 .where(integration_batches.c.target_ref == target.target_ref)
                 .order_by(integration_batches.c.created_at, integration_batches.c.id)
-                .limit(1)
-            )).mappings().first()
-        return Batch.from_row(row) if row else None
+            )).mappings().all()
+            for row in rows:
+                # Immutable old batches remain inspectable. A refreshed stack
+                # needs a new exact candidate; it must not be trapped behind
+                # its former source. Explicit operator pause still holds.
+                stale = False
+                if row["intent"] == "open":
+                    for tid, source in (await conn.execute(select(
+                        integration_batch_members.c.task_id, integration_batch_members.c.source_sha,
+                    ).where(integration_batch_members.c.batch_id == row["id"]))).all():
+                        origin = await stacks._origin(tid, conn)
+                        stack = origin and origin["stack_snapshot"]
+                        if (stack and not stack.get("hold") and stack.get("refreshed_head")
+                                and stack["refreshed_head"] != source):
+                            stale = True
+                            break
+                if not stale:
+                    return Batch.from_row(row)
+        return None
 
     @staticmethod
     def _admission_key(target: TrainTarget) -> str:
@@ -479,6 +513,9 @@ class DatabaseBatches:
                        integration_batches.c.intent == "aborted",
                        integration_batch_members.c.task_id.in_(ids))
             )).all())
+            repairs = set((await conn.execute(select(task_metadata.c.task_id).where(
+                task_metadata.c.task_id.in_(ids), task_metadata.c.key == "stack_repair_for",
+            ))).scalars())
             bases: dict[str, str] = {}
             for task_id, base, _ in (await conn.execute(
                 select(task_branch_origins.c.task_id, task_branch_origins.c.base_sha,
@@ -502,8 +539,13 @@ class DatabaseBatches:
         )
         members: dict[str, BatchMember] = {}
         delivered: set[str] = set()
+        from src.integration.stacked_branches import StackedBranches
+
+        stacks = StackedBranches(self.db)
         for task_id in ids:
             request, base = requests.get(task_id), bases.get(task_id)
+            if task_id in repairs or not await stacks.current(task_id):
+                continue
             if request is None or not is_valid_git_oid(base or ""):
                 continue
             evidence = await snapshot.is_delivered(request, source_base=base)
@@ -541,6 +583,9 @@ class DatabaseBatches:
                     or evidence.reason != "source_not_delivered"
                     or not is_valid_git_oid(source or "") or (task_id, source) in withheld):
                 continue
+            if (not await stacks.current(task_id, source_sha=source)
+                    or not await stacks.source_contains_stack(task_id, source, snapshot)):
+                continue
             member = BatchMember(task_id, source, base)
             if gate_pr and target.kind == "root":
                 refusal = (await self.pr_gate(target, member) if self.pr_gate else {
@@ -554,7 +599,22 @@ class DatabaseBatches:
             members[task_id] = member
         # A member never lands ahead of undelivered work it depends on that
         # this batch does not carry; it waits for a later batch instead.
-        blocked = set(ids) - members.keys() - delivered
+        # Include prerequisites outside the member window: reopened, aborted and
+        # capped-out sources must not disappear from the admission rule.
+        required = set().union(*edges.values()) if edges else set()
+        absent = required - members.keys() - delivered
+        outside = await load_delivery_requests(self.db, absent,
+            repository_id=target.repository_id, target_ref=target.target_ref, reduced=True)
+        async with self.db._engine.connect() as conn:
+            outside_bases = dict((await conn.execute(select(
+                task_branch_origins.c.task_id, task_branch_origins.c.base_sha,
+            ).where(task_branch_origins.c.task_id.in_(absent),
+                    task_branch_origins.c.retired_at.is_(None)))).all())
+        for task_id, request in outside.items():
+            if request.task_status == "COMPLETED" and (await snapshot.is_delivered(
+                    request, source_base=outside_bases.get(task_id))).satisfied:
+                delivered.add(task_id)
+        blocked = (set(ids) | required) - members.keys() - delivered
         changed = True
         while changed:
             changed = False
@@ -601,6 +661,12 @@ class DatabaseBatches:
             self.db, ids, repository_id=batch.repository_id, target_ref=batch.target_ref,
             reduced=True,
         )
+        from src.integration.stacked_branches import StackedBranches
+
+        stacks = StackedBranches(self.db)
+        for member in members:
+            if not await stacks.current(member.task_id, source_sha=member.source_sha):
+                return False
         for task_id in ids:
             request, target = requests.get(task_id), routed.get(task_id)
             if ((not batch.epic_sync and task_id not in live)
