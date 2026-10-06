@@ -161,6 +161,10 @@ class TestCheckCommandScope:
         for command in ("review_delegate", "review_import_edits"):
             assert "local operator" in check_command_scope(command, {}, elevated)
 
+    def test_git_first_train_controls_are_operator_controls(self):
+        assert {"integration_pause_batch", "integration_resume_batch", "integration_eject",
+                "integration_seal_now"} <= OPERATOR_INTEGRATION_CONTROLS
+
     def test_review_decision_commands_remain_outside_worker_scope(self):
         """Only a held dispatch task can comment; no worker may decide."""
         for command in ("review_decide", "review_dispatch"):

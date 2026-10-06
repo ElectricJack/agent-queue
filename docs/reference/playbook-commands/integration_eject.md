@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:5531fcb917967af1b253889ae419f52e15f0e3949cdb9963946da7d26120c978` |
+| Contract fingerprint | `sha256:aa04eed3448fedebd1cd12ddfe94a0aa2c4865bf1d7db5a4d0357406aca774ba` |
 
 ## Parameters
 
@@ -23,7 +23,7 @@
 | `batch_id` | `string` | yes | — | — |
 | `task_id` | `string` | yes | — | — |
 | `reason` | `string` | no | `""` | — |
-| `dry_run` | `boolean` | no | `false` | — |
+| `dry_run` | `boolean` | no | `true` | — |
 
 Redacted in receipts and explanations: `reason`.
 

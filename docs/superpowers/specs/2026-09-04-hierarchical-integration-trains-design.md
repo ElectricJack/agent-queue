@@ -452,6 +452,28 @@ explicit eject from a human-held operation rearms a bounded deadline while retai
 attempts. A later delegate receives a revision-specific identity. Ejecting the final
 member aborts the batch and releases its sweep request. Reviews are never revoked.
 
+On the Git-first train, ejection instead aborts the old immutable batch and
+freezes the remaining inputs in a replacement batch. The authorized eject
+command writes the original batch's durable release instruction, bound to its
+project, frozen member, operator and reason. The daemon supersedes an open batch
+whose stacked source was refreshed using the same batch-owned record, bound to
+the refreshed frozen member, service identity and supersede reason. Its inputs
+return to pending for a new exact candidate; an explicit pause still holds.
+Task archival or deletion cannot erase that instruction; worker task metadata
+and legacy ejection markers cannot
+authorize release. An ordinary supervisor abort continues withholding its inputs.
+Pause requires open intent and resume requires paused intent; repeated or invalid
+transitions refuse. Pause, resume, eject and seal-now default to preview and remain
+operator/supervisor controls scoped to the owning project. Eject returns
+`not_a_member` or `unknown_batch` for those refusals. Seal-now returns
+`existing_batch` when a frozen batch already owns the target.
+Eject checks caller authority before reading batches and rejects an empty batch
+ID with `invalid_state`. A project supervisor receives the same `unauthorized`
+refusal for foreign and missing batch IDs; an unknown ID has no project binding
+to authorize. Only the local operator or global supervisor may observe
+`unknown_batch`. The exact active root-policy ejection retains its existing
+transactional authority checks.
+
 Persist reviewed-file guard failures against the exact current revision in the
 repair dossier. Both `integration.reviewed_file_guard` and `stall.sweep` report the
 batch, blocked invariant and safe eject/rechain recovery path. Old revision failures

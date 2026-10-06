@@ -77,11 +77,13 @@ window for one call. They preserve all admission and publication checks;
 an empty or blocked call does not arm a bypass for future work. The supervisor
 can use `aq integration seal-now --project PROJECT_ID --apply` to freeze the
 currently eligible members immediately. It leaves building, checks, reviews
-and publication to the train.
+and publication to the train. If a batch already owns the target, the command
+reports `existing_batch` with that batch's identity rather than `sealed`.
 
 For a misbehaving batch, first use `aq integration pause-batch BATCH_ID --apply`.
 It preserves the frozen inputs and blocks candidate and target publication.
 `aq integration resume-batch BATCH_ID --apply` restores open intent.
+Pausing a paused batch or resuming an open batch refuses with `refused`.
 `aq integration status PROJECT_ID` shows batch intent and member disposition.
 
 `aq integration eject --batch BATCH_ID --task TASK_ID --reason "isolate member" --apply`
@@ -91,6 +93,22 @@ membership stays intact, and the removed task keeps its PR and approval,
 returns to pending, and can enter a new batch at the next cadence. An ordinary
 abort continues to withhold its frozen sources. Ejection refuses removal of an
 undelivered prerequisite that the remaining members need.
+
+The ejection instruction belongs to the batch and binds its project, frozen
+member, operator and reason. It survives member archival and deletion. Task
+metadata cannot release an aborted batch: the `integration_train_ejection`
+prefix is reserved, and legacy markers are ignored. The additive migration
+does not adopt those untrusted markers. Ejecting a task outside the frozen
+membership returns `not_a_member`. A missing batch returns `unknown_batch` to
+the local operator or global supervisor. A project supervisor gets the same
+`unauthorized` refusal for foreign and missing IDs, which have no authorized
+project binding. An empty batch ID returns `invalid_state`.
+
+When a stacked source refresh replaces an open batch, the daemon writes the
+same batch-owned release record with its service identity and the supersede
+reason. The old batch aborts and its inputs return to pending for a new exact
+candidate. An explicit pause or ordinary abort still holds its inputs; task
+metadata cannot forge a supersede release.
 
 These four supervisor controls default to preview; `--dry-run` explicitly
 requests it. Applying an ejection requires a nonblank reason. Paused batches

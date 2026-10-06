@@ -26,6 +26,14 @@ from src.integration.train import TrainTarget
 from src.integration.train_sources import project_delivered, project_snapshot
 
 
+class TrainControlError(ValueError):
+    """A control refusal whose outcome is part of the command contract."""
+
+    def __init__(self, outcome, message):
+        super().__init__(message)
+        self.outcome = outcome
+
+
 class TrainControls:
     def __init__(self, db, *, snapshot=project_snapshot, clock=time.time):
         self.db, self.snapshot, self.clock = db, snapshot, clock
@@ -110,12 +118,15 @@ class TrainControls:
     async def eject(self, batch_id, task_id, *, service, dry_run, operator_id, reason):
         if not dry_run and not reason.strip():
             raise ValueError("ejection requires a nonblank reason")
-        batch, snapshot, candidate, unchanged = await self._abort_observation(batch_id)
+        batch = await service.store.get(batch_id)
+        if batch is None:
+            raise TrainControlError("unknown_batch", "Git-first batch is missing")
         if batch.epic_sync:
             raise ValueError("epic sync membership cannot be ejected")
         frozen = await service.store.members(batch_id)
         if task_id not in {m.task_id for m in frozen}:
-            raise ValueError("task is not a frozen batch member")
+            raise TrainControlError("not_a_member", "task is not a frozen batch member")
+        batch, snapshot, candidate, unchanged = await self._abort_observation(batch_id)
         requests = await load_delivery_requests(self.db, [m.task_id for m in frozen],
             repository_id=batch.repository_id, target_ref=batch.target_ref, reduced=True)
         _, trees = await service.freeze_inputs(batch, frozen, requests=requests, snapshot=snapshot)
@@ -179,7 +190,10 @@ class TrainControls:
                 "intent": batch.intent if batch else None,
                 "members": [m.task_id for m in members], "blockers": blockers}
         selection = await train.batches.open_batch(target, snapshot, lane.service, seal_now=True)
-        return {"outcome": "sealed" if selection.batch else "no_ready_work",
+        outcome = "no_ready_work"
+        if selection.batch:
+            outcome = "existing_batch" if selection.existing else "sealed"
+        return {"outcome": outcome,
             "project_id": project_id, "dry_run": False,
             "batch_id": selection.batch.id if selection.batch else None,
             "intent": selection.batch.intent if selection.batch else None,

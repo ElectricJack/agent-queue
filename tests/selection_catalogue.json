@@ -1418,7 +1418,7 @@
       ]
     }
   },
-  "digest": "sha256:6692430a5fa77be843a5ed2b84912e34028dd5bef0826913f82decf09da461ad",
+  "digest": "sha256:cc7f0a1624251c8c094d53f2494046170feaf58f64383cb56f5c9632283b1d44",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7585,6 +7585,9 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.cli.exceptions",
         "src.cli.integration",
         "src.database.tables",
         "src.integration.repair",
@@ -8701,6 +8704,7 @@
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
+        "src.commands.surface_commands",
         "src.commands.task_commands",
         "src.database",
         "src.database.queries.hierarchy_queries",
@@ -10525,7 +10529,8 @@
         "src.integration.delivery_truth",
         "src.integration.development",
         "src.integration.provenance",
-        "src.integration.publishable_artifact"
+        "src.integration.publishable_artifact",
+        "src.models"
       ],
       "markers": [
         "migration"

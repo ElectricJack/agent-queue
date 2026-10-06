@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -207,6 +207,42 @@ def test_cli_ejection_requires_identity_and_apply_reason_before_transport(argv, 
     assert result.exit_code == 2, result.output
     assert message in result.output
     get_client.assert_not_called()
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_cli_ejection_command_exists_and_refuses_workers(monkeypatch, apply):
+    from src.api.auth import LOCAL_SCOPE, RequestScope
+    from src.api.scope import check_command_scope
+    from src.cli.exceptions import ScopeDeniedError
+
+    result = CliRunner().invoke(integration_cli, ["eject", "--help"])
+    assert result.exit_code == 0, result.output
+    worker = RequestScope(kind="session", session_id="worker", project_id="p", task_id="e2")
+
+    async def execute(command, args):
+        refusal = check_command_scope(command, args, worker)
+        if refusal:
+            raise ScopeDeniedError(command, refusal)
+        return {"success": True}
+
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = False
+    client.execute.side_effect = execute
+    monkeypatch.setattr("src.cli.integration._get_client", lambda _api_url: client)
+    argv = ["eject", "--batch", "batch", "--task", "e2"]
+    if apply:
+        argv += ["--apply", "--reason", "isolate e2"]
+    result = CliRunner().invoke(integration_cli, argv)
+    assert result.exit_code == 4, result.output
+    assert "local operator or supervisor" in result.output
+    client.execute.assert_awaited_once_with("integration_eject", {
+        "batch_id": "batch", "task_id": "e2", "reason": "isolate e2" if apply else "",
+        "dry_run": not apply,
+    })
+    for scope in (LOCAL_SCOPE, RequestScope(kind="session", session_id="supervisor",
+                                          project_id="p", elevated=True)):
+        assert check_command_scope("integration_eject", {}, scope) is None
 
 
 @pytest.fixture(autouse=True)

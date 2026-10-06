@@ -180,8 +180,7 @@ class IntegrationEjectArgs(CommandArgs):
     batch_id: str = Field(min_length=1)
     task_id: str = Field(min_length=1)
     reason: str = ""
-    # Preserve existing policy callers; the supervisor CLI always sends dry_run.
-    dry_run: bool = False
+    dry_run: bool = True
 
 
 class IntegrationReleaseOwnerArgs(CommandArgs):
@@ -2857,8 +2856,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         outcomes = ("preview", applied, "refused")
         successes = {"preview", applied}
         if name == "integration_seal_now":
-            outcomes += ("no_ready_work",)
-            successes.add("no_ready_work")
+            outcomes += ("no_ready_work", "existing_batch")
+            successes.update({"no_ready_work", "existing_batch"})
         contract = _operational_contract(
             name, args_model, outcomes, successes=frozenset(successes),
             side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationTrainControlValue,
