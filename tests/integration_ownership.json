@@ -1510,7 +1510,7 @@
       ]
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed": {
-      "reason": "Branch-fence refusal branch of the hierarchical integration claim ladder: it records the fence evidence and releases the claim to READY with the ordinary preparation backoff for the owner-recovery sweep. Owned claim-preparation surface, never a remote ref or lifecycle transition."
+      "reason": "Branch-fence refusal classified as a wait rather than a workspace fault: releases the claim to READY under the ordinary preparation backoff while the owner-recovery sweep frees the retained owner row, and never BLOCKS or writes the slot_reset_failure record whose resume recovery would be the wrong repair. Claim preparation policy only; no ref, publication or integration lifecycle write."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._cmd_task_claim": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -1566,9 +1566,6 @@
         19,
         19
       ]
-    },
-    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed": {
-      "reason": "Branch-fence refusal classified as a wait rather than a workspace fault: releases the claim to READY under the ordinary preparation backoff while the owner-recovery sweep frees the retained owner row, and never BLOCKS or writes the slot_reset_failure record whose resume recovery would be the wrong repair. Claim preparation policy only; no ref, publication or integration lifecycle write."
     },
     "src/commands/contracts/__init__.py::register_builtin_contracts": {
       "reason": "Imports or references an explicitly owned integration primitive.",
@@ -12292,7 +12289,7 @@
       "owner_fingerprint": "6dc53e72699f31ce9c89c26eb979120a8729c29f5bbffaa2564b2727e3337b27",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary evidence of a preparation refused by the branch fence. The guard admits only a BranchOwnershipError, only while the owner-recovery sweep is enabled and only in hierarchy/train integration mode, and the release_claim that follows returns the task to READY with the ordinary preparation backoff instead of BLOCKED. Metadata key: 'branch_fenced', cleared by CLAIM_PREPARATION_METADATA_KEYS on the next activation; contains no remote OIDs, publication intent or ref replay authority."
+      "reason": "Branch-fence refusal diagnostics (reason, branch, repository, workspace, session, failed_at) written in the same command as the release_claim to READY that follows; cleared by the next successful activation. Metadata key: branch_fenced_prepare_failed; a claim preparation marker with no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::2142606549fbb7fc55f12062ec13ac7e0c300036166e68b70a945ed44a752050": {
       "line": 1284,
@@ -12329,15 +12326,6 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
-    },
-    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::064f8fcc1a52d145e4f7ee9a86a696a94b43a48b4533d10ca7ad822f1aac750d": {
-      "line": 1017,
-      "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
-      "call": "set_task_meta",
-      "owner_fingerprint": "6dc53e72699f31ce9c89c26eb979120a8729c29f5bbffaa2564b2727e3337b27",
-      "integration_signal": true,
-      "disposition": "ordinary",
-      "reason": "Branch-fence refusal diagnostics (reason, branch, repository, workspace, session, failed_at) written in the same command as the release_claim to READY that follows; cleared by the next successful activation. Metadata key: branch_fenced_prepare_failed; a claim preparation marker with no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/dashboard_state_commands.py::DashboardStateCommandsMixin._dashboard_mutate::7082de1161d61e4a5bb9e39c7bafb5ade15fe812419227082e188dc17f7e77ae": {
       "line": 225,
@@ -13645,10 +13633,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/integration/train_sources.py::EpicCompletions.settle::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
-      "line": 638,
+      "line": 680,
       "owner": "EpicCompletions.settle",
       "call": "insert",
-      "owner_fingerprint": "3bc2ed959ce273224a8e24202c625e895b4f93e1ec141f7574d72f9a16f58b9d",
+      "owner_fingerprint": "99ae5203a04a7d863811f94036b07788dcb3930ef94859fe7839eef4e1762fb8",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Current-generation pointer written under the project hierarchy lock in the same transaction as the immutable collected-epic completion record it names, after readiness is re-verified under that lock. Metadata key: DEVELOPMENT_COMPLETION_ID_KEY; a completion identity only, with no ref, PR or publication intent."
@@ -14068,10 +14056,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
     },
     "src/sessions/reconciler.py::SessionReconciler._apply_verdict::d0667d61d923ef69bf1ebe2b78426b134485aee6cccd32b75095d7e45a868885": {
-      "line": 1210,
+      "line": 1249,
       "owner": "SessionReconciler._apply_verdict",
       "call": "set_task_meta",
-      "owner_fingerprint": "5e0cce5f83ae12fb98730fc8f0d6fdd260e9bd1c855c7ddf65d7858dbfd2cae5",
+      "owner_fingerprint": "2ab7c9b3d12036e362d4c3902fe3318516ffcbaf1b1c96f151666027317d0204",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
@@ -14086,19 +14074,19 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'session_resume_key'"
     },
     "src/sessions/reconciler.py::SessionReconciler._exit_usage_limit_screen::2fc410e5e6cb875696994311109b55067ff1da9123f3889244bb579af7fdf5d0": {
-      "line": 1937,
+      "line": 1977,
       "owner": "SessionReconciler._exit_usage_limit_screen",
       "call": "set_task_meta",
-      "owner_fingerprint": "927739764ae2515e30a8d6a674b8d8c79a9bbe351693c0de983731c5a43e8cbe",
+      "owner_fingerprint": "468f0e119ba2443bb0e18f5656b126a0b15491cb959b634d55715d6e4045ef7f",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_NUDGES"
     },
     "src/sessions/reconciler.py::SessionReconciler._exit_usage_limit_screen::6732ef9f714e4fd40a44bc09eb86d98df200c62ed9943329ff0c3deb8ca6103f": {
-      "line": 1938,
+      "line": 1978,
       "owner": "SessionReconciler._exit_usage_limit_screen",
       "call": "set_task_meta",
-      "owner_fingerprint": "927739764ae2515e30a8d6a674b8d8c79a9bbe351693c0de983731c5a43e8cbe",
+      "owner_fingerprint": "468f0e119ba2443bb0e18f5656b126a0b15491cb959b634d55715d6e4045ef7f",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_LAST_ACTION"
@@ -14140,28 +14128,28 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
     },
     "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::2fc410e5e6cb875696994311109b55067ff1da9123f3889244bb579af7fdf5d0": {
-      "line": 2111,
+      "line": 2177,
       "owner": "SessionReconciler._step_stall_ladder",
       "call": "set_task_meta",
-      "owner_fingerprint": "1f01ebd6fc3388f88426b5c01048bd9af4ae4bbb12466f8bf9c992a6a7b5efbf",
+      "owner_fingerprint": "85005561fc2866163c19779960ee2d14403a450bdce31cc871f3b49dc39aa231",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_NUDGES"
     },
     "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::6732ef9f714e4fd40a44bc09eb86d98df200c62ed9943329ff0c3deb8ca6103f": {
-      "line": 2067,
+      "line": 2133,
       "owner": "SessionReconciler._step_stall_ladder",
       "call": "set_task_meta",
-      "owner_fingerprint": "1f01ebd6fc3388f88426b5c01048bd9af4ae4bbb12466f8bf9c992a6a7b5efbf",
+      "owner_fingerprint": "85005561fc2866163c19779960ee2d14403a450bdce31cc871f3b49dc39aa231",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_LAST_ACTION"
     },
     "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::675fd05fe0efd918ede8974d1c8788d12fe7f5b20d28d4ef5e184db913b1f27e": {
-      "line": 2066,
+      "line": 2132,
       "owner": "SessionReconciler._step_stall_ladder",
       "call": "set_task_meta",
-      "owner_fingerprint": "1f01ebd6fc3388f88426b5c01048bd9af4ae4bbb12466f8bf9c992a6a7b5efbf",
+      "owner_fingerprint": "85005561fc2866163c19779960ee2d14403a450bdce31cc871f3b49dc39aa231",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_NUDGES"
