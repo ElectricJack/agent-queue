@@ -1423,7 +1423,7 @@
       ]
     }
   },
-  "digest": "sha256:e3953236cee98e7a6cd8ca79cb5ec562337486556e3ce56c09d820b75a22f4d7",
+  "digest": "sha256:e55cf5bb87bbf6b875237d35e9d3f21474ea918615ce89aba43df28bb96207ad",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -14416,6 +14416,7 @@
         "src.sessions.tmux"
       ],
       "markers": [
+        "parametrize",
         "tmux"
       ],
       "summary": "Semantics every :class:`SessionProvider` must share."
