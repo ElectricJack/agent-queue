@@ -57,6 +57,50 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_promotion_publish(self, args: dict) -> dict:
+        """Mechanism entry for one admitted promotion; no worker can publish a target."""
+        from sqlalchemy import select
+
+        from src.commands.contracts.integration import IntegrationPromotionPublishArgs
+        from src.database.tables import integration_batches
+        from src.integration.batches import BatchStore
+        from src.integration.train import TrainTarget
+
+        request = IntegrationPromotionPublishArgs.model_validate(args)
+        async with self.db._engine.connect() as conn:
+            row = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == request.batch_id,
+            ))).mappings().one_or_none()
+        if row is None:
+            return _failure("not_found", "promotion batch does not exist")
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.SERVICE:
+            _operator, refusal = await integration_operator(self.db, row["project_id"])
+            if refusal:
+                return _failure("unauthorized", refusal)
+        snapshot = row["policy_snapshot"] or {}
+        if (row["trigger"] != "promotion" or not isinstance(snapshot, dict)
+                or not isinstance(snapshot.get("promotion_step"), dict)
+                or not (row["target_ref"] or "").startswith("refs/heads/")):
+            return _failure("promotion_intent_invalid", "batch is not a frozen promotion intent")
+        train = getattr(self.orchestrator, "integration_train", None)
+        if train is None:
+            return _failure("unavailable", "the integration train is not active")
+        target = TrainTarget(row["project_id"], row["repository_id"], row["target_ref"],
+                             "promotion", step=snapshot["promotion_step"])
+        store = BatchStore(self.db)
+        batch = await store.get(row["id"])
+        if batch is None:
+            return _failure("promotion_intent_invalid", "promotion batch has no frozen target")
+        lane = await train.lane_for(target)
+        observation = await lane.service.visit(batch, await store.members(batch.id),
+                                               await lane.snapshot())
+        if observation.state == "delivered":
+            await train.batches.settle(batch, observation)
+        return {"success": True, "outcome": observation.state, "batch_id": batch.id,
+                "source_sha": observation.candidate_sha, "target_sha": observation.target_sha,
+                "detail": observation.detail}
+
     async def _cmd_integration_abort_batch(self, args: dict) -> dict:
         """Preview or abort an unpromoted Git-first batch."""
         from src.commands.contracts.integration import IntegrationAbortBatchArgs
@@ -1070,6 +1114,7 @@ class IntegrationCommandsMixin:
                 repository_id=binding.repository_id,
                 full_name=binding.full_name,
                 attestation_app_id=identity.app_id,
+                promotion_flow=getattr(inputs["project"], "promotion_flow", None) or (),
             )
         except trust_manifest.TrustManifestRefusal as exc:
             return _failure(exc.code, str(exc))

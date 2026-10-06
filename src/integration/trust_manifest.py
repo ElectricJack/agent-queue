@@ -47,9 +47,10 @@ IDENTITY_FIELDS = (
     "ci_producer_app_id",
     "attestation_app_id",
     "attestation_name",
+    "promotion_attestation_names",
 )
 #: Informational in the tree (spec §5.2); the snapshot owns the check set.
-CHECK_SET_FIELDS = ("required_checks.version", "required_checks.names")
+CHECK_SET_FIELDS = ("required_checks.version", "required_checks.names", "check_sets")
 FIELDS = IDENTITY_FIELDS + CHECK_SET_FIELDS
 
 #: The largest committed copy compared; the attestation service reads no larger.
@@ -75,6 +76,8 @@ def build_trust_manifest(
     attestation_app_id: int,
     checks: Sequence[str],
     check_version: str,
+    promotion_attestation_names: Sequence[str] | None = None,
+    check_sets: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """The manifest object, validated by :class:`IntegrationTrustManifest`.
 
@@ -95,6 +98,8 @@ def build_trust_manifest(
         "attestation_app_id": attestation_app_id,
         "attestation_name": ATTESTATION_NAME,
         "required_checks": {"version": check_version, "names": list(checks)},
+        "promotion_attestation_names": list(promotion_attestation_names or ()),
+        "check_sets": {name: list(values) for name, values in (check_sets or {}).items()},
     }
     if ci_producer_app_id is not None:
         IntegrationTrustManifest.model_validate(manifest)
@@ -152,6 +157,8 @@ def manifest_for_policy(
     repository_id: int,
     full_name: str,
     attestation_app_id: int,
+    promotion_flow: Sequence[Mapping[str, Any]] = (),
+    check_sets: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """The manifest a bound (or candidate) policy implies for one repository.
 
@@ -169,6 +176,10 @@ def manifest_for_policy(
             attestation_app_id=attestation_app_id,
             checks=list(required.get("names") or ()),
             check_version=required.get("version"),
+            promotion_attestation_names=tuple(dict.fromkeys(
+                step["gate"]["attestation"] for step in promotion_flow
+            )),
+            check_sets=check_sets,
         )
     except ValidationError as exc:
         # The identities come from the binding and the App: a failure here is
@@ -214,7 +225,7 @@ def _unexpected_fields(committed: Mapping[str, Any]) -> list[str]:
     unexpected = [key for key in committed if key not in top]
     required = committed.get("required_checks")
     if isinstance(required, Mapping):
-        nested = {field.split(".", 1)[1] for field in CHECK_SET_FIELDS}
+        nested = {field.split(".", 1)[1] for field in CHECK_SET_FIELDS if "." in field}
         unexpected += [f"required_checks.{key}" for key in required if key not in nested]
     return unexpected
 

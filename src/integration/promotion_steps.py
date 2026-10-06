@@ -9,11 +9,30 @@ from __future__ import annotations
 import copy
 import fnmatch
 import re
+import json
+import logging
+import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
+from datetime import UTC, datetime
 
 from jsonschema import Draft202012Validator
+
+from sqlalchemy import select, update
+
+from src.database.tables import integration_batch_members, integration_batches, task_context, tasks
+from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
+from src.integration.batches import BatchObservation, BatchService
+from src.integration.ci import (
+    AttestationPayload, AuthenticatedGitHubObserver, IntegrationTrustManifest,
+    PromotionAttestationPayload, TrustedCIObservation,
+)
+from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+from src.integration.subjects import HeadIdentity
+
+log = logging.getLogger(__name__)
+PROMOTION_CONTEXT = "promotion_intent"
 
 DEFAULT_ATTESTATION = "Agent Queue Integration Attestation"
 STEP_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}\Z")
@@ -400,3 +419,450 @@ class FlowSchema:
                     "check_set_unknown", i, "gate/checks", "Check set is not in the manifest.", 3
                 )
         return FlowValidation(flow, tuple(problems), 3)
+
+
+class PromotionIntentInvalid(ValueError):
+    """A requested step no longer names its frozen, retained source."""
+
+
+class StepAdmission:
+    """Promotion identity is independent of worker-completion eligibility.
+
+    The request command stores its metadata in one existing task_context row
+    (type=promotion_intent); batch.policy_snapshot['promotion_step'] is the
+    independent frozen step copy. No new table or mutable completion record.
+    """
+
+    def __init__(self, db, gitops, step: dict):
+        self.db, self.gitops, self.step = db, gitops, copy.deepcopy(step)
+
+    async def load(self, batch, members, *, allow_completed=False) -> dict:
+        if len(members) != 1:
+            raise PromotionIntentInvalid("promotion must carry exactly one member")
+        member = members[0]
+        async with self.db._engine.connect() as conn:
+            row = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == batch.id,
+            ))).mappings().one_or_none()
+            task = (await conn.execute(select(tasks).where(
+                tasks.c.id == member.task_id,
+            ))).mappings().one_or_none()
+            contexts = (await conn.execute(select(task_context.c.content).where(
+                task_context.c.task_id == member.task_id, task_context.c.type == PROMOTION_CONTEXT,
+            ))).scalars().all()
+        try:
+            if row is None or task is None or len(contexts) != 1:
+                raise ValueError("missing or duplicate promotion identity")
+            meta = json.loads(contexts[0])
+            step = meta["step"]
+            pinned_step = row["policy_snapshot"]["promotion_step"]
+            pinned_intent = row["policy_snapshot"]["promotion_intent"]
+            expected = (batch.project_id, batch.repository_id, batch.target_ref)
+            if (row["trigger"] != "promotion" or member.order != 0
+                    or (row["project_id"], row["repository_id"], row["target_ref"]) != expected
+                    or (task["project_id"], task["repo_id"]) != expected[:2]
+                    or task["task_type"] != "promotion" or task["profile_id"] is not None
+                    or task["status"] not in ({"IN_PROGRESS", "COMPLETED"} if allow_completed
+                                              else {"IN_PROGRESS"})
+                    or (not allow_completed and row["intent"] != "open")
+                    or any(meta.get(key) != value for key, value in pinned_intent.items())
+                    or meta["request_id"] != row["request_id"]
+                    or not row["request_id"].startswith(
+                        f"promotion:{batch.repository_id}:{step['id']}:"
+                    )
+                    or meta["repository_id"] != batch.repository_id
+                    or meta["target_ref"] != batch.target_ref
+                    or meta["source_sha"] != member.source_sha
+                    or meta["base_sha"] != member.base_sha
+                    or step != pinned_step
+                    or step["id"] != self.step["id"]
+                    or step["source"] != self.step["source"]
+                    or "refs/heads/" + step["target"] != batch.target_ref
+                    or step["target"] != self.step["target"]):
+                raise ValueError("promotion metadata differs from frozen inputs")
+            repo = await self.gitops.repository(batch)
+            identity = CompletionIdentity(
+                batch.project_id, batch.repository_id, member.task_id,
+                "promotion:" + meta["request_id"],
+            )
+            repository_url = f"https://github.com/{repo.binding.full_name}.git"
+            retained = await self.gitops.git.als_remote_ref(
+                str(repo.store), identity.branch, repository_url=repository_url,
+            )
+            if retained.state is RemoteRefState.ERROR:
+                raise GitError(retained.error or "promotion retention cannot be observed")
+            if retained.state is not RemoteRefState.PRESENT:
+                raise ValueError("promotion source retention is absent")
+            present = await self.gitops.git.arun_git_result(
+                ["cat-file", "-e", retained.oid], cwd=str(repo.store),
+            )
+            if present.returncode:
+                await self.gitops.git.afetch_repository_oid(
+                    str(repo.store), repository=repo.binding, oid=retained.oid,
+                    destination_ref="refs/aq/promotion-sources/" + retained.oid,
+                )
+            record = await GitProvenance(
+                self.gitops.git, str(repo.store), repository_url=repo.binding.clone_url
+                if hasattr(repo.binding, "clone_url") else f"https://github.com/{repo.binding.full_name}.git",
+            ).read_completion(identity, refs={"refs/remotes/origin/" + identity.branch: retained.oid})
+            if record is None or record["source_oid"] != member.source_sha:
+                raise ValueError("promotion source is not retained under its request generation")
+            return meta
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PromotionIntentInvalid(str(exc)) from exc
+
+    async def eligible(self, batch, members) -> bool:
+        try:
+            await self.load(batch, members)
+            return True
+        except (PromotionIntentInvalid, GitError, OSError):
+            return False
+
+    async def retain(self, batch, member, request_id: str) -> str:
+        repo = await self.gitops.repository(batch)
+        await self.gitops.exact(repo, member.source_sha)
+        if not await self.gitops.is_ancestor(repo, member.base_sha, member.source_sha):
+            raise PromotionIntentInvalid("promotion base is not source history")
+        return await GitProvenance(
+            self.gitops.git, str(repo.store),
+            repository_url=f"https://github.com/{repo.binding.full_name}.git",
+        ).write_completion(CompletedSource(CompletionIdentity(
+            batch.project_id, batch.repository_id, member.task_id, "promotion:" + request_id,
+        ), member.source_sha))
+
+
+def promotion_ref(step: dict, meta: dict) -> str:
+    suffix = meta.get("version") or meta["source_sha"][:12]
+    # Custom tag versions may contain '/', but never arbitrary Git revision syntax.
+    ref = f"refs/heads/aq/promote/{step['id']}/{suffix}"
+    from src.integration.gitops import branch
+
+    branch(ref)
+    return ref
+
+
+def step_required_checks(trust: IntegrationTrustManifest, step: dict):
+    """A step selects the manifest's trust; it cannot invent check names or an App."""
+    from src.integration.ci import RequiredChecksManifest
+
+    if step["gate"]["attestation"] not in trust.promotion_attestation_names:
+        raise PromotionIntentInvalid("attestation_not_in_manifest")
+    selector = step["gate"]["checks"]
+    if selector == "inherit":
+        names = trust.required_checks.names
+    elif selector.startswith("manifest:") and selector[9:] in trust.check_sets:
+        names = trust.check_sets[selector[9:]]
+    else:
+        raise PromotionIntentInvalid("check_set_unknown")
+    return RequiredChecksManifest(version=trust.required_checks.version, names=names)
+
+
+class PromotionChecks:
+    """Resolve once outside the fence and reuse exact-SHA source-lane evidence."""
+
+    def __init__(self, admission, resolve):
+        self.admission, self.resolve = admission, resolve
+        self._resolved = {}
+        self._heads = {}
+
+    async def head(self, batch, sha):
+        from src.integration.batches import BatchStore
+
+        key = (batch.id, sha)
+        if key in self._heads:
+            return self._heads[key]
+        members = await BatchStore(self.admission.db).members(batch.id)
+        meta = await self.admission.load(batch, members)
+        head = HeadIdentity(repository_id=batch.repository_id,
+                            ref=promotion_ref(meta["step"], meta), sha=sha, generation=0)
+        self._heads[key] = head
+        return head
+
+    async def for_candidate(self, batch, sha):
+        key = (batch.id, sha)
+        if key not in self._resolved:
+            self._resolved[key] = await self.resolve(batch, sha)
+            await self.head(batch, sha)
+        return self._resolved[key]
+
+    @staticmethod
+    def passes(result):
+        return result.green
+
+    async def gate(self, batch, sha, tree):
+        checks = self._resolved.get((batch.id, sha))
+        head = self._heads.get((batch.id, sha))
+        return checks is not None and head is not None and (await checks.read(head)).green
+
+
+async def publish_step_attestation(admission, batch, members, trust, client) -> str:
+    """Publish and read back only this admitted step's canonical proof, outside locks."""
+    meta = await admission.load(batch, members)
+    step = meta["step"]
+    required = step_required_checks(trust, step)
+    if meta["checks_version"] != required.version:
+        raise PromotionIntentInvalid("promotion check version differs from the pinned request")
+    selected = trust.model_copy(update={"required_checks": required})
+    observer = AuthenticatedGitHubObserver(client, expected_event="push")
+    observed = await observer.observe(selected, meta["source_sha"])
+    if not isinstance(observed, TrustedCIObservation) or not isinstance(observed.payload, AttestationPayload):
+        return "not_green"
+    lower = observed.payload
+    payload = PromotionAttestationPayload.model_validate({
+        "schema": "aq.promotion-attestation.v1",
+        "repository": {"canonical_repository_id": trust.canonical_repository_id,
+                       "repository_id": trust.repository_id, "full_name": trust.full_name,
+                       "ci_producer_app_id": trust.ci_producer_app_id,
+                       "attestation_app_id": trust.attestation_app_id},
+        "step": step["id"], "target_ref": batch.target_ref,
+        "attestation_name": step["gate"]["attestation"], "version": meta.get("version"),
+        "request_id": meta["request_id"], "batch_id": batch.id,
+        "source_sha": meta["source_sha"], "base_sha": meta["base_sha"],
+        "checks_version": required.version,
+        "checks": lower.checks, "workflow_runs": lower.workflow_runs,
+    })
+    if not await admission.eligible(batch, members):
+        return "promotion_intent_invalid"
+    record_id = await observer.publish(trust, payload)
+    from urllib.parse import quote
+
+    records = await client.paged_items(
+        f"/repos/{trust.full_name}/commits/{payload.source_sha}/check-runs"
+        f"?check_name={quote(payload.attestation_name, safe='')}&filter=all&per_page=100",
+        key="check_runs",
+    )
+    trusted = [r for r in records if r.get("name") == payload.attestation_name
+               and type((r.get("app") or {}).get("id")) is int
+               and (r.get("app") or {}).get("id") == trust.attestation_app_id]
+    if not trusted or any(type(r.get("id")) is not int or r["id"] <= 0 for r in trusted):
+        return "unavailable"
+    newest = max(trusted, key=lambda r: r["id"])
+    return "published" if (
+        newest["id"] == record_id and newest.get("status") == "completed"
+        and newest.get("conclusion") == "success" and newest.get("head_sha") == payload.source_sha
+        and newest.get("external_id") == payload.external_id
+        and (newest.get("output") or {}).get("text") == payload.canonical_bytes().decode("ascii")
+    ) else "unavailable"
+
+
+class PromotionVisit(BatchService):
+    """Fast-forward S unchanged, with individually recoverable branch and tag writes."""
+
+    def __init__(self, store, gitops, *, admission, checks, publish, publish_tag, attest,
+                 snapshot, clock=time.time):
+        super().__init__(store, gitops, publish=publish, eligible=admission.eligible,
+                         gate=checks.gate, attest=attest)
+        self.admission, self.checks = admission, checks
+        self.publish_tag, self.snapshot, self.clock = publish_tag, snapshot, clock
+
+    async def _tag(self, repo, meta, member):
+        versioning = meta["step"]["versioning"]
+        if versioning["kind"] == "none":
+            return None
+        date = datetime.fromtimestamp(meta.get("requested_at", 0), UTC).strftime("%Y-%m-%d")
+        name = versioning["tag_format"].format(
+            version=meta.get("version"), sha12=member.source_sha[:12], utc_date=date,
+            step=meta["step"]["id"],
+        )
+        if (versioning["kind"] == "semver_tag"
+                and re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+                                 meta.get("version") or "") is None):
+            raise PromotionIntentInvalid("invalid semver promotion version")
+        await self.gitops.run(repo, "check-ref-format", "refs/tags/" + name)
+        return name
+
+    async def _tag_state(self, repo, tag, meta, member):
+        if tag is None:
+            return "none", None
+        ref = "refs/tags/" + tag
+        observed = await self.gitops.git.als_remote_qualified_refs(
+            str(repo.store), [ref, ref + "^{}"],
+            repository_url=f"https://github.com/{repo.binding.full_name}.git",
+        )
+        direct, peeled = observed[ref], observed[ref + "^{}"]
+        if direct.state is RemoteRefState.ERROR or peeled.state is RemoteRefState.ERROR:
+            return "unknown", None
+        if direct.state is RemoteRefState.ABSENT:
+            return "absent", None
+        if peeled.oid != member.source_sha:
+            return "conflict", direct.oid
+        result = await self.gitops.git.arun_git_result(
+            ["cat-file", "-e", direct.oid], cwd=str(repo.store),
+        )
+        if result.returncode:
+            await self.gitops.git.afetch_repository_tag_oid(
+                str(repo.store), repository=repo.binding, oid=direct.oid,
+                destination_ref="refs/aq/promotion-tags/" + direct.oid,
+            )
+        if await self.gitops.run(repo, "cat-file", "-t", direct.oid) != "tag":
+            return "conflict", direct.oid
+        body = await self.gitops.run(repo, "cat-file", "-p", direct.oid)
+        expected = self._tag_message(tag, meta, member)
+        headers, _, message = body.partition("\n\n")
+        if (message.rstrip() != expected.rstrip()
+                or f"object {member.source_sha}" not in headers.splitlines()
+                or "type commit" not in headers.splitlines()
+                or f"tag {tag}" not in headers.splitlines()):
+            return "conflict", direct.oid
+        return "valid", direct.oid
+
+    @staticmethod
+    def _tag_message(tag, meta, member):
+        return (f"Promote {meta['step']['id']} {tag}\n\n"
+                f"AQ-Promotion: {member.task_id}@{member.source_sha}\n"
+                f"AQ-Promotion-Request: {meta['request_id']}\n")
+
+    async def _create_tag(self, batch, repo, tag, meta, member, authorize):
+        # Plumbing avoids a mutable local tag and gives deterministic objects on retry.
+        body = (f"object {member.source_sha}\ntype commit\ntag {tag}\n"
+                f"tagger aq-integration[bot] <aq-integration[bot]@users.noreply.github.com> "
+                f"{int(batch.created_at)} +0000\n\n" + self._tag_message(tag, meta, member))
+        result = await self.gitops.git.arun_git_result(
+            ["mktag"], cwd=str(repo.store), stdin=body,
+        )
+        if result.returncode:
+            raise GitError(result.stderr or "annotated promotion tag construction failed")
+        oid = result.stdout.strip()
+        if not is_valid_git_oid(oid):
+            raise GitError("annotated promotion tag construction returned no exact object")
+        try:
+            async with self.store.publication(batch.id) as opened:
+                if opened:
+                    await self.publish_tag(
+                        repo, batch.target_ref, "refs/tags/" + tag, new_oid=oid,
+                        expected_old_oid="", authorize=authorize,
+                    )
+        except (GitError, RuntimeError, ValueError) as exc:
+            log.warning("promotion %s tag publication failed: %s", batch.id, exc)
+        return await self._tag_state(repo, tag, meta, member)
+
+    async def visit(self, batch, members, snapshot):
+        from src.operator_decisions import OperatorDecisions
+
+        members = tuple(members)
+        try:
+            if await self.store.members(batch.id) != members:
+                raise PromotionIntentInvalid("frozen promotion members changed")
+            meta = await self.admission.load(batch, members, allow_completed=True)
+            member = members[0]
+            repo = await self.gitops.repository(batch)
+            await self.gitops.validate_repository(repo)
+            if (snapshot.observation.project_id, snapshot.observation.repository_id,
+                snapshot.observation.target_ref) != (
+                batch.project_id, batch.repository_id, batch.target_ref,
+            ):
+                raise PromotionIntentInvalid("snapshot belongs to another promotion target")
+            target, source = snapshot.target_oid, member.source_sha
+            if snapshot.error or target is None:
+                return BatchObservation("unknown", source, target)
+            tag = await self._tag(repo, meta, member)
+            tag_state, tag_oid = await self._tag_state(repo, tag, meta, member)
+            if tag_state == "conflict":
+                return BatchObservation("held", source, target,
+                                        detail={"reason": "promotion_tag_conflict"})
+            if tag_state == "unknown":
+                return BatchObservation("unknown", source, target)
+            proof = await snapshot.contains_source(member.task_id, source, member.base_sha)
+            if proof is None:
+                return BatchObservation("unknown", source, target)
+            if proof and tag_state in {"valid", "none"}:
+                return BatchObservation("delivered", source, target, detail={"tag_oid": tag_oid})
+            if (await OperatorDecisions(self.store.db).holds("batch", batch.id)
+                    or not await self._authorized(batch, members)):
+                return BatchObservation("held", source, target)
+            if not proof and not await self.gitops.is_ancestor(repo, target, source):
+                return BatchObservation("held", source, target,
+                                        detail={"reason": "promotion_not_fast_forward"})
+            await self.gitops.exact(repo, source)
+            tree = await self.gitops.git.atree_sha(str(repo.store), source)
+            if proof and target == source:
+                # The target write already passed the step gate. Finish only the
+                # missing immutable tag and read-back after a crash (§3.3 4b/4c).
+                tag_state, tag_oid = await self._create_tag(
+                    batch, repo, tag, meta, member,
+                    lambda: self._authorized(batch, members),
+                )
+                fresh = await self.snapshot()
+                proof = await fresh.contains_source(member.task_id, source, member.base_sha)
+                if tag_state == "conflict":
+                    return BatchObservation("held", source, fresh.target_oid, tree,
+                                            detail={"reason": "promotion_tag_conflict"})
+                if proof is True and tag_state == "valid":
+                    return BatchObservation("delivered", source, fresh.target_oid, tree,
+                                            detail={"tag_oid": tag_oid})
+                return BatchObservation("unknown", source, fresh.target_oid, tree)
+            # Resolve trust outside the publication fence. A cached lower-lane
+            # success needs no candidate push and no new CI request.
+            await self.checks.for_candidate(batch, source)
+            if not await self.gate(batch, source, tree):
+                ref = promotion_ref(meta["step"], meta)
+                state = await self._transfer(batch, repo, ref, source, "0" * 40,
+                                             lambda: self._authorized(batch, members))
+                return BatchObservation("testing" if state == "published" else state,
+                                        source, target, tree)
+            if not await self.admission.eligible(batch, members):
+                raise PromotionIntentInvalid("promotion admission changed before attestation")
+            attestation = await self.attest(batch, source)
+            if attestation not in {"published", "already_published"}:
+                return BatchObservation("held", source, target, tree,
+                                        detail={"reason": "attestation_unavailable"})
+
+            async def authorize():
+                return await self._authorized(batch, members) and await self.gate(batch, source, tree)
+
+            # Each ref has its own exact lease/read-back; no atomicity is claimed.
+            if not proof:
+                state = await self._transfer(batch, repo, batch.target_ref, source, target, authorize)
+                if state != "published":
+                    return BatchObservation(state, source, target, tree)
+            if tag_state == "absent":
+                tag_state, tag_oid = await self._create_tag(
+                    batch, repo, tag, meta, member, authorize,
+                )
+            fresh = await self.snapshot()
+            proof = await fresh.contains_source(member.task_id, source, member.base_sha)
+            if tag_state == "conflict":
+                return BatchObservation("held", source, fresh.target_oid, tree,
+                                        detail={"reason": "promotion_tag_conflict"})
+            if proof is True and tag_state in {"valid", "none"}:
+                # Best-effort cleanup is deliberately outside completion authority.
+                try:
+                    ref = promotion_ref(meta["step"], meta)
+                    if await self.gitops.remote(repo, ref) == source:
+                        await self.gitops.git.adelete_repository_ref(
+                            str(repo.store), repository=repo.binding,
+                            branch=ref.removeprefix("refs/heads/"), expected_old_oid=source,
+                        )
+                except (GitError, OSError, ValueError):
+                    log.warning("promotion %s candidate cleanup deferred", batch.id)
+                return BatchObservation("delivered", source, fresh.target_oid, tree,
+                                        detail={"tag_oid": tag_oid})
+            return BatchObservation("unknown", source, fresh.target_oid, tree)
+        except PromotionIntentInvalid as exc:
+            return BatchObservation("held", detail={"reason": "promotion_intent_invalid",
+                                                   "error": str(exc)})
+        except (GitError, OSError, ValueError) as exc:
+            return BatchObservation("unknown", detail={"reason": str(exc)})
+
+
+async def settle_promotion(db, batch, observation, *, clock=time.time, conn=None):
+    """Called only after the visit's git_truth and optional annotated-tag read-back."""
+    if observation.state != "delivered":
+        raise ValueError("promotion settlement requires delivery proof")
+    if conn is None:
+        async with db.immediate() as owned:
+            return await settle_promotion(db, batch, observation, clock=clock, conn=owned)
+    members = (await conn.execute(select(integration_batch_members.c.task_id).where(
+        integration_batch_members.c.batch_id == batch.id,
+    ))).scalars().all()
+    await conn.execute(update(tasks).where(tasks.c.id.in_(members),
+                       tasks.c.task_type == "promotion", tasks.c.status == "IN_PROGRESS")
+                       .values(status="COMPLETED", updated_at=clock()))
+    for task_id in members:
+        row = (await conn.execute(select(task_context).where(
+            task_context.c.task_id == task_id, task_context.c.type == PROMOTION_CONTEXT,
+        ).with_for_update())).mappings().one()
+        meta = json.loads(row["content"])
+        meta["tag_oid"] = (observation.detail or {}).get("tag_oid")
+        await conn.execute(update(task_context).where(task_context.c.id == row["id"])
+                           .values(content=json.dumps(meta, sort_keys=True)))

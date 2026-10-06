@@ -55,6 +55,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_recover_candidate_member",
         "integration_recover_unwritten_resolution",
         "integration_promote_main",
+        "integration_promotion_publish",
         "integration_release",
         "integration_cleanup",
         "integration_status",
@@ -118,6 +119,17 @@ class PromoteValidateValue(CommandValue):
     layer: int | None = None
     problems: tuple[dict[str, Any], ...] = ()
     warnings: tuple[dict[str, Any], ...] = ()
+
+
+class IntegrationPromotionPublishArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+
+
+class IntegrationPromotionPublishValue(CommandValue):
+    batch_id: str | None = None
+    source_sha: str | None = None
+    target_sha: str | None = None
+    detail: dict[str, Any] | None = None
 
 
 class IntegrationAbortBatchArgs(CommandArgs):
@@ -1106,6 +1118,22 @@ INTEGRATION_STATUS = _operational_contract(
     side_effect=SideEffectClass.READ,
     result_model=IntegrationStatusValue,
 )
+
+INTEGRATION_PROMOTION_PUBLISH = _operational_contract(
+    "integration_promotion_publish", IntegrationPromotionPublishArgs,
+    ("delivered", "testing", "held", "moved", "unknown", "published",
+     "unavailable", "not_found", "promotion_intent_invalid"),
+    successes=frozenset({"delivered", "testing", "held", "moved", "unknown", "published"}),
+    side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationPromotionPublishValue,
+)
+
+
+async def _promotion_publish_adapter(args, ctx):
+    return await _hierarchy_adapter(
+        "integration_promotion_publish", args, ctx, IntegrationPromotionPublishValue,
+        {"delivered", "testing", "held", "moved", "unknown", "published", "unauthorized",
+         "unavailable", "not_found", "promotion_intent_invalid"},
+    )
 #: Every refusal names its cause (spec §3 I6); ``manifest`` is the only success.
 TRUST_MANIFEST_OUTCOMES = (
     "manifest",
@@ -2963,6 +2991,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         )
     for contract, adapter in (
         (INTEGRATION_STATUS, _status_adapter),
+        (INTEGRATION_PROMOTION_PUBLISH, _promotion_publish_adapter),
         (PROMOTE_SCHEMA, _promote_schema_adapter),
         (PROMOTE_VALIDATE, _promote_validate_adapter),
         (INTEGRATION_TRUST_MANIFEST, _trust_manifest_adapter),
