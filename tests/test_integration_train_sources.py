@@ -2060,12 +2060,12 @@ async def test_hosted_lane_missing_attestation_service_refuses_target_publicatio
     assert git(origin.url, "rev-parse", "refs/heads/main") == main
 
 
-async def development_train(world, tmp_path, monkeypatch, validation: str):
+async def development_train(world, tmp_path, monkeypatch, validation: str, *, mode="development"):
     """The daemon's own lanes for a development-pinned project: retained local jobs."""
     db, origin = world.db, world.origin
     _, config, load = await pin_development(
-        db, tmp_path, validation, hierarchical_integration_mode="development",
-        hierarchical_integration_desired_mode="development",
+        db, tmp_path, validation, hierarchical_integration_mode=mode,
+        hierarchical_integration_desired_mode=mode,
     )
     retained = RetainedRepository(repository_id="r", store=origin.clone, binding=None,
                                   default_branch="main")
@@ -2084,23 +2084,25 @@ async def development_train(world, tmp_path, monkeypatch, validation: str):
         github_repository_binding_resolver=binding, development_integration=SimpleNamespace(),
         integration_attestation_service=SimpleNamespace(publish=AsyncMock()),
     )
-    batches = fixture_batches(db)
+    batches = DatabaseBatches(db)
     train = IntegrationTrain(
         targets=DatabaseTargets(db), batches=batches,
         lane_for=DaemonLanes(orchestrator, batches=batches), repair=OrdinaryRepairService(db),
     )
     [target] = await DatabaseTargets(db).targets(time.time())
-    assert target.kind == "development"
+    assert target.kind == ("development" if mode == "development" else "root")
     train.attestation_publisher = orchestrator.integration_attestation_service.publish
     return train, target
 
 
+@pytest.mark.parametrize("mode", ["development", "train"])
 async def test_development_lane_publishes_without_attestation_after_exact_candidate_job_passes(
-    world, tmp_path, monkeypatch,
+    world, tmp_path, monkeypatch, mode,
 ):
     origin = world.origin
     a = await completed(world, "a")
-    train, target = await development_train(world, tmp_path, monkeypatch, "focused")
+    train, target = await development_train(world, tmp_path, monkeypatch, "focused", mode=mode)
+    await world.db.update_task("a", pr_url=None)
     main = git(origin.url, "rev-parse", "refs/heads/main")
 
     testing = await train.visit(target)

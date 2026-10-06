@@ -197,6 +197,24 @@ Admitting observations omit incomplete roots, retired or delivered sources and
 closed PRs. Missing local source objects defer to the fetching admission reader
 without blocking other sources. Sealed manifests remain immutable.
 
+## PR admission boundaries (2026-10-06)
+
+New hosted root batches require an open PR matching the repository, source branch,
+base and exact completion head. Its PR checks must be green, and reviewed admission
+also requires a current human approval with no outstanding request for changes.
+Unavailable hosted observations remain unknown and cannot admit a source. This
+gate runs before freezing a new batch; subsequent observations cannot undo its
+immutable membership or Git-proven delivery.
+
+Development targets and roots using a retained, reviewed development policy for
+local validation keep their existing Git-based admission. The daemon must load
+and validate that pinned artifact before selecting local admission; a missing or
+invalid artifact cannot bypass the hosted gate. Local candidate jobs and their
+focused, advisory or none policy still decide publication. A local source does
+not need a hosted PR, GitHub credentials or a hosted attestation. The disposable
+CLI S20 scenario exercises this path; hosted admission is covered separately by
+the real train lane tests with deterministic GitHub transport.
+
 ## Reconciler repair close handoff
 
 A root repair delegate closes through its owning reconciler, including a failed

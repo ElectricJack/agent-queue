@@ -459,7 +459,7 @@ class DatabaseBatches:
                     or not is_valid_git_oid(source or "") or (task_id, source) in withheld):
                 continue
             member = BatchMember(task_id, source, base)
-            if gate_pr and target.kind != "epic":
+            if gate_pr and target.kind == "root":
                 refusal = (await self.pr_gate(target, member) if self.pr_gate else {
                     "code": "unknown", "ref": task_id, "task_id": task_id,
                     "detail": "root PR admission observer is unavailable",
@@ -867,8 +867,18 @@ class DaemonLanes:
                 return await self._hosted(policy, binding, target, batch, member.source_sha,
                                           expected_event="pull_request")
 
-            self.batches.pr_gate = RootPullRequestGate(
+            hosted_pr_gate = RootPullRequestGate(
                 self.db, repository=repository, checks=pr_checks, clock=clock)
+
+            async def pr_gate(target, member):
+                # Local candidate validation comes from a retained reviewed
+                # artifact. Its admission does not depend on hosted PRs.
+                settings, _ = await self._settings(await self._policy(target.project_id))
+                if settings is not None:
+                    return None
+                return await hosted_pr_gate(target, member)
+
+            self.batches.pr_gate = pr_gate
 
     async def __call__(self, target: TrainTarget) -> TrainLane:
         from src.integration.development_runtime import development_repository
