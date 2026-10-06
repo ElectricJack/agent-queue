@@ -589,3 +589,10 @@ async def test_registered_prerequisite_observer_releases_pool_demand_without_rec
     assert (await db.count_ready_by_profile("p")).get("worker") == 1
     assert not any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
                    for r in await db.claim_frontier_exclusions("dependent"))
+    assert await db.hierarchy_prerequisite_delivery_head("dependent") == git(
+        origin.clone, "rev-parse", "main",
+    )
+    # Reopening after observation must not return a former parent head.
+    await db.transition_task("done", TaskStatus.IN_PROGRESS, force=True)
+    with pytest.raises(ValueError, match="delivery is not current"):
+        await db.hierarchy_prerequisite_delivery_head("dependent")

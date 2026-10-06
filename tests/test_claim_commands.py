@@ -2920,6 +2920,113 @@ async def development_admission(handler, db, tmp_path):
     )
 
 
+@pytest.mark.parametrize("child_work", ["none", "local", "remote"])
+@pytest.mark.parametrize("preparation", ["pool", "clone"])
+async def test_hierarchy_claim_inherits_git_proven_parent_without_resetting_child(
+    handler, db, tmp_path, development_admission, child_work, preparation
+):
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.integration.git_truth import GitTruth
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+    env = development_admission
+    git = env.git
+    await mktask(db, "epic", status=TaskStatus.IN_PROGRESS, repo_id="repo",
+                 branch_name="aq/epic")
+    await db.add_dependency("dependent", "epic", "parent-child")
+    await db.add_dependency("prerequisite", "epic", "parent-child")
+    await db.update_task("dependent", branch_name="aq/dependent", is_blocked=False)
+    # Both branches were created before the prerequisite reached the parent.
+    git(env.source, "push", "origin", f"{env.base}:refs/heads/aq/epic",
+        f"{env.base}:refs/heads/aq/dependent")
+    child_sha = env.base
+    if child_work == "remote":
+        git(env.source, "checkout", "-b", "aq/dependent", env.base)
+        (env.source / "child-work").write_text("already published")
+        git(env.source, "add", ".")
+        git(env.source, "commit", "-m", "child work")
+        child_sha = git(env.source, "rev-parse", "HEAD")
+        git(env.source, "push", "origin", "aq/dependent")
+    sid, work_dir = await pool_session(db, tmp_path)
+    git(tmp_path, "clone", str(env.remote), str(work_dir))
+    if child_work == "local":
+        git(work_dir, "checkout", "-b", "aq/dependent", env.base)
+        git(work_dir, "config", "user.name", "Test")
+        git(work_dir, "config", "user.email", "test@example.test")
+        (work_dir / "child-work").write_text("local worker commit")
+        git(work_dir, "add", ".")
+        git(work_dir, "commit", "-m", "child work")
+        child_sha = git(work_dir, "rev-parse", "HEAD")
+    async with db.immediate() as conn:
+        await conn.execute(task_branch_origins.insert().values(
+            id="origin-dependent", task_id="dependent", repository_id="repo",
+            branch_name="aq/dependent", parent_task_id="epic", parent_repository_id="repo",
+            parent_ref="aq/epic", base_sha=env.base, creation_generation=1,
+            reserved=True, materialized=True, created_at=time.time(),
+        ))
+        await conn.execute(task_integration_checkpoints.insert().values(
+            task_id="dependent", repository_id="repo", branch="aq/dependent",
+            checkpoint_sha=env.base, updated_at=time.time(),
+        ))
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="train",
+                            repo_url=str(env.remote))
+    ownership = BranchOwnership(db)
+    target = BranchKey(repository_id="repo", branch="aq/dependent")
+    await ownership.acquire(target, "dependent", "worker")
+    transport = handler.orchestrator.git
+    db.set_prerequisite_observer(DeliveryObserver(
+        db, git=transport, truth=GitTruth(transport), data_dir=tmp_path / "prerequisites",
+    ))
+    manager = WorktreeSlotManager(
+        db=db, git=transport, bus=handler.orchestrator.bus,
+        config=handler.config.worktrees, git_mutex=handler.orchestrator._git_mutex,
+    )
+    handler.orchestrator._worktree_slots = MagicMock(return_value=manager)
+    # Completed source alone cannot admit the child; it must reach the parent.
+    result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert result["result"] == "no_ready_work"
+    git(env.source, "checkout", "-b", "aq/epic", env.base)
+    git(env.source, "merge", "--no-ff", "-m", "deliver prerequisite", env.head)
+    parent_sha = git(env.source, "rev-parse", "HEAD")
+    git(env.source, "push", "origin", "aq/epic")
+    # Main moves independently. Its new content must never reach this child.
+    git(env.source, "checkout", "main")
+    (env.source / "main-only").write_text("unrelated")
+    git(env.source, "add", ".")
+    git(env.source, "commit", "-m", "main only")
+    git(env.source, "push", "origin", "main")
+
+    if preparation == "pool":
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert result["result"] == "claimed", result
+        assert result["task"]["id"] == "dependent"
+    else:
+        # The task launcher follows a fresh scheduler observation. Refresh the
+        # advisory snapshot used by its guard after the earlier negative claim.
+        assert await db.hierarchy_prerequisite_delivery_head("dependent") == parent_sha
+        task = await db.get_task("dependent")
+        project = await db.get_project(PROJECT_ID)
+        origin, fence, _role = await handler.orchestrator._hierarchy_origin_and_fence(task, project)
+        workspace = await db.get_workspace_for_agent("agent-1")
+        assert await handler.orchestrator._prepare_exact_origin_workspace(
+            task, project, SimpleNamespace(workspace=workspace), origin, fence,
+        ) == "aq/dependent"
+    assert git(work_dir, "branch", "--show-current") == "aq/dependent"
+    git(work_dir, "merge-base", "--is-ancestor", parent_sha, "HEAD")
+    git(work_dir, "merge-base", "--is-ancestor", child_sha, "HEAD")
+    assert (work_dir / "work").read_text() == "complete source"
+    assert not (work_dir / "main-only").exists()
+    if child_work != "none":
+        assert (work_dir / "child-work").exists()
+    origin = await db.get_task_branch_origin_for_promotion("dependent", "repo")
+    assert origin["base_sha"] == env.base
+    owner = await ownership.get_owner(target)
+    if preparation == "pool":
+        assert owner["handoff_state"] == "attached" and owner["session_id"] == sid
+    else:
+        assert owner["handoff_state"] == "reserved"
+
+
 @pytest.mark.parametrize("misleading_history", [False, True])
 async def test_development_readiness_pool_and_claim_follow_git(
     handler, db, tmp_path, development_admission, misleading_history

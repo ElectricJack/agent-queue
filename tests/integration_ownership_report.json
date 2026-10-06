@@ -9216,6 +9216,9 @@
     },
     "src/doctor/task_checks.py::import from src.database.queries.claim_queries import claim_frontier_predicates": {
       "reason": "Imports the integration-owned frontier predicate composer used by doctor to report Git prerequisite delivery exclusions."
+    },
+    "src/git/manager.py::GitManager.aprepare_child_branch": {
+      "reason": "Integration workspace preparation merges a proven parent head under the managed child writer fence; preserves local and published child history."
     }
   },
   "shared_state": {
