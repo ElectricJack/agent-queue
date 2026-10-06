@@ -1415,7 +1415,7 @@
       ]
     }
   },
-  "digest": "sha256:1778ab8c32fa1d16b7af9f78cf08ec16448ae566eea16f41f2f3416dc1db4bea",
+  "digest": "sha256:4dcc3d18ea67be5e74585dcaf24fbf34b56f1d6fcdeb255dde006fe3abd540ce",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7672,7 +7672,9 @@
       "default_arm": true,
       "imports": [
         "src.database.tables",
+        "src.git.manager",
         "src.integration.legacy_backfill",
+        "src.integration.provenance",
         "src.integration.train_sources",
         "src.models"
       ],

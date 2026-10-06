@@ -113,6 +113,22 @@ an ancestor of the tip (`development_delivery`) or merging it changes nothing
 anything unproven is listed and left alone for an explicit decision. A reopened
 task's new completion is not covered by the old row.
 
+A child of a still-open epic whose exact source is already on the epic branch
+gets retained provenance instead (`epic_branch_provenance`), because the epic's
+readiness reads provenance, not rows. An old **completed** epic whose branch never
+reached the default branch and must not now (it conflicts, or its work arrived
+another way) needs an explicit decision, never a bulk one:
+
+```bash
+.venv/bin/python scripts/backfill-legacy-deliveries.py "$PROJECT_ID" --abandon-epic EPIC_ID
+.venv/bin/python scripts/backfill-legacy-deliveries.py "$PROJECT_ID" --abandon-epic EPIC_ID \
+    --apply --reason "superseded by later work on main"
+```
+
+That records `abandoned` rows for the epic and its undelivered descendants, so
+the train neither blocks on them nor merges the stale branch. Nothing is deleted;
+removing the rows restores the previous state.
+
 ## 4. Select `active` and restart
 
 ```yaml

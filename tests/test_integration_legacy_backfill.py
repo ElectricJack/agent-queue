@@ -24,17 +24,19 @@ world = _sources.world  # the shared train-sources fixture
 
 
 async def legacy(world, tid, *, record_commits=True, land=False, squash=False,
-                 delete_branch=False, close_row=True) -> str:
+                 delete_branch=False, close_row=True, parent=None) -> str:
     """A completed task closed before provenance existed: no retained record."""
     db, origin = world.db, world.origin
     head = origin.work(tid)
     base = git(origin.clone, "rev-parse", f"{head}^")
     await db.create_task(Task(id=tid, project_id="p", repo_id="r", title=tid, description="",
-                              branch_name=f"aq/{tid}", status=TaskStatus.IN_PROGRESS))
+                              branch_name=f"aq/{tid}", status=TaskStatus.IN_PROGRESS,
+                              parent_task_id=parent))
     async with db._engine.begin() as conn:
         await conn.execute(insert(task_branch_origins).values(
             id=f"{tid}-origin", task_id=tid, repository_id="r", branch_name=f"aq/{tid}",
-            base_sha=base, creation_generation=0, reserved=True, materialized=True,
+            parent_task_id=parent, parent_repository_id="r" if parent else None,
+            parent_ref=f"aq/{parent}" if parent else None, base_sha=base, creation_generation=0, reserved=True, materialized=True,
             created_at=time.time(),
         ))
     if close_row:
@@ -130,3 +132,80 @@ async def test_backfill_records_a_legacy_close_without_a_completion_row(world):
     assert [(r["task_id"], r["outcome"], r["via"]) for r in applied["results"]] == [
         ("rowless", "recorded", "branch_tip")]
     assert "rowless" not in await blocker_codes(world)
+
+
+async def epic_with_child(world, epic, child, *, epic_status, land_child_on_epic=True):
+    """A legacy epic branch carrying one child's work, closed before provenance."""
+    db, origin = world.db, world.origin
+    git(origin.clone, "fetch", "-q", "origin")
+    git(origin.clone, "push", "-q", "origin", f"origin/main:refs/heads/aq/{epic}")
+    await db.create_task(Task(id=epic, project_id="p", repo_id="r", title=epic, description="",
+                              branch_name=f"aq/{epic}", status=TaskStatus.IN_PROGRESS))
+    head = await legacy(world, child, parent=epic)
+    if land_child_on_epic:
+        git(origin.clone, "checkout", "-q", "-B", f"aq/{epic}", f"origin/aq/{epic}")
+        git(origin.clone, "merge", "-q", "--no-ff", "-m", f"collect {child}", f"origin/aq/{child}")
+        git(origin.clone, "push", "-q", "origin", f"aq/{epic}")
+    if epic_status == TaskStatus.COMPLETED:
+        await db.transition_task(epic, TaskStatus.COMPLETED)
+    return head
+
+
+async def test_open_epic_child_on_epic_branch_gets_retained_provenance(world):
+    from src.git.manager import GitManager
+    from src.integration.legacy_backfill import EPIC_PROOF
+    from src.integration.provenance import CompletionIdentity, GitProvenance
+
+    db = world.db
+    head = await epic_with_child(world, "epic", "child", epic_status=TaskStatus.IN_PROGRESS)
+    preview = await backfill_legacy_deliveries(db, "p")
+    [item] = [r for r in preview["results"] if r["task_id"] == "child"]
+    assert (item["proof"], item["delivered_sha"]) == (EPIC_PROOF, head)
+    applied = await backfill_legacy_deliveries(db, "p", dry_run=False, operator_id="op",
+                                               reason="r")
+    assert [r["outcome"] for r in applied["results"] if r["task_id"] == "child"] == ["recorded"]
+    git(world.origin.clone, "fetch", "-q", "origin")
+    record = await GitProvenance(GitManager(), str(world.origin.clone),
+                                 repository_url=world.origin.url).read_completion(
+        CompletionIdentity("p", "r", "child", "close-child"))
+    assert record["source_oid"] == head
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_legacy_deliveries))).all() == []
+
+
+async def test_abandon_completed_epic_records_decision_for_epic_and_children(world):
+    from src.integration.legacy_backfill import abandon_epic
+
+    db = world.db
+    await epic_with_child(world, "old", "kid", epic_status=TaskStatus.COMPLETED)
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="old-origin", task_id="old", repository_id="r", branch_name="aq/old",
+            base_sha=git(world.origin.clone, "rev-parse", "origin/main"),
+            creation_generation=0, reserved=True, materialized=True, created_at=time.time()))
+    with pytest.raises(ValueError, match="nonblank reason"):
+        await abandon_epic(db, "p", "old", dry_run=False)
+    preview = await abandon_epic(db, "p", "old")
+    assert {r["task_id"] for r in preview["results"]} == {"old", "kid"}
+    await abandon_epic(db, "p", "old", dry_run=False, operator_id="op", reason="superseded")
+    async with db._engine.connect() as conn:
+        rows = {r.task_id: r.proof for r in
+                (await conn.execute(select(integration_legacy_deliveries))).all()}
+    assert rows == {"old": "abandoned", "kid": "abandoned"}
+    assert not {"old", "kid"} & set(await blocker_codes(world))
+    with pytest.raises(ValueError, match="completed epic"):
+        await abandon_epic(db, "p", "kid")
+
+
+async def test_backfill_never_answers_an_epic_by_its_branch(world):
+    db = world.db
+    # A fresh epic branch equals main before any child is collected.
+    await epic_with_child(world, "fresh", "kid", epic_status=TaskStatus.COMPLETED,
+                          land_child_on_epic=False)
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="fresh-origin", task_id="fresh", repository_id="r", branch_name="aq/fresh",
+            base_sha=git(world.origin.clone, "rev-parse", "origin/main"),
+            creation_generation=0, reserved=True, materialized=True, created_at=time.time()))
+    preview = await backfill_legacy_deliveries(db, "p")
+    assert "fresh" not in {r["task_id"] for r in preview["results"] + preview["unproven"]}
