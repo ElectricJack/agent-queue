@@ -61,7 +61,7 @@ from src.integration.epics import EpicGraphReader, EpicPolicy, EpicReadinessEval
 from src.integration.git_truth import GitTruth, GitTruthSnapshot
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
-from src.integration.models import BranchKey
+from src.integration.models import BranchKey, integration_ci_policy
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.promotion_steps import flow_status, flow_targets
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
@@ -718,7 +718,14 @@ async def epic_policy_on(conn, row, project) -> EpicPolicy:
             if evidence.get("decision_path") in {"github_pull_request", "review_task_close",
                                                   "reopen_with_feedback", "tree_review"}:
                 reviewers.add(identity)
-    return EpicPolicy(tuple(required.get("names") or ()), str(required.get("producer_id") or ""),
+    trust = str(required.get("producer_id") or "")
+    ci = integration_ci_policy(policy)
+    if ci is not None and ci.source_for("epic") != "hosted":
+        # The local runner produces the parent boundary's named checks.
+        from src.integration.checks import LOCAL_CHECKS_PRODUCER_ID
+
+        trust = LOCAL_CHECKS_PRODUCER_ID
+    return EpicPolicy(tuple(required.get("names") or ()), trust,
                       ReviewRequirements(reviewed, frozenset(reviewers)),
                       str(required.get("version") or ""))
 
@@ -933,13 +940,34 @@ async def _never_trusted(subject, sha) -> bool:
     return False
 
 
+def _ci_kind(target) -> str:
+    """The policy ``ci`` kind choosing *target*'s candidate runner."""
+    return target.kind if target.kind in {"epic", "promotion"} else "root"
+
+
+async def _exact_head_verdict(exact, head):
+    """Re-observe hosted checks; only read a local runner's stored rows.
+
+    A local job exists once requested for its exact head and plan. Observing a
+    head nobody requested would overwrite the evidence its own candidate run
+    left there with ``not_requested``.
+    """
+    from src.integration.checks import HostedChecks
+
+    if isinstance(exact.provider, HostedChecks):
+        return await exact.refresh(head)
+    return await exact.read(head)
+
+
 class DaemonLanes:
     """Per-target lanes over the daemon's git, retained stores and checks.
 
     The store is the repository's retained clone. A project with a pinned
     development source validates its root candidates with that source's local
-    jobs and rebuilds generated files with its command; everything else reads
-    the hosted checks the project requires at the target's boundary.
+    jobs and rebuilds generated files with its command. Otherwise the project
+    policy's ``ci`` block picks each target kind's runner (``hosted`` when
+    unset): a candidate gate, the root PR gate and a promotion step gate each
+    read the boundary's named required checks from that one producer.
     """
 
     def __init__(self, orchestrator, *, batches: DatabaseBatches,
@@ -957,14 +985,8 @@ class DaemonLanes:
                 binding = await self.orchestrator.github_repository_binding_resolver(repo)
                 return binding, self.git._github_client(binding)
 
-            async def pr_checks(target, member, policy, binding):
-                batch = Batch("pr-admission-" + member.task_id, target.project_id,
-                              target.repository_id, target.target_ref)
-                return await self._hosted(policy, binding, target, batch, member.source_sha,
-                                          expected_event="pull_request")
-
             hosted_pr_gate = RootPullRequestGate(
-                self.db, repository=repository, checks=pr_checks, clock=clock)
+                self.db, repository=repository, checks=self._pr_checks, clock=clock)
 
             async def pr_gate(target, member):
                 # Local candidate validation comes from a retained reviewed
@@ -1007,11 +1029,19 @@ class DaemonLanes:
             authority=SubjectGitAuthority(self.db, trusted_green=_never_trusted),
         )
         local = settings is not None and target.kind != "epic"
+        # A development source's own local jobs take precedence; its policy
+        # has no ci block.
+        ci = None if settings is not None else integration_ci_policy(policy)
+        local_ci = (ci is not None and target.kind != "promotion"
+                    and ci.source_for(_ci_kind(target)) != "hosted")
 
         async def resolve(batch: Batch, candidate_sha: str):
             if local:
                 return await self._local(target, retained, settings, version, batch,
                                          candidate_sha)
+            if local_ci:
+                await retain_train_candidate(self.git, retained.store, batch, candidate_sha)
+                return self._local_checks(target, retained.store, ci, policy, batch)
             return await self._hosted(policy, binding, target, batch, candidate_sha,
                                       retained=retained)
 
@@ -1045,17 +1075,21 @@ class DaemonLanes:
             )
 
         if target.kind == "promotion":
-            return await self._promotion_lane(target, retained, binding, gitops, policy, snapshot)
+            return await self._promotion_lane(target, retained, binding, gitops, policy, snapshot,
+                                              ci=ci)
 
+        # A locally gated candidate has no hosted checks to attest.
+        unattested = local or local_ci
         service = BatchService(self.store, gitops, publish=self.publish,
                                eligible=self.batches.eligible, gate=checks.gate,
-                               attest=None if local else attest, require_attestation=not local)
+                               attest=None if unattested else attest,
+                               require_attestation=not unattested)
 
         complete_epic = None
         sync_default_branch = None
         sync_closed_epic = None
         if target.kind == "epic":
-            complete_epic = self._epic_completion(target, binding)
+            complete_epic = self._epic_completion(target, binding, retained)
 
             async def sync_default_branch(batch, snapshot, candidate_sha, names):
                 return await self._default_branch_sync(
@@ -1081,7 +1115,7 @@ class DaemonLanes:
                     from src.integration.checks import Conclusion
                     from src.integration.subjects import HeadIdentity
 
-                    result = await exact.refresh(HeadIdentity(
+                    result = await _exact_head_verdict(exact, HeadIdentity(
                         repository_id=target.repository_id, ref=target.target_ref,
                         sha=snapshot.target_oid, generation=0,
                     ))
@@ -1123,13 +1157,19 @@ class DaemonLanes:
                 # merge cannot repair it, even on a new repair generation.
                 return None
             root = TrainTarget(target.project_id, target.repository_id, default_ref)
-            exact = await self._hosted(policy, binding, root, batch, sha)
+            ci = integration_ci_policy(policy)
+            if ci is not None and ci.source_for("root") != "hosted":
+                # The root candidate that became this head left its local
+                # evidence; reading it runs nothing.
+                exact = self._local_checks(root, retained.store, ci, policy, batch)
+            else:
+                exact = await self._hosted(policy, binding, root, batch, sha)
             if exact is None or not set(names) <= set(exact.required.names):
                 return None
             from src.integration.checks import Conclusion
             from src.integration.subjects import HeadIdentity
 
-            result = await exact.refresh(HeadIdentity(
+            result = await _exact_head_verdict(exact, HeadIdentity(
                 repository_id=target.repository_id, ref=default_ref, sha=sha,
                 generation=batch.repair_attempt_count,
             ))
@@ -1146,10 +1186,11 @@ class DaemonLanes:
                            for id_ in root_batches)
             provenance = "train_candidate"
             if not produced:
-                producer = exact.provider.producer
-                trust = producer.trust
+                # Only a hosted head carries the App's attestation.
+                trust = getattr(exact.provider.producer, "trust", None)
                 if not isinstance(trust, IntegrationTrustManifest):
                     return None
+                producer = exact.provider.producer
                 attestation = self.orchestrator.integration_attestation_service
                 records = await attestation._attestation_records(producer.client, trust, sha)
                 select_trusted_attestation(records, trust, expected_head_sha=sha)
@@ -1174,13 +1215,16 @@ class DaemonLanes:
             logger.info("integration batch %s default-branch sync evidence unavailable", batch.id)
             return None
 
-    def _epic_completion(self, target, binding):
+    def _epic_completion(self, target, binding, retained):
+        from src.integration.checks import HostedChecks
         from src.integration.subjects import HeadIdentity
 
         resolved = {}
 
         async def refresh(graph, snapshot):
             policy = await self._policy(target.project_id)
+            ci = integration_ci_policy(policy)
+            local = ci is not None and ci.source_for("epic") != "hosted"
             refused: list[dict] = []
             for node in graph.nodes:
                 head = snapshot.for_target(node.branch_ref).target_oid if node.branch_ref else None
@@ -1192,7 +1236,11 @@ class DaemonLanes:
                 batch = Batch("epic-readiness-" + node.task_id, target.project_id,
                               target.repository_id, node.branch_ref)
                 try:
-                    exact = await self._hosted(policy, binding, target, batch, head)
+                    if local:
+                        await retain_train_candidate(self.git, retained.store, batch, head)
+                        exact = self._local_checks(target, retained.store, ci, policy, batch)
+                    else:
+                        exact = await self._hosted(policy, binding, target, batch, head)
                 except SubjectTrustError as exc:
                     # A branch cut before the repository carried a trust manifest
                     # owes the epic a refresh, not a failed visit: the head's
@@ -1208,10 +1256,14 @@ class DaemonLanes:
                     continue
                 resolved[(head, node.policy)] = exact
                 if exact is not None:
-                    await exact.request(HeadIdentity(repository_id=graph.repository_id,
-                        ref=node.branch_ref, sha=head, generation=0))
-                    await exact.refresh(HeadIdentity(repository_id=graph.repository_id,
-                        ref=node.branch_ref, sha=head, generation=0))
+                    identity = HeadIdentity(repository_id=graph.repository_id,
+                                            ref=node.branch_ref, sha=head, generation=0)
+                    # A published epic head is usually the candidate its train
+                    # already ran locally; green evidence there runs nothing.
+                    if (isinstance(exact.provider, HostedChecks)
+                            or not (await exact.read(identity)).green):
+                        await exact.request(identity)
+                        await exact.refresh(identity)
             return tuple(refused)
 
         async def head_checks(repository_id, head, policy):
@@ -1238,7 +1290,8 @@ class DaemonLanes:
 
         return complete
 
-    async def _promotion_lane(self, target, retained, binding, gitops, policy, snapshot):
+    async def _promotion_lane(self, target, retained, binding, gitops, policy, snapshot, *,
+                              ci=None):
         from src.integration.checks import ExactChecks, HostedChecks
         from src.integration.ci import IntegrationTrustManifest
         from src.integration.ci_producers import HostedCIProducer
@@ -1250,10 +1303,29 @@ class DaemonLanes:
 
         admission = StepAdmission(self.db, gitops, target.step)
         resolved = {}
+        local = ci is not None and ci.source_for("promotion") == "local"
+
+        async def resolve_local(batch, sha, meta):
+            # The step still selects its checks from the source tree's own
+            # manifest; this box runs them, and no App proof is published.
+            manifest = await self._retained_manifest(retained, sha)
+            required = step_required_checks(manifest, meta["step"])
+            if required.version != meta["checks_version"]:
+                raise PromotionIntentInvalid("promotion check version differs from request")
+            missing = sorted(set(required.names) - set(ci.commands))
+            if missing:
+                raise PromotionIntentInvalid("ci_command_missing:" + ",".join(missing))
+            client = self.git._github_client(binding)
+            resolved[batch.id] = manifest, client, StepPullRequestGate(client, binding)
+            await retain_train_candidate(self.git, retained.store, batch, sha)
+            return self._local_checks(target, retained.store, ci, None, batch, requested=True,
+                                      names=required.names, version=required.version)
 
         async def resolve(batch, sha):
             members = await self.store.members(batch.id)
             meta = await admission.load(batch, members)
+            if local:
+                return await resolve_local(batch, sha, meta)
             attestation = getattr(self.orchestrator, "integration_attestation_service", None)
             if attestation is None:
                 raise PromotionIntentInvalid("promotion requires hosted App attestation service")
@@ -1289,10 +1361,31 @@ class DaemonLanes:
         service = PromotionVisit(
             self.store, gitops, admission=admission, checks=checks, publish=self.publish,
             publish_tag=self.publish.qualified, delete_ref=self.publish.delete,
-            attest=attest, snapshot=snapshot, clock=self.clock,
+            attest=None if local else attest, snapshot=snapshot, clock=self.clock,
         )
         await service.reconcile_cleanup(target)
         return TrainLane(snapshot=snapshot, service=service, checks=checks)
+
+    async def _pr_checks(self, target, member, policy, binding):
+        """The required checks a root PR member's head must pass to be admitted."""
+        batch = Batch("pr-admission-" + member.task_id, target.project_id,
+                      target.repository_id, target.target_ref)
+        ci = integration_ci_policy(policy)
+        if ci is not None and ci.source_for("root") == "local":
+            # The member head's own required checks, run on this box; hybrid
+            # still reads the PR checks GitHub enforces.
+            repo_row = await self.db.get_repo(target.repository_id)
+            primitives = self.orchestrator.development_integration
+            store = await primitives.store(repo_row, fetch=False)
+            try:
+                await retain_train_candidate(self.git, store, batch, member.source_sha)
+            except ValueError:
+                # The member head was pushed after the store's last fetch.
+                await primitives.store(repo_row)
+                await retain_train_candidate(self.git, store, batch, member.source_sha)
+            return self._local_checks(target, store, ci, policy, batch, requested=True)
+        return await self._hosted(policy, binding, target, batch, member.source_sha,
+                                  expected_event="pull_request")
 
     async def _policy(self, project_id: str) -> dict:
         async with self.db._engine.connect() as conn:
@@ -1317,6 +1410,54 @@ class DaemonLanes:
             load_pinned_development_policy, self.orchestrator.config, sha, definition
         )
         return pinned.settings, sha
+
+    async def _retained_manifest(self, retained, sha):
+        """The trust manifest in *sha*'s tree, read from the retained store."""
+        from src.integration.attestation import _parse_trust_manifest
+        from src.integration.ci import TRUST_MANIFEST_PATH
+
+        result = await self.git.arun_git_result(
+            ["show", f"{sha}:{TRUST_MANIFEST_PATH}"], cwd=str(retained.store),
+            env={"LC_ALL": "C"},
+        )
+        if result.returncode:
+            raise SubjectTrustError("missing", f"subject tree has no {TRUST_MANIFEST_PATH}")
+        return _parse_trust_manifest(result.stdout.encode("utf-8"))
+
+    def _local_checks(self, target, store, ci, policy, batch, *, requested=False,
+                      names=None, version=None):
+        """The local runner producing a boundary's named required checks.
+
+        Each required check name runs its ``ci.commands`` entry and its row
+        carries that name under the boundary's version: the same checks a hosted
+        runner reports, from another producer. *names* and *version* default to
+        the target boundary's ``required_checks`` in *policy*.
+        """
+        from src.integration.checks import ExactChecks, LocalChecks, RequestedChecks
+        from src.integration.ci_producers import LocalCIProducer, LocalValidationPlan
+        from src.jobs.adapters import PublisherJobs
+
+        if names is None:
+            boundary = "parent" if target.kind == "epic" else "root"
+            required = (policy.get(boundary) or {}).get("required_checks") or {}
+            names, version = required.get("names") or (), str(required.get("version") or "")
+        names = tuple(names)
+        missing = sorted(set(names) - set(ci.commands))
+        if missing:
+            raise ValueError("ci.commands has no command for required check(s) "
+                             + ", ".join(missing))
+        plan = LocalValidationPlan(
+            version=version, attempt_id=f"{batch.repair_attempt_count}:0",
+            commands=tuple(ci.commands[name] for name in names),
+            queue_seconds=ci.queue_seconds, run_seconds=ci.run_seconds,
+        )
+        producer = LocalCIProducer(
+            self.db, PublisherJobs(lambda: self.orchestrator._command_handler),
+            store=store, plan=plan, clock=self.clock,
+        )
+        checks = RequestedChecks if requested else ExactChecks
+        return checks(self.db, LocalChecks(producer, project_id=target.project_id,
+                                           names=names, version=version), clock=self.clock)
 
     async def _local(self, target, retained, settings, version, batch, candidate_sha):
         from src.integration.checks import ExactChecks, LocalChecks

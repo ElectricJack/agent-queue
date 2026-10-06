@@ -38,6 +38,10 @@ from src.integration.subjects import CIState, HeadIdentity
 
 logger = logging.getLogger(__name__)
 
+#: The producer id every local job runner row carries, whichever boundary or
+#: development source named its checks.
+LOCAL_CHECKS_PRODUCER_ID = "local-jobs"
+
 
 class Conclusion(StrEnum):
     SUCCESS = "success"
@@ -338,11 +342,25 @@ class LocalChecks:
 
     compares_targets = False
 
-    def __init__(self, producer: LocalCIProducer, *, project_id: str) -> None:
+    def __init__(
+        self, producer: LocalCIProducer, *, project_id: str,
+        names: tuple[str, ...] | None = None, version: str | None = None,
+    ) -> None:
+        """*names* label the plan's commands, one per command, in order.
+
+        A policy-selected local runner passes the boundary's required check
+        names and version, so its rows are the same named checks a hosted
+        runner would report. A development source names each check after its
+        command, under the pinned artifact's version.
+        """
         self.producer, self.project_id = producer, project_id
         plan = producer.plan
+        if names is not None and len(names) != len(plan.commands):
+            raise ValueError("local check names must label every plan command")
+        self.names = plan.commands if names is None else tuple(names)
         self.required = RequiredChecks(
-            version=plan.version, names=plan.commands, producer_id="local-jobs"
+            version=version or plan.version, names=self.names,
+            producer_id=LOCAL_CHECKS_PRODUCER_ID,
         )
 
     def _owner(self, head: HeadIdentity) -> _CommitOwner:
@@ -360,8 +378,9 @@ class LocalChecks:
     async def observe(self, head: HeadIdentity, *, now: float) -> tuple[CommitCheck, ...]:
         plan = self.producer.plan
         rows = []
-        for command, job, (state, classification, _, reason) in await self.producer.job_states(
-            self._owner(head), head
+        states = await self.producer.job_states(self._owner(head), head)
+        for name, (_command, job, (state, classification, _, reason)) in zip(
+            self.names, states, strict=True
         ):
             conclusion = _LOCAL_CONCLUSIONS.get(
                 state,
@@ -369,7 +388,7 @@ class LocalChecks:
             )
             rows.append(
                 _check(
-                    self.required, head, command, now,
+                    self.required, head, name, now,
                     conclusion=conclusion,
                     classification=classification,
                     reason=reason or (None if job else "not_requested"),
@@ -529,6 +548,19 @@ class ExactChecks:
         if check.conclusion is Conclusion.PENDING:
             return now + self.poll_seconds
         return now + self.retry_seconds
+
+
+class RequestedChecks(ExactChecks):
+    """Request before every refresh, for a consumer that only refreshes.
+
+    The root PR gate refreshes a member head's checks and never requests them:
+    a hosted head's push requests its own. A local head's jobs exist only once
+    requested, and its sequential plan advances one request at a time.
+    """
+
+    async def refresh(self, head: HeadIdentity) -> ChecksResult:
+        await self.request(head)
+        return await super().refresh(head)
 
 
 def _upsert(check: CommitCheck):

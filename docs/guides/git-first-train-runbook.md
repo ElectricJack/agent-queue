@@ -32,9 +32,27 @@ recorded stall's Git, check, tree-review and task-transition evidence.
 - **Checks.** A development project's default branch runs its pinned development
   policy's validation commands as integration jobs on a retained snapshot of the exact
   candidate (`validation: none` publishes without jobs; `advisory` publishes on red).
-  Every other target requires the hosted checks named by the frozen policy's
-  `root.required_checks` (`parent.required_checks` for parent branches), from the
-  trusted producer only.
+  Every other target requires the checks named by the frozen policy's
+  `root.required_checks` (`parent.required_checks` for parent branches). The
+  policy's optional `ci` block chooses which runner produces them:
+  `source` is `hosted` (the default; GitHub Actions, from the trusted producer
+  only), `local` (the local job runner runs `ci.commands[<check name>]` on a
+  retained snapshot of the exact candidate and the train reads no GitHub CI) or
+  `hybrid` (candidates run locally; a root PR and a promotion step still read the
+  hosted checks GitHub enforces on them). `root`, `epic` and `promotion` override
+  `source` per target kind. A `local` or `hybrid` boundary must name a command for
+  every one of its required checks, and a policy that does not is refused when it
+  is written. Local checks keep the boundary's check names and version, so
+  baselines, repair briefs and gate states read the same whichever runner
+  produced them. A locally gated candidate carries no hosted attestation. A local
+  promotion step runs the checks its trust manifest selects; when `ci.commands`
+  lacks one the step holds with `promotion_intent_invalid` and the error
+  `ci_command_missing:<name>`. A development pin
+  keeps its own validation commands; it has no `ci` block.
+  `aq integration status` reports the runner for each target kind as `ci_source`
+  (`origin: policy`, `development` or `default`), and `aq doctor --check
+  integration.ci_source` names projects that run checks locally and any stored `ci`
+  block that no longer validates (such a train reads hosted checks everywhere).
 - **Check evidence.** Each cached check keeps its own conclusion, even when its
   workflow fails. Baseline comparison uses those individual conclusions. A red
   repair brief names the failing checks, links their jobs (or the workflow when a

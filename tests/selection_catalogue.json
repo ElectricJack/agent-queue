@@ -1421,7 +1421,7 @@
       ]
     }
   },
-  "digest": "sha256:2dae8bbc2945b8a868992c4841aabca6c3102e133438b371f5e1b223c4851373",
+  "digest": "sha256:26924ae70f5d400d6c205e97d74535d8bb975cb3b7cfef93fd16a22c09885a70",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5390,6 +5390,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.database.tables",
         "src.doctor",
         "src.doctor.integration_checks",
         "src.doctor.models",
@@ -12516,6 +12517,7 @@
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.batches",
+        "src.integration.checks",
         "src.integration.ci",
         "src.integration.git_truth",
         "src.integration.models",
