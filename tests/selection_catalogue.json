@@ -1149,7 +1149,9 @@
       "description": "Task archiving: moving finished tasks and subtrees to the archive, archive sweeps, reads that span live and archived tasks, and refusals for undelivered work.",
       "modules": [
         "tests/test_archive.py",
-        "tests/test_hierarchy_archive_delete.py"
+        "tests/test_cli_task_remove.py",
+        "tests/test_hierarchy_archive_delete.py",
+        "tests/test_task_removal.py"
       ]
     },
     "task-comments": {
@@ -1417,7 +1419,7 @@
       ]
     }
   },
-  "digest": "sha256:f8cd35d085e3f75342b366e6172c1bb71dca2ccf3933e3b52ce6287d70c41c11",
+  "digest": "sha256:d979e915fcec8ab304911f6d0fe23b0c11a129720412e8fde18d5bc7257a9b06",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3619,6 +3621,17 @@
         "parametrize"
       ],
       "summary": "``aq task create --requires-kind``: parsing, forwarding, persistence, parity."
+    },
+    "tests/test_cli_task_remove.py": {
+      "areas": [
+        "task-archive"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.app"
+      ],
+      "markers": [],
+      "summary": "The operator removes a subtree with one explicit confirmation."
     },
     "tests/test_cli_task_subtasks.py": {
       "areas": [
@@ -15326,6 +15339,25 @@
       ],
       "markers": [],
       "summary": "task.ready — every entry into the frontier is recorded and emitted (spec §9)."
+    },
+    "tests/test_task_removal.py": {
+      "areas": [
+        "task-archive"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.database",
+        "src.database.tables",
+        "src.integration.parent_engine",
+        "src.integration.task_removal",
+        "src.models"
+      ],
+      "markers": [
+        "asyncio",
+        "parametrize"
+      ],
+      "summary": "Confirmed operator removal preserves audit, fences writers, and retires orphans."
     },
     "tests/test_task_requirements_queries.py": {
       "areas": [

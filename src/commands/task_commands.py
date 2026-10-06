@@ -4690,6 +4690,45 @@ class TaskCommandsMixin:
             "cancelled_reviews": cancelled_reviews,
         }
 
+    async def _cmd_remove_task(self, args: dict) -> dict:
+        """One confirmed operator decision removes an entire stopped subtree."""
+        from src.commands.supervisor_authority import operator_or_supervisor
+        from src.integration.task_removal import prepare_removal, remove_subtree
+
+        task_id = args["task_id"]
+        task = await self.db.get_task(task_id)
+        if task is None:
+            return {"success": False, "error": f"Task '{task_id}' not found"}
+        actor, refusal = await operator_or_supervisor(self.db, task.project_id, subject="task removal")
+        if refusal:
+            return {"success": False, "code": "removal.forbidden", "error": refusal}
+        async with self.db._engine.connect() as conn:
+            ids = await self.db.subtree_ids(task_id, conn=conn)
+        if not args.get("confirmed"):
+            return {"success": True, "removed": None, "task_ids": ids, "branches": "keep",
+                    "disposition": "preview", "title": task.title}
+        reason = args.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            return {"success": False, "code": "removal.reason_required",
+                    "error": "Remove requires a reason."}
+        try:
+            snapshots = await prepare_removal(self.db, task_id)
+            for tid, snapshot in snapshots.items():
+                await self.orchestrator._finish_manual_pause(tid, snapshot)
+            result = await remove_subtree(
+                self.db, task_id, expected_ids=snapshots, reason=reason.strip(), actor=actor,
+                legacy_engine_gone=getattr(self.orchestrator, "integration_train", None) is not None,
+            )
+        except HierarchyError as exc:
+            return self._hierarchy_failure(exc)
+        except ValueError as exc:
+            return {"success": False, "code": "removal.cleanup_pending",
+                    "error": str(exc).replace("Retry Resume.", "Retry Remove.")}
+        await self._emit_task_graph_change(
+            "task.archived" if result["disposition"] == "archived" else "task.deleted", task,
+        )
+        return {"success": True, "title": task.title, **result}
+
     async def _cmd_delete_task(self, args: dict) -> dict:
         task_id = args["task_id"]
         task = await self.db.get_task(task_id)
@@ -4828,8 +4867,8 @@ class TaskCommandsMixin:
     async def _cmd_archive_task(self, args: dict) -> dict:
         """Archive tasks — single task by ID or bulk by project.
 
-        **Single mode** (``task_id``): archives one task.  Must be in a
-        terminal status (COMPLETED, FAILED, or BLOCKED).
+        **Single mode** (``task_id``): archives the subtree. Terminal tasks
+        need no reason; DEFINED/READY/PAUSED tasks require a reason.
 
         **Bulk mode** (``project_id``): archives all completed tasks in a
         project.  Set ``include_failed=True`` to also archive FAILED and
@@ -4867,11 +4906,14 @@ class TaskCommandsMixin:
                 return {"error": f"Task '{task_id}' not found"}
 
             terminal = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED}
+            if isinstance(abandon_reason, str) and abandon_reason.strip():
+                terminal.update({TaskStatus.PAUSED, TaskStatus.DEFINED, TaskStatus.READY})
             if task.status not in terminal:
                 return {
                     "error": (
                         f"Cannot archive task in {task.status.value} status. "
-                        "Only COMPLETED, FAILED, or BLOCKED tasks can be archived."
+                        "Archive PAUSED, DEFINED, or READY tasks with --reason, "
+                        "or stop running work with Remove."
                     ),
                 }
 
@@ -4885,6 +4927,7 @@ class TaskCommandsMixin:
                     abandon_undelivered=abandon_undelivered,
                     abandon_reason=abandon_reason,
                     abandoned_by=(self._current_scope or {}).get("session_id") or "operator",
+                    archive_reason=abandon_reason,
                 )
             except HierarchyError as exc:
                 # Same renderer as delete: an ``integration_owned`` refusal

@@ -176,6 +176,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_recover": "task",
     "reopen_with_feedback": "task",
     "delete_task": "task",
+    "remove_task": "task",
     "skip_task": "task",
     "set_task_status": "task",
     "archive_task": "task",
@@ -2503,6 +2504,24 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "remove_task",
+        "description": (
+            "Remove a task or epic subtree. Operator/live supervisor only. With confirmed=false, "
+            "preview without changing anything. One confirmed decision stops sessions, aborts open "
+            "batches, cancels ownerless legacy operations and archives when audit history exists. "
+            "Branches are kept. Requires a reason when confirmed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task or epic to remove"},
+                "confirmed": {"type": "boolean", "default": False},
+                "reason": {"type": "string", "description": "Reason for removing this work"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
         "name": "delete_task",
         "description": "Delete a task. Cannot delete a task that is currently in progress.",
         "input_schema": {
@@ -2535,7 +2554,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "task_id": {
                     "type": "string",
                     "description": (
-                        "Archive a single task by ID (must be COMPLETED, FAILED, or BLOCKED)"
+                        "Archive a single task by ID; PAUSED, DEFINED and READY require reason"
                     ),
                 },
                 "project_id": {
@@ -2561,7 +2580,7 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "reason": {
                     "type": "string",
-                    "description": "Required reason when abandon_undelivered is true.",
+                    "description": "Required to archive PAUSED/DEFINED/READY or abandon undelivered work.",
                 },
             },
         },

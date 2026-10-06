@@ -514,6 +514,17 @@ class DeleteTaskResponse(BaseModel):
     discarded_branches: list[DeletedBranch] = []
 
 
+class RemoveTaskResponse(BaseModel):
+    success: bool = True
+    removed: str | None = None
+    title: str
+    task_ids: list[str] = []
+    disposition: Literal["preview", "deleted", "archived"]
+    branches: Literal["keep"] = "keep"
+    aborted_batches: list[str] = []
+    cancelled_operations: list[str] = []
+
+
 class TaskControlResponse(BaseModel):
     task_id: str
     status: str
@@ -1214,6 +1225,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "phase_list": PhaseListResponse,
     "edit_task": EditTaskResponse,
     "delete_task": DeleteTaskResponse,
+    "remove_task": RemoveTaskResponse,
     "stop_task": StopTaskResponse,
     "pause_task": TaskControlResponse,
     "resume_task": TaskControlResponse,
