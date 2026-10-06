@@ -8135,3 +8135,25 @@ async def test_ordinary_repair_keeps_normal_recovery_task_after_lease_expiry(ord
     assert {r["task_id"] for r in results} == {first["task_id"]}
     assert {r["outcome"] for r in results} == {"exists"}
     assert (await env.store.get("ordinary")).repair_attempt_count == 1
+
+
+async def test_ordinary_repair_restores_a_released_lease_for_an_unclaimed_repair(ordinary_env):
+    """A failed claim preparation releases the lease and leaves the repair READY."""
+    env = ordinary_env
+    filed = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True),
+                                       target_ref=env.ref, head_sha=STARTING_SHA, ttl_seconds=10)
+    first = await env.locks.get(env.target)
+    assert first.holder == filed["task_id"]
+    assert await env.locks.release(first.grant())
+    assert (await env.locks.get(env.target)).holder is None
+    replay = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA)
+    assert (replay["outcome"], replay["task_id"], replay.get("lease_restored")) == (
+        "exists", filed["task_id"], True)
+    restored = await env.locks.get(env.target)
+    assert restored.holder == filed["task_id"] and restored.fence > first.fence
+    # A claimed repair is never re-fenced behind its writer's back.
+    assert await env.locks.release(restored.grant())
+    await env.db.update_task(filed["task_id"], status=TaskStatus.IN_PROGRESS)
+    claimed = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA)
+    assert (claimed["outcome"], claimed.get("lease_expired")) == ("exists", True)
+    assert (await env.locks.get(env.target)).holder is None
