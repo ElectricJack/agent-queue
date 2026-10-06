@@ -835,6 +835,7 @@ areas:
       - tests/test_update.py
       - tests/test_additive_migrations.py
       - tests/test_update_rollback.py
+      - tests/test_db_cli.py
       - tests/test_setup_script.py
       - tests/test_windows_bootstrap.py
       - tests/test_known_tools.py
