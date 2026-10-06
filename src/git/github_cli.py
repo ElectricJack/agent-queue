@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import shutil
 import signal
 import stat
 import tempfile
+from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 from typing import Protocol
 
-from src.git.github import MAX_RESPONSE_BYTES
+from src.git.github import MAX_RESPONSE_BYTES, _command_error
 from src.git.github_contracts import (
     GitHubAccessError as GitHubAppError,
     GitHubCredentialIdentity,
@@ -26,6 +29,10 @@ MAX_STDIN_BYTES = 1024 * 1024
 MAX_DIAGNOSTIC_BYTES = 256 * 1024
 DEFAULT_TIMEOUT_SECONDS = 30.0
 PROCESS_CLEANUP_SECONDS = 1.0
+FAILURE_WARNING_INTERVAL_SECONDS = 300.0
+MAX_FAILURE_WARNING_KEYS = 256
+
+logger = logging.getLogger(__name__)
 
 _TARGET_OPTIONS = ("--hostname", "--repo", "-R")
 _TOKEN_ENVIRONMENT_KEYS = frozenset(
@@ -187,6 +194,7 @@ class GhRunner:
         self.max_stdin_bytes = max_stdin_bytes
         self.cleanup_timeout = float(cleanup_timeout)
         self._resolved_executable: str | None = None
+        self._failure_warnings: OrderedDict[tuple[str, str, str], float] = OrderedDict()
         self._temporary_work_dir: tempfile.TemporaryDirectory[str] | None = None
         if cwd is None:
             self._temporary_work_dir = tempfile.TemporaryDirectory(prefix="aq-gh-")
@@ -348,8 +356,36 @@ class GhRunner:
         safe_stderr = _scrub_diagnostic(stderr, secrets=diagnostic_secrets)
         result = GhResult(process.returncode or 0, stdout, safe_stderr)
         if check and result.returncode != 0:
-            raise _cli_error(result.returncode, stderr)
+            error = _cli_error(result.returncode, stderr)
+            self.warn_failure(error, repository=repository)
+            raise error
         return result
+
+    def warn_failure(
+        self,
+        error: GitHubAppError,
+        *,
+        repository: GitHubRepositoryBinding | None = None,
+    ) -> None:
+        """Warn on a classified failure, sharing a cooldown across callers."""
+        mode = self.credential_identity.mode.value
+        target = repository.full_name if repository is not None else "github.com (account)"
+        key = (mode, target, error.category)
+        now = monotonic()
+        last_warning = self._failure_warnings.get(key)
+        if last_warning is not None and now - last_warning < FAILURE_WARNING_INTERVAL_SECONDS:
+            return
+        self._failure_warnings[key] = now
+        self._failure_warnings.move_to_end(key)
+        if len(self._failure_warnings) > MAX_FAILURE_WARNING_KEYS:
+            self._failure_warnings.popitem(last=False)
+        logger.warning(
+            "%s; credential_mode=%s repository=%s; repeated warnings suppressed for %ds",
+            error,
+            mode,
+            target,
+            FAILURE_WARNING_INTERVAL_SECONDS,
+        )
 
     def _resolve_executable(self) -> str:
         if self._resolved_executable is not None:
@@ -607,22 +643,9 @@ def _scrub_diagnostic(diagnostic: bytes, *, secrets: Sequence[str] = ()) -> str:
 
 
 def _cli_error(returncode: int, stderr: bytes) -> GitHubAppError:
-    diagnostic = stderr.decode("utf-8", "replace")
-    status_match = re.search(r"\bHTTP\s+(\d{3})\b", diagnostic, flags=re.IGNORECASE)
-    status = int(status_match.group(1)) if status_match else None
-    if returncode == 4 or status == 401:
-        category = "credentials"
-    elif status == 404:
-        category = "not_found_or_hidden"
-    elif status in {409, 422}:
-        category = "conflict_or_invalid"
-    elif status in {403, 429} and "rate limit" in diagnostic.lower():
-        category = "rate_limited"
-    elif status == 403:
-        category = "permission"
-    else:
-        category = "transient"
-    return GitHubAppError(category, "GitHub CLI request failed")
+    # Classification may inspect stderr, but only fixed categories and a numeric
+    # status leave this boundary. Never include even a scrubbed stderr excerpt.
+    return _command_error(returncode, stderr.decode("utf-8", "replace"))
 
 
 __all__ = [

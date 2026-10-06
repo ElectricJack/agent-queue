@@ -528,7 +528,9 @@ class GitHubAccess:
         try:
             selected = await self.auth.credential_for(repository)
         except GitHubAccessError as exc:
-            raise GitHubWriteNotStarted(exc.category, str(exc), retry_at=exc.retry_at) from exc
+            raise GitHubWriteNotStarted(
+                exc.category, str(exc), retry_at=exc.retry_at, http_status=exc.http_status
+            ) from exc
         try:
             return await self._run(
                 args,
@@ -568,7 +570,7 @@ class GitHubAccess:
             check=check_result is None,
         )
         if check_result is not None:
-            check_result(result)
+            _validate_cli_result(self.runner, repository, result, check_result)
         return result
 
     @staticmethod
@@ -771,8 +773,26 @@ class GitHubRunnerAccess:
             check=check_result is None,
         )
         if check_result is not None:
-            check_result(result)
+            _validate_cli_result(self.runner, repository, result, check_result)
         return result
+
+
+def _validate_cli_result(
+    runner: GhRunnerLike,
+    repository: GitHubRepositoryBinding,
+    result: GhResultLike,
+    check_result: Callable[[GhResultLike], None],
+) -> None:
+    """Report actual API failures after decoding status and expected outcomes."""
+    try:
+        check_result(result)
+    except GitHubAccessError as exc:
+        # Injected runners may implement only the execution seam. Production
+        # uses GhRunner's shared warning cache for both checked and API calls.
+        warn_failure = getattr(runner, "warn_failure", None)
+        if callable(warn_failure):
+            warn_failure(exc, repository=repository)
+        raise
 
 
 @dataclass(frozen=True, slots=True)
@@ -1941,7 +1961,10 @@ def _http_error(status: int, headers: Mapping[str, str], now: float) -> GitHubAc
             except ValueError:
                 pass
         return GitHubAccessError(
-            "rate_limited", "GitHub request was rate limited", retry_at=retry_at
+            "rate_limited",
+            f"GitHub request was rate limited (rate_limited, HTTP {status})",
+            retry_at=retry_at,
+            http_status=status,
         )
     category = {
         401: "credentials",
@@ -1950,7 +1973,9 @@ def _http_error(status: int, headers: Mapping[str, str], now: float) -> GitHubAc
         409: "conflict_or_invalid",
         422: "conflict_or_invalid",
     }.get(status, "transient" if status >= 500 else "conflict_or_invalid")
-    return GitHubAccessError(category, f"GitHub request failed ({category})")
+    return GitHubAccessError(
+        category, f"GitHub request failed ({category}, HTTP {status})", http_status=status
+    )
 
 
 def _command_error(returncode: int, diagnostic: str) -> GitHubAccessError:
@@ -1962,13 +1987,16 @@ def _command_error(returncode: int, diagnostic: str) -> GitHubAccessError:
         category = "not_found_or_hidden"
     elif status in {409, 422}:
         category = "conflict_or_invalid"
-    elif status in {403, 429} and "rate limit" in diagnostic.lower():
+    elif status == 429 or (status == 403 and "rate limit" in diagnostic.lower()):
         category = "rate_limited"
     elif status == 403:
         category = "permission"
     else:
         category = "transient"
-    return GitHubAccessError(category, "GitHub CLI request failed")
+    detail = category if status is None else f"{category}, HTTP {status}"
+    return GitHubAccessError(
+        category, f"GitHub CLI request failed ({detail})", http_status=status
+    )
 
 
 def _strict_positive_int(value: Any) -> int | None:
