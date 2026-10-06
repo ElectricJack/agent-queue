@@ -317,7 +317,10 @@ async def test_changed_stack_replaces_frozen_inputs_and_tests_exact_combined_can
         targets=SimpleNamespace(targets=AsyncMock(return_value=[target])),
         batches=batches,
         lane_for=AsyncMock(return_value=TrainLane(observe, service, candidates)),
-        repair=SimpleNamespace(allocate=AsyncMock(side_effect=AssertionError("unexpected repair"))),
+        repair=SimpleNamespace(
+            allocate=AsyncMock(side_effect=AssertionError("unexpected repair")),
+            settle_green=AsyncMock(),
+        ),
     )
     old = await train.visit(target)
     assert old.state == "testing", old
