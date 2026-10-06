@@ -287,6 +287,23 @@ class DeliveryView:
 _FETCH_LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
+def prerequisite_observer(db):
+    """The truth-bearing observer for sibling prerequisites, or None in shadow mode.
+
+    The daemon's general delivery observer carries no ``GitTruth``; under
+    ``integration.git_first: active`` it registers a separate one
+    (:meth:`set_prerequisite_observer`).  A delivery observer that already
+    carries truth (tests, embedders) is used directly.
+    """
+    observer = getattr(db, "_prerequisite_observer", None)
+    if observer is not None and getattr(observer, "truth", None) is not None:
+        return observer
+    observer = getattr(db, "_delivery_observer", None)
+    if observer is not None and getattr(observer, "truth", None) is not None:
+        return observer
+    return None
+
+
 async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None):
     """Request-scoped Git prerequisite evidence for scheduling and diagnostics.
 
@@ -303,8 +320,8 @@ async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None):
 
     from src.database.queries.hierarchy_queries import ProjectIntegrationMode
 
-    observer = getattr(db, "_delivery_observer", None)
-    if observer is None or getattr(observer, "truth", None) is None:
+    observer = prerequisite_observer(db)
+    if observer is None:
         return {}
     if task_id is not None:
         task = await db.get_task(task_id)

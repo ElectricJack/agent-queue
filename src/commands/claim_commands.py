@@ -614,9 +614,10 @@ class ClaimCommandsMixin:
                     ClaimResult.NO_READY_WORK, "source_ci_repair_already_delivered", None, cap
                 )
         prerequisite_view = None
-        observer = getattr(self.db, "_delivery_observer", None)
-        if (hierarchy_mode and hierarchy_mode.hierarchical and observer is not None
-                and getattr(observer, "truth", None) is not None):
+        from src.integration.delivery_observer import prerequisite_observer
+
+        observer = prerequisite_observer(self.db)
+        if hierarchy_mode and hierarchy_mode.hierarchical and observer is not None:
             prerequisite_view = await observer.prerequisite_view(project.id, task_id=want_id)
             if not await prerequisite_view.fresh():
                 return self._simple(ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", None, cap)

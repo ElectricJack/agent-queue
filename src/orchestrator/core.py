@@ -1517,6 +1517,16 @@ class Orchestrator(
         # Archive/removal guards prove development delivery in git before
         # their transaction; the database layer has no Git of its own.
         self.db.set_delivery_observer(self.delivery_observer)
+        # Git-first promotion writes no delivery receipt, so sibling
+        # prerequisites are proven from the parent branch in Git instead.
+        if self.config.integration.git_first == "active":
+            from src.integration.delivery_observer import DeliveryObserver
+            from src.integration.git_truth import GitTruth
+
+            self.db.set_prerequisite_observer(DeliveryObserver(
+                self.db, git=self.git, data_dir=Path(self.config.data_dir) / "prerequisites",
+                truth=GitTruth(self.git),
+            ))
         # aq-surface Phase S2: construct the session-token store now that
         # the DB is live.  The API layer prefers this instance so
         # revocations from the cascade sweep share the same cache as
