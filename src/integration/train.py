@@ -480,6 +480,16 @@ class IntegrationTrain:
             return await self._red(
                 target, lane, batch, members, observation, result, head, checks
             )
+        missing_push = [check for check in getattr(result, "checks", ())
+                        if check.classification == "ci_not_triggered"]
+        if missing_push:
+            diagnostic = missing_push[0]
+            observation = replace(observation, detail={
+                **(observation.detail or {}), "ci_not_triggered": {
+                    **diagnostic.detail, "reason": diagnostic.reason,
+                },
+            })
+            return await self._repair(target, lane, batch, members, observation, result)
         return self._visit(target, "testing", batch, observation, result)
 
     async def _red(
@@ -539,6 +549,22 @@ class IntegrationTrain:
         # scope the target baseline left this repair.
         brief = brief or (conflict_brief(observation.detail, members, starting_sha=head)
                           if observation.state == "conflict" else "")
+        missing_push = (observation.detail or {}).get("ci_not_triggered")
+        if missing_push:
+            source = missing_push.get("repair_source_ref", "the repository's default branch")
+            brief = (
+                f"CI did not trigger on the exact candidate {head}. {missing_push['reason']}\n"
+                f"Fetch {source} and review its .github/workflows changes against this candidate. "
+                "Merge or apply the missing workflow changes as an ordinary commit on the "
+                "candidate, preserving intentional branch-specific changes and every frozen "
+                "batch member. Ensure the workflows providing the required checks trigger on "
+                f"push to {candidate_ref(batch.id)}. Publish the new candidate head with the "
+                "managed lease so GitHub creates a push run for that exact SHA. "
+                "Keep the trusted producer, required check names and attestation unchanged; "
+                "workflow_dispatch and checks on another SHA cannot satisfy this repair. "
+                "If the workflows already allow the candidate ref, diagnose path filters, "
+                "push credentials or GitHub availability before changing workflow content."
+            )
         _progress("allocate_repair")
         repair = await self.repair.allocate(batch.id, target_ref=candidate_ref(batch.id),
                                             head_sha=head, held=batch.intent != "open",

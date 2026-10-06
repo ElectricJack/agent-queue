@@ -252,7 +252,9 @@ async def development_lanes(world, tmp_path, monkeypatch, validation: str):
     )
     lanes = DaemonLanes(orchestrator, batches=DatabaseBatches(world.db))
 
-    async def hosted_checks(policy, binding, target, batch, candidate_sha):
+    async def hosted_checks(policy, binding, target, batch, candidate_sha, *, retained=None):
+        assert retained.repository_id == target.repository_id
+        assert retained.store == world.store
         hosted.append(target.kind)
         return "hosted"
 

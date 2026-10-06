@@ -39,7 +39,7 @@ from src.integration.delivery_observer import DeliveryObserver
 from src.integration.git_truth import GitTruth
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
-from src.integration.models import BranchKey
+from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.repair import OrdinaryRepairService
@@ -55,13 +55,14 @@ from src.integration.train_sources import (
     batch_id,
     train_for,
     _pending_tasks,
+    _push_branch_allowed,
 )
 from src.integration.reviews import ReviewRequirements, TreeReviews
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
 from src.test_selection import catalogue as Catalogue
 from tests.db_fixtures import lease_dsn
 from tests.test_delivery_consumers import Origin, close, git
-from tests.test_integration_gitops import LocalGit
+from tests.test_integration_gitops import LocalGit, commit
 from tests.test_jobs import finish, job_rows, jobs_handler, pin_development
 
 MAIN = TrainTarget("p", "r", "refs/heads/main", "root")
@@ -884,7 +885,7 @@ class HostedGitHub:
         return {"id": record["id"]}
 
 
-async def hosted_train(world, *, retained_store=None):
+async def hosted_train(world, *, retained_store=None, clock=time.time):
     """The daemon's own lanes for a project with no development pin: hosted checks."""
     db, origin = world.db, world.origin
     async with db._engine.begin() as conn:
@@ -926,7 +927,8 @@ async def hosted_train(world, *, retained_store=None):
     batches = DatabaseBatches(db)
     train = IntegrationTrain(
         targets=DatabaseTargets(db), batches=batches,
-        lane_for=DaemonLanes(orchestrator, batches=batches), repair=OrdinaryRepairService(db),
+        lane_for=DaemonLanes(orchestrator, batches=batches, clock=clock),
+        repair=OrdinaryRepairService(db, clock=clock), clock=clock,
     )
     return train, github, trusts
 
@@ -1284,6 +1286,108 @@ async def test_hosted_red_candidate_files_one_repair_and_never_publishes(world):
     assert (red.repair["outcome"], again.repair["outcome"]) == ("filed", "exists")
     assert again.repair["task_id"] == red.repair["task_id"]
     assert git(origin.url, "rev-parse", "refs/heads/main") == main
+
+
+@pytest.mark.parametrize(("push", "allowed"), [
+    ({"branches": ["aq/parent/**", "aq/integration/**"]}, False),
+    ({"branches": ["aq/batches/**"]}, True),
+    ({"branches": ["aq/*"]}, False),
+    ({"branches": ["aq/**", "!aq/batches/**"]}, False),
+    ({"branches": ["aq/**", "!aq/batches/**", "aq/batches/*"]}, True),
+    ({"branches-ignore": ["aq/batches/**"]}, False),
+    ({"tags": ["*"]}, False),
+    ({}, True),
+    ({"branches": ["aq/batches/[a-z]+"]}, None),
+    ({"branches": "aq/batches/**"}, None),
+])
+def test_candidate_branch_filter_diagnostic(push, allowed):
+    assert _push_branch_allowed(push, "refs/heads/aq/batches/abc") is allowed
+
+
+async def test_old_epic_workflow_files_repair_and_exact_push_then_delivers(collected_epic):
+    """Real Git/ref lease and PostgreSQL, with Actions driven by candidate push filters."""
+    case = collected_epic
+    path = ".github/workflows/tests.yml"
+    old = ("name: Tests\non:\n  push:\n    branches:\n"
+           "      - 'aq/parent/**'\n      - 'aq/integration/**'\n"
+           "  workflow_dispatch:\njobs:\n  unit:\n    name: unit\n")
+    current = old.replace("  workflow_dispatch:",
+                          "      - 'aq/batches/**'\n  workflow_dispatch:")
+    epic = commit(case.origin.clone, {path: old}, base=case.base)
+    git(case.origin.clone, "push", "origin", f"{epic}:aq/epic")
+    main = commit(case.origin.clone, {path: current}, base=case.base)
+    git(case.origin.clone, "push", "origin", f"{main}:main")
+
+    # A workflow run exists only after a real push whose own tree allows the ref.
+    transport = case.train.lane_for.git
+    push = transport.apush_repository_oid
+
+    async def actions_push(store, **kwargs):
+        pushed = await push(store, **kwargs)
+        sha, branch = kwargs["tip_oid"], kwargs["branch"]
+        if branch.startswith("aq/batches/"):
+            assert git(case.origin.url, "rev-parse", branch) == sha
+            workflow = git(case.origin.url, "show", f"{sha}:{path}")
+            if "'aq/batches/**'" in workflow:
+                case.github.runs[sha] = "success"
+        return pushed
+
+    transport.apush_repository_oid = actions_push
+    clock = SimpleNamespace(now=time.time())
+    case.train.clock = case.train.lane_for.clock = lambda: clock.now
+    await case.train.tick()
+    await case.train.drain()
+    testing = next(row for row in case.train.status() if row["target_ref"] == case.target.target_ref)
+    assert (testing["state"], testing["checks"]) == ("testing", "pending")
+    assert testing["candidate_sha"] not in case.github.runs
+
+    clock.now += 300
+    await case.train.tick()
+    await case.train.drain()
+    status = IntegrationStatusService(case.db, git_first="active", train=case.train)
+    project = await status.control_status("p")
+    blocker = next(b for b in project["blockers"] if b["code"] == "ci_not_triggered")
+    assert path in blocker["detail"] and "exclude refs/heads/aq/batches/" in blocker["detail"]
+    assert blocker["candidate_sha"] == testing["candidate_sha"]
+    own = await status.task_blockers("child-a")
+    assert "ci_not_triggered" in {b["code"] for b in own["blockers"]}
+    blocked = next(row for row in case.train.status() if row["target_ref"] == case.target.target_ref)
+    assert (blocked["state"], blocked["checks"]) == ("repair", "unknown")
+    repair = await case.db.get_task(blocked["repair"]["task_id"])
+    assert "Fetch refs/heads/main" in repair.description
+    assert "ordinary commit" in repair.description and path in repair.description
+    assert "workflow_dispatch" in repair.description
+    assert git(case.origin.url, "rev-parse", "aq/epic") == epic
+    assert case.github.records == []  # Absence never becomes an attestation.
+
+    await case.train.tick()
+    await case.train.drain()
+    again = next(row for row in case.train.status() if row["target_ref"] == case.target.target_ref)
+    assert again["repair"]["outcome"] == "exists"
+    assert again["repair"]["task_id"] == repair.id
+    assert again["repair"]["attempt_count"] == 1
+
+    # Follow the supported repair brief: apply the default branch's workflow
+    # in a normal commit, then publish under this repair task's managed lease.
+    repaired = commit(case.origin.clone, {path: current}, base=testing["candidate_sha"])
+    locks = BranchLock(case.db)
+    fence = Fence.model_validate(blocked["repair"]["fence"])
+    await locks.fenced_push(
+        fence, git=transport, checkout_path=str(case.origin.clone),
+        repository=GitHubRepositoryBinding(123, HostedGitHub.full_name),
+        tip_oid=repaired, expected_old_oid=testing["candidate_sha"],
+    )
+    await locks.release(fence)
+    assert repaired in case.github.runs and testing["candidate_sha"] not in case.github.runs
+    clock.now += 1
+    delivered = await case.train.visit(case.target)
+    assert (delivered.state, delivered.checks) == ("delivered", "green")
+    assert git(case.origin.url, "rev-parse", "aq/epic") == repaired
+    [attestation] = case.github.records
+    assert (attestation["head_sha"], attestation["name"]) == (repaired, ATTESTATION_CHECK_NAME)
+    assert case.trusts[-1][2]["names"] == ["unit"]
+    for source in case.children:
+        git(case.origin.url, "merge-base", "--is-ancestor", source, repaired)
 
 
 async def test_hosted_lane_missing_attestation_service_refuses_target_publication(world):

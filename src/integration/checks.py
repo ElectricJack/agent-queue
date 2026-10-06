@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
@@ -25,6 +25,7 @@ from sqlalchemy import and_, not_, select
 from sqlalchemy.dialects.postgresql import insert
 
 from src.database.tables import integration_check_evidence
+from src.git.manager import GitError
 from src.integration.ci import IntegrationCITrust, IntegrationTrustManifest
 from src.integration.ci_producers import (
     HostedCIProducer,
@@ -198,7 +199,8 @@ def _check(required: RequiredChecks, head: HeadIdentity, name: str, now: float, 
 
 _HOSTED_DEFERRED = {
     CIState.PENDING: Conclusion.PENDING,
-    # No workflow yet: the candidate push triggers one.
+    # Allow a newly published candidate time to acquire a push run. ExactChecks
+    # bounds this absence separately from a workflow that is already running.
     CIState.NONE: Conclusion.PENDING,
 }
 _HOSTED_CONCLUSIONS = {
@@ -213,14 +215,17 @@ class HostedChecks:
     """Per-check rows from the authenticated ``HostedCIProducer`` observation.
 
     Pushing the candidate ref under ``aq/integration/**`` (or a git-first
-    batch candidate under ``aq/batches/**``) triggers the workflows, so there
-    is nothing to request.
+    batch candidate under ``aq/batches/**``) is expected to trigger the workflows,
+    so there is nothing to dispatch. ExactChecks bounds an absent push run.
     """
 
     compares_targets = True
 
-    def __init__(self, producer: HostedCIProducer) -> None:
-        self.producer = producer
+    def __init__(
+        self, producer: HostedCIProducer, *,
+        diagnose: Callable[[HeadIdentity], Awaitable[dict[str, Any]]] | None = None,
+    ) -> None:
+        self.producer, self.diagnose = producer, diagnose
         self.required = RequiredChecks.from_trust(producer.trust)
 
     async def request(self, head: HeadIdentity) -> ProducerRequest:
@@ -263,6 +268,7 @@ class HostedChecks:
                     conclusion=conclusion,
                     classification=observed.classification,
                     reason=observed.reason,
+                    detail=observed.details,
                 )
                 for name in self.required.names
             )
@@ -394,10 +400,14 @@ class ExactChecks:
         *,
         poll_seconds: float = 60,
         retry_seconds: float = 300,
+        missing_push_seconds: float = 300,
         clock: Callable[[], float] = time.time,
     ) -> None:
+        if missing_push_seconds <= 0:
+            raise ValueError("missing push grace period must be positive")
         self.db, self.provider, self.clock = db, provider, clock
         self.poll_seconds, self.retry_seconds = poll_seconds, retry_seconds
+        self.missing_push_seconds = missing_push_seconds
 
     @property
     def required(self) -> RequiredChecks:
@@ -452,7 +462,13 @@ class ExactChecks:
         later always wins over an older one that finishes after it.
         """
         now = self.clock()
+        previous = (
+            {check.name: check for check in (await self.read(head)).checks}
+            if isinstance(self.provider, HostedChecks) else {}
+        )
         observed = await self.provider.observe(head, now=now)
+        if isinstance(self.provider, HostedChecks):
+            observed = await self._bound_missing_push(head, observed, previous, now)
         required = set(self.required.names)
         rows = [
             check.model_copy(update={"due_at": self._due(check, now)})
@@ -464,6 +480,46 @@ class ExactChecks:
                 for check in rows:
                     await conn.execute(_upsert(check))
         return await self.read(head)
+
+    async def _bound_missing_push(self, head, observed, previous, now):
+        """Retain the grace period in the exact-head cache across visits/restarts.
+
+        Missing runs are infrastructure, never conclusive failed checks. A
+        later real push run replaces this diagnostic through the normal refresh.
+        """
+        rows, diagnostic = [], None
+        for check in observed:
+            old = previous.get(check.name)
+            since = old.detail.get("missing_push_since") if old else None
+            if not check.detail.get("missing_push_run"):
+                # Transport failures do not reset a known missing-run deadline.
+                if since is not None and check.conclusion is Conclusion.UNAVAILABLE:
+                    check = check.model_copy(update={
+                        "detail": {**check.detail, "missing_push_since": since},
+                    })
+                rows.append(check)
+                continue
+            since = now if since is None else since
+            detail = {**check.detail, "missing_push_since": since}
+            values = {"detail": detail}
+            if now - since >= self.missing_push_seconds:
+                if diagnostic is None:
+                    diagnostic = {}
+                    if self.provider.diagnose is not None:
+                        try:
+                            diagnostic = await self.provider.diagnose(head)
+                        except (GitError, OSError, ValueError) as exc:
+                            diagnostic = {"reason": f"workflow inspection unavailable: {exc}"}
+                reason = (f"No push workflow run for exact head {head.sha} on {head.ref} "
+                          f"after {self.missing_push_seconds:g} seconds.")
+                if diagnostic.get("reason"):
+                    reason += " " + diagnostic["reason"]
+                values.update(
+                    conclusion=Conclusion.UNAVAILABLE, classification="ci_not_triggered",
+                    reason=reason, detail={**detail, **diagnostic},
+                )
+            rows.append(check.model_copy(update=values))
+        return tuple(rows)
 
     def _due(self, check: CommitCheck, now: float) -> float | None:
         if check.conclusion in FINAL:
