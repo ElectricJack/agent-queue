@@ -18509,8 +18509,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Atomically materialise an approved proposal into the live work graph: creates every task, then every dependency edge, stamping the proposal's source as provenance. Refused (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal, carries an approval resolution (``approve`` or ``approved``). The ready\u2192committed flip is a single conditional update, so two concurrent commits cannot both win. Any failure unwinds every task and edge already created and returns the proposal to ``ready`` for a retry. Committing an already committed proposal returns its original task ids with ``already_committed: true``. Returns the created task ids.",
-        "description": "Atomically materialise an approved proposal into the live work graph: creates every task, then every dependency edge, stamping the proposal's source as provenance. Refused (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal, carries an approval resolution (``approve`` or ``approved``). The ready\u2192committed flip is a single conditional update, so two concurrent commits cannot both win. Any failure unwinds every task and edge already created and returns the proposal to ``ready`` for a retry. Committing an already committed proposal returns its original task ids with ``already_committed: true``. Returns the created task ids.",
+        "summary": "Atomically materialise an approved proposal into the live work graph: creates and edits tasks, changes edges and appends comments, stamping the proposal's source as provenance. Refused (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal, carries an approval resolution (``approve`` or ``approved``). Task versions and graph state are rechecked under the routing/hierarchy/write locks; two concurrent commits cannot both win. Any failure rolls back all changes, the audit and receipt in PostgreSQL, leaving the proposal in ``ready`` for a retry. A conflict requires a fresh proposal. Committing an already committed proposal returns its original task ids with ``already_committed: true``. Returns the created task ids.",
+        "description": "Atomically materialise an approved proposal into the live work graph: creates and edits tasks, changes edges and appends comments, stamping the proposal's source as provenance. Refused (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal, carries an approval resolution (``approve`` or ``approved``). Task versions and graph state are rechecked under the routing/hierarchy/write locks; two concurrent commits cannot both win. Any failure rolls back all changes, the audit and receipt in PostgreSQL, leaving the proposal in ``ready`` for a retry. A conflict requires a fresh proposal. Committing an already committed proposal returns its original task ids with ``already_committed: true``. Returns the created task ids.",
         "operationId": "task_batch_commit",
         "requestBody": {
           "content": {
@@ -18603,8 +18603,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Propose a batch of tasks and their dependency edges as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard.",
-        "description": "Propose a batch of tasks and their dependency edges as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard.",
+        "summary": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard.",
+        "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard.",
         "operationId": "task_batch_propose",
         "requestBody": {
           "content": {
@@ -18650,8 +18650,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Replace a pending proposal's tasks and edges, re-running the same shape, reference and cycle checks as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated \u2014 a committed or discarded one is history.",
-        "description": "Replace a pending proposal's tasks and edges, re-running the same shape, reference and cycle checks as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated \u2014 a committed or discarded one is history.",
+        "summary": "Replace a pending change set, re-running final graph, state and version checks as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated \u2014 a committed or discarded one is history.",
+        "description": "Replace a pending change set, re-running final graph, state and version checks as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated \u2014 a committed or discarded one is history.",
         "operationId": "task_batch_update",
         "requestBody": {
           "content": {
@@ -66093,6 +66093,18 @@
             "type": "boolean",
             "title": "Success",
             "default": true
+          },
+          "diff": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diff"
           }
         },
         "type": "object",
@@ -66195,11 +66207,69 @@
             "title": "Source",
             "description": "Where the proposal came from (e.g. a spec path or playbook id). Recorded as provenance on every task the commit creates."
           },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dry Run",
+            "description": "Validate and return the diff without storing a proposal."
+          },
+          "edits": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edits",
+            "description": "Existing task edits and controls. Live control changes are refused."
+          },
+          "remove_edges": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remove Edges",
+            "description": "Typed edges to remove: from, to, dep_type (default blocks)."
+          },
+          "comments": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comments",
+            "description": "Append comments to existing ids or tempIds. Author comes from the caller."
+          },
           "tasks": {
-            "items": {},
-            "type": "array",
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Tasks",
-            "description": "The tasks to create. Must be non-empty."
+            "description": "Tasks to create with temporary ids; optional for edit-only change sets."
           },
           "edges": {
             "anyOf": [
@@ -66217,8 +66287,7 @@
         },
         "type": "object",
         "required": [
-          "source",
-          "tasks"
+          "source"
         ],
         "title": "TaskBatchProposeRequest"
       },
@@ -66239,6 +66308,23 @@
               }
             ],
             "title": "Proposal Id"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": false
+          },
+          "diff": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diff"
           }
         },
         "type": "object",
@@ -66256,7 +66342,7 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Payload",
-            "description": "The replacement graph: ``{\"tasks\": [...], \"edges\": [...]}`` in the same shape task_batch_propose takes."
+            "description": "The complete replacement change set (tasks, edits, edges, remove_edges, comments), in the same shape task_batch_propose takes."
           }
         },
         "type": "object",

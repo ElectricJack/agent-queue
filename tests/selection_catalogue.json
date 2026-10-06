@@ -1165,6 +1165,7 @@
     "task-dependencies": {
       "description": "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection.",
       "modules": [
+        "tests/test_cli_task_change_sets.py",
         "tests/test_dependency_queries.py",
         "tests/test_get_downstream_tasks.py",
         "tests/test_get_stuck_tasks_command.py",
@@ -1419,7 +1420,7 @@
       ]
     }
   },
-  "digest": "sha256:d979e915fcec8ab304911f6d0fe23b0c11a129720412e8fde18d5bc7257a9b06",
+  "digest": "sha256:af7c661c9d240f44526cc0d36c138c93f84cd42bbeb8d729b98653aae3a03ab1",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3570,6 +3571,19 @@
         "parametrize"
       ],
       "summary": "Contract tests for the hand-crafted system-config CLI."
+    },
+    "tests/test_cli_task_change_sets.py": {
+      "areas": [
+        "task-dependencies"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.app"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The file CLI preserves the reviewed change set and offers an unsaved preview."
     },
     "tests/test_cli_task_comments.py": {
       "areas": [
@@ -12507,7 +12521,6 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.commands.proposal_commands",
         "src.event_schemas"
       ],
       "markers": [],
@@ -14996,12 +15009,12 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.commands",
         "src.commands.contracts.builtin",
-        "src.commands.proposal_commands",
         "src.database.queries.proposal_queries",
         "src.database.tables",
+        "src.event_schemas",
         "src.models",
+        "src.orchestrator.events",
         "src.vault"
       ],
       "markers": [
