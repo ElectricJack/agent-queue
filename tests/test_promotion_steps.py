@@ -18,7 +18,8 @@ from src.integration.git_truth import GitTruth
 from src.integration.ci import ATTESTATION_CHECK_NAME, IntegrationTrustManifest
 from src.integration.provenance import CompletionIdentity
 from src.integration.promotion_steps import (
-    FlowSchema, PromotionChecks, PromotionIntentInvalid, PromotionVisit, StepAdmission,
+    PROMOTION_PUBLISH, FlowSchema, PromotionChecks, PromotionIntentInvalid, PromotionVisit,
+    StepAdmission,
     StepPullRequestGate,
     frozen_required_checks, promotion_ref, settle_promotion,
 )
@@ -603,15 +604,69 @@ async def test_crash_after_tag_write_before_response_reads_back_success(promotio
 
 async def test_missing_tag_recovers_after_target_advances_and_pr_closes(promotion):
     e = promotion
+    original = e.service.publish_tag
+    e.service.publish_tag = AsyncMock(side_effect=GitError("lost connection before tag write"))
+    assert (await visit(e)).state == "unknown"
+    assert git(e.ops.git.remote_path, "rev-parse", "main") == e.source
     tree = git(e.repo.store, "rev-parse", f"{e.source}^{{tree}}")
     advanced = git(e.repo.store, "commit-tree", tree, "-p", e.source, "-m", "later target work")
     git(e.repo.store, "push", "origin", f"{advanced}:refs/heads/main")
     e.github.pull["state"] = "closed"
     e.github.reviews = []
+    e.service.publish_tag = original
+    e.service.attest = AsyncMock(side_effect=AssertionError("must not repeat attestation"))
     assert (await visit(e)).state == "delivered"
     assert git(e.ops.git.remote_path, "rev-parse", "main") == advanced
     assert git(e.ops.git.remote_path, "rev-parse", "v1.2.3^{}") == e.source
+
+
+@pytest.mark.parametrize("pr_state", ["open", "closed"])
+async def test_source_reaching_target_another_way_never_earns_a_tag(promotion, pr_state):
+    e = promotion
+    tree = git(e.repo.store, "rev-parse", f"{e.source}^{{tree}}")
+    advanced = git(e.repo.store, "commit-tree", tree, "-p", e.source, "-m", "manual push")
+    git(e.repo.store, "push", "origin", f"{advanced}:refs/heads/main")
+    e.github.pull["state"] = pr_state
+    result = await visit(e)
+    assert result.state == "held" and result.detail["reason"] == "promotion_recovery_unproven"
+    assert not git(e.ops.git.remote_path, "for-each-ref", "refs/tags/")
     e.service.attest.assert_not_awaited()
+
+
+async def test_publish_record_precedes_the_target_write_and_names_the_request(promotion):
+    e = promotion
+    seen = []
+    original = e.service.publish
+
+    async def publish(*args, **kwargs):
+        async with e.db._engine.connect() as conn:
+            seen.append(await conn.scalar(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == e.member.task_id,
+                task_metadata.c.key == PROMOTION_PUBLISH,
+            )))
+        await original(*args, **kwargs)
+
+    e.service.publish = publish
+    assert (await visit(e)).state == "delivered"
+    record = json.loads(seen[0])
+    assert record == {"request_id": e.meta["request_id"], "batch_id": e.batch.id,
+                      "source_sha": e.source, "target_ref": e.batch.target_ref,
+                      "expected_old_oid": e.base}
+
+
+async def test_publish_record_for_another_request_does_not_prove_recovery(promotion):
+    e = promotion
+    async with e.db._engine.begin() as conn:
+        await conn.execute(insert(task_metadata).values(
+            task_id=e.member.task_id, key=PROMOTION_PUBLISH, value=json.dumps({
+                "request_id": "another-request", "batch_id": e.batch.id,
+                "source_sha": e.source, "target_ref": e.batch.target_ref,
+            }),
+        ))
+    git(e.repo.store, "push", "origin", f"{e.source}:refs/heads/main")
+    result = await visit(e)
+    assert result.state == "held" and result.detail["reason"] == "promotion_recovery_unproven"
+    assert not git(e.ops.git.remote_path, "for-each-ref", "refs/tags/")
 
 
 async def test_equivalent_patch_does_not_substitute_for_the_pinned_source(promotion):

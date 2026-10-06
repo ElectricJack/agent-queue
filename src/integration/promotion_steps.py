@@ -47,6 +47,7 @@ from src.integration.subjects import HeadIdentity
 log = logging.getLogger(__name__)
 PROMOTION_CONTEXT = "promotion_intent"
 PROMOTION_RESULT = "promotion_result"
+PROMOTION_PUBLISH = "promotion_publish_intent"
 
 DEFAULT_ATTESTATION = "Agent Queue Integration Attestation"
 STEP_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}\Z")
@@ -1241,6 +1242,34 @@ class PromotionVisit(BatchService):
             log.warning("promotion %s tag publication failed: %s", batch.id, exc)
         return await self._tag_state(repo, tag, meta, member)
 
+    async def _record_publish(self, batch, meta, member, expected):
+        """Record, before the target write, that this request's gated and attested S may land.
+
+        Write-once per task: a later batch of the same request proves the same thing.
+        """
+        record = {"request_id": meta["request_id"], "batch_id": batch.id,
+                  "source_sha": member.source_sha, "target_ref": batch.target_ref,
+                  "expected_old_oid": expected}
+        async with self.store.db.immediate() as conn:
+            await conn.execute(insert(task_metadata).values(
+                task_id=member.task_id, key=PROMOTION_PUBLISH,
+                value=json.dumps(record, sort_keys=True),
+            ).on_conflict_do_nothing(index_elements=["task_id", "key"]))
+
+    async def _publish_recorded(self, batch, meta, member):
+        async with self.store.db._engine.connect() as conn:
+            value = await conn.scalar(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == member.task_id,
+                task_metadata.c.key == PROMOTION_PUBLISH,
+            ))
+        try:
+            record = json.loads(value) if value else {}
+        except ValueError:
+            return False
+        return isinstance(record, dict) and (
+            record.get("request_id"), record.get("source_sha"), record.get("target_ref"),
+        ) == (meta["request_id"], member.source_sha, batch.target_ref)
+
     async def visit(self, batch, members, snapshot):
         from src.operator_decisions import OperatorDecisions
 
@@ -1285,8 +1314,13 @@ class PromotionVisit(BatchService):
             await self.gitops.exact(repo, source)
             tree = await self.gitops.git.atree_sha(str(repo.store), source)
             if proof:
-                # The target write already passed the step gate. Finish only the
-                # missing immutable tag and read-back after a crash (§3.3 4b/4c).
+                # Finish only the missing immutable tag and read-back after a crash
+                # (§3.3 4b/4c), and only when this request's own gated, attested write
+                # was recorded. The PR reads merged once S is on the target however it
+                # got there, so a live gate cannot tell a manual push from ours.
+                if not await self._publish_recorded(batch, meta, member):
+                    return BatchObservation("held", source, target, tree,
+                                            detail={"reason": "promotion_recovery_unproven"})
                 tag_state, tag_oid = await self._create_tag(
                     batch, repo, tag, meta, member,
                     lambda: self._authorized(batch, members),
@@ -1330,6 +1364,7 @@ class PromotionVisit(BatchService):
 
             # Each ref has its own exact lease/read-back; no atomicity is claimed.
             if not proof:
+                await self._record_publish(batch, meta, member, target)
                 state = await self._transfer(batch, repo, batch.target_ref, source, target, authorize)
                 if state != "published":
                     return BatchObservation(state, source, target, tree)
