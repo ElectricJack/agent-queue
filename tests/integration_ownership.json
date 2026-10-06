@@ -14162,6 +14162,15 @@
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Operator audit of batch abort or delivered-origin retirement with principal and reason; never replayed and carries no ref-update lifecycle."
+    },
+    "src/integration/train_sources.py::EpicCompletions.settle::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "line": 638,
+      "owner": "EpicCompletions.settle",
+      "call": "insert",
+      "owner_fingerprint": "3bc2ed959ce273224a8e24202c625e895b4f93e1ec141f7574d72f9a16f58b9d",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary task completion pointer. Metadata key: development_completion_id; value is the immutable collected epic completion generation after retained Git provenance and readiness revalidation. It contains no ref-update intent, replay authority or duplicate integration lifecycle."
     }
   },
   "generic_dependencies": {
