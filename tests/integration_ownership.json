@@ -1879,6 +1879,12 @@
         403
       ]
     },
+    "src/commands/project_commands.py::ProjectCommandsMixin._configure_promotion_flow": {
+      "reason": "Promotion-flow activation: validates layers 1-3, dry-runs the integration policy fence, creates missing targets outside it and writes behind the same generation."
+    },
+    "src/commands/project_commands.py::ProjectCommandsMixin._create_flow_targets": {
+      "reason": "Promotion-flow activation layer 4: create-only pushes of missing chain targets from the project workspace."
+    },
     "src/commands/project_onboarding_commands.py::ProjectOnboardingCommandsMixin._github_client": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -6281,6 +6287,9 @@
         1226
       ]
     },
+    "src/orchestrator/core.py::Orchestrator._recheck_promotion_flows": {
+      "reason": "Daemon-start re-validation of stored promotion flows (layers 1-3); records problems for status, writes nothing."
+    },
     "src/orchestrator/core.py::Orchestrator._reconcile_sessions": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -8154,6 +8163,21 @@
     },
     "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_task_on": {
       "reason": "Transaction-scoped subtree archive enforces integration removal guards, retains abandonment and delegate retirement evidence, and preserves branch identity."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_schema": {
+      "reason": "Read-only promotion-flow schema command; owns the integration configuration contract."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_validate": {
+      "reason": "Read-only layered promotion-flow validation against designated-repository trust."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_manifest": {
+      "reason": "Reads committed integration trust for promotion-flow validation."
+    },
+    "src/commands/promote_commands.py::import from src.commands.supervisor_authority import integration_operator": {
+      "reason": "Promotion validation uses project-scoped integration operator authority."
+    },
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import FlowSchema": {
+      "reason": "Promotion commands depend on the integration-owned flow schema."
     }
   },
   "exclusions": {
@@ -13231,10 +13255,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/integration/development.py::DevelopmentPrimitives.stale_branches::1a8916f711dc47c080cb0bac5599a46fa61aee803ddea03d9439036c30b321e9": {
-      "line": 1016,
+      "line": 1028,
       "owner": "DevelopmentPrimitives.stale_branches",
       "call": "log_event",
-      "owner_fingerprint": "024a084b28c16536d892ea4caac836da19d3189890ab0593316a54fee7180a21",
+      "owner_fingerprint": "65b3e8213e67f1399deb2e887c6cb924ace5ef5946609c43fb962f2923121eb8",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."

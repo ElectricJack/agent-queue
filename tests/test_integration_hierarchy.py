@@ -22,6 +22,7 @@ from src.database.tables import (
     integration_review_evidence,
     playbook_artifacts,
     projects,
+    repos,
     task_branch_origins,
     task_completion_records,
     task_delivery_receipts,
@@ -158,6 +159,29 @@ async def _origins(db) -> list[dict]:
             )
         ).mappings().all()
     return [dict(row) for row in rows]
+
+
+@pytest.mark.parametrize("ref", ["dev", "refs/heads/dev", "main"])
+async def test_child_origin_guard_uses_repository_default_branch(db, hierarchy, ref):
+    from src.database.queries.hierarchy_queries import HierarchyError
+
+    await _create(db, "parent")
+    await _create(db, "child", parent_id="parent")
+    async with db.immediate() as conn:
+        await conn.execute(update(repos).where(repos.c.id == "repo").values(default_branch="dev"))
+        await conn.execute(update(tasks).where(tasks.c.id == "child").values(branch_name="aq/child"))
+        if ref != "main":
+            with pytest.raises(HierarchyError, match="cannot target the default branch"):
+                await hierarchy._reserve_origin(
+                    conn, task_id="child", repository_id="repo", parent_task_id="parent",
+                    parent_ref=ref, base_sha=BASE, generation=0,
+                )
+        else:
+            origin = await hierarchy._reserve_origin(
+                conn, task_id="child", repository_id="repo", parent_task_id="parent",
+                parent_ref=ref, base_sha=BASE, generation=0,
+            )
+            assert origin["parent_ref"] == "main"
 
 
 async def test_project_mode_and_designated_repository_round_trip_and_validate(tmp_path):

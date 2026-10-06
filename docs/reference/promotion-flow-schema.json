@@ -1,0 +1,418 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "additionalProperties": false,
+            "default": {},
+            "properties": {
+              "backmerge": {
+                "default": true,
+                "type": "boolean"
+              },
+              "deploy_hook": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "event_type": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "event_type"
+                    ],
+                    "type": "object"
+                  }
+                ],
+                "default": null
+              },
+              "github_release": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          "gate": {
+            "additionalProperties": false,
+            "default": {},
+            "properties": {
+              "approval": {
+                "default": "operator",
+                "enum": [
+                  "operator",
+                  "requester",
+                  "none"
+                ],
+                "type": "string"
+              },
+              "attestation": {
+                "description": "Default: Agent Queue Promotion Attestation (<id>)",
+                "minLength": 1,
+                "type": "string"
+              },
+              "checks": {
+                "default": "inherit",
+                "pattern": "^(inherit|manifest:[^\\s:]+)$",
+                "type": "string"
+              },
+              "request_ttl": {
+                "default": "7d",
+                "pattern": "^[1-9][0-9]*[smhdw]$",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "id": {
+            "description": "[a-z0-9][a-z0-9-]{0,31}; unique",
+            "type": "string"
+          },
+          "notes": {
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "file_template",
+                        "changelog_heading"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "path"
+                  ]
+                }
+              }
+            ],
+            "default": {},
+            "properties": {
+              "bootstrap_sha": {
+                "default": null,
+                "pattern": "^[0-9a-f]{40}$",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "default": "none",
+                "enum": [
+                  "none",
+                  "file_template",
+                  "changelog_heading"
+                ],
+                "type": "string"
+              },
+              "path": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "source": {
+            "minLength": 1,
+            "pattern": "^(?!refs/)(?!/)(?!.*(?:\\.\\.|@\\{|//|[\\s~^:?*\\[\\\\]))(?!.*(?:^|/)\\.)(?!.*\\.lock(?:/|$))(?!.*[/.]$)(?!@$).+$",
+            "type": "string"
+          },
+          "target": {
+            "minLength": 1,
+            "pattern": "^(?!refs/)(?!/)(?!.*(?:\\.\\.|@\\{|//|[\\s~^:?*\\[\\\\]))(?!.*(?:^|/)\\.)(?!.*\\.lock(?:/|$))(?!.*[/.]$)(?!@$).+$",
+            "type": "string"
+          },
+          "type": {
+            "default": "request",
+            "enum": [
+              "request",
+              "continuous"
+            ],
+            "type": "string"
+          },
+          "versioning": {
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "semver_tag"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "tag_format": {
+                      "pattern": "^(?=.*\\{version\\})(?:[^{}]|\\{(?:version|sha12|utc_date|step)\\})+$"
+                    }
+                  }
+                }
+              }
+            ],
+            "default": {},
+            "properties": {
+              "kind": {
+                "default": "none",
+                "enum": [
+                  "none",
+                  "semver_tag",
+                  "custom"
+                ],
+                "type": "string"
+              },
+              "source": {
+                "pattern": "^(pyproject|package\\.json|file:[^:]+:.+)$",
+                "type": "string"
+              },
+              "tag_format": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "target"
+        ],
+        "type": "object"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "promotion_flow": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "after": {
+                "additionalProperties": false,
+                "default": {},
+                "properties": {
+                  "backmerge": {
+                    "default": true,
+                    "type": "boolean"
+                  },
+                  "deploy_hook": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "event_type": {
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "event_type"
+                        ],
+                        "type": "object"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "github_release": {
+                    "default": false,
+                    "type": "boolean"
+                  }
+                },
+                "type": "object"
+              },
+              "gate": {
+                "additionalProperties": false,
+                "default": {},
+                "properties": {
+                  "approval": {
+                    "default": "operator",
+                    "enum": [
+                      "operator",
+                      "requester",
+                      "none"
+                    ],
+                    "type": "string"
+                  },
+                  "attestation": {
+                    "description": "Default: Agent Queue Promotion Attestation (<id>)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "checks": {
+                    "default": "inherit",
+                    "pattern": "^(inherit|manifest:[^\\s:]+)$",
+                    "type": "string"
+                  },
+                  "request_ttl": {
+                    "default": "7d",
+                    "pattern": "^[1-9][0-9]*[smhdw]$",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "id": {
+                "description": "[a-z0-9][a-z0-9-]{0,31}; unique",
+                "type": "string"
+              },
+              "notes": {
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "kind": {
+                          "enum": [
+                            "file_template",
+                            "changelog_heading"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ]
+                    },
+                    "then": {
+                      "required": [
+                        "path"
+                      ]
+                    }
+                  }
+                ],
+                "default": {},
+                "properties": {
+                  "bootstrap_sha": {
+                    "default": null,
+                    "pattern": "^[0-9a-f]{40}$",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "kind": {
+                    "default": "none",
+                    "enum": [
+                      "none",
+                      "file_template",
+                      "changelog_heading"
+                    ],
+                    "type": "string"
+                  },
+                  "path": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "source": {
+                "minLength": 1,
+                "pattern": "^(?!refs/)(?!/)(?!.*(?:\\.\\.|@\\{|//|[\\s~^:?*\\[\\\\]))(?!.*(?:^|/)\\.)(?!.*\\.lock(?:/|$))(?!.*[/.]$)(?!@$).+$",
+                "type": "string"
+              },
+              "target": {
+                "minLength": 1,
+                "pattern": "^(?!refs/)(?!/)(?!.*(?:\\.\\.|@\\{|//|[\\s~^:?*\\[\\\\]))(?!.*(?:^|/)\\.)(?!.*\\.lock(?:/|$))(?!.*[/.]$)(?!@$).+$",
+                "type": "string"
+              },
+              "type": {
+                "default": "request",
+                "enum": [
+                  "request",
+                  "continuous"
+                ],
+                "type": "string"
+              },
+              "versioning": {
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "kind": {
+                          "const": "semver_tag"
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ]
+                    },
+                    "then": {
+                      "properties": {
+                        "tag_format": {
+                          "pattern": "^(?=.*\\{version\\})(?:[^{}]|\\{(?:version|sha12|utc_date|step)\\})+$"
+                        }
+                      }
+                    }
+                  }
+                ],
+                "default": {},
+                "properties": {
+                  "kind": {
+                    "default": "none",
+                    "enum": [
+                      "none",
+                      "semver_tag",
+                      "custom"
+                    ],
+                    "type": "string"
+                  },
+                  "source": {
+                    "pattern": "^(pyproject|package\\.json|file:[^:]+:.+)$",
+                    "type": "string"
+                  },
+                  "tag_format": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "required": [
+              "id",
+              "source",
+              "target"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "promotion_flow"
+      ],
+      "type": "object"
+    }
+  ],
+  "description": "A bare flow or a document containing promotion_flow. Null disables promotions.",
+  "title": "Agent Queue promotion flow"
+}

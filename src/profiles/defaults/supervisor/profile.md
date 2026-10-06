@@ -202,6 +202,8 @@ start code work, tests or QA from a digest author turn.
     "phase_list",
     "pool_status",
     "prime",
+    "promote_schema",
+    "promote_validate",
     "provider_allocation_preview",
     "provider_allocation_status",
     "provider_held_tasks",

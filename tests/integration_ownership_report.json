@@ -2635,6 +2635,9 @@
         19
       ]
     },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed": {
+      "reason": "Branch-fence refusal classified as a wait rather than a workspace fault: releases the claim to READY under the ordinary preparation backoff while the owner-recovery sweep frees the retained owner row, and never BLOCKS or writes the slot_reset_failure record whose resume recovery would be the wrong repair. Claim preparation policy only; no ref, publication or integration lifecycle write."
+    },
     "src/commands/contracts/__init__.py::register_builtin_contracts": {
       "reason": "Imports or references an explicitly owned integration primitive.",
       "baseline_span": [
@@ -2946,6 +2949,12 @@
         283,
         403
       ]
+    },
+    "src/commands/project_commands.py::ProjectCommandsMixin._configure_promotion_flow": {
+      "reason": "Promotion-flow activation: validates layers 1-3, dry-runs the integration policy fence, creates missing targets outside it and writes behind the same generation."
+    },
+    "src/commands/project_commands.py::ProjectCommandsMixin._create_flow_targets": {
+      "reason": "Promotion-flow activation layer 4: create-only pushes of missing chain targets from the project workspace."
     },
     "src/commands/project_onboarding_commands.py::ProjectOnboardingCommandsMixin._github_client": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -7349,6 +7358,9 @@
         1226
       ]
     },
+    "src/orchestrator/core.py::Orchestrator._recheck_promotion_flows": {
+      "reason": "Daemon-start re-validation of stored promotion flows (layers 1-3); records problems for status, writes nothing."
+    },
     "src/orchestrator/core.py::Orchestrator._reconcile_sessions": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -9184,9 +9196,6 @@
     "src/api/target_scope.py::CONTEXT_TARGET_RESOLVERS[('decision_list', 'object_id')]": {
       "reason": "Registers tagged integration operator decision read ownership."
     },
-    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed": {
-      "reason": "Branch-fence refusal classified as a wait rather than a workspace fault: releases the claim to READY under the ordinary preparation backoff while the owner-recovery sweep frees the retained owner row, and never BLOCKS or writes the slot_reset_failure record whose resume recovery would be the wrong repair. Claim preparation policy only; no ref, publication or integration lifecycle write."
-    },
     "src/database/queries/claim_queries.py::ClaimQueryMixin.claim_frontier_exclusions": {
       "reason": "Frontier diagnostics evaluate sibling delivery predicates using the revalidated Git prerequisite view."
     },
@@ -9225,6 +9234,21 @@
     },
     "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_task_on": {
       "reason": "Transaction-scoped subtree archive enforces integration removal guards, retains abandonment and delegate retirement evidence, and preserves branch identity."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_schema": {
+      "reason": "Read-only promotion-flow schema command; owns the integration configuration contract."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_validate": {
+      "reason": "Read-only layered promotion-flow validation against designated-repository trust."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_manifest": {
+      "reason": "Reads committed integration trust for promotion-flow validation."
+    },
+    "src/commands/promote_commands.py::import from src.commands.supervisor_authority import integration_operator": {
+      "reason": "Promotion validation uses project-scoped integration operator authority."
+    },
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import FlowSchema": {
+      "reason": "Promotion commands depend on the integration-owned flow schema."
     }
   },
   "shared_state": {
