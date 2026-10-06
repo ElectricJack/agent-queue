@@ -1415,7 +1415,7 @@
       ]
     }
   },
-  "digest": "sha256:9a5d1aca3866940dfc5f4ca229140df61e1a55af5675937747b10559a1c2052f",
+  "digest": "sha256:4ffee1929d34b6c60e73ceaacc75e59bcb01ac32f5f87861468586bdc878c7ae",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7624,7 +7624,8 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.source_trailer",
-        "src.integration.subjects"
+        "src.integration.subjects",
+        "src.models"
       ],
       "markers": [
         "parametrize"

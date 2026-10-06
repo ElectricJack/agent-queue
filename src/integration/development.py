@@ -35,6 +35,7 @@ from src.integration.delivery_branches import (
     live_branch_references,
     released_integration_refs,
     remote_heads,
+    repository_protected_branches,
 )
 from src.integration.delivery_truth import (
     SETTLEMENT_KEY,
@@ -730,6 +731,11 @@ class DevelopmentPrimitives:
                 store = await self.store(repo)
                 heads = await remote_heads(self.run_git, store)
                 holds = await self.branch_holds(heads)
+                async with self.db._engine.connect() as conn:
+                    protected = await repository_protected_branches(
+                        conn, repo.id, default_branch=repo.default_branch,
+                    )
+                holds.update({branch: "protected promotion target" for branch in protected})
                 plans = {
                     row["id"]: await self._plan_branch_cleanup(
                         repo, store, row, history, heads, holds
@@ -746,6 +752,7 @@ class DevelopmentPrimitives:
                     default_branch=repo.default_branch,
                     main_head=heads.get(repo.default_branch),
                     backup_dir=self.backup_dir, repository_id=repo.id, now=now,
+                    protected=protected,
                 )
             except Exception as exc:  # noqa: BLE001 - one attempt, recorded, retried
                 error = f"{type(exc).__name__}: {exc}"
@@ -991,9 +998,13 @@ class DevelopmentPrimitives:
             async with self.db._engine.connect() as conn:
                 released = await released_integration_refs(conn)
                 expired = await expired_task_branches(conn, now=now)
+                protected = await repository_protected_branches(
+                    conn, repo.id, default_branch=repo.default_branch,
+                )
             report = await find_stale_branches(
                 self.run_git, store, default_branch=repo.default_branch, holds=holds,
                 released=released, expired=expired,
+                protected=protected,
             )
             report.update(project_id=project_id, repository_id=repo.id)
             if not delete or not report["stale"]:
@@ -1003,6 +1014,7 @@ class DevelopmentPrimitives:
                 {e["branch"]: {"head": e["head"], "reason": e["reason"]} for e in report["stale"]},
                 default_branch=repo.default_branch, main_head=report["main_head"],
                 backup_dir=self.backup_dir, repository_id=repo.id, now=now,
+                protected=protected,
             )
         outcomes = deletion["outcomes"]
         deleted = [e for e in report["stale"] if outcomes.get(e["branch"]) == "deleted"]

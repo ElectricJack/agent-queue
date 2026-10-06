@@ -30,6 +30,7 @@ from src.database.tables import (
     project_integration_leases,
     project_integration_schedules,
     projects,
+    repos,
     task_delivery_receipts,
     tasks,
     workspaces,
@@ -1617,27 +1618,35 @@ async def test_cleanup_retry_backoff_and_exhaustion_are_frozen(release_db):
     assert (exhausted.outcome, exhausted.attempts) == ("failed", 2)
 
 
-async def test_cleanup_never_deletes_default_branch_even_with_matching_sha(release_db):
+@pytest.mark.parametrize("kind", ["remote_ref", "local_ref"])
+@pytest.mark.parametrize("branch", ["dev", "main", "staging", "aq/release"])
+async def test_cleanup_never_deletes_protected_branch_even_with_matching_sha(release_db, kind, branch):
     db, _scheduler = release_db
     async with db.immediate() as conn:
+        await conn.execute(update(repos).where(repos.c.id == "repo").values(default_branch="dev"))
+        await conn.execute(update(projects).where(projects.c.id == "p").values(promotion_flow=[
+            {"id": "staging", "target": "staging"}, {"id": "release", "target": "main"},
+            {"id": "aq", "target": "aq/release"},
+        ]))
         await conn.execute(
             insert(integration_cleanup_items).values(
-                batch_id="batch", kind="remote_ref", identity="refs/heads/main",
-                domain_key="cleanup:batch:remote_ref:main", project_id="p",
+                batch_id="batch", kind=kind, identity=f"refs/heads/{branch}",
+                domain_key=f"cleanup:batch:{kind}:{branch}", project_id="p",
                 repository_id="repo", repository_numeric_id=99,
                 repository_full_name="acme/widgets", revision=0,
-                member_ordinal=0,
-                target_ref="refs/heads/main", expected_sha=HEAD, state="pending",
+                member_ordinal=0 if kind == "remote_ref" else None,
+                target_ref=f"refs/heads/{branch}", expected_sha=HEAD, state="pending",
                 attempts=0, next_attempt_at=30.0, created_at=30.0, updated_at=30.0,
             )
         )
-    app = CleanupApp({"main": HEAD})
+    app = CleanupApp({branch: HEAD})
     git = CleanupGit(app)
     result = await IntegrationCleanupService(
         db, data_dir="/daemon", git_manager=git, github_client_factory=lambda _: app
-    ).execute("batch", "remote_ref", "refs/heads/main", now=30.0)
+    ).execute("batch", kind, f"refs/heads/{branch}", now=30.0)
     assert result.outcome == "conflict"
     assert git.remote_deletes == []
+    assert git.local_refs == {BRANCH: HEAD}
 
 
 @pytest.mark.parametrize("protection", ["moved", "foreign_owner"])
