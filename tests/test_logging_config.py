@@ -233,14 +233,14 @@ def test_exception_logging_never_renders_locals(output_format, native, capsys, t
     assert repr_calls == []
     if output_format in {"dev", "plain"}:
         assert len(output.splitlines()) < 100
-        assert max(map(len, output.splitlines())) <= 100
+        assert len(output) < 4_000
 
 
 @pytest.mark.parametrize("output_format", ["dev", "plain", "json"])
 def test_deep_exception_logging_has_bounded_frames(output_format, capsys, tmp_path):
     log_file = tmp_path / "logs" / "deep.jsonl"
     setup_logging(format=output_format, log_file=str(log_file))
-    # Distinct frames prevent Python/Rich's repeated-frame compression from
+    # Distinct frames prevent Python's repeated-frame compression from
     # masking an unbounded formatter.
     functions = {}
     source = "\n".join(
@@ -254,13 +254,138 @@ def test_deep_exception_logging_has_bounded_frames(output_format, capsys, tmp_pa
     output = re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().err)
     assert "RuntimeError: deep failure" in output
     if output_format != "json":
-        assert "frames hidden" in output
+        assert output.count('File "deep_traceback.py"') == 20
         assert len(output.splitlines()) < 100
     else:
         assert json.loads(output)["exception"].count('File "deep_traceback.py"') <= 20
     record = json.loads(log_file.read_text().splitlines()[-1])
     assert record["exception"].count('File "deep_traceback.py"') == 20
     assert "RuntimeError: deep failure" in record["exception"]
+
+
+@pytest.mark.parametrize("output_format", ["dev", "plain"])
+def test_console_tracebacks_are_plain_text_without_rich(output_format, capsys, monkeypatch):
+    """The daemon's stderr is its log file: Rich/pygments rendering cost ~a core.
+
+    Regression (fresh-quest-25): every traceback went through
+    ``RichTracebackFormatter``, whose pygments highlighting kept the event
+    loop busy.  The console path must never reach Rich.
+    """
+    def _no_rich(*_args, **_kwargs):
+        raise AssertionError("console tracebacks must not render through Rich")
+
+    monkeypatch.setattr(structlog.dev.RichTracebackFormatter, "__call__", _no_rich)
+    setup_logging(format=output_format)
+    try:
+        raise ValueError("plain failure")
+    except ValueError:
+        logging.getLogger("test.plain").exception("unexpected failure")
+
+    output = capsys.readouterr().err
+    assert "Logging error" not in output
+    assert "Traceback (most recent call last):" in output
+    assert 'File "' in output and "ValueError: plain failure" in output
+    assert "╭" not in output and "│" not in output
+
+
+def test_dev_console_writes_no_ansi_when_stderr_is_not_a_terminal(capsys):
+    """``aq start`` redirects the daemon's stderr to a file: no colour codes there."""
+    setup_logging(format="dev")
+    try:
+        raise ValueError("redirected")
+    except ValueError:
+        logging.getLogger("test.redirected").exception("unexpected failure")
+    output = capsys.readouterr().err
+    assert "unexpected failure" in output
+    assert "\x1b[" not in output
+
+
+def test_dev_console_keeps_colors_on_a_terminal(monkeypatch):
+    import io
+
+    class _Terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    terminal = _Terminal()
+    monkeypatch.setattr("sys.stderr", terminal)
+    setup_logging(format="dev")
+    logging.getLogger("test.terminal").warning("coloured")
+    assert "coloured" in terminal.getvalue()
+    assert "\x1b[" in terminal.getvalue()
+
+
+class TestLogHandled:
+    """One line for handled, recurring failures; the traceback only at DEBUG."""
+
+    @staticmethod
+    def _chained_failure():
+        from src.git.github_contracts import GitHubAccessError
+        from src.git.manager import GitError
+
+        try:
+            try:
+                raise GitHubAccessError(
+                    "rate_limited", "GitHub CLI request failed (rate_limited, HTTP 403)",
+                    http_status=403,
+                )
+            except GitHubAccessError as exc:
+                raise GitError(f"could not create PR: {exc}") from exc
+        except GitError as exc:
+            return exc
+
+    def test_error_inside_except_logs_one_line_with_code(self, capsys, tmp_path):
+        from src.logging_config import log_handled
+
+        log_file = tmp_path / "logs" / "handled.jsonl"
+        setup_logging(level="INFO", format="plain", log_file=str(log_file))
+        test_logger = logging.getLogger("test.handled")
+        failure = self._chained_failure()
+        try:
+            raise failure
+        except type(failure) as exc:
+            # ERROR inside an except block: the auto exc_info filter must not
+            # attach the traceback the caller deliberately left out.
+            log_handled(test_logger, logging.ERROR, "visit failed for %s", "p/r/main", exc=exc)
+
+        output = capsys.readouterr().err
+        lines = [line for line in output.splitlines() if line.strip()]
+        assert len(lines) == 1, output
+        assert "visit failed for p/r/main" in lines[0]
+        assert "GitError: could not create PR" in lines[0]
+        assert "code=rate_limited" in lines[0] and "http=403" in lines[0]
+        assert "Traceback" not in output
+        record = json.loads(log_file.read_text().splitlines()[-1])
+        assert record["level"] == "error" and "exception" not in record
+        assert "code=rate_limited" in record["event"]
+
+    def test_traceback_is_logged_at_debug(self, capsys):
+        from src.logging_config import log_handled
+
+        setup_logging(level="DEBUG", format="plain")
+        test_logger = logging.getLogger("test.handled.debug")
+        failure = self._chained_failure()
+        try:
+            raise failure
+        except type(failure) as exc:
+            log_handled(test_logger, logging.WARNING, "inventory failed", exc=exc)
+
+        output = capsys.readouterr().err
+        assert "inventory failed: GitError" in output
+        assert "Traceback (most recent call last):" in output
+        assert "GitHubAccessError: GitHub CLI request failed" in output
+
+    def test_describe_exception_bounds_and_flattens_the_message(self):
+        from src.logging_config import describe_exception
+        from src.projects.github import GitHubError, GitHubErrorCode
+
+        described = describe_exception(GitHubError(
+            GitHubErrorCode.REPOSITORY_INACCESSIBLE, "expected <owner>/<repo>\n" + "x" * 2000,
+        ))
+        assert "\n" not in described
+        assert described.startswith("GitHubError: github_repository_inaccessible: expected")
+        assert described.endswith("[code=github_repository_inaccessible]")
+        assert len(described) < 400
 
 
 class TestStructlogOutput:

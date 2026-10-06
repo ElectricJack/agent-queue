@@ -37,6 +37,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
+from src.git.github_contracts import GitHubAccessError
 from src.integration.batches import (
     Batch,
     BatchMember,
@@ -52,8 +53,14 @@ from src.integration.candidate_baseline import (
 from src.integration.checks import ChecksResult, ChecksState, ExactChecks
 from src.integration.git_truth import GitTruthSnapshot
 from src.integration.subjects import HeadIdentity
+from src.logging_config import log_handled
 
 logger = logging.getLogger(__name__)
+
+#: A rate-limited repository waits this long, doubling per consecutive limit,
+#: or until GitHub's own retry time when that is later.
+RATE_LIMIT_BACKOFF_SECONDS = 60.0
+RATE_LIMIT_MAX_BACKOFF_SECONDS = 900.0
 
 TRAIN_KINDS = ("root", "epic", "development")
 _PROGRESS: ContextVar[dict | None] = ContextVar("train_visit_progress", default=None)
@@ -314,8 +321,39 @@ class _Lane:
     task: asyncio.Task | None = None
     last: TrainVisit | None = None
     started_at: float = 0.0
+    #: The train's count of visit starts when this lane's visit began.
+    start: int = 0
     visits: int = 0
     errors: int = 0
+
+
+@dataclass
+class _RateLimitPause:
+    """GitHub's rate limit on one repository, shared by all of its targets.
+
+    Every visit re-verifies the repository with GitHub, so its targets hit the
+    limit together. A visit limited after it started counts once per pause, and
+    when the pause ends a single probe visit runs while the others wait for it.
+    """
+
+    hits: int = 0
+    #: Visit starts before the latest limit; a visit numbered at or below it
+    #: began before the pause.
+    since: int = 0
+    retry_at: float = 0.0
+    probe: tuple[str, str, str] | None = None
+
+
+def _rate_limit(exc: BaseException) -> GitHubAccessError | None:
+    """The ``rate_limited`` GitHub failure anywhere in *exc*'s cause chain."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, GitHubAccessError) and current.category == "rate_limited":
+            return current
+        current = current.__cause__ or current.__context__
+    return None
 
 
 class IntegrationTrain:
@@ -341,27 +379,35 @@ class IntegrationTrain:
         self.baseline = baseline or UnrecordedBaseline()
         self.visit_timeout_seconds = visit_timeout_seconds
         self._lanes: dict[tuple[str, str, str], _Lane] = {}
+        self._pauses: dict[tuple[str, str], _RateLimitPause] = {}
+        self._starts = 0
         self._tick_lock = asyncio.Lock()
 
     async def tick(self, now: float | None = None) -> dict[str, list[str]]:
         """Start one visit per idle target; never wait on a running one."""
         now = self.clock() if now is None else now
         if self._tick_lock.locked():
-            return {"started": [], "running": [], "skipped": ["tick_in_progress"]}
+            return {"started": [], "running": [], "skipped": ["tick_in_progress"],
+                    "deferred": []}
         async with self._tick_lock:
-            started, running = [], []
+            started, running, deferred = [], [], []
             for target in await self.targets.targets(now):
                 lane = self._lanes.setdefault(target.key, _Lane())
                 label = "/".join(target.key)
                 if lane.task is not None and not lane.task.done():
                     running.append(label)
                     continue
-                lane.started_at = now
+                if not self._admit(target.key, now):
+                    deferred.append(label)
+                    continue
+                self._starts += 1
+                lane.started_at, lane.start = now, self._starts
                 lane.task = asyncio.create_task(
                     self._bounded(target, lane), name=f"integration-train:{label}"
                 )
                 started.append(label)
-            return {"started": started, "running": running, "skipped": []}
+            return {"started": started, "running": running, "skipped": [],
+                    "deferred": deferred}
 
     async def drain(self) -> None:
         """Wait for every running visit; for tests and orderly shutdown."""
@@ -408,14 +454,64 @@ class IntegrationTrain:
             logger.warning("integration train visit timed out for %s", target.key)
         except Exception as exc:  # one target's failure never stops the train
             lane.errors += 1
-            visit = TrainVisit(target, "unknown", detail={"reason": type(exc).__name__,
-                                                          "error": str(exc)[:500]},
-                               observed_at=self.clock())
-            logger.exception("integration train visit failed for %s", target.key)
+            limit = _rate_limit(exc)
+            if limit is not None:
+                visit = self._defer_rate_limited(target, lane, exc, limit)
+            else:
+                visit = TrainVisit(target, "unknown", detail={"reason": type(exc).__name__,
+                                                              "error": str(exc)[:500]},
+                                   observed_at=self.clock())
+                logger.exception("integration train visit failed for %s", target.key)
         finally:
             _PROGRESS.reset(token)
+        pause = self._pauses.get(target.key[:2])
+        if (pause is not None and lane.start > pause.since
+                and (visit.detail or {}).get("reason") != "rate_limited"):
+            # A visit begun after the pause got past GitHub: the limit is over.
+            del self._pauses[target.key[:2]]
         lane.visits += 1
         lane.last = visit
+
+    def _admit(self, key: tuple[str, str, str], now: float) -> bool:
+        """Whether the repository's rate-limit pause lets *key* start a visit."""
+        pause = self._pauses.get(key[:2])
+        if pause is None:
+            return True
+        if pause.retry_at > now:
+            return False
+        if pause.probe is not None and pause.probe != key:
+            probe = self._lanes.get(pause.probe)
+            if probe is not None and probe.task is not None and not probe.task.done():
+                return False
+        pause.probe = key
+        return True
+
+    def _defer_rate_limited(
+        self, target: TrainTarget, lane: _Lane, exc: Exception, limit: GitHubAccessError,
+    ) -> TrainVisit:
+        """Pause the repository past GitHub's limit rather than fail it every tick."""
+        now = self.clock()
+        pause = self._pauses.setdefault(target.key[:2], _RateLimitPause())
+        label = "/".join(target.key)
+        if pause.hits and lane.start <= pause.since:
+            # A sibling started before the pause began; it is the same limit.
+            pause.retry_at = max(pause.retry_at, limit.retry_at or 0.0)
+            log_handled(logger, logging.DEBUG,
+                        "integration train visit for %s rate limited", label, exc=exc)
+        else:
+            pause.hits += 1
+            backoff = min(RATE_LIMIT_BACKOFF_SECONDS * 2 ** (pause.hits - 1),
+                          RATE_LIMIT_MAX_BACKOFF_SECONDS)
+            pause.since, pause.probe = self._starts, None
+            pause.retry_at = max(now + backoff, limit.retry_at or 0.0)
+            log_handled(logger, logging.WARNING,
+                        "integration train visit for %s rate limited; repository %s "
+                        "deferred %.0fs", label, "/".join(target.key[:2]),
+                        pause.retry_at - now, exc=exc)
+        return TrainVisit(target, "unknown",
+                          detail={"reason": "rate_limited", "error": str(exc)[:500],
+                                  "retry_at": pause.retry_at},
+                          observed_at=now)
 
     async def visit(self, target: TrainTarget) -> TrainVisit:
         """Observe the target once and take at most one step toward delivery."""
