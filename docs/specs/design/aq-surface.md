@@ -110,6 +110,15 @@ branch back — a fence still held by the stopped writer — restart is refused 
 leaves the task as it found it, naming `reserve-owner` (and `release-owner` for
 the held fence) as the recovery.
 
+For READY/BLOCKED tasks with `slot_reset_failure`, `aq task resume` clears the
+preparation backoff and retries. A historical claim from a terminal session does
+not prevent recovery once the session provider confirms that exact writer has
+stopped. Resume rechecks the session identity and claim under row locks before
+clearing stale assignment and pool-claim records. A live or restarting writer,
+an unavailable stop proof, a retained workspace lock or an attached integration
+owner still refuses recovery. Reused agents and slots remain untouched; resume
+does not release integration ownership or resolve gates and dependencies.
+
 > **Retired (2026-09-08):** the never-implemented `ask_human` / `aq task
 > ask-human` surface was removed. Live worker questions are recorded by the
 > claim-fenced `AgentQuestionService` from completed native transcript turns

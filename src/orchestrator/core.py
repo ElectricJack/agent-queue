@@ -1033,6 +1033,35 @@ class Orchestrator(
             snapshot = await self.db.get_task_meta(task_id, "manual_pause")
             if snapshot:
                 await self._finish_manual_pause(task_id, snapshot)
+            task = await self.db.get_task(task_id)
+            if (
+                task is not None
+                and task.status in {TaskStatus.READY, TaskStatus.BLOCKED}
+                and await self.db.get_task_meta(task_id, "slot_reset_failure")
+            ):
+                from src.sessions.provider import SessionHandle
+
+                stopped_sessions = []
+                for session in await self.db.slot_reset_recovery_sessions(task_id):
+                    if (
+                        session["state"] not in {"stopped", "quarantined"}
+                        or session["desired_state"] != "stopped"
+                        or not session["instance_token"]
+                    ):
+                        continue
+                    try:
+                        provider = self.session_providers.create(session["provider"], self.config)
+                        stopped = await asyncio.wait_for(provider.confirm_stopped(SessionHandle(
+                            session["name"], session["provider"], session["instance_token"],
+                        )), timeout=10)
+                    except Exception as exc:
+                        raise ValueError(
+                            "Slot reset recovery could not prove the old writer stopped; retry Resume"
+                        ) from exc
+                    if stopped is not True:
+                        raise ValueError("Slot reset recovery must wait for the old writer to stop")
+                    stopped_sessions.append(session)
+                return await self.db.resume_task(task_id, stopped_sessions=stopped_sessions)
             return await self.db.resume_task(task_id)
 
     async def retry_manual_pause_cleanup(self, task_id: str) -> None:

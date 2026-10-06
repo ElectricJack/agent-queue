@@ -154,6 +154,28 @@ async def pool_session(db, tmp_path, sid="s1", agent_id="agent-1"):
     return sid, work_dir
 
 
+async def stopped_slot_reset_claim(handler, db, tmp_path, *, detached=False, stopped=True):
+    """The retained claim left by a stopped worker after a reset incident."""
+    await mktask(db, "t1", profile_id="worker")
+    sid, wd = await pool_session(db, tmp_path)
+    assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "claimed"
+    await db.transition_task("t1", TaskStatus.BLOCKED, force=True)
+    await db.update_workspace("ws-agent-1", locked_by_task_id=None, locked_by_agent_id=None)
+    if stopped:
+        await db.update_session(
+            sid, state="stopped", desired_state="stopped", ended_at=time.time(), end_reason="drained",
+            **({"task_id": None, "claim_phase": None} if detached else {}),
+        )
+    await db.set_task_meta("t1", "slot_reset_failure", {"reason": "old reset failure"})
+    await db.set_task_meta("t1", "needs_attention", "slot_reset_failed")
+    await db.set_task_meta("t1", "claim_prepare_backoff_until", time.time() + 300)
+    await db.set_task_meta("t1", "claim_prepare_backoff_attempts", 3)
+    provider = SimpleNamespace(confirm_stopped=AsyncMock(return_value=True))
+    handler.orchestrator.session_providers = SimpleNamespace(create=lambda *_: provider)
+    handler._current_scope = None
+    return sid, wd, provider
+
+
 def scoped(handler, sid):
     handler._current_scope = {
         "kind": "session",
@@ -1423,6 +1445,125 @@ class TestClaim:
         await db.resume_task("t1")
         assert await db.get_task_meta("t1", "needs_attention") == "operator_investigation"
         assert await db.get_task_meta("t1", "claim_prepare_backoff_until") is None
+
+    @pytest.mark.parametrize("detached", [False, True])
+    @pytest.mark.parametrize("assigned", [False, True])
+    async def test_slot_reset_resume_releases_a_proven_stopped_claim(
+        self, handler, db, tmp_path, detached, assigned
+    ):
+        sid, _wd, provider = await stopped_slot_reset_claim(handler, db, tmp_path, detached=detached)
+        if not assigned:
+            await db.update_task("t1", assigned_agent_id=None)
+        before = await db.get_task("t1")
+        result = await handler.execute("resume_task", {"task_id": "t1"})
+        assert "error" not in result, result
+        task = await db.get_task("t1")
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+        assert (task.claim_epoch, task.branch_name, task.retry_count) == (
+            before.claim_epoch, before.branch_name, before.retry_count,
+        )
+        session = await db.get_session(sid)
+        assert (session.state, session.task_id, session.claim_phase) == ("stopped", None, None)
+        assert (await db.get_agent("agent-1")).current_task_id is None
+        assert await db.get_task_meta("t1", "claimed_by_session") is None
+        assert await db.get_task_meta("t1", "needs_attention") is None
+        assert await db.get_task_meta("t1", "claim_prepare_backoff_until") is None
+        assert await db.get_task_meta("t1", "claim_prepare_backoff_attempts") is None
+        assert await db.get_task_meta("t1", "slot_reset_failure") is not None
+        provider.confirm_stopped.assert_awaited_once()
+        # The old session's historical row and claim record no longer wedge retry.
+        next_sid, _ = await pool_session(db, tmp_path, sid="s2", agent_id="agent-2")
+        assert (await scoped(handler, next_sid)._cmd_task_claim({"next": True}))["result"] == "claimed"
+
+    @pytest.mark.parametrize("unsafe", [
+        "live", "restarting", "provider_alive", "probe_error", "changed_token",
+        "changed_epoch", "new_holder", "workspace_lock", "no_proof",
+    ])
+    async def test_slot_reset_resume_keeps_an_unproven_claim(
+        self, handler, db, tmp_path, unsafe
+    ):
+        sid, _wd, provider = await stopped_slot_reset_claim(
+            handler, db, tmp_path, stopped=unsafe != "live",
+        )
+        if unsafe == "restarting":
+            await db.update_session(sid, desired_state="running")
+        elif unsafe == "provider_alive":
+            provider.confirm_stopped.return_value = False
+        elif unsafe == "probe_error":
+            provider.confirm_stopped.side_effect = RuntimeError("probe unavailable")
+        elif unsafe in {"changed_token", "changed_epoch", "new_holder"}:
+            async def changed(_handle):
+                if unsafe == "new_holder":
+                    successor, _ = await pool_session(db, tmp_path, sid="s2", agent_id="agent-2")
+                    await db.update_session(successor, task_id="t1")
+                else:
+                    updates = {"instance_token": "successor"} if unsafe == "changed_token" else {
+                        "last_claim_epoch": (await db.get_session(sid)).last_claim_epoch + 1,
+                    }
+                    await db.update_session(sid, **updates)
+                return True
+            provider.confirm_stopped.side_effect = changed
+        elif unsafe == "workspace_lock":
+            await db.update_workspace("ws-agent-1", locked_by_task_id="t1")
+        if unsafe == "no_proof":
+            with pytest.raises(ValueError, match="old claim to release"):
+                await db.resume_task("t1")
+        else:
+            result = await handler.execute("resume_task", {"task_id": "t1"})
+            assert "error" in result, result
+        assert (await db.get_task("t1")).status == TaskStatus.BLOCKED
+        assert (await db.get_session(sid)).task_id == "t1"
+        assert await db.get_task_meta("t1", "claimed_by_session") == sid
+        assert await db.get_task_meta("t1", "needs_attention") == "slot_reset_failed"
+        assert await db.get_task_meta("t1", "claim_prepare_backoff_attempts") == 3
+
+    async def test_slot_reset_resume_preserves_reused_agent_and_workspace(
+        self, handler, db, tmp_path
+    ):
+        sid, _wd, _provider = await stopped_slot_reset_claim(handler, db, tmp_path)
+        await mktask(db, "peer", profile_id="worker")
+        await db.update_agent("agent-1", current_task_id="peer", state=AgentState.BUSY)
+        await db.update_workspace("ws-agent-1", locked_by_task_id="peer", locked_by_agent_id="agent-1")
+        assert "error" not in await handler.execute("resume_task", {"task_id": "t1"})
+        agent = await db.get_agent("agent-1")
+        assert (agent.state, agent.current_task_id) == (AgentState.BUSY, "peer")
+        workspace = await db.get_workspace("ws-agent-1")
+        assert (workspace.locked_by_task_id, workspace.locked_by_agent_id) == ("peer", "agent-1")
+        assert (await db.get_session(sid)).task_id is None
+
+    async def test_slot_reset_resume_preserves_gates_and_dependency_blockers(
+        self, handler, db, tmp_path
+    ):
+        await stopped_slot_reset_claim(handler, db, tmp_path)
+        await mktask(db, "upstream", status=TaskStatus.DEFINED)
+        await db.add_dependency("t1", "upstream")
+        gate_id, _ = await db.create_gate(
+            project_id=PROJECT_ID, gate_type="human", title="Approval", waiter_task_ids=["t1"],
+        )
+        assert "error" not in await handler.execute("resume_task", {"task_id": "t1"})
+        assert (await db.get_task("t1")).is_blocked
+        assert (await db.get_gate(gate_id))["status"] == "open"
+
+    async def test_slot_reset_resume_retains_an_attached_integration_owner(
+        self, handler, db, tmp_path
+    ):
+        ownership, fence = await self._hierarchy_task(db, tmp_path)
+        sid, _wd = await pool_session(db, tmp_path)
+        assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "claimed"
+        await db.transition_task("child", TaskStatus.BLOCKED, force=True)
+        await db.update_session(sid, state="stopped", desired_state="stopped", ended_at=time.time())
+        await db.update_workspace("ws-agent-1", locked_by_task_id=None, locked_by_agent_id=None)
+        await db.set_task_meta("child", "slot_reset_failure", {"reason": "old reset failure"})
+        await db.set_task_meta("child", "needs_attention", "slot_reset_failed")
+        provider = SimpleNamespace(confirm_stopped=AsyncMock(return_value=True))
+        handler.orchestrator.session_providers = SimpleNamespace(create=lambda *_: provider)
+        handler._current_scope = None
+        before = await ownership.get_owner(fence.target)
+        result = await handler.execute("resume_task", {"task_id": "child"})
+        assert "old claim to release" in result.get("error", ""), result
+        assert await ownership.get_owner(fence.target) == before
+        assert (await db.get_session(sid)).task_id == "child"
+        assert (await db.get_task("child")).status == TaskStatus.BLOCKED
 
     async def test_claim_consumes_operator_handoff_checkpoint(self, handler, db, tmp_path):
         """A prepared claim consumes the handoff, so no later prepare replays it."""
