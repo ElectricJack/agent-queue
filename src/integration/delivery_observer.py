@@ -292,8 +292,9 @@ async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None):
 
     A cycle shares these modes between the scheduler and pool measurement.
     Direct readers take their own view. Git runs outside transactions; identity
-    revalidation uses a short connection without locks. Claim activation still
-    revalidates its own view under the task locks.
+    revalidation uses a short connection without locks. Advisory readers reuse
+    successful snapshots within READ_MAX_AGE, still checking target freshness.
+    Claim activation fetches and revalidates its own view under the task locks.
 
     Shadow observers preserve receipt admission. An unstable active view supplies
     an empty delivered set, so it cannot fall back to a stale receipt.
@@ -319,7 +320,9 @@ async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None):
         mode = ProjectIntegrationMode.of(project)
         if not mode.hierarchical:
             continue
-        view = await observer.prerequisite_view(project.id, task_id=task_id)
+        view = await observer.prerequisite_view(
+            project.id, task_id=task_id, max_age=observer.READ_MAX_AGE,
+        )
         verified = {}
         if await view.fresh():
             async with db._engine.connect() as conn:
@@ -446,8 +449,13 @@ class DeliveryObserver:
             task_id: evaluated[task_id] for task_id in task_ids if task_id in evaluated
         }
 
-    async def prerequisite_view(self, project_id: str, *, task_id: str | None = None):
-        """One Git view for current completed sibling prerequisites on the frontier."""
+    async def prerequisite_view(
+        self, project_id: str, *, task_id: str | None = None, max_age: float = 0.0,
+    ):
+        """Current completed sibling prerequisites; only advisory readers reuse snapshots.
+
+        Claims keep the default max_age=0 to fetch before revalidating under locks.
+        """
         from src.database.tables import task_dependencies
 
         dependent = tasks.alias("delivery_dependent")
@@ -464,7 +472,7 @@ class DeliveryObserver:
             query = query.where(dependent.c.id == task_id)
         async with self.db._engine.connect() as conn:
             ids = (await conn.execute(query)).scalars().all()
-        return await self.observe(ids)
+        return await self.observe(ids, max_age=max_age)
 
     async def observe(self, task_ids: Iterable[str], *, max_age: float = 0.0) -> DeliveryView:
         """Evaluate each task's current completion against its project's target.
