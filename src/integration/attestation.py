@@ -475,15 +475,18 @@ class IntegrationAttestationService:
         project_id = state.get("project_id")
         if not operation_id or not project_id:
             return
+        # The boundary picks the check set, not the subject: the train reads an
+        # epic head's parent checks under a batch identity with no parent episode.
+        parent = boundary == "parent" and "parent_task_id" in state
         subject = (
             {"parent_task_id": state["parent_task_id"], "generation": state["generation"]}
-            if boundary == "parent"
+            if parent
             else {"batch_id": state["batch_id"], "revision": state["revision"]}
         )
         failure = {
             "operation_id": operation_id,
             "project_id": project_id,
-            "target_kind": "parent" if boundary == "parent" else "batch",
+            "target_kind": "parent" if parent else "batch",
             "subject": subject,
             "head_sha": state["candidate_sha"],
             "cause": error.cause,

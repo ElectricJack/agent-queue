@@ -1121,6 +1121,40 @@ async def test_subject_producer_is_compared_with_the_snapshot_boundary(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_parent_boundary_batch_subject_is_refused_as_its_batch(tmp_path):
+    """The train reads an epic head's parent checks under a batch identity, not a parent's."""
+    service = IntegrationAttestationService(
+        None,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(None),
+        github_client_factory=lambda binding: ProviderClient(),
+    )
+    required = {"version": "checks-v1", "names": list(SNAPSHOT_CHECKS), "producer_id": "404"}
+    state = {
+        "project_id": "p",
+        "operation_id": "epic-readiness-epic",
+        "canonical_repository_id": "repo-config-1",
+        "repository_numeric_id": 303,
+        "repository_full_name": "acme/widgets",
+        "policy_snapshot": {"parent": {"required_checks": required}},
+        "batch_id": "epic-readiness-epic",
+        "revision": 0,
+        "candidate_sha": SHA,
+    }
+
+    with pytest.raises(SubjectTrustError) as refused:
+        await service._load_trust(state, boundary="parent")
+
+    assert refused.value.cause == "missing"
+    failure = service._subject_trust["epic-readiness-epic"]
+    assert (failure["target_kind"], failure["subject"], failure["head_sha"]) == (
+        "batch",
+        {"batch_id": "epic-readiness-epic", "revision": 0},
+        SHA,
+    )
+
+
+@pytest.mark.asyncio
 async def test_slug_producer_in_app_mode_is_a_policy_fault_not_a_subject_refusal(tmp_path):
     client = ProviderClient()
     service = IntegrationAttestationService(
