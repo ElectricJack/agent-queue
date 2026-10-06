@@ -131,7 +131,9 @@ merged into its preserved branch and recorded as a new completion. Conflicts
 file an isolated repair task; the dependent stays withheld until the repair
 resolves and current heads are included. Reopened, abandoned or unproven
 prerequisites pause dependent delivery. A refreshed source gets a new batch;
-the former frozen candidate cannot publish it. Explicit batch pauses still hold.
+the former frozen candidate cannot publish it. The train aborts that open batch
+and releases its unchanged members to pending, so one live batch still owns the
+target. Explicit batch pauses still hold.
 
 In wait-for-parent mode, Git must prove the sibling's current work reached the
 shared parent first. Preparation merges that exact parent head into the child.

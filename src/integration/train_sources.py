@@ -343,6 +343,8 @@ class DatabaseBatches:
             if outcome in {"refreshed", "changed", "repair_filed"}:
                 return BatchSelection(blockers=({"code": "stack_" + outcome, "task_id": task_id,
                     "ref": task_id, "detail": "Prerequisite stack changed; take a fresh Git view"},))
+        # One live batch owns a target: a replaced stale batch must not block the freeze.
+        await self.supersede_refreshed(target, service)
         current = await self.current(target)
         blockers: list[dict[str, Any]] = []
         pending = None
@@ -407,9 +409,22 @@ class DatabaseBatches:
                 identity = "train-" + hashlib.sha256((identity + ":readmit").encode()).hexdigest()[:32]
 
     async def current(self, target: TrainTarget) -> Batch | None:
+        return next((batch for batch, refreshed in await self._open_batches(target)
+                     if refreshed is None), None)
+
+    async def supersede_refreshed(self, target: TrainTarget, service: BatchService) -> None:
+        """Abort open batches whose stacked source was refreshed, releasing their inputs."""
+        for batch, refreshed in await self._open_batches(target):
+            if refreshed is not None:
+                await service.store.supersede(batch, refreshed, reason=(
+                    f"stacked source of {refreshed} was refreshed; a new batch replaces it"))
+
+    async def _open_batches(self, target: TrainTarget) -> list[tuple[Batch, str | None]]:
+        """Open batches oldest first, each with the member whose stack was refreshed."""
         from src.integration.stacked_branches import StackedBranches
 
         stacks = StackedBranches(self.db)
+        found = []
         async with self.db._engine.connect() as conn:
             rows = (await conn.execute(
                 _open_batch_rows(target.project_id, target.repository_id)
@@ -417,10 +432,9 @@ class DatabaseBatches:
                 .order_by(integration_batches.c.created_at, integration_batches.c.id)
             )).mappings().all()
             for row in rows:
-                # Immutable old batches remain inspectable. A refreshed stack
-                # needs a new exact candidate; it must not be trapped behind
-                # its former source. Explicit operator pause still holds.
-                stale = False
+                # A refreshed stack needs a new exact candidate; it must not be
+                # trapped behind its former source. Explicit operator pause still holds.
+                refreshed = None
                 if row["intent"] == "open":
                     for tid, source in (await conn.execute(select(
                         integration_batch_members.c.task_id, integration_batch_members.c.source_sha,
@@ -429,11 +443,10 @@ class DatabaseBatches:
                         stack = origin and origin["stack_snapshot"]
                         if (stack and not stack.get("hold") and stack.get("refreshed_head")
                                 and stack["refreshed_head"] != source):
-                            stale = True
+                            refreshed = tid
                             break
-                if not stale:
-                    return Batch.from_row(row)
-        return None
+                found.append((Batch.from_row(row), refreshed))
+        return found
 
     @staticmethod
     def _admission_key(target: TrainTarget) -> str:

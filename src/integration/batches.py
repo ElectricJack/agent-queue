@@ -326,6 +326,34 @@ class BatchStore:
                     "replacement_batch_id": replacement.id if replacement else None,
                     "operator_id": operator_id, "reason": reason}), conn=conn)
 
+    async def supersede(self, batch: Batch, task_id: str, *, reason: str) -> bool:
+        """Abort an open batch a refreshed stack replaced; release its inputs.
+
+        Its frozen candidate can no longer publish the refreshed source, so it
+        must not keep the target. Unlike an ordinary abort, its unchanged
+        members return to pending. An explicit pause still holds.
+        """
+        import json
+
+        async with self.db.immediate() as conn:
+            await self._target_lock(conn, batch)
+            row = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == batch.id,
+            ).with_for_update())).mappings().one_or_none()
+            if row is None or row["intent"] != "open" or row["lifecycle"] == "promoted":
+                return False
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch.id,
+            ).values(intent="aborted", lifecycle="aborted",
+                     human_abort_reason=reason, cleanup_state="pending", updated_at=self.clock()))
+            instruction = {"replacement_batch_id": None, "operator_id": None, "reason": reason}
+            await conn.execute(insert(task_metadata).values(task_id=task_id,
+                key=EJECTION_KEY_PREFIX + batch.id, value=json.dumps(instruction)))
+            await self.db.log_event("integration.batch_superseded", project_id=batch.project_id,
+                task_id=task_id, payload=json.dumps({"batch_id": batch.id, "reason": reason}),
+                conn=conn)
+        return True
+
     async def set_intent(self, batch_id: str, intent: str, *, dry_run=False,
                          authorize=None, operator_id=None, reason=""):
         """Abort before intentional candidate deletion; an abort is irreversible."""
