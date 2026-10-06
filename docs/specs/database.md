@@ -1328,11 +1328,27 @@ acquires one workspace per declared kind, all-or-nothing, in canonical lock orde
 
 ### Table: `task_proposals`
 
-A batch of tasks and dependency edges proposed as one reviewable graph, before
-anything exists in the live work graph. Written by spec ingest and by agents via
-`task_batch_propose`; `task_batch_commit` materialises the whole batch atomically
-and flips `status` to `committed` in a single conditional update, so two
-concurrent commits cannot both win.
+A task change set proposed as one reviewable graph: new tasks, edits to existing
+tasks, dependency additions/removals, reparenting, lifecycle controls and comments.
+Written by spec ingest and supervisors via `task_batch_propose`. Propose/update
+validate the same connection-scoped implementation as commit in a rolled-back
+savepoint; no task or comment becomes visible until an approved commit.
+
+`task_batch_commit` locks the proposal row, revalidates the PostgreSQL `xmin`
+versions of referenced tasks and their hierarchy, graph edges, metadata, gates
+and integration checkpoints, and applies all changes, the receipt and one
+`task.change_set_committed` audit event in a single transaction. It takes the
+fleet routing lock, project hierarchy lock and task/graph table write locks, so
+scheduler, routing and claim writes serialize with commit. The final graph's
+blocked projection and container settlement are computed before publishing;
+listeners run after commit. A stale scheduler promotion repeats its observed
+status, timestamp and unblocked predicate in the guarded write.
+
+An approved proposal is immutable once a human gate awaits it. A version
+conflict leaves it ready and requires a fresh proposal and decision. A committed
+proposal replays its stored receipt, even after its tasks have been archived.
+Live-holder controls, integration-owned placement/disposition and invalid state
+transitions are refused rather than bypassing existing lifecycle guards.
 
 `payload` is a JSON blob rather than normalised rows on purpose: a proposal is
 reviewed and committed or discarded as a unit, never queried edge-by-edge, and
@@ -1343,7 +1359,7 @@ its tasks do not have real ids until the commit creates them.
 | `id` | TEXT | PRIMARY KEY | `"prop-"` + uuid4[:12] |
 | `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
 | `source` | TEXT | NOT NULL | Provenance, e.g. `spec:projects/foo/specs/2026-08-21-thing.md`; stamped onto every task the commit creates |
-| `payload` | TEXT | NOT NULL | JSON: `{"tasks":[{tempId,title,description,priority?},...], "edges":[{from,to,dep_type},...]}` |
+| `payload` | TEXT | NOT NULL | JSON: `tasks`, `edits`, `edges`, `remove_edges`, `comments`, validated `diff`, optimistic `expected` read set, and committed `receipt`; see [task change sets](../guides/task-change-sets.md) |
 | `status` | TEXT | NOT NULL DEFAULT 'draft' | CHECK `ck_task_proposals_status`: draft, ready, committed, discarded |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |

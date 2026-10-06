@@ -47,6 +47,7 @@ areas:
       - tests/test_get_downstream_tasks.py
       - tests/test_get_stuck_tasks_command.py
       - tests/test_task_batch_commands.py
+      - tests/test_cli_task_change_sets.py
   - id: work-graph
     description: "Work graph: typed edges and labels, the persisted is_blocked projection, gates, the promotion cascade, the ready frontier and explain, outcomes, hierarchical ids and event replay."
     match:

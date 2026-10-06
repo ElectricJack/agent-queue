@@ -4,8 +4,8 @@
   "counts": {
     "leaf_commands": 508,
     "registration": {
-      "generated": 345,
-      "handwritten": 163
+      "generated": 344,
+      "handwritten": 164
     },
     "ownership": {
       "core": 469,
@@ -18,8 +18,8 @@
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 345,
-      "registration": 149
+      "dispatch": 344,
+      "registration": 150
     },
     "acceptance_status": {
       "working": 59,
@@ -15437,32 +15437,34 @@
     },
     {
       "path": "aq task batch-propose",
-      "registration": "generated",
+      "registration": "handwritten",
       "owner_kind": "core",
       "owner": "agent-queue",
       "backend_command": "task_batch_propose",
-      "callback": "src.cli.auto_commands.callback",
+      "callback": "src.cli.tasks.task_batch_propose",
       "support": "supported",
       "alias_for": null,
       "deprecation": null,
       "unsupported_reason": null,
-      "evidence_level": "dispatch",
+      "evidence_level": "registration",
       "evidence": [
         "click-registration",
-        "json-schema",
-        "mock-dispatch",
         "core-handler"
       ],
       "acceptance_status": "untested",
       "acceptance_evidence": [],
       "parameters": {
-        "required": [
-          "--source",
-          "--tasks"
-        ],
+        "required": [],
         "optional": [
+          "--file",
           "--project-id",
+          "--source",
+          "--dry-run",
+          "--tasks",
           "--edges",
+          "--edits",
+          "--remove-edges",
+          "--comments",
           "--json",
           "--brief",
           "--save-output",
@@ -15470,7 +15472,10 @@
         ],
         "structured": [
           "--tasks",
-          "--edges"
+          "--edges",
+          "--edits",
+          "--remove-edges",
+          "--comments"
         ],
         "nullable": []
       }
