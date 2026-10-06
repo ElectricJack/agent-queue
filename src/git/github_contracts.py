@@ -89,9 +89,17 @@ class GitHubCredentialIdentity:
 class GitHubAccessError(RuntimeError):
     """Safe GitHub failure containing classification but no raw diagnostics."""
 
-    def __init__(self, category: str, message: str, *, retry_at: float | None = None):
+    def __init__(
+        self,
+        category: str,
+        message: str,
+        *,
+        retry_at: float | None = None,
+        http_status: int | None = None,
+    ):
         self.category = category
         self.retry_at = retry_at
+        self.http_status = http_status
         super().__init__(message)
 
 
