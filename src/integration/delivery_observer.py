@@ -397,7 +397,16 @@ async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None):
         if await view.fresh():
             async with db._engine.connect() as conn:
                 verified_mode = await view.mode(mode, conn=conn)
-        modes[project.id] = verified_mode
+        stackable = frozenset()
+        if mode.stacked:
+            from src.integration.stacked_branches import observe_stacks
+
+            stack_view = await observe_stacks(observer, project.id, task_id=task_id,
+                                               max_age=observer.READ_MAX_AGE)
+            if await stack_view.fresh():
+                async with db._engine.connect() as conn:
+                    stackable = frozenset(await stack_view.verified_on(conn))
+        modes[project.id] = replace(verified_mode, stackable_prerequisite_ids=stackable)
     return modes
 
 

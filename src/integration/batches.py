@@ -18,7 +18,9 @@ from typing import Protocol
 
 from sqlalchemy import func, insert, select, update
 
-from src.database.tables import integration_batch_members, integration_batches
+from src.database.tables import (
+    archived_tasks, integration_batch_members, integration_batches, projects, tasks,
+)
 from src.git.manager import GitError, is_valid_git_oid
 from src.integration.delivery_truth import DeliveryRequest
 from src.integration.git_truth import GitTruthSnapshot
@@ -178,25 +180,42 @@ class BatchStore:
                     raise ValueError("batch id already names different frozen inputs")
                 return Batch.from_row(existing)
             manifest = hashlib.sha256(repr(members).encode()).hexdigest()
+            policy = await conn.scalar(select(projects.c.hierarchical_integration_policy).where(
+                projects.c.id == batch.project_id,
+            )) or {}
+            retention = (policy.get("cleanup") or {}).get("successful_source_refs", "delete")
             await conn.execute(insert(integration_batches).values(
                 id=batch.id, project_id=batch.project_id, repository_id=batch.repository_id,
                 target_ref=batch.target_ref, intent=batch.intent,
                 repair_attempt_count=batch.repair_attempt_count,
                 created_at=batch.created_at or now, updated_at=now,
-                # Compatibility-only required fields, never read by this engine.
+                # Legacy required fields and the immutable cleanup policy snapshot.
                 request_id=batch.id, source_manifest_digest=manifest,
                 base_sha=members[0].base_sha, integration_branch=candidate_ref(batch.id),
-                lifecycle="sealing", policy_snapshot={}, artifact_snapshot={}, cleanup_state="pending",
+                lifecycle="sealing", policy_snapshot=policy,
+                artifact_snapshot={}, cleanup_state="pending",
             ))
             for member in members:
                 tree = trees[member.task_id]
                 if not is_valid_git_oid(tree):
                     raise ValueError("source tree must be exact")
+                source = None
+                for table in (tasks, archived_tasks):
+                    source = (await conn.execute(select(table.c.branch_name, table.c.pr_url).where(
+                        table.c.id == member.task_id, table.c.repo_id == batch.repository_id,
+                    ))).mappings().one_or_none()
+                    if source is not None:
+                        break
+                source_ref = ("refs/heads/" + source["branch_name"].removeprefix("refs/heads/")
+                              if source and source["branch_name"] else None)
                 await conn.execute(insert(integration_batch_members).values(
                     batch_id=batch.id, ordinal=member.order, task_id=member.task_id,
                     repository_id=batch.repository_id, source_sha=member.source_sha,
                     source_base_sha=member.base_sha, reviewed_head_sha=member.source_sha,
                     reviewed_tree_sha=tree, review_evidence_id=None, review_evidence={},
+                    pr_url=source["pr_url"] if source else None,
+                    source_ref=source_ref,
+                    source_ref_retention=retention if source_ref else None,
                 ))
             await conn.execute(update(integration_batches).where(
                 integration_batches.c.id == batch.id,
@@ -529,7 +548,8 @@ class BatchService:
 
             async def authorize():
                 return (await self._authorized(batch, members) and
-                        await self.gitops.remote(repo, ref) == candidate and
+                        (batch.epic_refresh or
+                         await self.gitops.remote(repo, ref) == candidate) and
                         await self.gate(batch, candidate, tree))
 
             # Explicit expected-old CAS and ancestry enforce the exact final FF.

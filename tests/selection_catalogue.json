@@ -596,6 +596,7 @@
         "tests/test_integration_settling.py",
         "tests/test_integration_size.py",
         "tests/test_integration_source_ancestry.py",
+        "tests/test_integration_stacked_branches.py",
         "tests/test_integration_stale_schedule.py",
         "tests/test_integration_stall_recovery.py",
         "tests/test_integration_state.py",
@@ -1417,7 +1418,7 @@
       ]
     }
   },
-  "digest": "sha256:ad9d8be94c48cc67179ebda4fb4685efb88801f1e7079ce337b89f0c2bb11855",
+  "digest": "sha256:b581a8317baabe40d1995f863646795b726e4e5daa75bce00cad9044c3a3c5f1",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7398,6 +7399,7 @@
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.checks",
+        "src.integration.ci",
         "src.integration.ci_producers",
         "src.integration.root_runtime",
         "src.integration.subjects"
@@ -8544,6 +8546,26 @@
       "markers": [],
       "summary": "A train source whose recorded base is not its ancestor never strands a batch."
     },
+    "tests/test_integration_stacked_branches.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.integration.batches",
+        "src.integration.gitops",
+        "src.integration.stacked_branches",
+        "src.integration.train",
+        "src.integration.train_sources",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Stacked source admission and refresh over real Git and disposable PostgreSQL."
+    },
     "tests/test_integration_stale_owners.py": {
       "areas": [
         "integration-ownership"
@@ -8681,11 +8703,14 @@
         "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.attestation",
         "src.integration.batches",
         "src.integration.candidate_baseline",
+        "src.integration.checks",
         "src.integration.ci",
         "src.integration.cleanup",
         "src.integration.delivery_observer",
@@ -8699,12 +8724,15 @@
         "src.integration.regeneration",
         "src.integration.repair",
         "src.integration.reviews",
+        "src.integration.root_pull_requests",
         "src.integration.stacked_branches",
         "src.integration.status",
+        "src.integration.subjects",
         "src.integration.train",
         "src.integration.train_controls",
         "src.integration.train_sources",
         "src.models",
+        "src.orchestrator.workspace",
         "src.profiles.capabilities",
         "src.test_selection",
         "src.test_selection.catalogue"

@@ -67,6 +67,13 @@ POLL_INTERVAL = float(os.environ.get("AQ_E2E_POLL_SECONDS", "2"))
 TIMINGS: dict[str, float] = {}
 
 
+def train_delivery_timeout() -> float:
+    """Allow the default root settling window before publication convergence."""
+    from src.integration.models import IntegrationTrainPolicy
+
+    return IntegrationTrainPolicy().cadence_seconds + CONVERGE_TIMEOUT
+
+
 # ---------------------------------------------------------------------------
 # Failure signalling
 # ---------------------------------------------------------------------------
@@ -2553,6 +2560,7 @@ def s20_train_delivery(state: dict) -> str:
         return tip
 
     tip = wait_for(delivered, what="S20 train to publish its ordinary completion",
+                   timeout=train_delivery_timeout(),
                    diagnostic=lambda: str(aq("integration", "status", project_id)))
     check(_git_text(str(remote), "show", f"{tip}:{artifact}") == "ordinary train delivery",
           "S20 delivered target lost the source artifact")

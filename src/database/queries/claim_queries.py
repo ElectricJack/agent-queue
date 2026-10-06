@@ -460,7 +460,8 @@ FRONTIER_PREDICATE_DETAILS = {
     ),
     "sibling_prerequisite_not_delivered": (
         "delivered_same_parent_prerequisites_when_hierarchical(): requires the preserved "
-        "parent origin and delivery of each completed blocks sibling to the shared parent; "
+        "parent origin and each completed blocks sibling delivered to the shared parent or "
+        "proven on its own task branch under the project stacked policy; "
         "Git-first uses current Git proof, shadow uses matching code receipts after rework"
     ),
     "container_settles_without_worker": "container_flag_exists() must be false",

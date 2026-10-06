@@ -43,14 +43,69 @@ refused while live subjects, owners or unresolved publication intents retain it.
 Policy routes must resolve to reviewed artifacts available to the project.
 Configuration changes never replace an in-flight subject's frozen artifact.
 
-A child with a completed `blocks` prerequisite under the same parent becomes
-claimable after Git proves the sibling's current work reached that parent.
-Workspace preparation merges the exact proven parent head into the child's
-branch under its managed writer fence before activation. Existing local and
-published child commits survive; the immutable filing origin stays unchanged.
-This uses the parent branch, even when the default branch has newer unrelated
-commits. Unknown or stale delivery evidence leaves the child unclaimable. A
-merge conflict fails preparation and preserves the child's committed work.
+The git-first train accepts an optional `train` block in the hierarchical
+integration policy:
+
+```json
+{
+  "train": {
+    "cadence_seconds": 300,
+    "settling_cap_seconds": 1800
+  }
+}
+```
+
+This fragment belongs alongside the required `parent`, `root`,
+`branchless_parent` and `on_failed_child` fields. Both train timing values
+must be positive integers. Omitting `train` uses the timing defaults at
+runtime and keeps the field absent from serialized policy snapshots, so
+pre-existing snapshots still compare equal.
+
+A root seals after a quiet period of `cadence_seconds` since the latest
+admission, or at `settling_cap_seconds` since the first admission, whichever
+comes first. With the defaults, roots admitted at 0 s and 10 s share a batch
+at 310 s; arrivals every 200 s share a batch at the 1800 s cap. This corrects
+the fidelity spec's 300 s example to use the old settling rule, latest
+admission plus cadence. The status state is `settling`, with the admission
+times and `seal_at` in `detail`. Admission timing survives daemon restarts
+but never substitutes for the current PR gate or Git delivery proof.
+Epic collection and local development targets freeze immediately.
+
+The `IntegrationTrain.visit(target, seal_now=True)` and
+`DatabaseBatches.open_batch(..., seal_now=True)` hooks bypass the timing
+window for one call. They preserve all admission and publication checks;
+an empty or blocked call does not arm a bypass for future work. A5 supplies
+the supervisor-facing `seal-now` command.
+
+The git-first path still rebuilds on target movement. It does not implement
+`on_main_moved: wait` or a `max_wait_seconds` limit on candidate rebuilds;
+these policy gaps are tracked separately from cadence and settling.
+
+The project policy `hierarchical_integration_policy.prerequisite_branches` accepts
+`stacked` or `wait-for-parent`. The `agent-queue` project defaults to `stacked`;
+other projects default to `wait-for-parent`.
+
+In stacked mode, a child with completed `blocks` prerequisites under the same
+parent can start as soon as Git proves their checkpointed heads on their own
+task branches. One prerequisite supplies the child's base directly; multiple
+prerequisites are merged over the epic head. The origin records this stack
+separately from its immutable filing base. Preparation preserves existing child
+commits under the managed writer fence. Scheduler, pool demand, explain and
+claim consume the same verified frontier rule.
+
+A batch carries prerequisites before their dependents, or proves the absent
+prerequisites already reached its target. It tests the exact combined candidate.
+Before batching an idle completed dependent, changed prerequisite heads are
+merged into its preserved branch and recorded as a new completion. Conflicts
+file an isolated repair task; the dependent stays withheld until the repair
+resolves and current heads are included. Reopened, abandoned or unproven
+prerequisites pause dependent delivery. A refreshed source gets a new batch;
+the former frozen candidate cannot publish it. Explicit batch pauses still hold.
+
+In wait-for-parent mode, Git must prove the sibling's current work reached the
+shared parent first. Preparation merges that exact parent head into the child.
+Both modes preserve the filing origin and exclude unrelated default-branch
+commits. Unknown or stale evidence leaves the child unclaimable.
 
 A completed prerequisite in another epic, or a root prerequisite, must reach
 the project's default branch before its dependent becomes claimable. Git proves
@@ -68,6 +123,9 @@ the refresh pending; a content conflict files ordinary repair work on the epic
 branch and withholds its children. Preparation preserves the child's existing
 commits and records its actual refreshed parent head and default head in the
 filing origin's `base_refresh` annotation. The original `base_sha` stays fixed.
+Preparation requires the epic to contain each proven cross-epic source; unrelated
+default-branch commits arriving during CI do not force another refresh. It refreshes
+before constructing a sibling prerequisite stack, so both inputs reach the child.
 Status includes each epic's `ahead` and `behind` commit counts against the default
 branch, or an unknown distance when Git cannot observe it.
 
@@ -80,7 +138,11 @@ aq integration refresh-epic --task EPIC_ID --apply
 
 An apply reports `pending` while the train checks or repairs its candidate.
 Subsequent train visits finish publication; repeating apply also advances the
-same frozen refresh. A refresh serializes with an epic's open collection batch.
+same frozen refresh. Apply and child preparation request bounded, serialized train
+visits and respect repository rate-limit pauses. Any open collection or refresh
+batch on the epic withholds its cross-epic dependents until that batch settles.
+Repairs for failed or missing CI start from the tested refresh candidate; conflict
+repairs start from the partial candidate containing the successful merges.
 
 For an existing historical subject, `engine-transfer` and
 `development-engine-transfer` offer a forward-only audited transfer to

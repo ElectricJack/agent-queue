@@ -345,6 +345,8 @@ class ProjectIntegrationMode:
     delivered_prerequisite_ids: frozenset[str] | None = None
     cross_epic_prerequisites: str = "default_branch"
     default_prerequisite_ids: frozenset[str] = frozenset()
+    stacked: bool = False
+    stackable_prerequisite_ids: frozenset[str] = frozenset()
 
     @classmethod
     def of(cls, project) -> ProjectIntegrationMode | None:
@@ -355,7 +357,10 @@ class ProjectIntegrationMode:
         """
         if project is None:
             return None
+        from src.integration.stacked_branches import stacked_policy
+
         return cls(
+            stacked=stacked_policy(project),
             hierarchical=getattr(project, "hierarchical_integration_mode", None)
             in HIERARCHY_MODES,
             integration_repository_id=getattr(project, "integration_repository_id", None),
@@ -593,6 +598,8 @@ def delivered_same_parent_prerequisites_when_hierarchical(
     )
     if mode is not None and mode.delivered_prerequisite_ids is not None:
         delivered = prerequisite.c.id.in_(mode.delivered_prerequisite_ids)
+    if mode is not None and mode.stacked:
+        delivered = or_(delivered, prerequisite.c.id.in_(mode.stackable_prerequisite_ids))
     prerequisite_is_undelivered = exists(
         select(literal(1))
         .select_from(
@@ -683,15 +690,15 @@ def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = 
     # The observed source ids use one array bind, however large the frontier.
     ids = mode.default_prerequisite_ids if mode else ()
     unproven = ~(source.c.id == any_(literal(list(ids), type_=ARRAY(Text)))) if ids else true()
-    missing = exists(select(literal_column("1")).select_from(
+    cross_edge = select(literal_column("1")).select_from(
         edge.join(source, source.c.id == edge.c.depends_on_task_id),
     ).correlate(tasks).where(
         edge.c.task_id == tasks.c.id, edge.c.dep_type == literal_column("'blocks'"),
         source.c.parent_task_id.is_distinct_from(tasks.c.parent_task_id)
         | source.c.parent_task_id.is_(None),
         source.c.status == literal_column("'COMPLETED'"),
-        unproven,
-    ))
+    )
+    missing = exists(cross_edge.where(unproven))
     if mode is None:
         enabled = exists(select(literal_column("1")).where(
             projects.c.id == tasks.c.project_id,
@@ -700,12 +707,11 @@ def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = 
                 "cross_epic_prerequisites"].as_string(), "default_branch") != "completed",
         ))
     parent = tasks.alias("refresh_pending_parent")
-    pending = exists(select(literal_column("1")).select_from(
+    pending = exists(cross_edge) & exists(select(literal_column("1")).select_from(
         integration_batches.join(parent, parent.c.id == tasks.c.parent_task_id),
     ).correlate(tasks).where(
         integration_batches.c.project_id == tasks.c.project_id,
         integration_batches.c.repository_id == parent.c.repo_id,
-        integration_batches.c.id.startswith("train-epic-refresh-"),
         integration_batches.c.intent != literal_column("'aborted'"),
         integration_batches.c.lifecycle != literal_column("'promoted'"),
         integration_batches.c.target_ref == (literal_column("'refs/heads/'", type_=Text) + func.replace(

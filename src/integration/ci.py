@@ -1,15 +1,28 @@
 """Strict trusted CI manifest, attestation, and durable evidence contracts."""
 
 from __future__ import annotations
+
+import hashlib
+import json
+import re
 import time
 import uuid
-import re
-from typing import Any
+from collections.abc import Iterable, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Any, Literal
+from urllib.parse import quote
+
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from sqlalchemy import insert, select, update
+
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
-    integration_check_evidence,
+    integration_batches,
     integration_branch_owners,
+    integration_candidate_revisions,
+    integration_check_evidence,
     integration_parent_verification_evidence,
     integration_parent_verifications,
     integration_repair_operations,
@@ -18,33 +31,15 @@ from src.database.tables import (
     task_integration_checkpoints,
     tasks,
 )
-from src.integration.parent_engine import (
-    parent_engine_guard,
-)
-from src.integration.models import HierarchicalIntegrationPolicy
-from src.integration.outbox import enqueue_integration_event
-import hashlib
-import json
-from dataclasses import dataclass
-from collections.abc import Iterable, Mapping
-from typing import Literal
-from urllib.parse import quote
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
-from src.database.tables import (
-    integration_batches,
-    integration_candidate_revisions,
-)
 from src.git.github_contracts import (
     GitHubCredentialMode,
     credential_identity_from_client,
 )
-
-
-
-
-
-
-
+from src.integration.models import HierarchicalIntegrationPolicy
+from src.integration.outbox import enqueue_integration_event
+from src.integration.parent_engine import (
+    parent_engine_guard,
+)
 
 _OID = re.compile(r"^[0-9a-f]{40}$")
 
@@ -177,7 +172,7 @@ class RequiredChecksManifest(BaseModel):
     names: tuple[str, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def unique_nonempty_names(self) -> "RequiredChecksManifest":
+    def unique_nonempty_names(self) -> RequiredChecksManifest:
         if any(not name.strip() for name in self.names) or len(set(self.names)) != len(self.names):
             raise ValueError("required check names must be unique and non-empty")
         return self
@@ -195,7 +190,7 @@ class IntegrationCITrust(BaseModel):
     required_checks: RequiredChecksManifest
 
     @model_validator(mode="after")
-    def valid_producer_identity(self) -> "IntegrationCITrust":
+    def valid_producer_identity(self) -> IntegrationCITrust:
         if self.producer_id.isdecimal() and int(self.producer_id) <= 0:
             raise ValueError("numeric CI producer identity must be positive")
         return self
@@ -253,7 +248,7 @@ class IntegrationTrustManifest(BaseModel):
     required_checks: RequiredChecksManifest
 
     @model_validator(mode="after")
-    def distinct_apps(self) -> "IntegrationTrustManifest":
+    def distinct_apps(self) -> IntegrationTrustManifest:
         if self.ci_producer_app_id == self.attestation_app_id:
             raise ValueError("CI and attestation App identities must be distinct")
         return self
@@ -300,7 +295,7 @@ class AttestationPayload(BaseModel):
     workflow_runs: tuple[AttestedWorkflowRun, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def coherent_attempts(self) -> "AttestationPayload":
+    def coherent_attempts(self) -> AttestationPayload:
         names = [check.name for check in self.checks]
         check_ids = [check.check_run_id for check in self.checks]
         suites = [workflow.check_suite_id for workflow in self.workflow_runs]
@@ -318,7 +313,7 @@ class AttestationPayload(BaseModel):
         return self
 
     @classmethod
-    def from_canonical_bytes(cls, value: bytes) -> "AttestationPayload":
+    def from_canonical_bytes(cls, value: bytes) -> AttestationPayload:
         try:
             decoded = json.loads(value, object_pairs_hook=_reject_duplicate_keys)
         except (UnicodeDecodeError, json.JSONDecodeError, AttestationError) as exc:
@@ -357,7 +352,7 @@ class CIReceiptPayload(BaseModel):
     workflow_runs: tuple[AttestedWorkflowRun, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def coherent_attempts(self) -> "CIReceiptPayload":
+    def coherent_attempts(self) -> CIReceiptPayload:
         _validate_check_workflow_coverage(self.checks, self.workflow_runs, self.head_sha)
         return self
 
@@ -508,7 +503,7 @@ class IntegrationCIEvidence(BaseModel):
     observed_at: float
 
     @model_validator(mode="after")
-    def exact_subject(self) -> "IntegrationCIEvidence":
+    def exact_subject(self) -> IntegrationCIEvidence:
         parent = (
             self.batch_id is None
             and self.candidate_revision is None
@@ -1027,6 +1022,35 @@ class CIService:
         return derived
 
 
+_HOSTED_LISTINGS: ContextVar[dict | None] = ContextVar("hosted_visit_listings", default=None)
+
+
+@contextmanager
+def hosted_observation_scope():
+    """Share raw authenticated listings across policies/events in one visit."""
+    token = _HOSTED_LISTINGS.set({})
+    try:
+        yield
+    finally:
+        _HOSTED_LISTINGS.reset(token)
+
+
+async def _hosted_listing(client, path, *, key):
+    cache = _HOSTED_LISTINGS.get()
+    if cache is None:
+        return await client.paged_items(path, key=key)
+    try:
+        credential = credential_identity_from_client(client)
+    except ValueError:
+        credential = id(client)
+    identity = (credential, path, key)
+    if identity in cache:
+        return cache[identity]
+    rows = await client.paged_items(path, key=key)
+    cache[identity] = rows
+    return rows
+
+
 class AuthenticatedGitHubObserver:
     """Build canonical evidence exclusively from authenticated GitHub API reads."""
 
@@ -1040,7 +1064,7 @@ class AuthenticatedGitHubObserver:
         if not isinstance(head_sha, str) or re.fullmatch(_SHA_PATTERN, head_sha) is None:
             raise AttestationError("invalid CI head")
         owner, repository = trust.full_name.split("/", 1)
-        workflow_records = await self.client.paged_items(
+        workflow_records = await _hosted_listing(self.client,
             f"/repos/{owner}/{repository}/actions/runs?head_sha={head_sha}&per_page=100",
             key="workflow_runs",
         )
@@ -1061,7 +1085,7 @@ class AuthenticatedGitHubObserver:
         # query cost one API call per required check (17 per observation) and
         # exhausted the App installation's hourly rate limit within an hour of
         # every daemon restart.
-        all_records = await self.client.paged_items(
+        all_records = await _hosted_listing(self.client,
             f"/repos/{owner}/{repository}/commits/{head_sha}/check-runs"
             "?filter=all&per_page=100",
             key="check_runs",
@@ -1142,13 +1166,14 @@ class AuthenticatedGitHubObserver:
 
         missing_suite_id: int | None = None
         if missing:
-            # An empty check list immediately after a push is not a CI failure.
-            # Only completed push workflows for this exact head can establish
+            # An empty check list immediately after publication is not a CI failure.
+            # Only completed workflows of the expected event on this head establish
             # that the snapshot's required name was never produced.
-            push_runs = [record for record in workflow_records
-                         if record.get("event") == "push" and record.get("head_sha") == head_sha]
-            if not push_runs or any(record.get("status") != "completed" for record in push_runs):
-                missing_push = self.expected_event == "push" and not push_runs
+            expected_runs = [record for record in workflow_records
+                         if record.get("event") == (self.expected_event or "push")
+                         and record.get("head_sha") == head_sha]
+            if not expected_runs or any(record.get("status") != "completed" for record in expected_runs):
+                missing_push = self.expected_event == "push" and not expected_runs
                 raise CIObservationDeferred(
                     f"required check is pending: {', '.join(missing)}",
                     classification="none" if missing_push else (
@@ -1156,7 +1181,7 @@ class AuthenticatedGitHubObserver:
                     ),
                     details={"missing_push_run": True} if missing_push else {},
                 )
-            for record in push_runs:
+            for record in expected_runs:
                 suite_id = _strict_int(record.get("check_suite_id"))
                 if (
                     record.get("head_sha") != head_sha
@@ -1178,10 +1203,10 @@ class AuthenticatedGitHubObserver:
             missing_suite_id = min(
                 (
                     _strict_int(record["check_suite_id"])
-                    for record in push_runs
+                    for record in expected_runs
                     if _strict_int(record["check_suite_id"]) in selected_suites
                 ),
-                default=min(_strict_int(record["check_suite_id"]) for record in push_runs),
+                default=min(_strict_int(record["check_suite_id"]) for record in expected_runs),
             )
 
         workflow_rows: list[dict[str, Any]] = []

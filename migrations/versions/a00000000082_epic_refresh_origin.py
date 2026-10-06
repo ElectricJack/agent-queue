@@ -1,15 +1,15 @@
 """Record the refreshed parent base used to start a cross-epic dependent.
 
-Revision ID: a00000000081
-Revises: a00000000080
+Revision ID: a00000000082
+Revises: a00000000081
 """
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision = "a00000000081"
-down_revision = "a00000000080"
+revision = "a00000000082"
+down_revision = "a00000000081"
 branch_labels = None
 depends_on = None
 

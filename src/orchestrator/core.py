@@ -1977,7 +1977,7 @@ class Orchestrator(
             train=TrainCommandDriver(self.integration_train, lambda: self._command_handler)
             if train_active else None,
             maintenance={
-                "aborted batch cleanup": self.integration_cleanup_service.reconcile_aborted,
+                "batch cleanup": self.integration_cleanup_service.reconcile,
                 "branch discard": self._drain_branch_discards,
                 "branch materialization": self._drain_branch_materializations,
                 "owner recovery": self._sweep_stranded_owners,

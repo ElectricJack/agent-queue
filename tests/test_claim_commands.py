@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import asyncpg
 import pytest
@@ -2922,8 +2922,9 @@ async def development_admission(handler, db, tmp_path):
 
 @pytest.mark.parametrize("child_work", ["none", "local", "remote"])
 @pytest.mark.parametrize("preparation", ["pool", "clone"])
+@pytest.mark.parametrize("prerequisite_policy", ["wait-for-parent", "stacked"])
 async def test_hierarchy_claim_inherits_git_proven_parent_without_resetting_child(
-    handler, db, tmp_path, development_admission, child_work, preparation
+    handler, db, tmp_path, development_admission, child_work, preparation, prerequisite_policy
 ):
     from src.integration.delivery_observer import DeliveryObserver
     from src.integration.git_truth import GitTruth
@@ -2968,8 +2969,14 @@ async def test_hierarchy_claim_inherits_git_proven_parent_without_resetting_chil
             task_id="dependent", repository_id="repo", branch="aq/dependent",
             checkpoint_sha=env.base, updated_at=time.time(),
         ))
+        await conn.execute(task_integration_checkpoints.insert().values(
+            task_id="prerequisite", repository_id="repo", branch="prerequisite",
+            checkpoint_sha=env.head, updated_at=time.time(),
+        ))
     await db.update_project(PROJECT_ID, hierarchical_integration_mode="train",
-                            repo_url=str(env.remote))
+                            repo_url=str(env.remote), hierarchical_integration_policy={
+                                "prerequisite_branches": prerequisite_policy,
+                            })
     ownership = BranchOwnership(db)
     target = BranchKey(repository_id="repo", branch="aq/dependent")
     await ownership.acquire(target, "dependent", "worker")
@@ -2982,13 +2989,14 @@ async def test_hierarchy_claim_inherits_git_proven_parent_without_resetting_chil
         config=handler.config.worktrees, git_mutex=handler.orchestrator._git_mutex,
     )
     handler.orchestrator._worktree_slots = MagicMock(return_value=manager)
-    # Completed source alone cannot admit the child; it must reach the parent.
-    result = await scoped(handler, sid)._cmd_task_claim({"next": True})
-    assert result["result"] == "no_ready_work"
-    git(env.source, "checkout", "-b", "aq/epic", env.base)
-    git(env.source, "merge", "--no-ff", "-m", "deliver prerequisite", env.head)
-    parent_sha = git(env.source, "rev-parse", "HEAD")
-    git(env.source, "push", "origin", "aq/epic")
+    parent_sha = env.head
+    if prerequisite_policy == "wait-for-parent":
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert result["result"] == "no_ready_work"
+        git(env.source, "checkout", "-b", "aq/epic", env.base)
+        git(env.source, "merge", "--no-ff", "-m", "deliver prerequisite", env.head)
+        parent_sha = git(env.source, "rev-parse", "HEAD")
+        git(env.source, "push", "origin", "aq/epic")
     # Main moves independently. Its new content must never reach this child.
     git(env.source, "checkout", "main")
     (env.source / "main-only").write_text("unrelated")
@@ -3003,7 +3011,8 @@ async def test_hierarchy_claim_inherits_git_proven_parent_without_resetting_chil
     else:
         # The task launcher follows a fresh scheduler observation. Refresh the
         # advisory snapshot used by its guard after the earlier negative claim.
-        assert await db.hierarchy_prerequisite_delivery_head("dependent") == parent_sha
+        if prerequisite_policy == "wait-for-parent":
+            assert await db.hierarchy_prerequisite_delivery_head("dependent") == parent_sha
         task = await db.get_task("dependent")
         project = await db.get_project(PROJECT_ID)
         origin, fence, _role = await handler.orchestrator._hierarchy_origin_and_fence(task, project)
@@ -3020,6 +3029,9 @@ async def test_hierarchy_claim_inherits_git_proven_parent_without_resetting_chil
         assert (work_dir / "child-work").exists()
     origin = await db.get_task_branch_origin_for_promotion("dependent", "repo")
     assert origin["base_sha"] == env.base
+    if prerequisite_policy == "stacked":
+        assert origin["stack_snapshot"]["base_sha"] == env.head
+        assert git(env.source, "ls-remote", "origin", "refs/heads/aq/epic").split()[0] == env.base
     owner = await ownership.get_owner(target)
     if preparation == "pool":
         assert owner["handoff_state"] == "attached" and owner["session_id"] == sid
@@ -3093,6 +3105,26 @@ async def test_cross_epic_demand_explain_claim_and_refreshed_child_base(
     assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == 1
     explanation = await handler._cmd_explain_task({"task_id": "dependent"})
     assert not [item for item in explanation["reasons"] if "prerequisite" in item["code"]]
+
+    # An ordinary collection on this epic must stop admission before workspace
+    # preparation or claim epochs churn, even though main contains the source.
+    from src.integration.batches import Batch, BatchMember, BatchStore
+
+    store = BatchStore(db)
+    collection = Batch("train-existing-collection", PROJECT_ID, "repo", target.target_ref)
+    await store.freeze(collection, (BatchMember("dependent", env.base, env.base),),
+                       trees={"dependent": git(env.remote, "rev-parse", f"{env.base}^{{tree}}")})
+    before = (await db.get_task("dependent")).claim_epoch
+    with patch.object(handler, "_prepare_and_activate", AsyncMock(side_effect=AssertionError(
+        "an open collection must withhold workspace preparation",
+    ))):
+        assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == 0
+        for _ in range(2):
+            assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == (
+                "no_ready_work"
+            )
+    assert (await db.get_task("dependent")).claim_epoch == before
+    await store.set_intent(collection.id, "aborted")
 
     # First preparation creates the refresh, then leaves the child unclaimed
     # while hosted checks run. Every frontier reader now sees that pending batch.

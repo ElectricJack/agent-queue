@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import replace
 
 # Re-exported for backwards compatibility: the claim-file helpers moved to the
 # leaf module ``src.claim_file`` so ``src.sessions.reconciler`` can use them
@@ -613,6 +614,7 @@ class ClaimCommandsMixin:
                     ClaimResult.NO_READY_WORK, "source_ci_repair_already_delivered", None, cap
                 )
         prerequisite_view = None
+        stack_view = None
         from src.integration.delivery_observer import prerequisite_observer
 
         observer = prerequisite_observer(self.db)
@@ -621,6 +623,14 @@ class ClaimCommandsMixin:
             if not await prerequisite_view.fresh():
                 return self._simple(ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", None, cap)
             hierarchy_mode = await prerequisite_view.mode(hierarchy_mode)
+        if hierarchy_mode and hierarchy_mode.hierarchical and hierarchy_mode.stacked and observer:
+            from src.integration.stacked_branches import observe_stacks
+
+            stack_view = await observe_stacks(observer, project.id, task_id=want_id)
+            if not await stack_view.fresh():
+                return self._simple(ClaimResult.NO_READY_WORK, "stack_snapshot_changed", None, cap)
+            hierarchy_mode = replace(hierarchy_mode,
+                                     stackable_prerequisite_ids=frozenset(stack_view.proofs))
         # What to do once the transaction has committed — set inside the
         # block, acted on outside it.
         active_claim: tuple | None = None  # (task, epoch, row) — already active
@@ -717,6 +727,15 @@ class ClaimCommandsMixin:
                             tasks.c.id.in_(proof_ids),
                         ).order_by(tasks.c.id).with_for_update())
                     hierarchy_mode = await prerequisite_view.mode(hierarchy_mode, conn=conn)
+                if stack_view is not None:
+                    proof_ids = sorted(stack_view.proofs)
+                    if proof_ids:
+                        await conn.execute(select(tasks.c.id).where(
+                            tasks.c.id.in_(proof_ids),
+                        ).order_by(tasks.c.id).with_for_update())
+                    hierarchy_mode = replace(hierarchy_mode, stackable_prerequisite_ids=frozenset(
+                        await stack_view.verified_on(conn, proof_ids)
+                    ))
                 tid = await self.db.select_ready_for_profile(
                     conn,
                     project_id=session.project_id,
@@ -1086,6 +1105,11 @@ class ClaimCommandsMixin:
                     reset_kwargs["target_branch"] = target_branch
                 if preserve_branch:
                     reset_kwargs["preserve_branch"] = True
+                if hierarchy_enabled and origin.get("stack_store"):
+                    await self.orchestrator.git._arun(
+                        ["fetch", "--no-tags", str(origin["stack_store"]), base_branch],
+                        cwd=slot.workspace_path,
+                    )
                 branch = await self.orchestrator._worktree_slots().reset_slot_for_task(
                     slot, task, **reset_kwargs
                 )
