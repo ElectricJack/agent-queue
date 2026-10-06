@@ -542,6 +542,7 @@
         "tests/test_integration_child_delivery.py",
         "tests/test_integration_delivered_parent_adoption.py",
         "tests/test_integration_epics.py",
+        "tests/test_integration_legacy_backfill.py",
         "tests/test_integration_main_promotion.py",
         "tests/test_integration_parent_completion.py",
         "tests/test_integration_parent_source.py",
@@ -1414,7 +1415,7 @@
       ]
     }
   },
-  "digest": "sha256:50ae25b71b4b241919096c781103c1aff0078cbeec08576931dcde5cc5b1a605",
+  "digest": "sha256:1778ab8c32fa1d16b7af9f78cf08ec16448ae566eea16f41f2f3416dc1db4bea",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7663,6 +7664,22 @@
         "usefixtures"
       ],
       "summary": "Flag-enabled isolated child origins and hierarchy mutation guards."
+    },
+    "tests/test_integration_legacy_backfill.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.integration.legacy_backfill",
+        "src.integration.train_sources",
+        "src.models"
+      ],
+      "markers": [
+        "asyncio"
+      ],
+      "summary": "Git-proven backfill of pre-provenance completions (src/integration/legacy_backfill.py)."
     },
     "tests/test_integration_lock.py": {
       "areas": [

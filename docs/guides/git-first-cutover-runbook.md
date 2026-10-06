@@ -92,6 +92,27 @@ Record, for the canary: the repository or project id, and **every transfer
 performed** with its exact subject ids and versions, or the explicit statement
 that none was needed because the roots were already owned.
 
+## 3a. Backfill legacy deliveries the train cannot see
+
+Completions closed before retained provenance existed (merged pull requests, the
+old engine's batches) are `missing_git_provenance` to the train: they are listed
+as unknown blockers on the root target, and anything that depends on them is held
+out of every batch. Record the ones git proves are already on the default branch:
+
+```bash
+.venv/bin/python scripts/backfill-legacy-deliveries.py "$PROJECT_ID" --output preview.json
+.venv/bin/python scripts/backfill-legacy-deliveries.py "$PROJECT_ID" --apply \
+    --reason "git-first cutover: legacy work already on main"
+```
+
+For each such task it locates exact candidate sources (reported completion commits,
+origin branch tip, old batch members and delivery receipts, the pull request
+head), and writes an `integration_legacy_deliveries` row only when a candidate is
+an ancestor of the tip (`development_delivery`) or merging it changes nothing
+(`content_equivalent`). It never writes provenance, moves a ref or edits a task;
+anything unproven is listed and left alone for an explicit decision. A reopened
+task's new completion is not covered by the old row.
+
 ## 4. Select `active` and restart
 
 ```yaml
