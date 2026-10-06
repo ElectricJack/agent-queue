@@ -1498,6 +1498,11 @@ class DatabaseConfig:
     #: the wire.  ``0`` disables recycling.
     pool_recycle_seconds: int = 1800
 
+    #: Directory retained from the newer release for verified code rollbacks.
+    schema_ahead_migrations: str = ""
+    #: Null leaves the revision-distance limit disabled until release cutover.
+    schema_ahead_max_revisions: int | None = None
+
     @property
     def backend(self) -> str:
         """Infer backend from the URL scheme."""
@@ -1505,6 +1510,16 @@ class DatabaseConfig:
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
+        if self.schema_ahead_max_revisions is not None and (
+            type(self.schema_ahead_max_revisions) is not int
+            or self.schema_ahead_max_revisions < 0
+        ):
+            errors.append(
+                ConfigError(
+                    "database", "schema_ahead_max_revisions",
+                    "must be null or a nonnegative integer",
+                )
+            )
         if not self.url:
             errors.append(ConfigError("database", "url", "database url/path is required"))
         if self.backend == "postgresql":
@@ -4909,6 +4924,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             pool_max_size=d.get("pool_max_size", 10),
             pre_ping=str(d.get("pre_ping", "local")),
             pool_recycle_seconds=int(d.get("pool_recycle_seconds", 1800)),
+            schema_ahead_migrations=str(d.get("schema_ahead_migrations", "")),
+            schema_ahead_max_revisions=d.get("schema_ahead_max_revisions"),
         )
     # Backward compat: if no explicit database section, populate from database_path
     if not config.database.url:

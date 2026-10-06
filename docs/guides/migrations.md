@@ -11,6 +11,67 @@ For everything else about the schema — what the revision chain contains, how t
 add a revision, how to back up and restore, and what each diagnostic means —
 see the [database migrations reference](../reference/database/migrations.md).
 
+## Release compatibility and code rollback
+
+Check the exact release range before promotion:
+
+```bash
+python scripts/check_additive_migrations.py --from-ref v0.1.0 --to-ref v0.2.0 --json
+```
+
+The checker reads pinned Git objects without executing migrations. It allows
+new tables, indexes, constraints, and nullable or server-defaulted columns.
+Upgrade drops, renames, type changes, non-null columns without server defaults,
+raw SQL and imported helpers that cannot be proved additive fail with file and
+line evidence. Drops in `downgrade()` do not affect code rollback. Historical
+migration edits, missing parents, duplicate revision ids and multiple heads
+also fail; resolve the graph before promoting.
+
+An older checkout cannot infer a newer migration's compatibility from its id.
+Retain the newer release's complete, unmodified `migrations/versions/` directory
+outside the checkout before rolling back, and configure the database startup:
+
+```yaml
+database:
+  schema_ahead_migrations: /path/to/retained-newer-release/migrations/versions
+  schema_ahead_max_revisions: 1
+```
+
+The guard proves that the database stamp descends from the code head, that all
+extra upgrades pass the additive checker, and that retained historical sources
+match the running checkout. Accepted ahead schemas are left untouched by Alembic.
+The limit counts extra **revisions**, including both sides of a merge, rather
+than releases. Set it to the number of migrations in the supported rollback
+window; zero disallows an ahead schema. Its default is `null`, so no distance
+limit is enabled before cutover. With no retained directory, the existing
+unknown-revision refusal remains in effect. Behind schemas retain the existing
+operator/daemon migration rules. Refusals explain how to deploy matching code or
+supply evidence; downgrading or stamping to bypass the guard is not a rollback.
+
+Run a drill on an explicitly provisioned, empty scratch PostgreSQL database:
+
+```bash
+AQ_ROLLBACK_DRILL_DSN=postgresql://user:password@localhost/scratch_rollback \
+  python scripts/rollback_drill.py --previous-tag v0.1.0 --current-tag v0.2.0 \
+  --max-revisions 1 --seed-sql /path/to/scratch-seed.sql
+```
+
+The script exports both pinned release trees, initializes A's database adapter,
+upgrades with B, optionally inserts fixture rows, then initializes A's database
+adapter against B's schema using B's retained migrations. This exercises
+`run_schema_setup` and startup data migrations. Both tags must include schema-ahead
+support. Every public table's contents and the Alembic stamp are hashed before
+and after the rollback probe; changed rows fail the drill. JSON output records
+the commit ids and per-table evidence. It launches no live daemon, modifies no
+checkout, performs no downgrade or restore, and leaves the scratch database
+available for inspection. It refuses the configured production database and
+any nonempty database. The fixture check seeds actual task, event, durable-wait
+and approval rows:
+
+```bash
+aq test -m migration tests/test_update_rollback.py
+```
+
 > **This page used to be a technical-debt inventory** of `ALTER TABLE`
 > one-liners run from `Database.initialize()`. That is no longer how the schema
 > changes: schema changes are Alembic revisions under `migrations/versions/`,
