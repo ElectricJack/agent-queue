@@ -212,6 +212,14 @@
             ],
             "description": "LOCAL-only integration mode for new reconciler subjects."
           },
+          "promotion_flow": {
+            "type": [
+              "array",
+              "object",
+              "null"
+            ],
+            "description": "LOCAL-only promotion flow (steps list, or {promotion_flow: [...]}); validated and activated behind the integration generation CAS."
+          },
           "expected_integration_generation": {
             "type": "integer",
             "minimum": 0,

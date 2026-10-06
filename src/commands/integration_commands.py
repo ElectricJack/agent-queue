@@ -940,6 +940,7 @@ class IntegrationCommandsMixin:
             self.db,
             git_first=getattr(self.config.integration, "git_first", "shadow"),
             train=getattr(self.orchestrator, "integration_train", None),
+            flow_problems=getattr(self.orchestrator, "promotion_flow_problems", None),
         )
         status = await (service.control_status(project_id) if args.get("control_only")
                         else service.status(project_id))

@@ -501,3 +501,582 @@ def test_migration_column_is_nullable_jsonb_and_inspector_guarded():
         inspector.get_columns.return_value.pop()
         migration.downgrade()
         assert op.drop_column.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Activation (§3.11, R16/R17): the fenced write, ``promotion_flow_in_use``,
+# create-only targets, the status chain and the daemon-start re-check.
+# ---------------------------------------------------------------------------
+
+
+def filled(document):
+    result = validate(document)
+    assert result.valid, result.problems
+    return result.flow
+
+
+@pytest.mark.parametrize(
+    "path,value",
+    [
+        (("source",), "elsewhere"),
+        (("target",), "production"),
+        (("type",), "continuous"),
+        (("gate", "approval"), "requester"),
+        (("gate", "checks"), "manifest:release"),
+        (("versioning", "kind"), "none"),
+        (("notes", "kind"), "none"),
+    ],
+)
+def test_each_protected_field_change_is_listed(path, value):
+    from src.integration.promotion_steps import protected_changes
+
+    stored = filled([release()])
+    flow = copy.deepcopy(stored)
+    node = flow[0]
+    for key in path[:-1]:
+        node = node[key]
+    node[path[-1]] = value
+    assert [(c["step_id"], c["field"], c["pointer"], c["target"])
+            for c in protected_changes(stored, flow)] == [
+        ("release", path[0], f"/0/{path[0]}", "main")
+    ]
+
+
+def test_after_ttl_and_appended_steps_are_free_and_removal_is_not():
+    from src.integration.promotion_steps import protected_changes
+
+    stored = filled([release()])
+    flow = copy.deepcopy(stored)
+    flow[0]["after"]["backmerge"] = False
+    flow[0]["gate"]["request_ttl"] = "1d"
+    flow.append({"id": "hotfix", "source": "main", "target": "hotfix"})
+    assert protected_changes(stored, flow) == []
+    assert protected_changes(stored, [{"id": "release", "source": "dev", "target": "main",
+                                        "versioning": stored[0]["versioning"],
+                                        "notes": stored[0]["notes"]}]) == []
+    assert protected_changes(stored, []) == [
+        {"step_id": "release", "target": "main", "field": "id", "pointer": "/0/id"}
+    ]
+    assert protected_changes(None, filled([release()])) == []
+
+
+def test_status_prints_the_chain_and_marks_a_failing_flow_misconfigured():
+    from src.integration.promotion_steps import flow_status
+
+    flow = filled(two_steps())
+    status = flow_status(flow, default_branch="dev")
+    assert status["state"] == "configured" and status["problems"] == []
+    assert status["chain"] == "dev -> staging -> main"
+    assert [(s["id"], s["target_ref"], s["type"], s["state"]) for s in status["steps"]] == [
+        ("staging", "refs/heads/staging", "continuous", "configured"),
+        ("release", "refs/heads/main", "request", "configured"),
+    ]
+    renamed = flow_status(flow, default_branch="trunk")
+    assert renamed["state"] == "misconfigured"
+    assert {s["state"] for s in renamed["steps"]} == {"misconfigured"}
+    assert renamed["problems"][0]["code"] == "source_not_default"
+    assert renamed["problems"][0]["pointer"] == "/0/source"
+    recorded = [{"code": "check_set_unknown", "pointer": "/1/gate/checks", "layer": 3}]
+    assert flow_status(flow, default_branch="dev", recorded=recorded)["problems"] == recorded
+    # A default renamed back clears a recorded layer-2 finding without a restart.
+    stale = [{"code": "source_not_default", "pointer": "/0/source", "layer": 2}]
+    assert flow_status(flow, default_branch="dev", recorded=stale)["state"] == "configured"
+    assert flow_status(None, default_branch="dev") is None
+    assert flow_status([], default_branch="dev") is None
+
+
+class FakeGit:
+    """Remote heads by branch; create-only pushes that may lose a race."""
+
+    def __init__(self, heads, *, ancestors=(), lost=(), unreadable=()):
+        self.heads = dict(heads)
+        self.ancestors = set(ancestors)
+        self.lost = set(lost)
+        self.unreadable = set(unreadable)
+        self.pushes = []
+        self.fetches = 0
+
+    async def als_remote_refs(self, checkout, branches, *, repository_url=None):
+        from src.git.manager import RemoteRefResult, RemoteRefState
+
+        return {
+            b: RemoteRefResult(RemoteRefState.ERROR, error="denied") if b in self.unreadable
+            else RemoteRefResult(RemoteRefState.PRESENT, self.heads[b]) if b in self.heads
+            else RemoteRefResult(RemoteRefState.ABSENT)
+            for b in branches
+        }
+
+    async def afetch_origin(self, checkout, *, repository_url, all_heads=False):
+        self.fetches += 1
+
+    async def ais_ancestor(self, checkout, ancestor, descendant, *, strict=False):
+        return (ancestor, descendant) in self.ancestors
+
+    async def apush_new_refs(self, checkout, tips, *, repository_url=None):
+        from src.git.manager import RemoteRefResult, RemoteRefState
+
+        self.pushes.append(dict(tips))
+        result = {}
+        for branch, oid in tips.items():
+            if branch in self.lost:
+                result[branch] = RemoteRefResult(RemoteRefState.PRESENT, "f" * 40)
+            else:
+                self.heads[branch] = oid
+                result[branch] = RemoteRefResult(RemoteRefState.PRESENT, oid)
+        return result
+
+
+DEV, MAIN = "d" * 40, "a" * 40
+
+
+async def test_missing_targets_are_created_in_chain_order_at_their_source_tip():
+    from src.integration.promotion_steps import create_missing_targets
+
+    git = FakeGit({"dev": DEV, "main": MAIN}, ancestors={(MAIN, DEV)})
+    assert await create_missing_targets(git, "/w", filled(two_steps())) == (
+        None, {"staging": DEV})
+    # staging is created at dev's tip, and main must then be its ancestor.
+    assert git.pushes == [{"staging": DEV}] and git.fetches == 1
+    git = FakeGit({"dev": DEV, "main": DEV})
+    assert await create_missing_targets(git, "/w", filled([release()])) == (None, {})
+    assert git.pushes == [] and git.fetches == 0
+
+
+@pytest.mark.parametrize(
+    "git,error,pointer",
+    [
+        (FakeGit({"dev": DEV, "main": MAIN}), "target_not_ancestor_of_source", "/0/target"),
+        (FakeGit({"main": MAIN}), "source_missing_on_remote", "/0/source"),
+        (FakeGit({"dev": DEV}, lost={"main"}), "target_create_failed", "/0/target"),
+        (FakeGit({"dev": DEV, "main": MAIN}, unreadable={"main"}), "remote_unavailable", None),
+    ],
+)
+async def test_layer_four_refuses_and_reports_why(git, error, pointer):
+    from src.integration.promotion_steps import create_missing_targets
+
+    before = dict(git.heads)
+    refusal, created = await create_missing_targets(git, "/w", filled([release()]))
+    assert refusal["error"] == error and refusal.get("pointer") == pointer
+    assert created == {}
+    # No existing head moves; only a refused create can have been attempted.
+    assert {b: git.heads[b] for b in before} == before
+    assert git.pushes in ([], [{"main": DEV}])
+
+
+async def test_a_failed_create_reports_the_targets_that_did_land():
+    from src.integration.promotion_steps import create_missing_targets
+
+    git = FakeGit({"dev": DEV}, lost={"main"})
+    refusal, created = await create_missing_targets(git, "/w", filled(two_steps()))
+    assert refusal["error"] == "target_create_failed" and refusal["pointer"] == "/1/target"
+    assert created == {"staging": DEV}
+
+
+@pytest.fixture
+async def flow_db(reuse_database):
+    from src.models import Project, RepoConfig, RepoSourceType
+
+    db = await reuse_database("promotion-flow.db")
+    await db.create_project(Project(id="p", name="project", repo_default_branch="dev"))
+    await db.create_repo(RepoConfig(
+        id="repo", project_id="p", source_type=RepoSourceType.CLONE,
+        url="https://github.com/acme/widgets.git", default_branch="dev"))
+    await db.update_project("p", integration_repository_id="repo")
+    return db
+
+
+async def stored(db):
+    from sqlalchemy import select
+
+    from src.database.tables import projects
+
+    async with db._engine.connect() as conn:
+        row = (await conn.execute(select(
+            projects.c.promotion_flow, projects.c.hierarchical_integration_generation
+        ).where(projects.c.id == "p"))).one()
+    return row.promotion_flow, row.hierarchical_integration_generation
+
+
+async def configure(db, flow, *, manifest=None, dry_run=False, generation=None):
+    from src.integration.records import PolicyActivation
+
+    if generation is None:
+        generation = (await stored(db))[1]
+    return await PolicyActivation(db).configure(
+        "p", updates={"promotion_flow": flow}, expected_generation=generation,
+        reason="test", operator_id="operator", promotion_manifest=manifest,
+        dry_run=dry_run)
+
+
+async def open_batch(db, batch_id, target, *, lifecycle="building", intent="open",
+                     trigger="promotion"):
+    from sqlalchemy import insert
+
+    from src.database.tables import integration_batches
+
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_batches).values(
+            id=batch_id, project_id="p", repository_id="repo", request_id=f"req-{batch_id}",
+            trigger=trigger, target_ref=f"refs/heads/{target}", intent=intent,
+            source_manifest_digest="sha256:" + "3" * 64, base_sha=DEV, lifecycle=lifecycle,
+            integration_branch=f"aq/promotion/{batch_id}", policy_snapshot={},
+            artifact_snapshot={}, cleanup_state="pending", created_at=1.0, updated_at=1.0))
+
+
+async def test_dry_run_checks_and_fills_without_writing_then_the_write_lands(flow_db):
+    checked = await configure(flow_db, two_steps(), manifest=TRUST, dry_run=True)
+    assert checked["outcome"] == "checked" and checked["generation"] == 0
+    assert checked["updates"]["promotion_flow"] == filled(two_steps())
+    assert await stored(flow_db) == (None, 0)
+    result = await configure(flow_db, two_steps(), manifest=TRUST)
+    assert result["outcome"] == "configured" and result["fields"] == ["promotion_flow"]
+    assert await stored(flow_db) == (filled(two_steps()), 1)
+    cleared = await configure(flow_db, None)
+    assert cleared["outcome"] == "configured" and await stored(flow_db) == (None, 2)
+
+
+@pytest.mark.parametrize(
+    "flow,manifest,error",
+    [
+        ([{**release(), "source": "main"}], TRUST, "source_not_default"),
+        ([{**release(), "target": "dev"}], None, "target_is_default"),
+        (two_steps(), {**TRUST, "check_sets": {}}, "check_set_unknown"),
+    ],
+)
+async def test_any_failing_layer_refuses_and_writes_nothing(flow_db, flow, manifest, error):
+    for dry_run in (True, False):
+        result = await configure(flow_db, flow, manifest=manifest, dry_run=dry_run)
+        assert result["outcome"] == "invalid" and result["error"] == error
+        assert result["problems"][0]["code"] == error
+    assert await stored(flow_db) == (None, 0)
+
+
+async def test_stale_generation_refuses_the_dry_run_and_the_write(flow_db):
+    for dry_run in (True, False):
+        stale = await configure(flow_db, [release()], generation=5, dry_run=dry_run)
+        assert stale["outcome"] == "stale"
+    assert await stored(flow_db) == (None, 0)
+
+
+async def test_open_promotion_freezes_its_step_but_not_after_or_ttl(flow_db):
+    assert (await configure(flow_db, [release()]))["outcome"] == "configured"
+    await open_batch(flow_db, "b1", "main")
+    changed = filled([release()])
+    changed[0]["versioning"]["tag_format"] = "release-v{version}"
+    refused = await configure(flow_db, changed)
+    assert refused["outcome"] == "in_use" and refused["error"] == "promotion_flow_in_use"
+    assert (refused["step_id"], refused["field"], refused["pointer"]) == (
+        "release", "versioning", "/0/versioning")
+    assert (refused["batch_id"], refused["request_id"]) == ("b1", "req-b1")
+    removed = await configure(flow_db, None)
+    assert removed["outcome"] == "in_use" and removed["field"] == "id"
+    free = filled([release()])
+    free[0]["after"]["backmerge"] = False
+    free[0]["gate"]["request_ttl"] = "1d"
+    assert (await configure(flow_db, free))["outcome"] == "configured"
+    assert (await stored(flow_db))[0] == free
+
+
+@pytest.mark.parametrize(
+    "lifecycle,intent,trigger",
+    [("promoted", "open", "promotion"), ("building", "aborted", "promotion"),
+     ("building", "open", "schedule")],
+)
+async def test_closed_or_train_batches_do_not_freeze_a_step(flow_db, lifecycle, intent, trigger):
+    assert (await configure(flow_db, [release()]))["outcome"] == "configured"
+    await open_batch(flow_db, "b1", "main", lifecycle=lifecycle, intent=intent, trigger=trigger)
+    changed = filled([release()])
+    changed[0]["versioning"]["tag_format"] = "release-v{version}"
+    assert (await configure(flow_db, changed))["outcome"] == "configured"
+
+
+async def test_live_work_on_a_new_target_refuses_activation(flow_db):
+    from src.integration.records import PolicyActivation
+
+    await open_batch(flow_db, "b1", "staging", trigger="schedule")
+    result = await configure(flow_db, two_steps(), dry_run=True)
+    assert result["outcome"] == "busy" and result["error"] == "repository_busy"
+    assert result["targets"] == ["main", "staging"]
+    assert await stored(flow_db) == (None, 0)
+    # F10: an open train batch now holds the repository on the strict path too.
+    assert await PolicyActivation(flow_db).has_active_work("p") is True
+
+
+async def test_busy_check_names_only_new_targets(flow_db):
+    assert (await configure(flow_db, [release()]))["outcome"] == "configured"
+    await open_batch(flow_db, "b1", "main", trigger="schedule")
+    appended = [*filled([release()]), {"id": "hotfix", "source": "main", "target": "hotfix"}]
+    assert (await configure(flow_db, appended))["outcome"] == "configured"
+
+
+def project_handler(db, git=None, *, recorded=None):
+    from src.commands.project_commands import ProjectCommandsMixin
+
+    class Handler(ProjectCommandsMixin, PromoteCommandsMixin):
+        pass
+
+    value = Handler()
+    value.db = db
+    value.orchestrator = SimpleNamespace(
+        git=git or FakeGit({"dev": DEV, "main": DEV}),
+        promotion_flow_problems=recorded if recorded is not None else {},
+    )
+    value._promotion_manifest = AsyncMock(return_value=TRUST)
+    return value
+
+
+def edit(flow, generation=0):
+    return {"project_id": "p", "promotion_flow": flow,
+            "expected_integration_generation": generation, "reason": "release flow"}
+
+
+async def test_handler_activates_creates_targets_and_clears_the_start_finding(flow_db):
+    git = FakeGit({"dev": DEV})
+    recorded = {"p": [{"code": "source_not_default"}], "other": [{"code": "chain_broken"}]}
+    value = project_handler(flow_db, git, recorded=recorded)
+    with patch.object(flow_db, "get_project_workspace_path", AsyncMock(return_value="/w")):
+        result = await value._cmd_edit_project(edit(two_steps()))
+    assert result["success"], result
+    assert result["outcome"] == "configured" and result["generation"] == 1
+    assert git.pushes == [{"staging": DEV, "main": DEV}]
+    assert result["created_targets"] == {"staging": DEV, "main": DEV}
+    assert (await stored(flow_db))[0] == filled(two_steps())
+    assert recorded == {"other": [{"code": "chain_broken"}]}
+    value._promotion_manifest.assert_awaited_once()
+
+
+async def test_handler_refusals_write_nothing(flow_db):
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import DENY_ALL
+
+    value = project_handler(flow_db)
+    session = ExecutionPrincipal(kind=PrincipalKind.SESSION, policy=DENY_ALL,
+                                 session_id="s", project_id="p")
+    with principal_context(session):
+        refused = await value._cmd_edit_project(edit([release()]))
+    assert refused["success"] is False and refused["error"] == "local_operator_only"
+    invalid = await value._cmd_edit_project(edit([{**release(), "source": "main"}]))
+    assert invalid["outcome"] == "invalid" and invalid["error"] == "source_not_default"
+    value._promotion_manifest.assert_not_awaited()
+    value._promotion_manifest.side_effect = RuntimeError("manifest unreadable")
+    blocked = await value._cmd_edit_project(edit([release()]))
+    assert blocked["outcome"] == "blocked" and blocked["error"] == "trust_manifest_unavailable"
+    value._promotion_manifest.side_effect = None
+    no_workspace = await value._cmd_edit_project(edit([release()]))
+    assert no_workspace["error"] == "workspace_unavailable"
+    stale = await value._cmd_edit_project(edit([release()], generation=3))
+    assert stale["success"] is False and stale["error"] == "integration_generation_stale"
+    with patch.object(flow_db, "get_repo", AsyncMock(return_value=None)):
+        unbound = await value._cmd_edit_project(edit([release()]))
+    assert unbound["outcome"] == "blocked"
+    assert unbound["error"] == "integration_repository_required"
+    assert await stored(flow_db) == (None, 0)
+
+
+async def test_handler_pushes_outside_the_fence_and_the_write_rechecks_it(flow_db):
+    git = FakeGit({"dev": DEV})
+    value = project_handler(flow_db, git)
+    real_push = git.apush_new_refs
+
+    async def push_while_a_racing_write_lands(*args, **kwargs):
+        # A database lock held across the push would deadlock this write.
+        assert (await configure(flow_db, [release()]))["outcome"] == "configured"
+        return await real_push(*args, **kwargs)
+
+    git.apush_new_refs = push_while_a_racing_write_lands
+    with patch.object(flow_db, "get_project_workspace_path", AsyncMock(return_value="/w")):
+        result = await value._cmd_edit_project(edit(two_steps()))
+    assert result["success"] is False and result["error"] == "integration_generation_stale"
+    assert git.pushes == [{"staging": DEV, "main": DEV}]
+    assert result["created_targets"] == {"staging": DEV, "main": DEV}
+    assert await stored(flow_db) == (filled([release()]), 1)
+
+
+async def test_daemon_start_recheck_marks_a_renamed_default_and_a_changed_manifest(flow_db):
+    from sqlalchemy import update
+
+    from src.database.tables import repos
+    from src.integration.promotion_steps import recheck_stored_flows
+    from src.integration.status import IntegrationStatusService
+
+    value = project_handler(flow_db)
+    with patch.object(flow_db, "get_project_workspace_path", AsyncMock(return_value="/w")):
+        assert (await value._cmd_edit_project(edit(two_steps())))["success"]
+
+    async def check():
+        return await recheck_stored_flows(
+            flow_db, lambda pid: value._cmd_promote_validate({"project_id": pid}))
+
+    assert await check() == {}
+    status = (await IntegrationStatusService(flow_db).status("p"))["promotion_flow"]
+    assert status["state"] == "configured" and status["chain"] == "dev -> staging -> main"
+    # The trust manifest at the default branch dropped the check set.
+    value._promotion_manifest.return_value = {**TRUST, "check_sets": {}}
+    found = await check()
+    assert found["p"][0]["code"] == "check_set_unknown"
+    assert found["p"][0]["pointer"] == "/1/gate/checks"
+    status = (await IntegrationStatusService(flow_db, flow_problems=found).status("p"))
+    assert status["promotion_flow"]["state"] == "misconfigured"
+    assert {s["state"] for s in status["promotion_flow"]["steps"]} == {"misconfigured"}
+    # An unreadable manifest alone is not a manifest change.
+    value._promotion_manifest.side_effect = RuntimeError("offline")
+    assert await check() == {}
+    value._promotion_manifest.side_effect = None
+    value._promotion_manifest.return_value = TRUST
+    async with flow_db.immediate() as conn:
+        await conn.execute(update(repos).where(repos.c.id == "repo").values(
+            default_branch="trunk"))
+    found = await check()
+    assert (found["p"][0]["code"], found["p"][0]["pointer"]) == ("source_not_default", "/0/source")
+    # Status re-runs layers 1-2 on read, so the rename shows without a restart.
+    status = (await IntegrationStatusService(flow_db).status("p"))["promotion_flow"]
+    assert status["state"] == "misconfigured" and status["problems"][0]["code"] == (
+        "source_not_default")
+    assert (await stored(flow_db))[0] == filled(two_steps())
+
+
+async def test_daemon_start_recheck_survives_a_failing_project(flow_db):
+    from src.integration.promotion_steps import recheck_stored_flows
+
+    assert (await configure(flow_db, [release()]))["outcome"] == "configured"
+    validate_ = AsyncMock(side_effect=RuntimeError("boom"))
+    found = await recheck_stored_flows(flow_db, validate_)
+    assert found == {"p": [{"code": "flow_check_failed", "pointer": "",
+                            "message": "RuntimeError: boom", "layer": 0}]}
+    validate_.assert_awaited_once_with("p")
+
+
+async def test_daemon_start_recheck_drops_a_flow_replaced_while_it_ran(flow_db):
+    from src.integration.promotion_steps import recheck_stored_flows
+
+    assert (await configure(flow_db, [release()]))["outcome"] == "configured"
+
+    async def validate_while_an_activation_lands(project_id):
+        assert (await configure(flow_db, two_steps()))["outcome"] == "configured"
+        return {"outcome": "invalid", "problems": [{"code": "check_set_unknown", "layer": 3}]}
+
+    assert await recheck_stored_flows(flow_db, validate_while_an_activation_lands) == {}
+
+
+async def test_train_keeps_the_default_while_the_flow_is_misconfigured(flow_db):
+    from sqlalchemy import update
+
+    from src.commands.contracts.integration import IntegrationStatusValue
+    from src.database.tables import projects, repos
+    from src.integration.status import IntegrationStatusService
+    from src.integration.train_sources import DatabaseTargets
+
+    assert (await configure(flow_db, two_steps()))["outcome"] == "configured"
+    async with flow_db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_mode="train"))
+        await conn.execute(update(repos).where(repos.c.id == "repo").values(
+            default_branch="trunk"))
+    targets = await DatabaseTargets(flow_db).targets(0.0)
+    assert [(t.project_id, t.target_ref, t.kind) for t in targets] == [
+        ("p", "refs/heads/trunk", "root")]
+    status = await IntegrationStatusService(flow_db, git_first="active").status("p")
+    assert status["projection_kind"] == "train"
+    assert status["promotion_flow"]["state"] == "misconfigured"
+    assert status["promotion_flow"]["problems"][0]["pointer"] == "/0/source"
+    assert "promotion_flow" in IntegrationStatusValue.model_fields
+
+
+def project_set_client(result):
+    client = SimpleNamespace(execute=AsyncMock(return_value=result))
+
+    @asynccontextmanager
+    async def get_client(*_args):
+        yield client
+
+    return client, get_client
+
+
+def test_project_set_promotion_flow_loads_the_file_under_the_generation_fence(tmp_path):
+    from src.cli.app import cli
+
+    path = tmp_path / "flow.yaml"
+    path.write_text("promotion_flow:\n  - id: release\n    source: dev\n    target: main\n")
+    client, get_client = project_set_client(
+        {"success": True, "outcome": "configured", "generation": 1})
+    argv = ["--json", "project", "set", "p", "promotion-flow", str(path),
+            "--expected-integration-generation", "0", "--reason", "release flow"]
+    with patch("src.cli.projects._get_client", get_client):
+        result = CliRunner().invoke(cli, argv)
+        assert result.exit_code == 0, result.output
+        client.execute.assert_awaited_once_with("edit_project", {
+            "project_id": "p",
+            "promotion_flow": {"promotion_flow": [
+                {"id": "release", "source": "dev", "target": "main"}]},
+            "expected_integration_generation": 0, "reason": "release flow"})
+        client.execute.reset_mock()
+        cleared = CliRunner().invoke(cli, argv[:5] + ["clear"] + argv[6:])
+        assert cleared.exit_code == 0, cleared.output
+        assert client.execute.await_args.args[1]["promotion_flow"] is None
+        unfenced = CliRunner().invoke(cli, argv[:7])
+        assert unfenced.exit_code == 2 and "--expected-integration-generation" in unfenced.output
+
+
+def test_project_set_promotion_flow_exits_nonzero_on_a_refusal(tmp_path):
+    from src.cli.app import cli
+
+    path = tmp_path / "flow.yaml"
+    path.write_text("promotion_flow: [\n")
+    client, get_client = project_set_client({
+        "success": False, "outcome": "in_use", "error": "promotion_flow_in_use"})
+    argv = ["--json", "project", "set", "p", "promotion-flow", str(path),
+            "--expected-integration-generation", "0"]
+    with patch("src.cli.projects._get_client", get_client):
+        unreadable = CliRunner().invoke(cli, argv)
+        assert unreadable.exit_code == 1
+        assert json.loads(unreadable.output)["error"]["code"] == "flow_schema_invalid"
+        client.execute.assert_not_awaited()
+        path.write_text("promotion_flow: []\n")
+        refused = CliRunner().invoke(cli, argv)
+    assert refused.exit_code == 1
+    assert "promotion_flow_in_use" in refused.output
+
+
+async def test_doctor_names_the_first_failing_pointer_per_project(flow_db):
+    from src.doctor import default_registry
+    from src.doctor.integration_checks import _BY_ID
+    from src.doctor.models import DoctorContext, Severity
+
+    check = _BY_ID["integration.promotion_flow"]
+    assert "integration.promotion_flow" in {c.id for c in default_registry().checks()}
+    value = project_handler(flow_db)
+
+    async def execute(command, args):
+        assert command == "promote_validate"
+        return await value._cmd_promote_validate(args)
+
+    ctx = DoctorContext(config=SimpleNamespace(), db=flow_db,
+                        handler=SimpleNamespace(execute=execute))
+    assert (await check.run(ctx)).severity == Severity.OK
+    assert (await configure(flow_db, two_steps()))["outcome"] == "configured"
+    assert (await check.run(ctx)).severity == Severity.OK
+    value._promotion_manifest.return_value = {**TRUST, "check_sets": {}}
+    result = await check.run(ctx)
+    assert result.severity == Severity.ERROR
+    assert "p: check_set_unknown at '/1/gate/checks'" in result.detail
+    assert result.data["projects"][0]["pointer"] == "/1/gate/checks"
+    assert (await check.run(DoctorContext(config=SimpleNamespace()))).severity == Severity.INFO
+
+
+async def test_daemon_start_records_findings_and_logs_the_pointer(flow_db, caplog):
+    from src.orchestrator.core import Orchestrator
+
+    assert (await configure(flow_db, two_steps()))["outcome"] == "configured"
+    value = project_handler(flow_db)
+    value._promotion_manifest.return_value = {**TRUST, "check_sets": {}}
+
+    async def execute(command, args):
+        return await value._cmd_promote_validate(args)
+
+    orchestrator = SimpleNamespace(_command_handler=SimpleNamespace(execute=execute),
+                                   db=flow_db, promotion_flow_problems={})
+    with caplog.at_level("WARNING", logger="src.orchestrator.core"):
+        await Orchestrator._recheck_promotion_flows(orchestrator)
+    assert orchestrator.promotion_flow_problems["p"][0]["code"] == "check_set_unknown"
+    assert "check_set_unknown at '/1/gate/checks'" in caplog.text
+    assert (await stored(flow_db))[0] == filled(two_steps())

@@ -174,6 +174,13 @@ def _defaults(value: dict, schema: dict) -> None:
             _defaults(value[key], field)
 
 
+def _fill_defaults(step: dict) -> None:
+    _defaults(step, _STEP)
+    step["gate"].setdefault("attestation", f"Agent Queue Promotion Attestation ({step['id']})")
+    if step["versioning"]["kind"] == "semver_tag":
+        step["versioning"].setdefault("tag_format", "v{version}")
+
+
 def _format_fields(format_: str) -> set[str] | None:
     """Only exact documented placeholders, with no conversions or format specs."""
     fields = set(re.findall(r"\{([^{}]*)\}", format_))
@@ -283,12 +290,7 @@ class FlowSchema:
         if not flow:
             return FlowValidation(flow)
         for step in flow:
-            _defaults(step, _STEP)
-            step["gate"].setdefault(
-                "attestation", f"Agent Queue Promotion Attestation ({step['id']})"
-            )
-            if step["versioning"]["kind"] == "semver_tag":
-                step["versioning"].setdefault("tag_format", "v{version}")
+            _fill_defaults(step)
 
         def problem(code: str, index: int, field: str, message: str, layer: int = 2) -> None:
             problems.append(
@@ -400,3 +402,228 @@ class FlowSchema:
                     "check_set_unknown", i, "gate/checks", "Check set is not in the manifest.", 3
                 )
         return FlowValidation(flow, tuple(problems), 3)
+
+
+# A step with an open promotion keeps these; ``after`` and the gate's
+# ``request_ttl`` may change at any time (§3.11).
+_PROTECTED = ("source", "target", "type", "gate", "versioning", "notes")
+
+
+def _filled(step: Any) -> dict[str, Any] | None:
+    if not isinstance(step, dict) or not isinstance(step.get("id"), str):
+        return None
+    step = copy.deepcopy(step)
+    try:
+        _fill_defaults(step)
+    except (AttributeError, KeyError, TypeError):
+        pass
+    if isinstance(step.get("gate"), dict):
+        step["gate"].pop("request_ttl", None)
+    return step
+
+
+def protected_changes(stored: Any, flow: Any) -> list[dict[str, Any]]:
+    """Each stored step the new flow removes or changes in a protected field.
+
+    Steps match by id, so renaming a step removes it. Appended steps and
+    ``after`` edits are never listed.
+    """
+    current = {}
+    for index, step in enumerate(flow or ()):
+        filled = _filled(step)
+        if filled is not None:
+            current.setdefault(filled["id"], (index, filled))
+    changes = []
+    for index, step in enumerate(stored or ()):
+        old = _filled(step)
+        if old is None:
+            continue
+        change = {"step_id": old["id"], "target": old.get("target")}
+        if old["id"] not in current:
+            changes.append({**change, "field": "id", "pointer": f"/{index}/id"})
+            continue
+        new_index, new = current[old["id"]]
+        changes.extend(
+            {**change, "field": field, "pointer": f"/{new_index}/{field}"}
+            for field in _PROTECTED
+            if old.get(field) != new.get(field)
+        )
+    return changes
+
+
+def flow_targets(flow: Any) -> list[str]:
+    """Target branch names in chain order."""
+    return [
+        step["target"]
+        for step in flow or ()
+        if isinstance(step, dict) and isinstance(step.get("target"), str)
+    ]
+
+
+def flow_status(
+    document: Any, *, default_branch: str | None, recorded: Any = ()
+) -> dict[str, Any] | None:
+    """The chain ``aq integration status`` prints, re-validated on read (R17).
+
+    Layers 1-2 run here against the current default branch, so a fix to
+    either side shows at once. ``recorded`` carries the daemon-start result;
+    only its layer-3 findings, which need the trust manifest, are kept, and
+    they clear on reactivation or the next daemon start. Any problem marks
+    every target ``misconfigured``; the train ignores such a flow and promotes
+    to the default branch. Nothing is written.
+    """
+    if not document:
+        return None
+    result = FlowSchema.validate(document, default_branch=default_branch or "")
+    problems = [problem.as_dict() for problem in result.problems if problem.layer < 3]
+    problems = problems or [
+        dict(problem) for problem in recorded or () if problem.get("layer") not in (1, 2)
+    ]
+    raw = document.get("promotion_flow") if isinstance(document, dict) else document
+    steps = [step for step in (result.flow or raw or ()) if isinstance(step, dict)]
+    state = "misconfigured" if problems else "configured"
+    pairs = [(str(step.get("source")), str(step.get("target"))) for step in steps]
+    linked = all(pairs[i][0] == pairs[i - 1][1] for i in range(1, len(pairs)))
+    chain = (
+        " -> ".join([pairs[0][0], *(target for _source, target in pairs)])
+        if pairs and linked
+        else "; ".join(f"{source} -> {target}" for source, target in pairs)
+    )
+    return {
+        "state": state,
+        "chain": chain,
+        "steps": [
+            {
+                "id": step.get("id"),
+                "source": step.get("source"),
+                "target": step.get("target"),
+                "target_ref": f"refs/heads/{step.get('target')}",
+                "type": step.get("type", "request"),
+                "state": state,
+            }
+            for step in steps
+        ],
+        "problems": problems,
+    }
+
+
+async def recheck_stored_flows(db: Any, validate: Any) -> dict[str, list[dict[str, Any]]]:
+    """Re-run layers 1-3 on every stored flow at daemon start (R17).
+
+    ``validate(project_id)`` is the ``promote_validate`` command. Returns the
+    problems per project whose flow no longer validates; nothing is written.
+    An unreadable trust manifest is not a manifest change, so it alone does
+    not mark a flow, and a flow replaced while the check ran is dropped: its
+    activation validated layers 1-3 itself.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import projects
+
+    async def stored_flows(ids=None):
+        query = select(projects.c.id, projects.c.promotion_flow).where(
+            projects.c.promotion_flow.is_not(None)
+        )
+        if ids is not None:
+            query = query.where(projects.c.id.in_(ids))
+        async with db._engine.connect() as conn:
+            return (await conn.execute(query)).all()
+
+    rows = await stored_flows()
+    checked = dict(rows)
+    found = {}
+    for project_id, document in rows:
+        if not document:
+            continue
+        try:
+            result = await validate(project_id)
+        except Exception as exc:  # noqa: BLE001 - one project's failure must not stop the rest
+            result = {"error": f"{type(exc).__name__}: {exc}"}
+        if result.get("outcome") == "valid":
+            continue
+        problems = list(result.get("problems") or ())
+        if any(w.get("code") == "trust_manifest_unavailable" for w in result.get("warnings") or ()):
+            problems = [problem for problem in problems if problem.get("layer", 0) < 3]
+            if not problems:
+                continue
+        found[project_id] = problems or [
+            {
+                "code": "flow_check_failed",
+                "pointer": "",
+                "message": str(result.get("error") or "flow did not validate"),
+                "layer": 0,
+            }
+        ]
+    if found:
+        current = dict(await stored_flows(list(found)))
+        found = {pid: problems for pid, problems in found.items()
+                 if current.get(pid) == checked[pid]}
+    return found
+
+
+async def create_missing_targets(
+    git: Any, checkout: str, flow: list[dict[str, Any]], *, repository_url: str | None = None
+) -> tuple[dict[str, Any] | None, dict[str, str]]:
+    """Create each absent target at its source's tip with a create-only push.
+
+    Layer 4 at activation (§3.11): an existing target must be an ancestor of,
+    or equal to, its source, and an absent one is created in chain order, so a
+    step may take its source from the target the step before just created.
+    Returns ``(refusal, created)``: the refusal, or ``None`` once every target
+    exists, and each branch this call created with its OID. No existing head
+    ever moves, and a lost race or failed push refuses rather than retries.
+    """
+    from src.git.manager import RemoteRefState
+
+    def refusal(error: str, index: int, field: str, message: str, **extra: Any) -> dict:
+        return {"outcome": "invalid", "error": error, "pointer": f"/{index}/{field}",
+                "message": message, "layer": 4, **extra}
+
+    branches = list(dict.fromkeys(b for step in flow for b in (step["source"], step["target"])))
+    remote = await git.als_remote_refs(checkout, branches, repository_url=repository_url)
+    unreadable = [b for b in branches if remote[b].state is RemoteRefState.ERROR]
+    if unreadable:
+        return {"outcome": "blocked", "error": "remote_unavailable", "branches": unreadable,
+                "message": remote[unreadable[0]].error or "cannot read the remote heads"}, {}
+    oids = {b: remote[b].oid for b in branches if remote[b].state is RemoteRefState.PRESENT}
+    created: dict[str, str] = {}
+    fetched = False
+    for index, step in enumerate(flow):
+        source, target = step["source"], step["target"]
+        if source not in oids:
+            return refusal("source_missing_on_remote", index, "source",
+                           f"Source branch {source!r} does not exist on the remote."), {}
+        if target not in oids:
+            oids[target] = created[target] = oids[source]
+            continue
+        if oids[target] == oids[source]:
+            continue
+        if not fetched:
+            await git.afetch_origin(checkout, repository_url=repository_url or "", all_heads=True)
+            fetched = True
+        ancestor = await git.ais_ancestor(checkout, oids[target], oids[source], strict=True)
+        if ancestor is None:
+            return {"outcome": "blocked", "error": "ancestry_unknown", "branches": [target, source],
+                    "message": f"Could not compare {target!r} with {source!r}."}, {}
+        if not ancestor:
+            return refusal("target_not_ancestor_of_source", index, "target",
+                           f"Target {target!r} is not an ancestor of, or equal to, {source!r}.",
+                           target_oid=oids[target], source_oid=oids[source]), {}
+    if not created:
+        return None, {}
+    after = await git.apush_new_refs(checkout, created, repository_url=repository_url)
+    landed = {b: o for b, o in created.items()
+              if (r := after.get(b)) is not None and r.state is RemoteRefState.PRESENT
+              and r.oid == o}
+    for index, step in enumerate(flow):
+        target = step["target"]
+        if target not in created:
+            continue
+        result = after.get(target)
+        if result is None or result.state is not RemoteRefState.PRESENT or (
+            result.oid != created[target]
+        ):
+            return refusal("target_create_failed", index, "target",
+                           (result.error if result is not None else None)
+                           or f"Target {target!r} was not created at its source's tip."), landed
+    return None, landed

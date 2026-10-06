@@ -1878,6 +1878,12 @@
         403
       ]
     },
+    "src/commands/project_commands.py::ProjectCommandsMixin._configure_promotion_flow": {
+      "reason": "Promotion-flow activation: validates layers 1-3, dry-runs the integration policy fence, creates missing targets outside it and writes behind the same generation."
+    },
+    "src/commands/project_commands.py::ProjectCommandsMixin._create_flow_targets": {
+      "reason": "Promotion-flow activation layer 4: create-only pushes of missing chain targets from the project workspace."
+    },
     "src/commands/project_onboarding_commands.py::ProjectOnboardingCommandsMixin._github_client": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -6276,6 +6282,9 @@
         1220,
         1226
       ]
+    },
+    "src/orchestrator/core.py::Orchestrator._recheck_promotion_flows": {
+      "reason": "Daemon-start re-validation of stored promotion flows (layers 1-3); records problems for status, writes nothing."
     },
     "src/orchestrator/core.py::Orchestrator._reconcile_sessions": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",

@@ -221,6 +221,7 @@ INTEGRATION_ROLLOUT_FIELDS = frozenset(
         "hierarchical_integration_policy",
         "hierarchical_integration_mode",
         "hierarchical_integration_desired_mode",
+        "promotion_flow",
         "hierarchical_integration_draining",
         "hierarchical_integration_generation",
         "expected_integration_generation",

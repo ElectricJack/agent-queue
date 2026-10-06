@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:40cc769cf32c0effe7c519d36361e352699f691089227ee5717c3186bffbf6e6` |
+| Contract fingerprint | `sha256:a27e8b2a72831c6f6ebecf88cfab538bc9f0ed492fb09ed74a52a2128efeb820` |
 
 ## Parameters
 
@@ -93,8 +93,9 @@
 | `subjects` | `object[]` | — |
 | `drain_blockers` | `object[]` | — |
 | `warnings` | `object[]` | — |
+| `promotion_flow` | `object \| null` | — |
 
-Projected into the run receipt: `id`, `head_sha`, `recovered_task_id`, `source_sha`, `manifest`, `evidence`, `policy`, `deliveries`, `pending_publications`, `parked`, `preserved_owners`, `released_delegates`, `archived_delegates`, `project_id`, `operation_id`, `batch_id`, `task_id`, `effective_mode`, `desired_mode`, `mode`, `generation`, `draining`, `ready`, `rollout_ready`, `blockers`, `blocker_digest`, `certification`, `repository_id`, `schedule`, `active_batch`, `members`, `parent_readiness`, `ownership`, `lease`, `repair`, `ci_evidence`, `promotion`, `reconciliation`, `cleanup_pending`, `release`, `legacy_suppression`, `waiver_id`, `request_id`, `request_sequence`, `trigger`, `requested_at`, `next_due_at`, `state`, `stage`, `deadline_at`, `reason`, `count`, `outcomes`, `dry_run`, `leases`, `bound`, `unproven`, `verifier_task_id`, `children`, `retire_delegates`, `conclusion`, `operator_decisions`, `projection_kind`, `subjects`, `drain_blockers`, `warnings`.
+Projected into the run receipt: `id`, `head_sha`, `recovered_task_id`, `source_sha`, `manifest`, `evidence`, `policy`, `deliveries`, `pending_publications`, `parked`, `preserved_owners`, `released_delegates`, `archived_delegates`, `project_id`, `operation_id`, `batch_id`, `task_id`, `effective_mode`, `desired_mode`, `mode`, `generation`, `draining`, `ready`, `rollout_ready`, `blockers`, `blocker_digest`, `certification`, `repository_id`, `schedule`, `active_batch`, `members`, `parent_readiness`, `ownership`, `lease`, `repair`, `ci_evidence`, `promotion`, `reconciliation`, `cleanup_pending`, `release`, `legacy_suppression`, `waiver_id`, `request_id`, `request_sequence`, `trigger`, `requested_at`, `next_due_at`, `state`, `stage`, `deadline_at`, `reason`, `count`, `outcomes`, `dry_run`, `leases`, `bound`, `unproven`, `verifier_task_id`, `children`, `retire_delegates`, `conclusion`, `operator_decisions`, `projection_kind`, `subjects`, `drain_blockers`, `warnings`, `promotion_flow`.
 
 ## Outcomes
 

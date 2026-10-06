@@ -28,6 +28,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
     archived_tasks,
+    integration_batches,
     integration_branch_owners,
     integration_child_dispositions,
     integration_episode_receipt_acceptances,
@@ -67,6 +68,7 @@ from src.integration.parent_engine import (
     parent_checkpoint_allowed_on,
     parent_engine_guard,
 )
+from src.integration.promotion_steps import FlowSchema, flow_targets, protected_changes
 from src.integration.subjects import (
     HeadIdentity,
     JournalMode,
@@ -1358,18 +1360,31 @@ class PolicyActivation:
         expected_generation: int,
         reason: str,
         operator_id: str,
+        promotion_manifest: dict[str, Any] | None = None,
+        dry_run: bool = False,
     ) -> dict[str, Any]:
-        """Activate repository and policy inputs behind the project generation CAS."""
+        """Activate repository and policy inputs behind the project generation CAS.
+
+        A ``promotion_flow`` update is re-validated against the fenced default
+        branch (layer 3 only when ``promotion_manifest`` is given) and refused
+        while a protected change meets an open promotion or live work holds a
+        new target (§3.11). ``dry_run`` runs every refusal check and returns
+        ``checked`` without writing, so network work such as creating the flow's
+        targets happens outside the fence and the write re-checks behind the
+        same generation.
+        """
         allowed = {
             "integration_repository",
             "integration_repository_id",
             "hierarchical_integration_policy",
             "integration_mode",
             "hierarchical_integration_mode",
+            "promotion_flow",
         }
         if not updates or set(updates) - allowed:
             raise ValueError(
-                "only repository, review mode, and hierarchical policy are configurable here"
+                "only repository, review mode, hierarchical policy, and promotion flow "
+                "are configurable here"
             )
         if expected_generation < 0:
             raise ValueError("expected integration generation must be non-negative")
@@ -1532,6 +1547,22 @@ class PolicyActivation:
             if repository_changed and await self._has_active_work_on(conn, project_id):
                 return {"outcome": "busy", "project_id": project_id, "generation": generation,
                         "error": "a live subject retains the repository"}
+            if "promotion_flow" in updates:
+                if has_repository_config:
+                    default_branch = repository_config["default_branch"]
+                else:
+                    default_branch = (
+                        await conn.scalar(select(repos.c.default_branch).where(
+                            repos.c.id == repository_id)) if repository_id is not None else None
+                    ) or project["repo_default_branch"]
+                refusal = await self._flow_refusal(
+                    conn, project, updates, default_branch=str(default_branch or ""),
+                    manifest=promotion_manifest)
+                if refusal is not None:
+                    return {"project_id": project_id, "generation": generation, **refusal}
+            if dry_run:
+                return {"outcome": "checked", "project_id": project_id,
+                        "generation": generation, "updates": dict(updates)}
             if has_repository_config:
                 values = {"url": repository_config["url"],
                           "default_branch": repository_config["default_branch"]}
@@ -1580,25 +1611,75 @@ class PolicyActivation:
         )
 
 
+    async def _flow_refusal(self, conn, project, updates, *, default_branch, manifest):
+        result = FlowSchema.validate(
+            updates["promotion_flow"], default_branch=default_branch, manifest=manifest)
+        problems = [p for p in result.problems if manifest is not None or p.layer < 3]
+        if problems:
+            return {"outcome": "invalid", "error": problems[0].code,
+                    "problems": [problem.as_dict() for problem in problems]}
+        flow, stored = result.flow, project["promotion_flow"]
+        for change in protected_changes(stored, flow):
+            batch = (await conn.execute(select(
+                integration_batches.c.id, integration_batches.c.request_id
+            ).where(
+                integration_batches.c.project_id == project["id"],
+                integration_batches.c.trigger == "promotion",
+                integration_batches.c.target_ref == f"refs/heads/{change['target']}",
+                integration_batches.c.intent != "aborted",
+                integration_batches.c.lifecycle != "promoted",
+            ).limit(1))).first()
+            if batch is not None:
+                return {"outcome": "in_use", "error": "promotion_flow_in_use", **change,
+                        "batch_id": batch.id, "request_id": batch.request_id}
+        added = sorted(set(flow_targets(flow)) - set(flow_targets(stored)))
+        if added and await self._has_active_work_on(conn, project["id"], branches=added):
+            return {"outcome": "busy", "error": "repository_busy", "targets": added}
+        updates["promotion_flow"] = flow
+        return None
+
     async def has_active_work(self, project_id):
         async with self.db._engine.connect() as conn:
             return await self._has_active_work_on(conn, project_id)
 
     @staticmethod
-    async def _has_active_work_on(conn, project_id):
-        for statement in (
-            select(integration_subjects.c.id).where(
-                integration_subjects.c.project_id == project_id,
-                integration_subjects.c.phase != "done"),
-            select(integration_branch_owners.c.id).join(
-                repos, repos.c.id == integration_branch_owners.c.repository_id
-            ).where(repos.c.project_id == project_id,
-                    integration_branch_owners.c.handoff_state != "released",
-                    ~terminal_reservation_clause()),
-            select(integration_promotion_intents.c.id).where(
-                integration_promotion_intents.c.project_id == project_id,
-                integration_promotion_intents.c.state.not_in(("committed", "conflict", "superseded"))),
-        ):
+    async def _has_active_work_on(conn, project_id, *, branches=None):
+        """Whether live work holds the repository or, given ``branches``, any of them.
+
+        The strict project-wide path also counts open train batches (F10).
+        """
+        # Open as the train counts it (``train_sources._open_batch_rows``).
+        open_batches = select(integration_batches.c.id).where(
+            integration_batches.c.project_id == project_id,
+            integration_batches.c.target_ref.is_not(None),
+            integration_batches.c.intent != "aborted",
+            integration_batches.c.lifecycle != "promoted")
+        subjects = select(integration_subjects.c.id).where(
+            integration_subjects.c.project_id == project_id,
+            integration_subjects.c.phase != "done")
+        owners = select(integration_branch_owners.c.id).join(
+            repos, repos.c.id == integration_branch_owners.c.repository_id
+        ).where(repos.c.project_id == project_id,
+                integration_branch_owners.c.handoff_state != "released",
+                ~terminal_reservation_clause())
+        if branches is not None:
+            refs = [f"refs/heads/{branch}" for branch in branches]
+            statements = (
+                subjects.where(integration_subjects.c.target_ref.in_(refs)),
+                owners.where(integration_branch_owners.c.ref.in_([*branches, *refs])),
+                open_batches.where(integration_batches.c.target_ref.in_(refs)),
+            )
+        else:
+            statements = (
+                subjects,
+                owners,
+                select(integration_promotion_intents.c.id).where(
+                    integration_promotion_intents.c.project_id == project_id,
+                    integration_promotion_intents.c.state.not_in(
+                        ("committed", "conflict", "superseded"))),
+                open_batches,
+            )
+        for statement in statements:
             if await conn.scalar(statement.limit(1)) is not None:
                 return True
         return False

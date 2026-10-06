@@ -551,6 +551,9 @@ class IntegrationStatusValue(IntegrationOperationalValue):
     #: Non-blocking App-mode configuration warnings (spec §6.2); never part
     #: of ``blockers``, their digest or ``ready``.
     warnings: tuple[dict[str, Any], ...] = ()
+    #: The stored promotion flow as a chain, re-validated on read; its
+    #: targets are ``misconfigured`` when the flow no longer validates.
+    promotion_flow: dict[str, Any] | None = None
 
 
 class IntegrationRedriveRootValue(CommandValue):

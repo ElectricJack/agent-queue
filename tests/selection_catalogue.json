@@ -1415,7 +1415,7 @@
       ]
     }
   },
-  "digest": "sha256:9a5d1aca3866940dfc5f4ca229140df61e1a55af5675937747b10559a1c2052f",
+  "digest": "sha256:b7950e4edfca41271608e5a178fca0b6ca35c66a6f341fd5604ee17257bd659d",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -12359,11 +12359,22 @@
         "src.api.scope",
         "src.cli.app",
         "src.commands.contracts",
+        "src.commands.contracts.integration",
         "src.commands.contracts.models",
         "src.commands.principal",
+        "src.commands.project_commands",
         "src.commands.promote_commands",
         "src.database.tables",
+        "src.doctor",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.git.manager",
         "src.integration.promotion_steps",
+        "src.integration.records",
+        "src.integration.status",
+        "src.integration.train_sources",
+        "src.models",
+        "src.orchestrator.core",
         "src.profiles.capabilities"
       ],
       "markers": [
