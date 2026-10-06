@@ -15,13 +15,14 @@ from src.database.tables import (
     agents,
     integration_branch_owners,
     sessions,
+    task_branch_origins,
     task_integration_checkpoints,
     tasks,
     workspaces,
 )
 from src.git.manager import GitError
 from src.integration.models import BranchKey, Fence
-from src.integration.ownership import BranchOwnership
+from src.integration.ownership import BranchOwnership, BranchOwnershipError
 from src.models import (
     Agent,
     AgentState,
@@ -810,6 +811,123 @@ async def test_release_for_retry_restores_a_closed_repair_delegates_reservation(
         Fence(target=target, owner_id="task", token=5), "operation", "collector"
     )
     assert successor == Fence(target=target, owner_id="operation", token=6)
+
+
+async def _hierarchy_writer(orchestrator_factory, tmp_path):
+    """The ``_orchestrator`` fixture with its task ready for a branch prepare.
+
+    ``_orchestrator`` already parks a ``handoff_pending`` ``worker`` row on
+    ``aq/parent`` for ``task`` -- exactly the shape a reopened producer finds
+    when its prior session's handoff never completed.  A materialized origin
+    and a checkpoint are what ``_hierarchy_origin_and_fence`` resolves first.
+    """
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    db = orchestrator.db
+    await db.update_project(
+        "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+    )
+    now = time.time()
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(task_branch_origins).values(
+                id="origin",
+                task_id="task",
+                repository_id="repo",
+                parent_ref="aq/grandparent",
+                base_sha="a" * 40,
+                creation_generation=0,
+                reserved=True,
+                materialized=True,
+                created_at=now,
+                materialized_at=now,
+            )
+        )
+        await conn.execute(
+            insert(task_integration_checkpoints).values(
+                task_id="task",
+                repository_id="repo",
+                branch="aq/parent",
+                checkpoint_sha="a" * 40,
+                updated_at=now,
+            )
+        )
+    return orchestrator
+
+
+async def test_reopened_producer_reclaims_its_own_handoff_pending_branch(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """A retry takes back its own unfinished handoff, proved -- not assumed.
+
+    ``_hierarchy_origin_and_fence`` only re-acquired a *released* owner, so a
+    producer whose prior session left the row ``handoff_pending`` raised
+    ``BranchBusy`` on every attempt and its prepare ladder drove the task to
+    BLOCKED (stage-13 repair delegates, 2026-10-05).  Reclaiming runs the same
+    confirmation every close path runs, so the prior writer is proved gone
+    before a fresh fence is allocated.
+    """
+    orchestrator = await _hierarchy_writer(orchestrator_factory, tmp_path)
+    events: list[str] = []
+    monkeypatch.setattr(
+        orchestrator.session_providers, "create", lambda *_args: _provider(events)
+    )
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    task = await orchestrator.db.get_task("task")
+    origin, fence, role = await orchestrator._hierarchy_origin_and_fence(
+        task, await orchestrator.db.get_project("p")
+    )
+
+    assert role == "worker"
+    # The producer keeps its own reservation and gains a fresh reserved fence
+    # on the immutable origin it already had.
+    assert origin["base_sha"] == "a" * 40
+    assert fence == Fence(
+        target=BranchKey(repository_id="repo", branch="aq/parent"),
+        owner_id="task",
+        token=5,
+    )
+    await BranchOwnership(orchestrator.db).assert_current(fence, expected_role="worker")
+    assert "stop" in events and "detach" in events
+    owner = await BranchOwnership(orchestrator.db).get_owner(fence.target)
+    assert owner["handoff_state"] == "reserved"
+    assert owner["session_id"] is None
+
+
+async def test_unprovable_own_handoff_pending_branch_stays_fenced(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """A dirty checkout is not termination evidence, so the row keeps its fence.
+
+    This is the refusal that must *not* silently become a hand-over: with the
+    proof unavailable the owner row stays fenced at its old token and the
+    caller falls back to waiting (and, on the claim path, to the
+    owner-recovery sweep).
+    """
+    orchestrator = await _hierarchy_writer(orchestrator_factory, tmp_path)
+    events: list[str] = []
+    monkeypatch.setattr(
+        orchestrator.session_providers, "create", lambda *_args: _provider(events)
+    )
+    current_branch, run = _clean_git(events, dirty=True)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    task = await orchestrator.db.get_task("task")
+    with pytest.raises(BranchOwnershipError):
+        await orchestrator._hierarchy_origin_and_fence(
+            task, await orchestrator.db.get_project("p")
+        )
+
+    assert "stop" not in events
+    owner = await BranchOwnership(orchestrator.db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert owner["handoff_state"] == "handoff_pending"
+    assert int(owner["fence_token"]) == 4
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
 
 
 async def test_release_for_retry_is_idempotent_for_a_repair_delegate(

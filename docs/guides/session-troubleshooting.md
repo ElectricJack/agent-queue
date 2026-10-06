@@ -546,6 +546,36 @@ every binding for recovery rather than unlocking a checkout an integration
 fence still names; see
 [development integration](development-integration.md).
 
+## `branch_fenced`: the branch is not yours yet
+
+**Symptom.** A claim comes back `prepare_failed`, and the task carries
+`needs_attention: branch_fenced`.
+
+**What it means.** The task's own branch is still owned by a writer that has
+not released it. The owner-recovery sweep releases an `attached` or
+`handoff_pending` row whose writer is gone, so this clears itself.
+
+**What AQ does.** It releases the claim back to `READY` with the normal
+preparation backoff and never blocks the task, because the ladder that ends in
+`BLOCKED` is for a workspace fault only a human can fix. Nothing to repair: the
+next attempt claims it once the owner is released. (With
+`integration.owner_recovery_sweep: false` the sweep will not run, so AQ keeps the
+escalating ladder and asks for a human instead.)
+
+**Diagnose.** The recorded `branch_fenced` metadata names the branch and the
+refusal:
+
+```bash
+aq task explain <task-id>
+aq integration status          # what still holds the branch
+```
+
+If the writer is gone and the sweep did not clear it:
+
+```bash
+aq integration release-owner --owner-row-id <row>
+```
+
 ## A pool worker that stopped asking for work
 
 **Symptom.** A `p-` session is `running`, holds no task, and never claims

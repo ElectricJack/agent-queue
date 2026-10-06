@@ -685,12 +685,36 @@ class WorkspaceMixin:
             and owner is not None
             and owner["owner_id"] == task.id
             and owner["owner_role"] == "worker"
-            and owner["handoff_state"] == "released"
+            and owner["handoff_state"] in {"released", "handoff_pending"}
         ):
             # A reopened producer retains its canonical origin, but its prior
-            # session released ownership at close. Reserve a fresh fence for
-            # the new attempt before preparing the workspace.
-            await ownership.acquire(target, task.id, "worker")
+            # session released ownership at close -- or asked for a handoff
+            # that never completed, which left the row ``handoff_pending``.
+            # Reserve a fresh fence for the new attempt before preparing the
+            # workspace.
+            if owner["handoff_state"] == "released":
+                await ownership.acquire(target, task.id, "worker")
+            else:
+                # ``handoff_pending`` is not a free row: it fences the branch
+                # until the prior writer is *proved* gone, and ``acquire``
+                # refuses it for exactly that reason.  This is still the same
+                # task's own reservation, so take it back the way every close
+                # path does -- the ordinary self-transfer, which runs that
+                # proof first.  An unproven row stays fenced and the caller
+                # backs off to the owner-recovery sweep instead of acquiring a
+                # branch a live writer may still hold.
+                prior = (
+                    await self.db.get_session(owner["session_id"])
+                    if owner.get("session_id")
+                    else None
+                )
+                reclaimed = await self.arelease_integration_writer_for_retry(
+                    task,
+                    reason="hierarchy_reclaim_handoff_pending",
+                    pool=prior is not None and prior.lifecycle == "pool",
+                )
+                if reclaimed is not True:
+                    raise BranchBusy("own branch handoff is unproven")
             owner = await ownership.get_owner(target)
         role = str(owner["owner_role"]) if owner is not None else ""
         expected_role = "verifier" if operation is not None or subject_id == task.id and role == "verifier" else "worker"
