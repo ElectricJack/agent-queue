@@ -5366,9 +5366,8 @@ class TaskCommandsMixin:
         # Evaluate the claim query itself: graph blockedness and capacity
         # snapshots do not include hierarchy receipt/origin fences, and the
         # route filter depends on the project's router readiness (§9.1).
-        from src.routing.readiness import orchestrator_router_ready
-
         from src.integration.delivery_observer import git_prerequisite_mode
+        from src.routing.readiness import orchestrator_router_ready
 
         reasons.extend(await self.db.claim_frontier_exclusions(
             str(task_id),
