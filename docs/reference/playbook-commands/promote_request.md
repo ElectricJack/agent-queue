@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/promote.py`](../../../src/commands/contracts/promote.py) |
-| Contract fingerprint | `sha256:a221afa0145582ce66868dd32dd229bcbc76360fc7d627d6251aadf25122fb88` |
+| Contract fingerprint | `sha256:7d336be70118c70cacd719a904e4c30806806b3970a470dd6997eaecfe05f80c` |
 
 ## Parameters
 
@@ -43,8 +43,9 @@
 | `flow` | `object[] \| null` | — |
 | `promotions` | `object[]` | — |
 | `evidence_source` | `string \| null` | — |
+| `retry_at` | `number \| null` | — |
 
-Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id`, `intent`, `pr_url`, `promotion`, `review`, `flow`, `promotions`, `evidence_source`.
+Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id`, `intent`, `pr_url`, `promotion`, `review`, `flow`, `promotions`, `evidence_source`, `retry_at`.
 
 ## Outcomes
 
@@ -68,6 +69,7 @@ Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id
 | `promotion_requester_identity_missing` | failure | — |
 | `promotion_review_invalid` | failure | — |
 | `promotion_source_not_on_chain` | failure | — |
+| `rate_limited` | failure | — |
 | `requested` | success | — |
 | `step_not_found` | failure | — |
 | `step_not_versioned` | failure | — |
