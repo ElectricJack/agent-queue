@@ -3453,6 +3453,16 @@ integration_batches = Table(
     Column("pr_url", Text, nullable=True),
     Column("repair_stage_ordinal", Integer, nullable=True),
     Column("tested_candidate_sha", Text, nullable=True),
+    # A red candidate whose failures the target already has, or has not decided,
+    # is not repaired: these count that candidate's consecutive observations, its
+    # bounded re-request deadline and how many re-requests it asked for. The
+    # identity is the exact candidate at one repair generation, so a repaired or
+    # moved head starts from zero.
+    Column("baseline_candidate_sha", Text, nullable=True),
+    Column("baseline_generation", Integer, nullable=False, server_default="0"),
+    Column("baseline_observations", Integer, nullable=False, server_default="0"),
+    Column("baseline_reruns", Integer, nullable=False, server_default="0"),
+    Column("baseline_rerun_at", Float, nullable=True),
     Column("ci_evidence_id", Text, nullable=True),
     Column("final_main_sha", Text, nullable=True),
     Column("human_abort_reason", Text, nullable=True),
@@ -3471,6 +3481,13 @@ integration_batches = Table(
         "repair_stage_ordinal IS NULL OR repair_stage_ordinal >= 0",
         name="ck_integration_batches_repair_stage",
     ),
+    CheckConstraint(
+        "baseline_generation >= 0", name="ck_integration_batches_baseline_generation"
+    ),
+    CheckConstraint(
+        "baseline_observations >= 0", name="ck_integration_batches_baseline_observations"
+    ),
+    CheckConstraint("baseline_reruns >= 0", name="ck_integration_batches_baseline_reruns"),
     CheckConstraint(
         "(lifecycle = 'empty' AND base_sha IS NULL AND integration_branch IS NULL) OR "
         "(lifecycle <> 'empty' AND base_sha IS NOT NULL AND integration_branch IS NOT NULL)",
