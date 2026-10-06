@@ -9,7 +9,8 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.database.tables import (
-    agent_profiles, integration_batches, projects, repos, task_context, task_metadata, tasks,
+    agent_profiles, integration_batches, integration_review_evidence, projects, repos,
+    task_context, task_metadata, tasks,
 )
 from src.git.manager import GitError
 from src.git.github_contracts import GitHubAccessError
@@ -482,6 +483,31 @@ async def test_none_approval_needs_green_pr_without_a_human_review(promotion):
 async def test_green_source_without_a_request_pr_is_held(promotion):
     result = await visit(promotion)
     assert result.state == "held" and result.detail["reason"] == "promotion_pr_missing"
+
+
+async def test_gate_refresh_writes_review_evidence_only_on_change(promotion):
+    e = promotion
+
+    async def rows():
+        async with e.db._engine.connect() as conn:
+            return (await conn.execute(select(integration_review_evidence).where(
+                integration_review_evidence.c.source_task_id == e.member.task_id,
+                integration_review_evidence.c.review_kind == "promotion_pr",
+            ).order_by(integration_review_evidence.c.created_at))).mappings().all()
+
+    e.github.reviews = []
+    for _ in range(3):
+        await e.checks.refresh_gate(e.batch, e.source)
+    [first] = await rows()
+    assert first["verdict"] == "rejected"
+    assert first["evidence"]["reason"] == "promotion_operator_approval_missing"
+    e.github.reviews = [e.github.review(1, e.source)]
+    await e.checks.refresh_gate(e.batch, e.source)
+    await e.checks.refresh_gate(e.batch, e.source)
+    # Append-only: the change adds one row and the earlier observation stays.
+    [kept, second] = await rows()
+    assert kept["id"] == first["id"] and second["verdict"] == "approved"
+    assert second["evidence"]["reason"] is None
 
 
 async def test_review_change_during_attestation_withdraws_publication(promotion):

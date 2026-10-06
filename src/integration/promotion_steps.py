@@ -962,14 +962,29 @@ def frozen_required_checks(meta: dict):
 
 
 async def cache_promotion_review(conn, repository_id, member, tree, reason, evidence):
-    """Cache an observed PR verdict for readers; admission always re-observes GitHub."""
+    """Cache an observed PR verdict for readers; admission always re-observes GitHub.
+
+    Review evidence is append-only, so an observation identical to the member's latest
+    row writes nothing: rows accrue per change on GitHub, not per gate visit.
+    """
+    evidence = {**evidence, "reason": reason}
+    current = {"source_base": member.base_sha, "reviewed_head_sha": member.source_sha,
+               "reviewed_tree_sha": tree, "verdict": "approved" if reason is None else "rejected"}
+    latest = (await conn.execute(select(integration_review_evidence).where(
+        integration_review_evidence.c.source_task_id == member.task_id,
+        integration_review_evidence.c.repository_id == repository_id,
+        integration_review_evidence.c.review_kind == "promotion_pr",
+    ).order_by(integration_review_evidence.c.created_at.desc(),
+               integration_review_evidence.c.id.desc()).limit(1))).mappings().first()
+    if latest and all(latest[key] == value for key, value in current.items()) and (
+        json.dumps(latest["evidence"], sort_keys=True) == json.dumps(evidence, sort_keys=True)
+    ):
+        return
     await conn.execute(insert(integration_review_evidence).values(
         id="promotion-review-" + uuid.uuid4().hex, source_task_id=member.task_id,
-        repository_id=repository_id, source_base=member.base_sha,
-        reviewed_head_sha=member.source_sha, reviewed_tree_sha=tree,
-        reviewer_identity="service:promotion-pr", review_kind="promotion_pr", generation=0,
-        verdict="approved" if reason is None else "rejected",
-        evidence={**evidence, "reason": reason}, created_at=time.time(),
+        repository_id=repository_id, reviewer_identity="service:promotion-pr",
+        review_kind="promotion_pr", generation=0, evidence=evidence, created_at=time.time(),
+        **current,
     ))
 
 
