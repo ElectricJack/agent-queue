@@ -457,6 +457,11 @@ class RootAttestationProvider:
                  "conclusion": "success", "event": "push"}
                 for index in range(2)
             ]
+        if key == "check_runs" and "check_name=" not in path:
+            return [{"id": 11 + index, "name": name, "app": {"id": 404},
+                     "head_sha": HEAD, "status": "completed", "conclusion": "success",
+                     "check_suite": {"id": 21 + index}}
+                    for index, name in enumerate(("unit", "postgres"))]
         for index, name in enumerate(("unit", "postgres")):
             if f"check_name={name}" in path:
                 return [{"id": 11 + index, "name": name, "app": {"id": 404},
