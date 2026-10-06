@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-168 commands are registered.
+170 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -191,6 +191,8 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`object_loop_reconcile`](object_loop_reconcile.md) | Object Loop Reconcile | Coordinate a bounded, durable object evaluation round. |
 | [`object_loop_start`](object_loop_start.md) | Object Loop Start | Coordinate a bounded, durable object evaluation round. |
 | [`object_score_record`](object_score_record.md) | Object Score Record | Coordinate a bounded, durable object evaluation round. |
+| [`promote_schema`](promote_schema.md) | Promote Schema | Authenticated hierarchical integration operational control. |
+| [`promote_validate`](promote_validate.md) | Promote Validate | Authenticated hierarchical integration operational control. |
 | [`provider_allocation_preview`](provider_allocation_preview.md) | Preview a provider worker allocation | Show what one provider allocation would change -- the selected profiles before and after, the provider-wide ceiling, the sessions it drains and the busy set an interrupt would need, the pins and manual agents it leaves alone -- with the token apply consumes, without changing anything. |
 | [`provider_allocation_status`](provider_allocation_status.md) | Read provider worker allocation | Group every ordinary worker profile by provider with its pool supply, live sessions, pinned tasks, manual agents, project preferences and the provider-wide configured ceiling, without changing anything. |
 | [`provider_availability_notify`](provider_availability_notify.md) | Announce a provider's availability change | Message the global supervisor and the human once when a provider moves between launchable and unavailable; a repeat for the same change sends nothing. |

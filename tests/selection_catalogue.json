@@ -536,7 +536,7 @@
       ]
     },
     "integration-promotion": {
-      "description": "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, explicit root authorization, parent CI publication and legacy deliveries.",
+      "description": "Promotion-flow validation, child-to-parent and root-to-main promotion, parent assembly and completion, root PRs and authorization, bounded repairs, trusted review evidence, parent CI publication, legacy deliveries and proven closure of delivered PRs.",
       "modules": [
         "tests/test_integration_cancelled_collection.py",
         "tests/test_integration_child_delivery.py",
@@ -555,6 +555,7 @@
         "tests/test_integration_root_pull_requests.py",
         "tests/test_integration_stranded_children.py",
         "tests/test_parent_ci_publication.py",
+        "tests/test_promotion_flow.py",
         "tests/test_repair_checkout_refs.py"
       ]
     },
@@ -1414,7 +1415,7 @@
       ]
     }
   },
-  "digest": "sha256:50ae25b71b4b241919096c781103c1aff0078cbeec08576931dcde5cc5b1a605",
+  "digest": "sha256:9a5d1aca3866940dfc5f4ca229140df61e1a55af5675937747b10559a1c2052f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -12347,6 +12348,28 @@
         "parametrize"
       ],
       "summary": "Configuration and diagnostics for project onboarding roots."
+    },
+    "tests/test_promotion_flow.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.cli.app",
+        "src.commands.contracts",
+        "src.commands.contracts.models",
+        "src.commands.principal",
+        "src.commands.promote_commands",
+        "src.database.tables",
+        "src.integration.promotion_steps",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Dev-branch releases §3.1/§3.11: pure validation and its command surfaces."
     },
     "tests/test_prompt_builder.py": {
       "areas": [

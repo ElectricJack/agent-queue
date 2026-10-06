@@ -116,6 +116,8 @@ somehow declares none.
     "collaboration_close",
     "pr_merge",
     "prime",
+    "promote_schema",
+    "promote_validate",
     "review_list",
     "review_attachment_add",
     "review_attachment_list",
