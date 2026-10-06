@@ -8,8 +8,8 @@ account.
 
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import os
 import shutil
 import stat
@@ -28,7 +28,6 @@ from src.git.github_contracts import (
     GitHubCredentialIdentity,
     GitHubRepositoryBinding,
 )
-
 from src.projects.github import (
     GhClient,
     GitHubAuthStatus,
