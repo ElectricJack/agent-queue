@@ -622,3 +622,29 @@ async def test_failed_historical_probes_require_independent_proof_and_are_not_ca
     retry = await snapshot.is_delivered(request, source_base=repo.base)
     assert retry.state == (DeliveryState.CONTAINED if delivered else DeliveryState.PENDING)
     assert await snapshot.contains_source("task", head, repo.base) is delivered
+
+
+async def test_spent_patch_budget_falls_back_to_merge_noop_then_unknown(repository, monkeypatch):
+    """A quadratic range search is bounded; a squash is still proven by a no-op merge."""
+    from src.integration import git_truth
+
+    repo = repository
+    await repo.commit("hot", "source\n")
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.run("checkout", "main")
+    await repo.commit("other", "unrelated\n", message="unrelated")
+    for index in range(4):  # later target work on the same hot path
+        await repo.commit("hot", f"target {index}\n", message=f"hot {index}")
+    await repo.run("merge", "--squash", "-X", "theirs", "source")
+    await repo.run("commit", "-m", "squash without a source trailer")
+    await repo.commit("hot", "moved on\n", message="hot again")
+    await repo.publish()
+    monkeypatch.setattr(git_truth, "HISTORICAL_PATCH_PROBE_LIMIT", 1)
+    # One and hot differ from the source, so only the no-op merge can prove it.
+    proof = await (await repo.snapshot()).is_delivered(request, source_base=repo.base)
+    assert proof.state == DeliveryState.UNKNOWN, proof.reason
+    await repo.commit("hot", "source\n", message="hot restored")
+    await repo.publish()
+    proof = await (await repo.snapshot()).is_delivered(request, source_base=repo.base)
+    assert (proof.state, proof.reason) == (DeliveryState.CONTAINED, "merge_noop")

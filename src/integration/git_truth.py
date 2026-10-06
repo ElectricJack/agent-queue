@@ -77,6 +77,7 @@ class _PairFacts:
     trailers: dict[str, bool] = field(default_factory=dict)
     patches: dict[str, bool] = field(default_factory=dict)
     equal_tree: bool | None = None
+    merge_noop: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -215,8 +216,14 @@ class GitTruthSnapshot:
                 return True
             if facts.equal_tree is None:
                 facts.equal_tree = await _equal_tree(observed, source_oid, observed.target_oid)
-            if not facts.equal_tree and patch_error is not None:
-                raise patch_error
+            if not facts.equal_tree:
+                if facts.merge_noop is None:
+                    facts.merge_noop = await _merge_noop(
+                        observed, source_oid, observed.target_oid)
+                if facts.merge_noop:
+                    return True
+                if patch_error is not None:
+                    raise patch_error
             return facts.equal_tree
         except (GitError, OSError, ValueError):
             return None
@@ -278,6 +285,7 @@ async def _whole_patch(
                          "--", *(path for path in paths if path))
     starts = {base} if common_base else set()
     first_error = None
+    probes = 0
     for row in history.splitlines():
         head, *parents = row.split()
         after_base = common_base and await provenance.ancestor(base, head)
@@ -288,6 +296,10 @@ async def _whole_patch(
         for start in candidates:
             if start == head or not await provenance.ancestor(start, head):
                 continue
+            probes += 1
+            if probes > HISTORICAL_PATCH_PROBE_LIMIT:
+                raise _HistoricalPatchFailure(first_error or GitError(
+                    "historical patch probe budget exhausted"))
             try:
                 candidate = await snapshot.git.apatch_id(snapshot.store, start, head)
             except (GitError, OSError) as exc:
@@ -305,6 +317,31 @@ async def _whole_patch(
     if first_error is not None:
         raise _HistoricalPatchFailure(first_error) from first_error
     return False
+
+
+#: Patch-id comparisons one whole-source proof may run. The range search is
+#: quadratic in the commits after the source base that touch the source's
+#: paths; an old task on a hot path (2026-10-06: tests/selection_catalogue.json)
+#: ran for over 120 s each and kept the root visit past its timeout. Spent, the
+#: probe is unavailable rather than negative, exactly like a failed probe.
+HISTORICAL_PATCH_PROBE_LIMIT = 150
+
+
+async def _merge_noop(snapshot: DeliverySnapshot, source: str, target: str) -> bool:
+    """Merging the exact source into the target changes nothing.
+
+    Every change the source makes relative to the merge base is already in the
+    target, whatever commits carried it (squash, cherry-pick, re-delivery). A
+    conflict, or any difference, is no proof. One bounded merge-tree call.
+    """
+    result = await snapshot.git.arun_git_result(
+        ["--no-replace-objects", "merge-tree", "--write-tree", target, source],
+        cwd=snapshot.store,
+    )
+    if result.returncode:
+        return False
+    merged = (result.stdout or "").splitlines()[:1]
+    return merged == [await snapshot.git.atree_sha(snapshot.store, target)]
 
 
 async def _equal_tree(snapshot: DeliverySnapshot, source: str, target: str) -> bool:
@@ -394,6 +431,11 @@ async def is_delivered(
             facts.equal_tree = await _equal_tree(observed, source, observed.target_oid)
         if facts.equal_tree:
             return answer(DeliveryState.CONTAINED, "full_tree")
+        step = "merge_noop"
+        if facts.merge_noop is None:
+            facts.merge_noop = await _merge_noop(observed, source, observed.target_oid)
+        if facts.merge_noop:
+            return answer(DeliveryState.CONTAINED, "merge_noop")
         if patch_error is not None:
             step = "whole_source_patch"
             raise patch_error
