@@ -293,7 +293,7 @@ async def test_live_child_writer_withholds_refresh_without_losing_commits(stack)
 
 
 async def test_changed_stack_replaces_frozen_inputs_and_tests_exact_combined_candidate(stack):
-    from src.integration.batches import BatchService, BatchStore
+    from src.integration.batches import BatchService, BatchStore, ejection_instruction
     from src.integration.train import CandidateChecks, IntegrationTrain, TrainLane
     from src.integration.train_sources import LeasedPublish
     from tests.test_integration_train_sources import GreenWhen
@@ -337,6 +337,10 @@ async def test_changed_stack_replaces_frozen_inputs_and_tests_exact_combined_can
     new = await train.visit(target)
     assert new.state == "testing" and new.batch_id != old.batch_id, new
     assert new.candidate_sha != old.candidate_sha
+    # The replaced batch gives up the target and releases its inputs.
+    assert (await service.store.get(old.batch_id)).intent == "aborted"
+    async with stack.db._engine.connect() as conn:
+        assert await conn.scalar(select(ejection_instruction(old.batch_id)))
     assert (
         git(
             stack.origin.clone, "show", f"{new.candidate_sha}:first-reworked before publication.txt"

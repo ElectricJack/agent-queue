@@ -2,9 +2,10 @@
 
 Everything here is read from durable rows and Git at visit time: the targets a
 project's completed work routes to, the exact completion sources not yet in
-those targets, and the open batch's frozen inputs. Nothing is journalled. A
-batch's ``intent`` is the only operator control; aborting one withholds its
-exact (task, source) inputs from that target until the task completes again.
+those targets, and the open batch's frozen inputs. Aborting a batch withholds
+its exact (task, source) inputs until the task completes again. An explicit
+ejection instruction releases those inputs for admission after replacing the
+batch with its remaining members.
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ from src.integration.batches import (
     BatchService,
     BatchStore,
     candidate_ref,
+    ejection_instruction,
 )
 from src.integration.candidate_baseline import CandidateBaselineService
 from src.integration.ci import (
@@ -341,6 +343,8 @@ class DatabaseBatches:
             if outcome in {"refreshed", "changed", "repair_filed"}:
                 return BatchSelection(blockers=({"code": "stack_" + outcome, "task_id": task_id,
                     "ref": task_id, "detail": "Prerequisite stack changed; take a fresh Git view"},))
+        # One live batch owns a target: a replaced stale batch must not block the freeze.
+        await self.supersede_refreshed(target, service)
         current = await self.current(target)
         blockers: list[dict[str, Any]] = []
         pending = None
@@ -382,7 +386,7 @@ class DatabaseBatches:
                     "settling_cap_seconds": policy.settling_cap_seconds,
                     "task_ids": [member.task_id for member in members],
                 })
-        batch = Batch(id=batch_id(target, members), project_id=target.project_id,
+        batch = Batch(id=await self.next_batch_id(target, members), project_id=target.project_id,
                       repository_id=target.repository_id, target_ref=target.target_ref,
                       created_at=now)
         frozen = await service.freeze(batch, members, requests=requests, snapshot=snapshot,
@@ -391,10 +395,36 @@ class DatabaseBatches:
             await self._clear_admissions(target)
         return BatchSelection(frozen, await service.store.members(frozen.id), tuple(blockers))
 
+    async def next_batch_id(self, target, members):
+        """An ejected singleton may return with the same exact frozen inputs."""
+        identity = batch_id(target, members)
+        async with self.db._engine.connect() as conn:
+            while True:
+                row = (await conn.execute(select(integration_batches.c.intent,
+                    ejection_instruction(integration_batches.c.id).label("ejected")).where(
+                        integration_batches.c.id == identity,
+                    ))).first()
+                if row is None or row.intent != "aborted" or not row.ejected:
+                    return identity
+                identity = "train-" + hashlib.sha256((identity + ":readmit").encode()).hexdigest()[:32]
+
     async def current(self, target: TrainTarget) -> Batch | None:
+        return next((batch for batch, refreshed in await self._open_batches(target)
+                     if refreshed is None), None)
+
+    async def supersede_refreshed(self, target: TrainTarget, service: BatchService) -> None:
+        """Abort open batches whose stacked source was refreshed, releasing their inputs."""
+        for batch, refreshed in await self._open_batches(target):
+            if refreshed is not None:
+                await service.store.supersede(batch, refreshed, reason=(
+                    f"stacked source of {refreshed} was refreshed; a new batch replaces it"))
+
+    async def _open_batches(self, target: TrainTarget) -> list[tuple[Batch, str | None]]:
+        """Open batches oldest first, each with the member whose stack was refreshed."""
         from src.integration.stacked_branches import StackedBranches
 
         stacks = StackedBranches(self.db)
+        found = []
         async with self.db._engine.connect() as conn:
             rows = (await conn.execute(
                 _open_batch_rows(target.project_id, target.repository_id)
@@ -402,10 +432,9 @@ class DatabaseBatches:
                 .order_by(integration_batches.c.created_at, integration_batches.c.id)
             )).mappings().all()
             for row in rows:
-                # Immutable old batches remain inspectable. A refreshed stack
-                # needs a new exact candidate; it must not be trapped behind
-                # its former source. Explicit operator pause still holds.
-                stale = False
+                # A refreshed stack needs a new exact candidate; it must not be
+                # trapped behind its former source. Explicit operator pause still holds.
+                refreshed = None
                 if row["intent"] == "open":
                     for tid, source in (await conn.execute(select(
                         integration_batch_members.c.task_id, integration_batch_members.c.source_sha,
@@ -414,11 +443,10 @@ class DatabaseBatches:
                         stack = origin and origin["stack_snapshot"]
                         if (stack and not stack.get("hold") and stack.get("refreshed_head")
                                 and stack["refreshed_head"] != source):
-                            stale = True
+                            refreshed = tid
                             break
-                if not stale:
-                    return Batch.from_row(row)
-        return None
+                found.append((Batch.from_row(row), refreshed))
+        return found
 
     @staticmethod
     def _admission_key(target: TrainTarget) -> str:
@@ -511,6 +539,7 @@ class DatabaseBatches:
                        integration_batches.c.repository_id == target.repository_id,
                        integration_batches.c.target_ref == target.target_ref,
                        integration_batches.c.intent == "aborted",
+                       ~ejection_instruction(integration_batches.c.id),
                        integration_batch_members.c.task_id.in_(ids))
             )).all())
             repairs = set((await conn.execute(select(task_metadata.c.task_id).where(
