@@ -13633,10 +13633,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/integration/train_sources.py::EpicCompletions.settle::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
-      "line": 638,
+      "line": 642,
       "owner": "EpicCompletions.settle",
       "call": "insert",
-      "owner_fingerprint": "3bc2ed959ce273224a8e24202c625e895b4f93e1ec141f7574d72f9a16f58b9d",
+      "owner_fingerprint": "99ae5203a04a7d863811f94036b07788dcb3930ef94859fe7839eef4e1762fb8",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Current-generation pointer written under the project hierarchy lock in the same transaction as the immutable collected-epic completion record it names, after readiness is re-verified under that lock. Metadata key: DEVELOPMENT_COMPLETION_ID_KEY; a completion identity only, with no ref, PR or publication intent."
