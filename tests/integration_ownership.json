@@ -14487,6 +14487,7 @@
     "src/database/queries/digest_queries.py::DigestQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/digest_queries.py::DigestSupervisorQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/escalation_queries.py::EscalationQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/escalation_queries.py::OPEN_ESCALATION_STATES": "Shared escalation state vocabulary used by ordinary repair green settlement; owns no integration mechanism, ref replay, or lifecycle journal.",
     "src/database/queries/event_queries.py::EventQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/gate_queries.py::GateQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/hierarchy_queries.py::HIERARCHY_MODES": "Generic dependency; integration-specific definitions in this file are charged independently.",
