@@ -104,6 +104,12 @@ the local operator or global supervisor. A project supervisor gets the same
 `unauthorized` refusal for foreign and missing IDs, which have no authorized
 project binding. An empty batch ID returns `invalid_state`.
 
+When a stacked source refresh replaces an open batch, the daemon writes the
+same batch-owned release record with its service identity and the supersede
+reason. The old batch aborts and its inputs return to pending for a new exact
+candidate. An explicit pause or ordinary abort still holds its inputs; task
+metadata cannot forge a supersede release.
+
 These four supervisor controls default to preview; `--dry-run` explicitly
 requests it. Applying an ejection requires a nonblank reason. Paused batches
 can resume; aborted or promoted batches cannot.

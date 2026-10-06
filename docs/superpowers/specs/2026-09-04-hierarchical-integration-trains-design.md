@@ -453,10 +453,14 @@ attempts. A later delegate receives a revision-specific identity. Ejecting the f
 member aborts the batch and releases its sweep request. Reviews are never revoked.
 
 On the Git-first train, ejection instead aborts the old immutable batch and
-freezes the remaining inputs in a replacement batch. Only the authorized eject
+freezes the remaining inputs in a replacement batch. The authorized eject
 command writes the original batch's durable release instruction, bound to its
-project, frozen member, operator and reason. Task archival or deletion cannot
-erase that instruction; worker task metadata and legacy ejection markers cannot
+project, frozen member, operator and reason. The daemon supersedes an open batch
+whose stacked source was refreshed using the same batch-owned record, bound to
+the refreshed frozen member, service identity and supersede reason. Its inputs
+return to pending for a new exact candidate; an explicit pause still holds.
+Task archival or deletion cannot erase that instruction; worker task metadata
+and legacy ejection markers cannot
 authorize release. An ordinary supervisor abort continues withholding its inputs.
 Pause requires open intent and resume requires paused intent; repeated or invalid
 transitions refuse. Pause, resume, eject and seal-now default to preview and remain

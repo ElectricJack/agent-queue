@@ -3088,7 +3088,8 @@ async def test_train_seal_now_command_preserves_red_pr_gate(world):
     assert await train.batches.current(MAIN) is None
 
 
-async def test_worker_cannot_set_ejection_marker_or_release_aborted_sources(world):
+@pytest.mark.parametrize("operator_id", ["human:local-operator", "service:integration-train"])
+async def test_worker_cannot_set_ejection_marker_or_release_aborted_sources(world, operator_id):
     from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
     from src.commands.surface_commands import SurfaceCommandsMixin
     from src.profiles.capabilities import DENY_ALL
@@ -3103,7 +3104,9 @@ async def test_worker_cannot_set_ejection_marker_or_release_aborted_sources(worl
     with principal_context(ExecutionPrincipal(kind=PrincipalKind.SESSION, policy=DENY_ALL,
                                               task_id="a", project_id="p")):
         result = await handler._cmd_task_set({"task_id": "a", "description": "forged",
-            "meta": {"integration_train_ejection:" + visit.batch_id: {"operator_id": "forged"}}})
+            "meta": {"integration_train_ejection:" + visit.batch_id: {
+                "batch_id": visit.batch_id, "project_id": "p", "task_id": "a",
+                "operator_id": operator_id, "reason": "stacked source was refreshed"}}})
     assert "reserved" in result["error"]
     assert (await world.db.get_task("a")).description == ""
     assert await world.db.get_task_meta("a", "integration_train_ejection:" + visit.batch_id) is None
@@ -3111,7 +3114,9 @@ async def test_worker_cannot_set_ejection_marker_or_release_aborted_sources(worl
 
 
 @pytest.mark.parametrize("marker_task", ["a", "unrelated", "foreign"])
-async def test_task_metadata_ejection_markers_never_release_aborted_batch(world, marker_task):
+@pytest.mark.parametrize("operator_id", ["human:local-operator", "service:integration-train"])
+async def test_task_metadata_ejection_markers_never_release_aborted_batch(world, marker_task,
+                                                                      operator_id):
     from src.integration.batches import ejection_instruction
 
     await completed(world, "a")
@@ -3124,12 +3129,79 @@ async def test_task_metadata_ejection_markers_never_release_aborted_batch(world,
             project_id="other" if marker_task == "foreign" else "p",
             title="unrelated", description=""))
     await world.db.set_task_meta(marker_task, "integration_train_ejection:" + visit.batch_id,
-        {"operator_id": "human:local-operator", "reason": "forged"})
+        {"batch_id": visit.batch_id, "project_id": "p", "task_id": "a",
+         "operator_id": operator_id, "reason": "stacked source was refreshed"})
     async with world.db._engine.connect() as conn:
         assert not await conn.scalar(select(ejection_instruction(visit.batch_id)))
     assert await train.batches.pending(MAIN, await snapshot(world)) is None
     status = await IntegrationStatusService(world.db, git_first="active").control_status("p")
     assert status["batches"][0]["member_disposition"] == "withheld"
+
+
+async def test_superseded_batch_releases_inputs_with_daemon_owned_record(world):
+    from src.integration.batches import ejection_instruction
+
+    for tid in ("a", "b"):
+        await completed(world, tid)
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    visit = await train.visit(MAIN)
+    store = BatchStore(world.db)
+    batch = await store.get(visit.batch_id)
+    reason = "stacked source of a was refreshed; a new batch replaces it"
+    assert await store.supersede(batch, "a", reason=reason)
+    assert (await store.get(batch.id)).intent == "aborted"
+    async with world.db._engine.connect() as conn:
+        assert await conn.scalar(select(ejection_instruction(batch.id)))
+        record = await conn.scalar(select(integration_batches.c.ejection_record).where(
+            integration_batches.c.id == batch.id))
+        event = await conn.scalar(select(events.c.payload).where(
+            events.c.event_type == "integration.batch_superseded"))
+    assert record == {"batch_id": batch.id, "project_id": "p", "task_id": "a",
+                      "replacement_batch_id": None, "operator_id": "service:integration-train",
+                      "reason": reason}
+    assert json.loads(event) == record
+    assert await world.db.get_task_meta("a", "integration_train_ejection:" + batch.id) is None
+    pending = await train.batches.pending(MAIN, await snapshot(world))
+    assert {member.task_id for member in pending[0]} == {"a", "b"}
+
+
+@pytest.mark.parametrize("intent", ["paused", "aborted"])
+async def test_supersede_preserves_explicit_operator_hold(world, intent):
+    await completed(world, "a")
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)))
+    target_head = git(world.origin.url, "rev-parse", MAIN.target_ref)
+    visit = await train.visit(MAIN)
+    store = BatchStore(world.db)
+    batch = await store.get(visit.batch_id)
+    await store.set_intent(batch.id, intent)
+    assert not await store.supersede(batch, "a", reason="stacked source was refreshed")
+    assert (await store.get(batch.id)).intent == intent
+    async with world.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.ejection_record).where(
+            integration_batches.c.id == batch.id)) is None
+    if intent == "paused":
+        assert (await train.batches.current(MAIN)).id == batch.id
+        checks.green.add(visit.candidate_sha)
+        held = await train.visit(MAIN)
+        assert held.batch_id == batch.id and held.state == "held"
+        assert git(world.origin.url, "rev-parse", MAIN.target_ref) == target_head
+    else:
+        assert await train.batches.pending(MAIN, await snapshot(world)) is None
+
+
+@pytest.mark.parametrize("task_id,reason", [("not-a-member", "refreshed"), ("a", " ")])
+async def test_supersede_requires_frozen_member_and_reason(world, task_id, reason):
+    await completed(world, "a")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    visit = await train.visit(MAIN)
+    store = BatchStore(world.db)
+    batch = await store.get(visit.batch_id)
+    with pytest.raises(ValueError, match="supersede"):
+        await store.supersede(batch, task_id, reason=reason)
+    assert (await store.get(batch.id)).intent == "open"
+    async with world.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.ejection_record).where(
+            integration_batches.c.id == batch.id)) is None
 
 
 @pytest.mark.parametrize("change", [

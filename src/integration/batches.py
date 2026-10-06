@@ -33,7 +33,8 @@ def ejection_instruction(batch_identity):
     """Only a batch-owned eject record for its frozen member releases inputs.
 
     Task metadata is untrusted, including legacy ejection markers. The record
-    is written atomically by eject and survives member archival/deletion.
+    is written atomically by eject or daemon supersede and survives member
+    archival/deletion.
     """
     batch = integration_batches.alias("ejected_batch")
     member = integration_batch_members.alias("ejected_member")
@@ -335,6 +336,8 @@ class BatchStore:
         """
         import json
 
+        if not reason.strip():
+            raise ValueError("supersede requires a nonblank reason")
         async with self.db.immediate() as conn:
             await self._target_lock(conn, batch)
             row = (await conn.execute(select(integration_batches).where(
@@ -342,15 +345,29 @@ class BatchStore:
             ).with_for_update())).mappings().one_or_none()
             if row is None or row["intent"] != "open" or row["lifecycle"] == "promoted":
                 return False
+            if Batch.from_row(row) != batch:
+                return False
+            member = await conn.scalar(select(integration_batch_members.c.task_id).where(
+                integration_batch_members.c.batch_id == batch.id,
+                integration_batch_members.c.task_id == task_id,
+                integration_batch_members.c.repository_id == batch.repository_id,
+            ))
+            source_projects = (await conn.execute(union_all(*(
+                select(table.c.project_id).where(table.c.id == task_id)
+                for table in (tasks, archived_tasks)
+            )))).scalars().all()
+            if member is None or source_projects != [batch.project_id]:
+                raise ValueError("superseded member does not belong to the frozen batch project")
+            instruction = {"batch_id": batch.id, "project_id": batch.project_id,
+                           "task_id": task_id, "replacement_batch_id": None,
+                           "operator_id": "service:integration-train", "reason": reason}
             await conn.execute(update(integration_batches).where(
                 integration_batches.c.id == batch.id,
             ).values(intent="aborted", lifecycle="aborted",
-                     human_abort_reason=reason, cleanup_state="pending", updated_at=self.clock()))
-            instruction = {"replacement_batch_id": None, "operator_id": None, "reason": reason}
-            await conn.execute(insert(task_metadata).values(task_id=task_id,
-                key=EJECTION_KEY_PREFIX + batch.id, value=json.dumps(instruction)))
+                     human_abort_reason=reason, ejection_record=instruction,
+                     cleanup_state="pending", updated_at=self.clock()))
             await self.db.log_event("integration.batch_superseded", project_id=batch.project_id,
-                task_id=task_id, payload=json.dumps({"batch_id": batch.id, "reason": reason}),
+                task_id=task_id, payload=json.dumps(instruction),
                 conn=conn)
         return True
 
