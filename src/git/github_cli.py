@@ -10,14 +10,20 @@ import shutil
 import signal
 import stat
 import tempfile
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from time import monotonic
-from typing import Protocol
+from time import monotonic, time
+from typing import Callable, Protocol
 
-from src.git.github import MAX_RESPONSE_BYTES, _command_error
+from src.git.github import (
+    MAX_HEADER_BYTES,
+    MAX_RESPONSE_BYTES,
+    _command_error,
+    _decode_included_response,
+    _http_error,
+)
 from src.git.github_contracts import (
     GitHubAccessError as GitHubAppError,
     GitHubCredentialIdentity,
@@ -31,6 +37,8 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 PROCESS_CLEANUP_SECONDS = 1.0
 FAILURE_WARNING_INTERVAL_SECONDS = 300.0
 MAX_FAILURE_WARNING_KEYS = 256
+CALL_WINDOW_SECONDS = 60
+MAX_CALL_ENDPOINTS = 256
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +176,7 @@ class GhRunner:
         max_stderr_bytes: int = MAX_DIAGNOSTIC_BYTES,
         max_stdin_bytes: int = MAX_STDIN_BYTES,
         cleanup_timeout: float = PROCESS_CLEANUP_SECONDS,
+        clock: Callable[[], float] = time,
     ) -> None:
         if not isinstance(executable, str) or not executable or "\x00" in executable:
             raise ValueError("GitHub CLI executable must be a non-empty path")
@@ -193,6 +202,11 @@ class GhRunner:
         self.max_stderr_bytes = max_stderr_bytes
         self.max_stdin_bytes = max_stdin_bytes
         self.cleanup_timeout = float(cleanup_timeout)
+        self._clock = clock
+        self._retry_at = 0.0
+        self._rate_limit_status: int | None = None
+        # One-second buckets bound memory even when request volume spikes.
+        self._calls: dict[str, deque[tuple[int, int]]] = {}
         self._resolved_executable: str | None = None
         self._failure_warnings: OrderedDict[tuple[str, str, str], float] = OrderedDict()
         self._temporary_work_dir: tempfile.TemporaryDirectory[str] | None = None
@@ -239,6 +253,14 @@ class GhRunner:
         """Run ``gh`` with explicit target, fresh credentials and bounded I/O."""
 
         command = self._scoped_args(args, repository=repository, hostname=hostname)
+        self.check_backoff()
+        # Binding/account API calls also need retry headers, while their
+        # consumers still receive just the body unless they asked for headers.
+        strip_headers = command[0] == "api" and not any(
+            option in command for option in ("--include", "-i")
+        )
+        if strip_headers:
+            command = (command[0], "--include", *command[1:])
         standard_input = self._stdin_bytes(stdin)
         self._validate_stdin_contract(command, standard_input)
         operation_timeout = self.timeout if timeout is None else timeout
@@ -306,6 +328,8 @@ class GhRunner:
         process: asyncio.subprocess.Process | None = None
         diagnostic_secrets = tuple(argument_secrets)
         try:
+            # Credential selection can yield while another caller hits a limit.
+            self.check_backoff()
             process = await asyncio.create_subprocess_exec(
                 executable,
                 *command,
@@ -320,6 +344,7 @@ class GhRunner:
                 env=environment,
                 start_new_session=True,
             )
+            self._record_call(args)
             async with asyncio.timeout(float(operation_timeout)):
                 stdout, stderr = await self._communicate_bounded(
                     process,
@@ -354,7 +379,30 @@ class GhRunner:
                 app_config.cleanup()
 
         safe_stderr = _scrub_diagnostic(stderr, secrets=diagnostic_secrets)
+        error = _cli_error(process.returncode, stderr) if process.returncode else None
+        if command[0] == "api" and stdout.startswith(b"HTTP/"):
+            response = _decode_included_response(
+                stdout,
+                max_header_bytes=MAX_HEADER_BYTES,
+                max_body_bytes=stdout_limit,
+            )
+            if response.status >= 400:
+                http_error = _http_error(
+                    response.status, response.headers, self._clock(), response.body
+                )
+                # Older gh versions can identify secondary limits in stderr
+                # even when the framed body has no usable classification.
+                if (
+                    http_error.category != "permission"
+                    or error is None
+                    or error.category != "rate_limited"
+                ):
+                    error = http_error
+            if strip_headers:
+                stdout = response.body
         result = GhResult(process.returncode or 0, stdout, safe_stderr)
+        if error is not None and error.category == "rate_limited":
+            self._defer(error)
         if result.returncode != 0 and (
             _command_error(result.returncode, safe_stderr).category == "rate_limited"
         ):
@@ -365,10 +413,84 @@ class GhRunner:
                 safe_stderr[:2000],
             )
         if check and result.returncode != 0:
-            error = _cli_error(result.returncode, stderr)
+            assert error is not None
             self.warn_failure(error, repository=repository)
             raise error
         return result
+
+    def check_backoff(self) -> None:
+        """Refuse network work before a caller selects or mints credentials."""
+        if self._clock() < self._retry_at:
+            raise GitHubAppError(
+                "rate_limited", "GitHub client is backing off after a rate limit",
+                retry_at=self._retry_at, http_status=self._rate_limit_status,
+            )
+
+    def _defer(self, error: GitHubAppError) -> None:
+        retry_at = error.retry_at
+        if retry_at is None or retry_at <= self._clock():
+            retry_at = self._clock() + CALL_WINDOW_SECONDS
+        self._retry_at = max(self._retry_at, retry_at)
+        self._rate_limit_status = error.http_status
+        error.retry_at = self._retry_at
+
+    def _record_call(self, args: Sequence[str]) -> None:
+        self._prune_calls()
+        if args[0] == "api":
+            # Paths have already been scoped; omit query values from metrics.
+            endpoint = "account"
+            options_with_values = {
+                "--method", "-X", "--header", "-H", "--input", "--jq", "-q",
+                "--template", "-t", "--cache",
+            }
+            arguments = iter(args[1:])
+            for argument in arguments:
+                if argument in options_with_values:
+                    next(arguments, None)
+                elif not argument.startswith("-"):
+                    endpoint = argument
+                    break
+            method = "POST" if "--input" in args or endpoint == "graphql" else "GET"
+            for index, argument in enumerate(args[:-1]):
+                if argument in ("--method", "-X"):
+                    method = args[index + 1].upper()
+                elif argument.startswith("--method="):
+                    method = argument.split("=", 1)[1].upper()
+            key = f"{method} {endpoint.split('?', 1)[0].lstrip('/')}"
+        else:
+            # A gh subcommand can issue several HTTP requests. Count its
+            # invocations separately, without inventing underlying API counts.
+            key = "gh " + " ".join(args[:2])
+        if key not in self._calls and len(self._calls) >= MAX_CALL_ENDPOINTS - 2:
+            key = "other endpoints" if args[0] == "api" else "gh other commands"
+        buckets = self._calls.setdefault(key, deque(maxlen=CALL_WINDOW_SECONDS + 1))
+        second = int(self._clock())
+        if buckets and buckets[-1][0] == second:
+            buckets[-1] = (second, buckets[-1][1] + 1)
+        else:
+            buckets.append((second, 1))
+
+    def _prune_calls(self) -> None:
+        cutoff = self._clock() - CALL_WINDOW_SECONDS
+        for key, buckets in list(self._calls.items()):
+            while buckets and buckets[0][0] <= cutoff:
+                buckets.popleft()
+            if not buckets:
+                del self._calls[key]
+
+    def activity(self) -> dict:
+        """Read daemon-wide, in-memory traffic without contacting GitHub."""
+        self._prune_calls()
+        counts = {key: sum(count for _, count in buckets) for key, buckets in self._calls.items()}
+        return {
+            "scope": "daemon",
+            "window_seconds": CALL_WINDOW_SECONDS,
+            "retry_at": self._retry_at if self._clock() < self._retry_at else None,
+            "api_calls_per_minute": {key: value for key, value in sorted(counts.items())
+                                     if not key.startswith("gh ")},
+            "gh_commands_per_minute": {key: value for key, value in sorted(counts.items())
+                                       if key.startswith("gh ")},
+        }
 
     def warn_failure(
         self,

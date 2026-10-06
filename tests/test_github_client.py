@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -25,6 +27,187 @@ from src.integration.ci import (
 
 
 REPOSITORY = GitHubRepositoryBinding(303, "acme/widgets")
+
+
+def _rate_limit_access(tmp_path, identity, response, now):
+    executable = tmp_path / "gh"
+    executable.write_text(
+        "#!/usr/bin/python3\nimport pathlib, sys\n"
+        "path = pathlib.Path('calls')\n"
+        "calls = int(path.read_text()) + 1 if path.exists() else 1\n"
+        "path.write_text(str(calls))\n"
+        f"sys.stdout.buffer.write({response.stdout!r} if calls == 1 else "
+        "b'HTTP/2.0 200 OK\\r\\n\\r\\n{}')\n"
+        f"sys.stderr.write({response.stderr!r} if calls == 1 else '')\n"
+        f"sys.exit({response.returncode} if calls == 1 else 0)\n"
+    )
+    executable.chmod(0o700)
+    app = identity.mode.value == "app"
+    auth = GitHubAuth(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem") if app else None,
+        app_provider=FakeTokenProvider() if app else None,
+        clock=lambda: 1_800_000_000.0,
+    )
+    runner = GhRunner(auth, executable=str(executable), env={}, cwd=tmp_path,
+                      clock=lambda: now[0])
+    return GitHubAccess(auth, runner)
+
+
+@pytest.mark.parametrize("headers,body,delay", [
+    ({"Retry-After": "7"}, {}, 7),
+    ({"Retry-After": "90"}, {}, 90),
+    ({"Retry-After": "Thu, 01 Jan 1970 00:18:20 GMT"}, {}, 100),
+    ({"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1123"}, {}, 123),
+    ({"Retry-After": "90", "X-RateLimit-Remaining": "0",
+      "X-RateLimit-Reset": "1123"}, {}, 123),
+    ({"Retry-After": "invalid", "X-RateLimit-Remaining": "0",
+      "X-RateLimit-Reset": "1123"}, {}, 123),
+    ({"Retry-After": "invalid", "X-RateLimit-Reset": "invalid"}, {}, 60),
+    ({"X-RateLimit-Remaining": "4978", "X-RateLimit-Reset": "9000"},
+     {"message": "You have exceeded a secondary rate limit"}, 60),
+])
+async def test_shared_backoff_honours_headers_and_blocks_all_request_paths(
+    tmp_path, credential_identity, headers, body, delay,
+):
+    now = [1000.0]
+    access = _rate_limit_access(
+        tmp_path, credential_identity, _response(403, body, headers=headers, returncode=1), now,
+    )
+    client = GitHubClient(REPOSITORY, access=access, clock=lambda: now[0])
+    other = GitHubRepositoryBinding(404, "acme/other")
+    other_client = GitHubClient(other, access=access, clock=lambda: now[0])
+    with pytest.raises(GitHubAccessError) as first:
+        # The plain binding-read path must retain headers internally too.
+        await access.run_read(["api", "repos/acme/widgets"], repository=REPOSITORY)
+    assert first.value.retry_at == 1000 + delay
+    assert first.value.category == "rate_limited"
+    assert access.runner.activity()["api_calls_per_minute"] == {"GET repos/acme/widgets": 1}
+
+    trust = IntegrationCITrust(
+        canonical_repository_id="repo", repository_id=303, full_name="acme/widgets",
+        producer_id="github-actions", required_checks={"version": "v1", "names": ["Tests"]},
+    )
+    paths = [
+        # Train ref snapshot, CI observer, review poll and preflight reads.
+        lambda: client.exact_head_ref("main"),
+        lambda: AuthenticatedGitHubObserver(client).observe(trust, "a" * 40),
+        lambda: client.paged_list("/repositories/303/pulls?state=open&per_page=100"),
+        lambda: client.request_json("GET", "/repos/acme/widgets"),
+        lambda: other_client.request_json("GET", "/repos/acme/other"),
+        lambda: other_client.request_json("POST", "/repos/acme/other/issues",
+                                          json_body={"title": "test"}),
+        lambda: access.bind_repository("acme/other"),
+        lambda: access.run_read(["pr", "view", "7", "--json", "headRefOid"],
+                                repository=REPOSITORY),
+        lambda: access.run_write(["pr", "close", "7"], repository=REPOSITORY),
+        lambda: access.runner.run(["api", "user"], hostname="github.com"),
+        lambda: GitHubClient(REPOSITORY, runner=access.runner).request_json(
+            "GET", "/repos/acme/widgets"),
+    ]
+    now[0] += delay - 1
+    for call in paths:
+        with pytest.raises(GitHubAccessError) as blocked:
+            await call()
+        assert blocked.value.category == "rate_limited"
+        assert blocked.value.retry_at == 1000 + delay
+    assert (tmp_path / "calls").read_text() == "1"
+
+    now[0] += 1
+    assert await other_client.request_json("GET", "/repos/acme/other") == {}
+    assert (tmp_path / "calls").read_text() == "2"
+    activity = access.runner.activity()
+    assert activity["retry_at"] is None
+    expected_counts = {"GET repos/acme/other": 1}
+    if delay < 60:
+        expected_counts["GET repos/acme/widgets"] = 1
+    assert activity["api_calls_per_minute"] == expected_counts
+
+
+@pytest.mark.parametrize("category", ["permission", "rate_limited"])
+async def test_permission_403_does_not_backoff_but_unframed_secondary_limit_does(
+    tmp_path, credential_identity, category,
+):
+    now = [1000.0]
+    diagnostic = "Forbidden (HTTP 403)" if category == "permission" else (
+        "You have exceeded a secondary rate limit (HTTP 403)"
+    )
+    access = _rate_limit_access(tmp_path, credential_identity,
+                              FakeResult(1, b"", diagnostic), now)
+    with pytest.raises(GitHubAccessError) as caught:
+        await access.run_read(["pr", "view", "7", "--json", "headRefOid"], repository=REPOSITORY)
+    assert caught.value.category == category
+    assert access.runner.activity()["retry_at"] == (1060 if category == "rate_limited" else None)
+    if category == "rate_limited":
+        with pytest.raises(GitHubAccessError, match="backing off"):
+            await access.run_read(["api", "repos/acme/widgets"], repository=REPOSITORY)
+        now[0] = 1060
+    await access.run_read(["api", "repos/acme/widgets"], repository=REPOSITORY)
+    assert (tmp_path / "calls").read_text() == "2"
+
+
+async def test_framed_permission_403_with_primary_quota_headers_does_not_backoff(
+    tmp_path, credential_identity,
+):
+    now = [1000.0]
+    access = _rate_limit_access(tmp_path, credential_identity,
+                              _response(403, {"message": "Resource not accessible by integration"},
+                                        headers={"X-RateLimit-Remaining": "4978",
+                                                 "X-RateLimit-Reset": "9000"}, returncode=1), now)
+    client = GitHubClient(REPOSITORY, access=access)
+    with pytest.raises(GitHubAccessError) as caught:
+        await client.request_json("GET", "/repos/acme/widgets")
+    assert caught.value.category == "permission"
+    assert access.runner.activity()["retry_at"] is None
+    assert await client.request_json("GET", "/repos/acme/widgets") == {}
+    assert access.runner.activity()["api_calls_per_minute"] == {"GET repos/acme/widgets": 2}
+
+
+async def test_endpoint_counter_overflow_keeps_api_and_cli_counts_separate(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.git.github_cli.MAX_CALL_ENDPOINTS", 4)
+    access = _rate_limit_access(tmp_path, GitHubCredentialIdentity.existing_login(),
+                              _response(200, {}), [1000.0])
+    runner = access.runner
+    for endpoint in ("repos/acme/widgets", "user", "repos/acme/widgets/issues",
+                     "repos/acme/widgets/pulls"):
+        await runner.run(["api", endpoint], repository=REPOSITORY)
+    await runner.run(["pr", "view", "7"], repository=REPOSITORY)
+    activity = runner.activity()
+    assert activity["api_calls_per_minute"] == {
+        "GET repos/acme/widgets": 1, "GET user": 1, "other endpoints": 2,
+    }
+    assert activity["gh_commands_per_minute"] == {"gh other commands": 1}
+
+
+@pytest.mark.parametrize("control_only", [True, False])
+async def test_integration_status_exposes_rolling_github_endpoint_counts(tmp_path, control_only):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.git.github_cli import ExistingLoginCredentials
+
+    now = [1000.0]
+    executable = tmp_path / "gh"
+    executable.write_text("#!/usr/bin/python3\nprint('HTTP/2.0 200 OK\\r\\n\\r\\n{}')\n")
+    executable.chmod(0o700)
+    runner = GhRunner(ExistingLoginCredentials(), executable=str(executable), env={},
+                      cwd=tmp_path, clock=lambda: now[0])
+    for endpoint in ("repos/acme/widgets", "repos/acme/widgets?per_page=100", "user"):
+        await runner.run(["api", endpoint], repository=REPOSITORY)
+    handler = IntegrationCommandsMixin()
+    handler.db = SimpleNamespace()
+    handler.config = SimpleNamespace(integration=SimpleNamespace(git_first="active"))
+    handler.orchestrator = SimpleNamespace(github_runner=runner)
+    method = "control_status" if control_only else "status"
+    from unittest.mock import patch
+
+    with patch(f"src.integration.status.IntegrationStatusService.{method}",
+               new=AsyncMock(return_value={"project_id": "p"})):
+        result = await handler._cmd_integration_status({"project_id": "p", "control_only": control_only})
+    assert result["github"] == {
+        "scope": "daemon", "window_seconds": 60, "retry_at": None,
+        "api_calls_per_minute": {"GET repos/acme/widgets": 2, "GET user": 1},
+        "gh_commands_per_minute": {},
+    }
+    now[0] = 1060
+    assert runner.activity()["api_calls_per_minute"] == {}
 
 
 @dataclass(frozen=True)

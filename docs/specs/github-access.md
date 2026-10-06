@@ -215,10 +215,11 @@ credential immediately before each network operation, not once per task or
 worker session.
 
 After a binding has been verified, retain its immutable repository identity in
-the startup-owned access service. Repeated binding still verifies that identity
-through `gh`, selecting the current token from the same ready credential cache
-as other repository reads. It must not retain a token in the binding or mint a
-separate bootstrap candidate on every poll tick or push. An authentication
+the startup-owned access service. Repeated binding reuses that verification for
+ten minutes, then verifies through `gh`, selecting the current token from the
+same ready credential cache as other repository reads. It must not retain a
+token in the binding or mint a separate bootstrap candidate on every poll tick
+or push. An authentication
 rejection during initial candidate verification discards that candidate and
 retries the verification once with a new candidate, fenced to the same numeric
 repository identity. Identity mismatches and permission failures do not trigger
@@ -266,8 +267,28 @@ can perform several requests, so a nonzero exit does not prove no mutation
 happened. After a timeout, cancellation or uncertain failure, the operation's
 existing marker/PR/ref reconciliation determines the outcome before retrying.
 In particular, distinguish a completed merge followed by failed branch cleanup
-from a merge that never happened. Preserve rate-limit retry information where
-available; retry scheduling remains with the existing caller.
+from a merge that never happened. The startup-owned `GhRunner` shares one
+rate-limit cooldown across all repositories and callers, including the train,
+CI observer, PR review poller and preflight. During that cooldown, calls fail
+before process launch with `rate_limited` and the shared `retry_at`; they do not
+sleep or replay writes. Cached repository identities remain reusable.
+
+Use `Retry-After` (seconds or HTTP date) and, when the primary quota is empty,
+`x-ratelimit-reset`; wait through both when both apply. Missing or invalid timing
+information uses a sixty-second delay. A secondary-limit message in a 403 body
+or CLI diagnostic also starts the cooldown; an ordinary permission 403 does not.
+Requests resume when the shared deadline expires. API invocations retain HTTP
+headers even when a binding/account caller only consumes the body.
+
+`aq integration status` includes a `github` snapshot, also in brief output:
+daemon-wide `api_calls_per_minute` keyed by method and endpoint (without query
+values), `gh_commands_per_minute` for non-API CLI invocations, and the active
+`retry_at` or null. These are rolling sixty-second in-memory counters, reset
+on daemon restart, with one-second resolution. Suppressed calls do not increment
+them; failed launched calls do. Endpoint cardinality and per-second buckets are
+bounded, with excess endpoints aggregated under `other endpoints` and excess
+CLI operations under `gh other commands`. A non-API `gh` invocation may
+make several HTTP requests; its counter measures invocations only.
 
 ## 7. Shared `gh` execution contract
 
