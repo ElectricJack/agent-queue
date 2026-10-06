@@ -17,6 +17,7 @@ from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
 from src.database.tables import (
+    integration_branch_owners,
     integration_repair_stages,
     projects,
     sessions,
@@ -799,6 +800,100 @@ class TestClaim:
         reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
         reset.assert_not_awaited()
         assert (await db.get_session(sid)).claim_phase is None
+
+    async def test_claim_backs_off_a_fenced_branch_instead_of_blocking(
+        self, handler, db, tmp_path
+    ):
+        """A fence the owner sweep clears is a wait, not a workspace fault.
+
+        A ``BranchBusy`` out of the hierarchy fence used to fall into the
+        slot-reset ladder, which escalates to BLOCKED on the third attempt --
+        so a stage-13 repair delegate whose branch was still fenced by a dead
+        writer ended BLOCKED, on a branch the periodic owner-recovery sweep
+        releases on its own (2026-10-05).  The claim must back off and retry,
+        and must not record the slot-reset fault whose ``aq task resume``
+        recovery is the wrong repair.
+        """
+        await self._hierarchy_task(db, tmp_path)
+        sid, wd = await pool_session(db, tmp_path)
+        # An ``attached`` row naming a writer that is gone: exactly what
+        # ``reconcile_ready_integration_owners`` sweeps for a READY task.
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(integration_branch_owners)
+                .where(integration_branch_owners.c.owner_id == "child")
+                .values(
+                    handoff_state="attached", session_id="gone-session",
+                    workspace_id="gone-workspace",
+                )
+            )
+        h = scoped(handler, sid)
+        for attempt in range(1, 4):
+            assert (await h._cmd_task_claim({"next": True}))["result"] == "prepare_failed"
+            task = await db.get_task("child")
+            assert task.status is TaskStatus.READY, f"attempt {attempt} blocked the task"
+            assert task.assigned_agent_id is None
+            assert await db.get_task_meta("child", "needs_attention") == "branch_fenced"
+            assert await db.get_task_meta("child", "claim_prepare_backoff_attempts") == attempt
+            assert await db.get_task_meta("child", "claim_prepare_backoff_until") > time.time()
+            # Not a slot-reset fault: ``aq task resume`` is not the repair.
+            assert await db.get_task_meta("child", "slot_reset_failure") is None
+            fenced = await db.get_task_meta("child", "branch_fenced")
+            assert fenced["branch"] == "aq/child"
+            assert "not reserved by this task" in fenced["reason"]
+            assert (await db.get_session(sid)).claim_phase is None
+            assert not (wd / ".aq" / "claim.json").exists()
+            await db.set_task_meta("child", "claim_prepare_backoff_until", time.time() - 1)
+
+        # The row is untouched by a refused claim; the sweep owns it.
+        owner = await BranchOwnership(db).get_owner(
+            BranchKey(repository_id="repo", branch="aq/child")
+        )
+        assert owner["handoff_state"] == "attached"
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = AsyncMock(
+            return_value="aq/child"
+        )
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(integration_branch_owners)
+                .where(integration_branch_owners.c.owner_id == "child")
+                .values(handoff_state="released", session_id=None, workspace_id=None)
+            )
+        assert (await h._cmd_task_claim({"next": True}))["result"] == "claimed"
+        # A successful activation clears the fence evidence with the ladder.
+        assert await db.get_task_meta("child", "branch_fenced") is None
+        assert await db.get_task_meta("child", "needs_attention") is None
+        assert await db.get_task_meta("child", "claim_prepare_backoff_attempts") is None
+
+    async def test_fenced_branch_keeps_the_operator_ladder_without_the_sweep(
+        self, handler, db, tmp_path
+    ):
+        """With the sweep off nothing frees the row, so BLOCK is the answer.
+
+        The retryable-backoff path is only correct while something is going to
+        release the fenced owner.  ``integration.owner_recovery_sweep: false``
+        is exactly the operator statement that it will not be, so the ordinary
+        preparation ladder still escalates and a human is asked.
+        """
+        await self._hierarchy_task(db, tmp_path)
+        sid, _wd = await pool_session(db, tmp_path)
+        handler.config.integration.owner_recovery_sweep = False
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(integration_branch_owners)
+                .where(integration_branch_owners.c.owner_id == "child")
+                .values(
+                    handoff_state="attached", session_id="gone-session",
+                    workspace_id="gone-workspace",
+                )
+            )
+        h = scoped(handler, sid)
+        for attempt in range(1, 4):
+            assert (await h._cmd_task_claim({"next": True}))["result"] == "prepare_failed"
+            assert (await db.get_task_meta("child", "slot_reset_failure"))["attempt"] == attempt
+            assert await db.get_task_meta("child", "branch_fenced") is None
+            await db.set_task_meta("child", "claim_prepare_backoff_until", time.time() - 1)
+        assert (await db.get_task("child")).status == TaskStatus.BLOCKED
 
     async def test_failed_attached_prepare_retries_same_claim_and_fence(self, handler, db, tmp_path):
         ownership, fence = await self._hierarchy_task(db, tmp_path)

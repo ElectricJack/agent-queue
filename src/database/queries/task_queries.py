@@ -175,6 +175,10 @@ _READY_REASONS = {
     "rate_limit": "resumed",
     "resume_paused": "resumed",
     "slot_reset_failed": "released",
+    # A preparation refused by a fenced branch (``BRANCH_FENCED``). Nothing
+    # was promoted: the task goes back on the frontier to wait for the
+    # owner-recovery sweep, exactly as a slot-reset failure does.
+    "branch_fenced": "released",
     "prepare_timeout": "released",
     # provider-failover D13: a launch or session its provider killed hands the
     # task back; the sweep resumes a provider pause early.

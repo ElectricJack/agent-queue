@@ -62,6 +62,14 @@ _ADMISSION_EVENTS = (
 ) + _POOL_EVENTS
 _FRONTIER_EVENTS = ("task.ready", "gate.resolved", "task.restarted", "task.completed") + _POOL_EVENTS
 
+#: ``needs_attention`` code for a preparation refused because the branch is
+#: fenced, not because the slot is dirty.  Distinct from ``slot_reset_failed``
+#: because the two have opposite recoveries: that one is a workspace fault only
+#: a human can fix, this one clears itself when the owner-recovery sweep
+#: releases the stranded writer, so ``aq task resume`` is the wrong repair and
+#: the claim must simply retry (see :meth:`_branch_fenced_prepare_failed`).
+BRANCH_FENCED = "branch_fenced"
+
 
 def _task_block(task) -> dict:
     """The claimed task's own row, field-for-field with ``task_show``'s core.
@@ -971,6 +979,71 @@ class ClaimCommandsMixin:
                 ClaimResult.NO_READY_WORK, "claim preparation database contention", row, cap
             )
 
+    async def _branch_fenced_prepare_failed(
+        self, task, project, *, exc, session, slot, epoch, row, cap
+    ) -> bool:
+        """Release a claim the branch fence refused, instead of BLOCKING it.
+
+        A ``BranchBusy`` out of the hierarchy fence is a *wait*, not a
+        workspace fault: the owner-recovery sweep
+        (:mod:`src.integration.owner_recovery`, plus the 30 s
+        ``reconcile_ready_integration_owners`` pass) releases an ``attached``
+        or ``handoff_pending`` row whose writer is gone, so the branch frees
+        itself inside the sweep's cadence and the next claim of this task
+        succeeds.  The generic preparation ladder cannot tell that apart from
+        a dirty slot, so it escalates to ``BLOCKED`` on the third attempt --
+        which is how a stage-13 repair delegate ended up blocked on a branch
+        it still legitimately owned (2026-10-05).
+
+        So while the sweep is running, release the claim to ``READY`` with the
+        ordinary preparation backoff: never ``BLOCKED``, and without the
+        ``slot_reset_failure`` record, whose ``aq task resume`` recovery is the
+        wrong repair for a wait that clears itself.  The backoff still throttles
+        the retry and is cleared, with this key, by the next successful
+        activation (``activate_claim(clear_preparation_metadata=True)``).
+
+        Returns ``False`` for anything that is not a branch fence, leaving the
+        caller's ladder to handle it.
+        """
+        from src.integration.ownership import BranchOwnershipError
+
+        if (
+            not isinstance(exc, BranchOwnershipError)
+            or not self.config.integration.owner_recovery_sweep
+            or getattr(project, "hierarchical_integration_mode", "disabled")
+            not in {"hierarchy", "train"}
+        ):
+            return False
+        await self.db.set_task_meta(task.id, BRANCH_FENCED, {
+            "reason": str(exc)[:2000],
+            "branch": task.branch_name,
+            "repository_id": task.repo_id,
+            "workspace_id": slot.id if slot else None,
+            "session_id": session.id,
+            "failed_at": time.time(),
+        })
+        await self.db.release_claim(
+            session.id,
+            task_status=TaskStatus.READY,
+            context=BRANCH_FENCED,
+            now=time.time(),
+            result="prepare_failed",
+            needs_attention=BRANCH_FENCED,
+            prepare_backoff=True,
+        )
+        await self.orchestrator.bus.emit(
+            "pool.prepare_failed",
+            {
+                "project_id": session.project_id,
+                "profile_id": session.profile_id,
+                "session_id": session.id,
+                "task_id": task.id,
+                "reason": str(exc),
+            },
+        )
+        self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+        return True
+
     async def _prepare_and_activate_locked(
         self, session, row, task, cap=None, *, slot=None, project=_UNSET, admission=None
     ) -> dict:
@@ -986,6 +1059,9 @@ class ClaimCommandsMixin:
         """
         epoch = task.claim_epoch
         hierarchy_attached = False
+        # Read by the ``except`` handler below, which can run before the
+        # assignment inside ``try`` (a missing slot raises first).
+        hierarchy_enabled = False
         fresh = None
         prepared_branch: str | None = None
         try:
@@ -1195,6 +1271,10 @@ class ClaimCommandsMixin:
                         task.id, "needs_attention", "integration_prepare_failed_attached"
                     )
                 self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+                return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
+            if hierarchy_enabled and await self._branch_fenced_prepare_failed(
+                task, project, exc=exc, session=session, slot=slot, epoch=epoch, row=row, cap=cap
+            ):
                 return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
             prior = await self.db.get_task_meta(task.id, "claim_prepare_backoff_attempts")
             try:
