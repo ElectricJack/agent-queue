@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import ValidationError
 
-from src.git.github_contracts import GitHubCredentialIdentity
+from src.git.github_contracts import GitHubAccessError, GitHubCredentialIdentity
 from src.integration.ci import IntegrationCITrust, IntegrationTrustManifest
 from src.integration.ci_adapters import CIAdapters, bind_ci_adapters
 from src.integration.ci_producers import (
@@ -328,6 +328,15 @@ async def test_hosted_pending_absence_and_transport_failure_are_distinct():
     assert (await producer.observe(s, s.head)).classification == "none"
     client.paged_items.side_effect = OSError("network")
     assert (await producer.observe(s, s.head)).classification == "infra"
+
+
+async def test_hosted_rate_limit_preserves_retry_after_for_train_pause():
+    client, trust = github(app=False)
+    error = GitHubAccessError("rate_limited", "secondary limit", retry_at=1900, http_status=403)
+    client.paged_items.side_effect = error
+    with pytest.raises(GitHubAccessError) as caught:
+        await HostedCIProducer(client, trust).observe(subject(), subject().head)
+    assert caught.value is error and caught.value.retry_at == 1900
 
 
 async def test_hosted_request_uses_existing_owner_without_running_git():

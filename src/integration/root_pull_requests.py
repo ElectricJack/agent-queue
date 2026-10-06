@@ -41,6 +41,7 @@ from src.database.tables import (
     task_integration_checkpoints,
     tasks,
 )
+from src.git.github import GitHubAccess
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError
 from src.logging_config import log_handled
@@ -519,6 +520,25 @@ class EpicPullRequestService:
 
     async def open_for_epic(self, epic_id: str, *,
                             expected_head_sha: str | None = None) -> dict[str, Any]:
+        result = await self._open_for_epic(epic_id, expected_head_sha=expected_head_sha)
+        if result["outcome"] != "already_open":
+            return result
+        # A retained URL is descriptive state, not proof the PR remains open.
+        # Read GitHub outside the transaction and surface a recoverable blocker.
+        task = await self._db.get_task(epic_id)
+        repo = await self._db.get_repo(task.repo_id)
+        binding = await self._git.bind_github_repository(repo.url)
+        GitHubAccess.validate_pr_url(binding, result["pr_url"])
+        pull = await self._git._github_client(binding).pull_request(result["pr_url"])
+        if pull.get("state") == "closed":
+            return {**result, "outcome": "pr_closed",
+                    "reason": "stored pull request is closed; reopen it before root admission"}
+        if pull.get("state") != "open":
+            raise ValueError("GitHub pull request state is malformed")
+        return result
+
+    async def _open_for_epic(self, epic_id: str, *,
+                             expected_head_sha: str | None = None) -> dict[str, Any]:
         if expected_head_sha is None and getattr(self._db, "_delivery_observer", None) is not None:
             # The retry locates the source from the immutable completion ref,
             # rather than treating a descriptive completion row as code truth.

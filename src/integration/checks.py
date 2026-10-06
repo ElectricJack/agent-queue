@@ -483,6 +483,17 @@ class ExactChecks:
                     await conn.execute(_upsert(check))
         return await self.read(head)
 
+    async def refresh_if_due(self, head: HeadIdentity) -> ChecksResult:
+        """Reuse unfinished evidence until due; final checks get a fresh observation.
+
+        Explicit refresh remains available for reruns and publication proofs.
+        Final PR checks must be refreshed to detect reruns on an unchanged head.
+        """
+        cached = await self.read(head)
+        if cached.due_at is not None and self.clock() < cached.due_at:
+            return cached
+        return await self.refresh(head)
+
     async def _bound_missing_push(self, head, observed, previous, now):
         """Retain the grace period in the exact-head cache across visits/restarts.
 

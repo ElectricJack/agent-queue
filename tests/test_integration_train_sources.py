@@ -30,7 +30,11 @@ from src.database.tables import (
     task_branch_origins,
     tasks,
 )
-from src.git.github_contracts import GitHubCredentialIdentity, GitHubRepositoryBinding
+from src.git.github_contracts import (
+    GitHubAccessError,
+    GitHubCredentialIdentity,
+    GitHubRepositoryBinding,
+)
 from src.git.manager import GitManager
 from src.integration.attestation import IntegrationAttestationService
 from src.integration.batches import (
@@ -1220,7 +1224,10 @@ async def test_seal_now_is_one_call_and_preserves_pr_and_candidate_gates(world):
     assert blocked.detail["blockers"][0]["code"] == "pr_checks_red"
     now[0] = 1010
     github.pr_runs[head] = "success"
-    assert (await train.visit(MAIN)).detail["seal_at"] == 1310
+    # Forced sealing cannot bypass a refused PR's observation backoff.
+    assert (await train.visit(MAIN, seal_now=True)).detail["blockers"][0]["code"] == "pr_checks_red"
+    now[0] = 1060
+    assert (await train.visit(MAIN)).detail["seal_at"] == 1360
     sealed = await train.visit(MAIN, seal_now=True)
     assert sealed.state == "testing", sealed
     assert sealed.checks == "pending"
@@ -1547,6 +1554,7 @@ class HostedGitHub:
         self.runs: dict[str, str] = {}
         self.pr_runs: dict[str, str] = {}
         self.reviews = []
+        self.permissions = {"alice": "write", "bob": "write", "jack": "write"}
         self.pulls = {}
         self.origin = None
         self.unavailable = False
@@ -1607,7 +1615,11 @@ class HostedGitHub:
                 if sha in runs]
         return rows
 
-    async def request_json(self, method, path, *, json_body, expected_statuses):
+    async def request_json(self, method, path, *, json_body=None, expected_statuses=None):
+        if method == "GET" and path.endswith("/permission"):
+            login = path.split("/")[-2]
+            return {"permission": self.permissions.get(login, "read"),
+                    "user": {"login": login}}
         assert method == "POST" and expected_statuses == {201}
         record = {"id": 7001 + len(self.records), "app": {"id": 101}, **json_body}
         self.records.append(record)
@@ -2212,6 +2224,7 @@ async def test_old_epic_workflow_files_repair_and_exact_push_then_delivers(colle
 
 def approve_pr(github, head, *, reviewer="default-fix-reviewer"):
     """Supply the human review required by a reviewed root boundary."""
+    github.permissions[reviewer.casefold()] = "write"
     github.reviews.append({"id": len(github.reviews) + 1, "state": "APPROVED",
         "commit_id": head, "user": {"login": reviewer, "type": "User"}})
 
@@ -2635,6 +2648,7 @@ async def test_train_status_still_publishes_the_configuration_generation(world):
     ("no_approval", "pr_review_missing"),
     ("old_approval", "pr_review_missing"),
     ("bot_approval", "pr_review_missing"),
+    ("outsider_approval", "pr_review_missing"),
     ("dismissed", "pr_review_missing"),
     ("changes", "pr_changes_requested"),
     ("outage", "unknown"),
@@ -2652,7 +2666,8 @@ async def test_root_pr_gate_refuses_before_freeze_then_admits_exact_green_head(w
             github.runs[head] = "success"
     elif condition == "red":
         github.pr_runs[head] = "failure"
-    elif condition in {"no_approval", "changes", "old_approval", "bot_approval", "dismissed"}:
+    elif condition in {"no_approval", "changes", "old_approval", "bot_approval", "dismissed",
+                       "outsider_approval"}:
         project = await world.db.get_project("p")
         policy = project.hierarchical_integration_policy
         policy["root"]["admission"] = "reviewed"
@@ -2669,6 +2684,8 @@ async def test_root_pr_gate_refuses_before_freeze_then_admits_exact_green_head(w
             if condition == "dismissed":
                 github.reviews.append({"id": 2, "commit_id": head, "state": "DISMISSED",
                                        "user": {"login": "bob", "type": "User"}})
+            if condition == "outsider_approval":
+                github.permissions["bob"] = "read"
     else:
         github.unavailable = True
     await train.tick()
@@ -2681,13 +2698,14 @@ async def test_root_pr_gate_refuses_before_freeze_then_admits_exact_green_head(w
         assert (await conn.execute(select(integration_batches.c.id))).first() is None
     status = await IntegrationStatusService(world.db, git_first="active", train=train).control_status("p")
     assert code in {blocker["code"] for blocker in status["blockers"]}
-    # An outage is cached with backoff and cannot inherit yesterday's green.
-    if condition == "outage":
-        github.unavailable = False
-        assert (await train.visit(MAIN)).state == "unknown"
+    # Every named refusal and outage retains its result until retry is due.
+    if condition != "missing_pr":
+        assert (await train.visit(MAIN)).state == visit["state"]
         now[0] += 61
+    github.unavailable = False
     await world.db.update_task("leaf", pr_url=url)
     github.pr_runs[head] = "success"
+    github.permissions["bob"] = "write"
     github.reviews.append({"id": 3, "commit_id": head, "state": "APPROVED",
                            "user": {"login": "bob", "type": "User"}})
     admitted = await train.visit(MAIN)
@@ -2815,7 +2833,8 @@ async def test_legacy_delivery_doctor_reports_unreachable_shas_without_writing(w
 @pytest.mark.parametrize("mismatch", ["closed", "head", "branch", "base", "fork"])
 async def test_root_pr_gate_requires_exact_open_same_repository_identity(world, mismatch):
     await completed(world, "leaf")
-    train, github, _ = await hosted_train(world)
+    now = [1000.0]
+    train, github, _ = await hosted_train(world, clock=lambda: now[0])
     url = (await world.db.get_task("leaf")).pr_url
     pull = await github.pull_request(url)
     if mismatch == "closed":
@@ -2831,10 +2850,121 @@ async def test_root_pr_gate_requires_exact_open_same_repository_identity(world, 
     original = github.pull_request
     github.pull_request = AsyncMock(return_value=pull)
     blocked = await train.visit(MAIN)
-    assert blocked.batch_id is None and blocked.detail["blockers"][0]["code"] == "awaiting_pr"
+    code = "pr_closed" if mismatch == "closed" else "awaiting_pr"
+    assert blocked.batch_id is None and blocked.detail["blockers"][0]["code"] == code
     assert github.observed == []  # Don't read CI for a different proposal.
     github.pull_request = original
+    now[0] += 61
     assert (await train.visit(MAIN)).state == "testing"
+
+
+@pytest.mark.parametrize("condition", ["red", "review_missing", "changes", "closed", "outage"])
+async def test_refused_root_github_call_budget_over_an_hour(world, condition):
+    head = await completed(world, "leaf")
+    now = [1000.0]
+    train, github, _ = await hosted_train(world, clock=lambda: now[0])
+    code = {"red": "pr_checks_red", "review_missing": "pr_review_missing",
+            "changes": "pr_changes_requested", "closed": "pr_closed", "outage": "unknown"}[condition]
+    if condition == "red":
+        github.pr_runs[head] = "failure"
+    elif condition in {"review_missing", "changes"}:
+        project = await world.db.get_project("p")
+        policy = project.hierarchical_integration_policy
+        policy["root"]["admission"] = "reviewed"
+        await world.db.update_project("p", hierarchical_integration_policy=policy)
+        if condition == "changes":
+            github.reviews = [{"id": 1, "state": "CHANGES_REQUESTED", "commit_id": head,
+                               "user": {"login": "bob", "type": "User"}}]
+    elif condition == "outage":
+        github.unavailable = True
+    original = github.pull_request
+
+    async def pull(url):
+        result = await original(url)
+        return {**result, "state": "closed"} if condition == "closed" else result
+
+    github.pull_request = AsyncMock(side_effect=pull)
+    github.paged_items = AsyncMock(wraps=github.paged_items)
+    github.paged_list = AsyncMock(wraps=github.paged_list)
+    github.request_json = AsyncMock(wraps=github.request_json)
+    assert (await train.visit(MAIN)).detail["blockers"][0]["code"] == code
+    member = BatchMember("leaf", head, git(world.origin.clone, "rev-parse", f"{head}^"))
+    # The idle train's real admission callback, visited every five seconds.
+    for elapsed in range(5, 3600, 5):
+        now[0] = 1000 + elapsed
+        refusal = await train.batches.pr_gate(MAIN, member)
+        assert refusal["code"] == code
+    assert github.pull_request.await_count == 9
+    calls = sum(mock.await_count for mock in (github.pull_request, github.paged_items,
+                                              github.paged_list, github.request_json))
+    assert calls <= 54  # At most six GitHub requests per attempt; formerly thousands.
+
+
+@pytest.mark.parametrize("stage", ["pull_request", "paged_items", "paged_list", "request_json"])
+async def test_root_pr_gate_rate_limit_reaches_shared_pause_with_retry_after(world, stage):
+    head = await completed(world, "leaf")
+    now = [1000.0]
+    train, github, _ = await hosted_train(world, clock=lambda: now[0])
+    project = await world.db.get_project("p")
+    policy = project.hierarchical_integration_policy
+    policy["root"]["admission"] = "reviewed"
+    await world.db.update_project("p", hierarchical_integration_policy=policy)
+    github.reviews = [{"id": 1, "state": "APPROVED", "commit_id": head,
+                       "user": {"login": "bob", "type": "User"}}]
+    original = getattr(github, stage)
+    limited = AsyncMock(side_effect=GitHubAccessError(
+        "rate_limited", "fixture secondary limit", retry_at=1900.0, http_status=403))
+    setattr(github, stage, limited)
+    await train.tick()
+    await train.drain()
+    [visit] = train.status()
+    assert visit["detail"]["reason"] == "rate_limited"
+    assert visit["detail"]["retry_at"] == 1900
+    calls = limited.await_count
+    now[0] = 1899
+    await train.tick()
+    await train.drain()
+    assert limited.await_count == calls
+    setattr(github, stage, original)
+    now[0] = 1900
+    await train.tick()
+    await train.drain()
+    assert train.status()[0]["state"] == "testing"
+
+
+@pytest.mark.parametrize("permission,allowlist,state", [
+    ("read", frozenset(), "pr_review_missing"),
+    ("none", frozenset({"github:bob"}), "pr_review_missing"),
+    ("write", frozenset(), "approved"),
+    ("admin", frozenset({"github:BOB"}), "approved"),
+    ("write", frozenset({"github:alice"}), "pr_review_missing"),
+])
+async def test_pr_reviewer_allowlist_only_narrows_repository_write_access(permission, allowlist, state):
+    from src.integration.reviews import observe_pull_request_review_state
+
+    client = SimpleNamespace(request_json=AsyncMock(return_value={
+        "permission": permission, "user": {"login": "bob"},
+    }))
+    reviews = [{"id": 1, "state": "APPROVED", "commit_id": "a" * 40,
+                "user": {"login": "bob", "type": "User"}}]
+    assert await observe_pull_request_review_state(reviews, "a" * 40, client=client,
+        binding=GitHubRepositoryBinding(123, "o/r"),
+        requirements=ReviewRequirements(True, allowlist)) == state
+
+
+async def test_untrusted_changes_request_does_not_veto_trusted_approval():
+    from src.integration.reviews import observe_pull_request_review_state
+
+    client = SimpleNamespace(request_json=AsyncMock(side_effect=[
+        {"permission": "write", "user": {"login": "bob"}},
+        {"permission": "read", "user": {"login": "outsider"}},
+    ]))
+    reviews = [{"id": 1, "state": "APPROVED", "commit_id": "a" * 40,
+                "user": {"login": "bob", "type": "User"}},
+               {"id": 2, "state": "CHANGES_REQUESTED", "commit_id": "a" * 40,
+                "user": {"login": "outsider", "type": "User"}}]
+    assert await observe_pull_request_review_state(reviews, "a" * 40, client=client,
+        binding=GitHubRepositoryBinding(123, "o/r")) == "approved"
 
 
 async def test_failed_epic_pr_open_is_retried_from_completion_ref_without_checkpoint(collected_epic):
