@@ -349,6 +349,57 @@ def test_rate_limit_exits_outside_the_window_do_not_combine():
     assert d.state == DEGRADED
 
 
+def test_explicit_usage_screen_exhausts_until_reset_despite_late_launch_acknowledgements():
+    d = Driver(provider="opencode-zen")
+    reset = T0 + 15 * 3600 + 2 * 60
+    d.feed(EXIT_RATE_LIMIT, "usage", session_id="s1", detail={
+        "usage_exhausted": True, "resets_at": reset,
+    })
+    assert d.state == EXHAUSTED and d.row.until == reset
+    # Even after the evidence ring loses the footer, daemon acknowledgements
+    # from sessions launched before the outage cannot clear the known quota.
+    for _ in range(d.config.evidence.keep + 1):
+        d.success()
+        assert d.state == EXHAUSTED and d.row.until == reset
+    d.tick(reset - d.clock.now + d.config.recovery.reset_grace_seconds)
+    assert d.row.reason_code == RECOVERING
+    d.success()
+    assert d.state == AVAILABLE
+
+
+def test_corroborated_long_retries_use_the_stated_reset_instead_of_backoff_cap():
+    d = Driver()
+    reset = T0 + 15 * 3600
+    d.feed(EXIT_RATE_LIMIT, "usage", session_id="s1", detail={"resets_at": reset})
+    assert d.state == DEGRADED
+    d.feed(EXIT_RATE_LIMIT, "usage", session_id="s2", detail={"resets_at": reset})
+    assert d.state == EXHAUSTED and d.row.until == reset
+    for _ in range(d.config.evidence.keep + 1):
+        d.success()
+        assert d.state == EXHAUSTED and d.row.until == reset
+
+
+def test_a_new_usage_screen_extends_exhaustion_and_recovery_canary_obeys_reset():
+    d = Driver()
+    d.feed(EXIT_RATE_LIMIT, "usage", session_id="s1", detail={"usage_exhausted": True})
+    first_reset = d.row.until
+    reset = first_reset + 7200
+    d.feed(EXIT_RATE_LIMIT, "usage", session_id="s2", detail={
+        "usage_exhausted": True, "resets_at": reset,
+    })
+    assert d.row.until == reset
+    d.tick(reset - d.clock.now + d.config.recovery.reset_grace_seconds)
+    assert d.row.reason_code == RECOVERING
+    reset = d.clock.now + 54000
+    d.feed(EXIT_RATE_LIMIT, "usage", session_id="s3", detail={
+        "usage_exhausted": True, "resets_at": reset,
+    })
+    assert d.state == EXHAUSTED and d.row.until == reset
+    for _ in range(d.config.evidence.keep + 1):
+        d.success()
+        assert d.state == EXHAUSTED and d.row.until == reset
+
+
 # -- D3: failing and attribution -------------------------------------------------
 
 

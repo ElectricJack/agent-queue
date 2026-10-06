@@ -43,6 +43,7 @@ from src.sessions.harness_parser import Harness
 from src.sessions.launch import launch_session
 from src.sessions.provider import SessionDiedDuringStartup, SessionSpec
 from tests.assignment_routing_helpers import route_source_for
+from tests.test_usage_limit_screen import OPENCODE_LIMIT_PANE
 
 CLASSES = {
     "standard-high": IntelligenceClass(
@@ -483,16 +484,27 @@ async def test_leaving_paused_drops_the_provider_pause_record(orch):
 # -- mid-task exits ------------------------------------------------------------------
 
 
-async def _launch_on_codex(orch, task_id: str = "t0", *, git_root=None):
+async def _launch_on_codex(orch, task_id: str = "t0", *, git_root=None, harness="codex"):
     """Launch *task_id* on Codex; with *git_root*, its workspace is a real repo."""
     workspace = pathlib.Path(orch.config.workspace_dir) / "p-1"
     origin = None
     if git_root is not None:
         origin, _work = _make_repo(git_root, branch=f"aq/{task_id}", work=workspace)
-    await _task(orch, task_id)
+    profile = "standard-high-codex"
+    if harness != "codex":
+        orch.harness_registry.upsert(Harness(
+            id=harness, name=harness, command="opencode", provider="openai",
+            prompt_mode="arg", process_names=("opencode",),
+        ))
+        profile = f"standard-high-{harness}"
+        await orch.db.create_profile(AgentProfile(
+            id=profile, name=profile, harness=harness, default_class="standard-high",
+            lifecycle="task", enabled=True,
+        ))
+    await _task(orch, task_id, profile=profile)
     await _cycle(orch)
     session = await orch.db.get_session_for_task(task_id)
-    assert session is not None and session.harness == "codex"
+    assert session is not None and session.harness == harness
     return session, workspace, origin
 
 
@@ -502,6 +514,54 @@ async def _die_on_usage_limit(orch, session) -> None:
     fake.feed_output(session.name, RATE_LIMIT_PANE, activity=False)
     fake.script_death(session.name)
     await orch.session_reconciler.tick()
+
+
+@pytest.mark.parametrize("push_fails", [False, True])
+async def test_live_opencode_exhaustion_preserves_work_and_releases_or_holds_task(
+    orch, tmp_path, push_fails
+):
+    session, workspace, origin = await _launch_on_codex(
+        orch, git_root=tmp_path / "git", harness="opencode-zen"
+    )
+    committed = _do_some_work(workspace)
+    mock_git, orch.git = orch.git, GitManager()
+    if push_fails:
+        _git(["remote", "set-url", "origin", str(tmp_path / "missing.git")], workspace)
+    fake = _fake(orch)
+    # The retry status keeps last_activity fresh: this must not depend on a
+    # stale pane, a readable OpenCode store, or an Ollama liveness endpoint.
+    fake.feed_output(session.name, OPENCODE_LIMIT_PANE)
+    now = time.time()
+    await orch.session_reconciler.tick(now=now)
+
+    availability = orch.provider_availability
+    assert availability.effective_state("opencode-zen") == EXHAUSTED
+    assert availability.row("opencode-zen").until == pytest.approx(now + 54120)
+    assert not availability.admit_launch("opencode-zen")[0]
+    assert not availability.suppresses("codex")
+    assert not availability.suppresses("opencode")
+    task = await orch.db.get_task("t0")
+    assert task.retry_count == 0 and task.assigned_agent_id is None
+    handoff = await orch.db.get_task_meta("t0", inflight.HANDOFF_META)
+    assert handoff["provider"] == "opencode-zen" and handoff["wip_commit"]
+    assert handoff["verdict"] == "rate_limit"
+    head = _git(["rev-parse", "HEAD"], workspace)
+    assert _git(["merge-base", "--is-ancestor", committed, head], workspace) == ""
+    assert "new.py" in _git(["ls-tree", "-r", "--name-only", head], workspace)
+    assert (await orch.db.get_session(session.id)).restarts == 0
+    if push_fails:
+        assert task.status == TaskStatus.PAUSED and task.resume_after is None
+        assert handoff["disposition"] == "held" and handoff["checkpoint"] == "push_failed"
+        assert await orch.db.get_task_meta("t0", "needs_attention") == inflight.PUSH_FAILED_ATTENTION
+        saved = await orch.db.get_task_meta("t0", "manual_pause_checkpoint")
+        assert saved and _git(["rev-parse", saved["ref"]], workspace)
+        assert (workspace / "new.py").exists()
+    else:
+        assert task.status == TaskStatus.READY
+        assert handoff["checkpoint"] == "pushed" and handoff["head"] == head
+        assert _git(["rev-parse", "refs/heads/aq/t0"], origin) == head
+        assert await orch.db.get_workspace_for_task("t0") is None
+    orch.git = mock_git
 
 
 async def test_a_mid_task_usage_limit_exit_checkpoints_pushes_and_hands_off(orch, tmp_path):
@@ -727,6 +787,39 @@ async def test_a_pool_session_usage_limit_exit_requeues_without_a_key_quarantine
 
     measurement = await orch._measure_pools()
     assert measurement.bounds[PoolKey("standard-high-codex")] == (0, 0)
+
+
+async def test_open_pool_claim_on_opencode_exhaustion_is_preserved_then_released(orch, tmp_path):
+    orch.harness_registry.upsert(Harness(id="opencode-zen", name="Zen", command="opencode"))
+    await orch.db.update_profile(
+        "standard-high-codex", lifecycle="pool", max_active=2, harness="opencode-zen"
+    )
+    row = await _claimed_pool_session(orch, tmp_path, "t0", 1)
+    await orch.db.update_session(row.id, harness="opencode-zen")
+    origin, work = _make_repo(tmp_path / "git", work=pathlib.Path(row.work_dir))
+    committed = _do_some_work(work)
+    mock_git, orch.git = orch.git, GitManager()
+    _fake(orch).feed_output(row.name, OPENCODE_LIMIT_PANE)
+
+    await orch.session_reconciler.tick()
+
+    task = await orch.db.get_task("t0")
+    assert task.status == TaskStatus.READY and task.assigned_agent_id is None
+    assert task.retry_count == 0 and orch._pool_quarantine == {}
+    stopped = await orch.db.get_session(row.id)
+    assert stopped.state == "stopped" and stopped.task_id is None and stopped.claim_phase is None
+    assert (await orch.db.get_agent("agent-1")).state != AgentState.BUSY
+    assert await orch.db.get_workspace_for_task("t0") is None
+    handoff = await orch.db.get_task_meta("t0", inflight.HANDOFF_META)
+    tip = _git(["rev-parse", "refs/heads/aq/t0"], origin)
+    assert handoff["checkpoint"] == "pushed" and handoff["head"] == tip
+    assert _git(["merge-base", "--is-ancestor", committed, tip], origin) == ""
+    assert "new.py" in _git(["ls-tree", "-r", "--name-only", tip], origin)
+    from src.scheduler import PoolKey
+
+    measurement = await orch._measure_pools()
+    assert measurement.bounds[PoolKey("standard-high-codex")] == (0, 0)
+    orch.git = mock_git
 
 
 async def test_pool_sessions_on_an_unavailable_provider_drain_and_busy_ones_are_left_alone(
