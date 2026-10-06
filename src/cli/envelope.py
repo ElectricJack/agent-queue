@@ -179,6 +179,8 @@ def _project_item(item: Any, fields: tuple[str, ...], entity: str) -> Any:
     if entity in {"task", "integration"} and isinstance(item, Mapping):
         if "operator_decisions" in item:
             projected["operator_decisions"] = item["operator_decisions"]
+        if entity == "integration" and "github" in item:
+            projected["github"] = item["github"]
     return projected
 
 

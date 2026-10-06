@@ -85,6 +85,11 @@ def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail():
         "warnings": [{"code": "audit_workflow_missing", "detail": "warns", "ref": "repo"}],
         "schedule": {"next_due_at": 123.0},
         "members": [{"task_id": "t"}],
+        "github": {
+            "scope": "daemon", "window_seconds": 60, "retry_at": 123.0,
+            "api_calls_per_minute": {"GET repos/acme/widgets": 3},
+            "gh_commands_per_minute": {},
+        },
     }
     client = _client(response)
     with patch("src.cli.integration._get_client", return_value=client):
@@ -109,6 +114,7 @@ def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail():
         "blocker_digest": response["blocker_digest"],
         # Non-blocking App-mode warnings stay visible in the brief projection.
         "warnings": response["warnings"],
+        "github": response["github"],
         "state": None,
         "stage": None,
         "count": None,

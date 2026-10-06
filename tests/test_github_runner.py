@@ -215,6 +215,7 @@ async def test_existing_login_preserves_auth_discovery_but_scrubs_target_overrid
     capture = json.loads(result.stdout)
     assert capture["argv"] == [
         "api",
+        "--include",
         "--hostname",
         "github.com",
         "--method",
