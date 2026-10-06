@@ -529,76 +529,39 @@ def _database_is_at_head() -> bool:
 def _backup_database() -> None:
     """Dump the configured Postgres database to BACKUPS_DIR.
 
-    Prefer a local PostgreSQL client and the configured connection, including
-    Homebrew's keg-only clients. Fall back to the legacy ``aq-postgres`` Docker
-    container when no local client is installed. A failed backup stops startup.
+    Prefer compatible local PostgreSQL clients and the configured connection,
+    including Homebrew's keg-only clients. Fall back to the running container
+    publishing that endpoint. Both paths write custom archives; failure stops startup.
     """
+    import asyncio
     import datetime
 
-    from src.install.command import run_command
-    from src.install.update import backup_database, find_pg_dump
-
-    pg_dump = find_pg_dump()
-    if pg_dump is not None:
-        destination = Path(BACKUPS_DIR) / (
-            f"pre-deploy-{datetime.datetime.now(datetime.UTC):%Y%m%dT%H%M%S%fZ}.dump"
-        )
-        try:
-            ok, message = backup_database(
-                Path(CONFIG_PATH), destination, execute=run_command, pg_dump=pg_dump
-            )
-            if not ok:
-                console.print(f"Database backup failed: {message}", markup=False)
-                raise SystemExit(13)
-            with destination.open("rb") as handle:
-                valid = handle.read(5) == b"PGDMP"
-            if not valid:
-                destination.unlink(missing_ok=True)
-                console.print("Database backup failed: pg_dump did not produce a custom archive.")
-                raise SystemExit(15)
-        except OSError as exc:
-            console.print(f"Database backup failed: {exc}", markup=False)
-            raise SystemExit(14) from exc
-        console.print(f"[green]Backup written[/] {destination} ({destination.stat().st_size:,} bytes)")
-        return
+    from src.config import load_config
+    from src.database.backup import BackupError, backup_database, postgres_clients
 
     try:
         os.makedirs(BACKUPS_DIR, exist_ok=True)
     except OSError as exc:
         raise SystemExit(12) from exc
 
-    ts = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
-    out = os.path.join(BACKUPS_DIR, f"pre-deploy-{ts}.sql")
-    container, user, db = "aq-postgres", "agent_queue", "agent_queue"
-    tmp = f"/tmp/pre-deploy-{ts}.sql"
+    destination = Path(BACKUPS_DIR) / (
+        f"pre-deploy-{datetime.datetime.now(datetime.UTC):%Y%m%dT%H%M%S%fZ}.dump"
+    )
 
-    def _docker(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(args, capture_output=True, text=True, check=True)
+    async def _main() -> None:
+        clients = await postgres_clients(load_config(CONFIG_PATH).database.url)
+        await backup_database(clients, destination)
 
     try:
-        _docker("docker", "exec", container, "pg_dump", "-U", user, "-d", db, "-f", tmp)
-        _docker("docker", "cp", f"{container}:{tmp}", out)
-        _docker("docker", "exec", container, "rm", "-f", tmp)
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        console.print(
-            "Database backup failed: no local pg_dump was found and the aq-postgres Docker "
-            "backup failed. Install PostgreSQL client tools for the configured server.",
-            markup=False,
-        )
-        raise SystemExit(13) from exc
-
-    # The wrapper's integrity check: a real pg_dump carries that comment.
-    size = os.path.getsize(out) if os.path.exists(out) else 0
-    try:
-        with open(out, "rb") as handle:
-            if size > 4096:
-                handle.seek(-4096, os.SEEK_END)
-            tail = handle.read().decode("utf-8", "replace")
-    except OSError as exc:
+        asyncio.run(_main())
+    except BackupError as exc:
+        console.print(f"Database backup failed: {exc}", markup=False)
+        invalid = str(exc).startswith(("restore_format_unsupported", "restore_archive_invalid"))
+        raise SystemExit(15 if invalid else 13) from exc
+    except (OSError, TimeoutError) as exc:
+        console.print(f"Database backup failed: {exc}", markup=False)
         raise SystemExit(14) from exc
-    if "unrestrict" not in tail:
-        raise SystemExit(15)
-    console.print(f"[green]Backup written[/] {out} ({size:,} bytes)")
+    console.print(f"[green]Backup written[/] {destination} ({destination.stat().st_size:,} bytes)")
 
 
 def _post_daemon_checks() -> None:

@@ -481,6 +481,7 @@
     "install": {
       "description": "aq install, uninstall and update: the installer engine and resume, platform detection and adapters (WSL, macOS), PostgreSQL, Node toolchain, dashboard build, provider CLIs and logins, onboarding wizard, bootstraps and update rollback.",
       "modules": [
+        "tests/test_db_cli.py",
         "tests/test_install_cli.py",
         "tests/test_install_dashboard.py",
         "tests/test_install_engine.py",
@@ -1417,7 +1418,7 @@
       ]
     }
   },
-  "digest": "sha256:f8cd35d085e3f75342b366e6172c1bb71dca2ccf3933e3b52ce6287d70c41c11",
+  "digest": "sha256:451b70a1b038993002b72071a1440efe089d8ba3cc7919565b453b41eccab6da",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3234,7 +3235,7 @@
         "src.cli.app",
         "src.cli.daemon",
         "src.daemon_state",
-        "src.install.command",
+        "src.database.backup",
         "src.sessions.env"
       ],
       "markers": [
@@ -4658,6 +4659,23 @@
         "skipif"
       ],
       "summary": "Integration tests for the PostgreSQL database adapter."
+    },
+    "tests/test_db_cli.py": {
+      "areas": [
+        "install"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.app",
+        "src.cli.db",
+        "src.database.backup",
+        "src.database.engine",
+        "src.database.schema_key"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Operator recovery refusals and a real PostgreSQL custom-archive round trip."
     },
     "tests/test_db_immediate.py": {
       "areas": [

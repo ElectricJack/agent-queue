@@ -126,13 +126,28 @@ Whether anything brings the daemon back after a reboot or a crash is `aq service
 `aq start` and `aq restart` do more than replace a process, and each step is a postcondition — a failure is reported, not a reason to claim a clean start and lose it:
 
 - **Harness environment scrub.** Every `AQ_*` marker, session/DB key (`AQ_DB_SCOPE`, `AQ_DATABASE_URL`, `AGENT_QUEUE_DB`) and Claude/Code/Codex session variable is stripped from the daemon's environment before launch. This fixes the 2026-09-21 incident, where a worker's `AQ_DB_SCOPE=worker` / DB-isolation keys leaked into the daemon and made it read the wrong database and silently refuse to migrate. `aq start` warns if it detects an enclosing harness marker at call time.
-- **Database backup when not at head.** If the database is Postgres and its stamped schema does not match the checkout's Alembic head, `aq start` dumps it to `~/.agent-queue/backups/pre-deploy-<UTC>.sql` before proceeding and then exits (code 12–15) if the dump or its integrity marker is missing. When the database is already at head, no backup is taken.
+- **Database backup when not at head.** If the stamped schema does not match the checkout's Alembic head, `aq start` dumps it to `~/.agent-queue/backups/pre-deploy-<UTC>.dump` before proceeding and then exits (code 12–15) if the dump or archive inspection fails. Local and Docker clients both produce PostgreSQL custom archives, the same format as `aq db backup` and the update backup. When the database is already at head, no startup backup is taken.
 - **Startup health wait.** The CLI polls `/health` for up to 120 seconds, accepting healthy (200) and degraded (503) responses while the launched child is alive. Timeout diagnostics read only the final 64 KiB of the log, then recheck health before stopping that child. A daemon that became healthy during diagnostics is kept; an exited child fails immediately. Cleanup preserves a PID file naming another instance.
 - **`/ready` wait.** After the daemon is up, `aq start` polls `{api_base}/ready` for up to 60 seconds and reports whether the daemon is fully ready, rather than assuming a daemon that answers `/health` is also reconciling pools.
 - **Stale-worktree fix.** The daemon then runs `aq doctor --check pools.stale_worktree_checkouts --fix` to release any worktrees it now owns. A failure here is downgraded to a warning and never undoes a successful start.
 - **Start lock and stop marker.** `aq start` holds `~/.agent-queue/daemon.lock` (with its PID inside) from before the database wait to the end of these checks, and removes `~/.agent-queue/daemon.stopped`; every `aq stop` (also the stop inside `aq restart` and `aq update`) and the daemon's `shutdown` command write that marker. A stop recorded while a start is running wins: the start checks the marker again just before it spawns the daemon, and `aq stop` waits briefly for a start in progress to settle. A lock whose owner process is gone is abandoned and cleared by the next start. The auto-restart watchdog (`aq service`) reads both: it never races a start in progress and never starts a daemon that was stopped on purpose. A `daemon.pid` whose process is gone, or whose PID now belongs to another program (after a reboot), is treated as stale.
 
 All of the above is built into `aq start` and `aq restart`, so an operator update no longer needs a separate wrapper to scrub the environment, dump the database, and run the doctor step. To update, run `aq restart --no-dashboard`; do not run a plain `aq stop` then `aq start` — `aq stop` also tears down the agent tmux sessions, including the one performing the update. Verify daemon health and the supervisor's live terminal after the restart; a stored session status alone can be stale.
+
+Disaster recovery is the separate operator command `aq db restore <backup.dump>`.
+Stop the daemon and end every agent session first. Preflight checks the dump's
+Alembic revision against the checkout, prints its UTC timestamp and counts of
+newer tasks, events, durable waits, gates, operator decisions and messages. Repeat
+the timestamp with `--accept-data-loss <timestamp>` to proceed. Restore writes a
+fresh `backups/pre-restore-<UTC>.dump` before replacing archived objects in one
+transaction. `--force` overrides the live-daemon refusal; it does not override
+the agent-session or data-loss checks. See
+[backup and restore](../reference/database/migrations.md#backup-and-restore).
+
+On the PG18 install, `aq-postgres` uses the named `pgdata` volume mounted at
+`/var/lib/postgresql`, with the version-specific data directory beneath it.
+Backup and restore use the existing server; they never run Compose. Do not
+compose-up PostgreSQL using an older checkout's volume layout.
 
 ## Symptom-to-command troubleshooting
 

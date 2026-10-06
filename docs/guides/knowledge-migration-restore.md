@@ -199,10 +199,8 @@ from one instant. `aq stop --keep-sessions` preserves agent sessions; plain
 ```bash
 aq stop --keep-sessions
 
-# PostgreSQL. $AQ_DB_URL must be THIS install's database.url from
-# ~/.agent-queue/config.yaml — not agent_queue_e2e, and not one of the worker
-# override variables. See the warning below.
-pg_dump --format=custom --file=/secure/backup/aq-knowledge.dump "$AQ_DB_URL"
+# PostgreSQL: the configured database.url in ~/.agent-queue/config.yaml.
+aq db backup /secure/backup/aq-knowledge.dump
 sha256sum /secure/backup/aq-knowledge.dump | tee /secure/backup/aq-knowledge.dump.sha256
 sha256sum -c /secure/backup/aq-knowledge.dump.sha256
 
@@ -246,15 +244,19 @@ Notes on the archives:
   `pg_restore --list /secure/backup/aq-knowledge.dump | grep knowledge_records`.
 - There is a second, smaller safety net worth knowing about: when the stamped
   schema is behind the checkout's Alembic head, `aq start` dumps the database to
-  `~/.agent-queue/backups/pre-deploy-<UTC>.sql` before it proceeds. That dump is
+  `~/.agent-queue/backups/pre-deploy-<UTC>.dump` before it proceeds. That dump is
   a schema-migration guard, not a knowledge backup — it is only taken when the
-  schema is behind, it is a plain SQL dump rather than a custom-format archive,
+  schema is behind, it uses the same PostgreSQL custom format as `aq db backup`,
   and it never contains the vault. Do not treat it as satisfying this section.
+  `aq db restore <dump>` checks the archived schema, requires ended agent sessions
+  and explicit `--accept-data-loss <dump-timestamp>`, and takes a recovery backup
+  before restoring the configured database.
 
 ### What this backup deliberately does not do
 
-There is no `aq db backup`, and adding one is not this runbook's business. The
-backups are access-controlled operator artifacts; the domain does not manage
+`aq db backup` captures the database, including knowledge history, but does not
+capture the vault or its artifact files. The backups are access-controlled
+operator artifacts; the domain does not manage
 their retention, and it does not expose a restore or import bypass either
 ([knowledge protection (K05)](../specs/design/knowledge-protection.md)).
 
