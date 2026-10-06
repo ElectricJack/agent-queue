@@ -12,9 +12,9 @@
 | Idempotency | natural |
 | Retry safe | yes |
 | Timeout | none |
-| Preview | not supported |
+| Preview | supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:89432149c2fcb98cf2d6cfcabd089e31d8c40b31f6ae1ba560cc552004b8518f` |
+| Contract fingerprint | `sha256:5531fcb917967af1b253889ae419f52e15f0e3949cdb9963946da7d26120c978` |
 
 ## Parameters
 
@@ -22,7 +22,8 @@
 |---|---|---|---|---|
 | `batch_id` | `string` | yes | — | — |
 | `task_id` | `string` | yes | — | — |
-| `reason` | `string` | yes | — | — |
+| `reason` | `string` | no | `""` | — |
+| `dry_run` | `boolean` | no | `false` | — |
 
 Redacted in receipts and explanations: `reason`.
 
@@ -60,7 +61,7 @@ Redacted in receipts and explanations: `reason`.
 | `repository_id` | `string \| null` | — |
 | `schedule` | `object \| null` | — |
 | `active_batch` | `object \| null` | — |
-| `members` | `object[]` | — |
+| `members` | `(object \| string)[]` | — |
 | `parent_readiness` | `object[]` | — |
 | `ownership` | `object[]` | — |
 | `lease` | `object \| null` | — |
@@ -91,8 +92,13 @@ Redacted in receipts and explanations: `reason`.
 | `children` | `object[]` | — |
 | `retire_delegates` | `string[]` | — |
 | `conclusion` | `string \| null` | — |
+| `replacement_batch_id` | `string \| null` | — |
+| `intent` | `string \| null` | — |
+| `target_ref` | `string \| null` | — |
+| `target_sha` | `string \| null` | — |
+| `candidate_sha` | `string \| null` | — |
 
-Projected into the run receipt: `id`, `head_sha`, `recovered_task_id`, `source_sha`, `manifest`, `evidence`, `policy`, `deliveries`, `pending_publications`, `parked`, `preserved_owners`, `released_delegates`, `archived_delegates`, `project_id`, `operation_id`, `batch_id`, `task_id`, `effective_mode`, `desired_mode`, `mode`, `generation`, `draining`, `ready`, `rollout_ready`, `blockers`, `blocker_digest`, `certification`, `repository_id`, `schedule`, `active_batch`, `members`, `parent_readiness`, `ownership`, `lease`, `repair`, `ci_evidence`, `promotion`, `reconciliation`, `cleanup_pending`, `release`, `legacy_suppression`, `waiver_id`, `request_id`, `request_sequence`, `trigger`, `requested_at`, `next_due_at`, `state`, `stage`, `deadline_at`, `reason`, `count`, `outcomes`, `dry_run`, `leases`, `bound`, `unproven`, `verifier_task_id`, `children`, `retire_delegates`, `conclusion`.
+Projected into the run receipt: `id`, `head_sha`, `recovered_task_id`, `source_sha`, `manifest`, `evidence`, `policy`, `deliveries`, `pending_publications`, `parked`, `preserved_owners`, `released_delegates`, `archived_delegates`, `project_id`, `operation_id`, `batch_id`, `task_id`, `effective_mode`, `desired_mode`, `mode`, `generation`, `draining`, `ready`, `rollout_ready`, `blockers`, `blocker_digest`, `certification`, `repository_id`, `schedule`, `active_batch`, `members`, `parent_readiness`, `ownership`, `lease`, `repair`, `ci_evidence`, `promotion`, `reconciliation`, `cleanup_pending`, `release`, `legacy_suppression`, `waiver_id`, `request_id`, `request_sequence`, `trigger`, `requested_at`, `next_due_at`, `state`, `stage`, `deadline_at`, `reason`, `count`, `outcomes`, `dry_run`, `leases`, `bound`, `unproven`, `verifier_task_id`, `children`, `retire_delegates`, `conclusion`, `replacement_batch_id`, `intent`, `target_ref`, `target_sha`, `candidate_sha`.
 
 ## Outcomes
 
@@ -101,6 +107,8 @@ Projected into the run receipt: `id`, `head_sha`, `recovered_task_id`, `source_s
 | `ejected` | success | — |
 | `invalid_state` | failure | — |
 | `not_a_member` | failure | — |
+| `preview` | success | — |
+| `refused` | failure | — |
 | `unknown_batch` | failure | — |
 
 ## Declared effects

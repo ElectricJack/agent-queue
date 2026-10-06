@@ -10600,15 +10600,19 @@
             "type": "string"
           },
           "reason": {
-            "minLength": 1,
+            "default": "",
             "title": "Reason",
             "type": "string"
+          },
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
           }
         },
         "required": [
           "batch_id",
-          "task_id",
-          "reason"
+          "task_id"
         ],
         "title": "IntegrationEjectArgs",
         "type": "object"
@@ -10827,6 +10831,35 @@
           "evidence_ids"
         ],
         "title": "IntegrationParentVerifyArgs",
+        "type": "object"
+      }
+    },
+    "integration_pause_batch": {
+      "name": "integration_pause_batch",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationAbortBatchArgs",
         "type": "object"
       }
     },
@@ -12128,6 +12161,35 @@
         "type": "object"
       }
     },
+    "integration_resume_batch": {
+      "name": "integration_resume_batch",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationAbortBatchArgs",
+        "type": "object"
+      }
+    },
     "integration_retire_origin": {
       "name": "integration_retire_origin",
       "description": "Authenticated hierarchical integration operational control.",
@@ -12237,6 +12299,30 @@
           "request_id"
         ],
         "title": "IntegrationSealArgs",
+        "type": "object"
+      }
+    },
+    "integration_seal_now": {
+      "name": "integration_seal_now",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationSealNowArgs",
         "type": "object"
       }
     },

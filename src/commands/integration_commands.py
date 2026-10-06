@@ -57,6 +57,47 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_pause_batch(self, args: dict) -> dict:
+        return await self._integration_batch_intent(args, "paused")
+
+    async def _cmd_integration_resume_batch(self, args: dict) -> dict:
+        return await self._integration_batch_intent(args, "open")
+
+    async def _integration_batch_intent(self, args, intent):
+        from src.commands.contracts.integration import IntegrationAbortBatchArgs
+        from src.integration.batches import BatchStore
+        from src.integration.train_controls import TrainControls
+
+        request = IntegrationAbortBatchArgs.model_validate(args)
+        batch = await BatchStore(self.db).get(request.batch_id)
+        operator, refusal = await integration_operator(self.db, batch.project_id if batch else None)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await TrainControls(self.db).set_batch_intent(
+                request.batch_id, intent, dry_run=request.dry_run,
+                operator_id=operator, reason=request.reason,
+            )
+        except (ValueError, GitError, OSError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
+    async def _cmd_integration_seal_now(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationSealNowArgs
+        from src.integration.train_controls import TrainControls
+
+        request = IntegrationSealNowArgs.model_validate(args)
+        _operator, refusal = await integration_operator(self.db, request.project_id)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await TrainControls(self.db).seal_now(request.project_id,
+                train=getattr(self.orchestrator, "integration_train", None),
+                dry_run=request.dry_run)
+        except (ValueError, GitError, OSError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def _cmd_integration_abort_batch(self, args: dict) -> dict:
         """Preview or abort an unpromoted Git-first batch."""
         from src.commands.contracts.integration import IntegrationAbortBatchArgs
@@ -1157,6 +1198,33 @@ class IntegrationCommandsMixin:
 
 
     async def _cmd_integration_eject(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationEjectArgs
+        from src.integration.batches import BatchStore
+        from src.integration.train_controls import TrainControls
+
+        batch = await BatchStore(self.db).get(str(args.get("batch_id") or ""))
+        if batch is not None:
+            request = IntegrationEjectArgs.model_validate(args)
+            operator, refusal = await integration_operator(self.db, batch.project_id)
+            if refusal:
+                return _failure("unauthorized", refusal)
+            train = getattr(self.orchestrator, "integration_train", None)
+            if train is None:
+                return _failure("refused", "the integration train is not active")
+            try:
+                targets = await train.targets.targets(time.time())
+                target = next((target for target in targets if target.key == (
+                    batch.project_id, batch.repository_id, batch.target_ref)), None)
+                if target is None:
+                    return _failure("refused", "batch has no active train target")
+                lane = await train.lane_for(target)
+                result = await TrainControls(self.db).eject(batch.id, request.task_id,
+                    service=lane.service, dry_run=request.dry_run,
+                    operator_id=operator, reason=request.reason)
+            except (ValueError, GitError, OSError) as exc:
+                return _failure("refused", str(exc))
+            return {"success": True, **result}
+
         from src.integration.engine import current_policy_ejection
 
         batch_id = str(args.get("batch_id") or "")
@@ -1164,6 +1232,8 @@ class IntegrationCommandsMixin:
         reason = str(args.get("reason") or "")
         if not batch_id or not task_id or not reason.strip():
             return _failure("invalid_state", "batch_id, task_id and reason are required")
+        if args.get("dry_run"):
+            return _failure("invalid_state", "legacy batch ejection does not support preview")
         policy_ejection = current_policy_ejection(self.db, batch_id, task_id, reason)
         if policy_ejection is None:
             return _failure("unauthorized", "ejection requires the active root policy visit")

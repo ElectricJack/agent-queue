@@ -767,3 +767,42 @@ async def test_root_promotion_command_is_registered_and_strictly_typed():
     )
     result = await handler.execute("integration_promote_main", {})
     assert result["outcome"] == "runtime_error"
+
+
+@pytest.mark.parametrize("name,payload,answer", [
+    ("integration_pause_batch", {"batch_id": "batch"},
+     {"outcome": "preview", "batch_id": "batch", "intent": "open", "dry_run": True}),
+    ("integration_resume_batch", {"batch_id": "batch"},
+     {"outcome": "preview", "batch_id": "batch", "intent": "paused", "dry_run": True}),
+    ("integration_eject", {"batch_id": "batch", "task_id": "c", "dry_run": True},
+     {"outcome": "preview", "replacement_batch_id": "new", "members": ["a", "b"]}),
+    ("integration_seal_now", {"project_id": "p"},
+     {"outcome": "preview", "project_id": "p", "members": ["a"]}),
+    ("integration_seal_now", {"project_id": "p", "dry_run": False},
+     {"outcome": "no_ready_work", "project_id": "p", "blockers": []}),
+])
+@pytest.mark.parametrize("preview", [False, True])
+async def test_train_control_contracts_preserve_preview_identity_and_result(name, payload, answer, preview):
+    class Handler:
+        async def execute(self, command, args):
+            expected = True if preview else payload.get("dry_run", True)
+            assert command == name and args["dry_run"] is expected
+            return answer
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    registration = registry.require(name)
+    set_handler_provider(Handler)
+    try:
+        args = registration.contract.execution.args_model.model_validate(payload)
+        adapter = registration.preview if preview else registration.invoke
+        result = await adapter(args, None)
+    finally:
+        set_handler_provider(None)
+    assert result.outcome == answer["outcome"]
+    assert registration.contract.execution.supports_preview
+    assert result.classification(registration.contract).value == "success"
+    for key, value in answer.items():
+        if key != "outcome":
+            actual = getattr(result.value, key)
+            assert actual == (tuple(value) if isinstance(value, list) else value)

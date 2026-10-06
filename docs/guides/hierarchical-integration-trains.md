@@ -74,8 +74,27 @@ Epic collection and local development targets freeze immediately.
 The `IntegrationTrain.visit(target, seal_now=True)` and
 `DatabaseBatches.open_batch(..., seal_now=True)` hooks bypass the timing
 window for one call. They preserve all admission and publication checks;
-an empty or blocked call does not arm a bypass for future work. A5 supplies
-the supervisor-facing `seal-now` command.
+an empty or blocked call does not arm a bypass for future work. The supervisor
+can use `aq integration seal-now --project PROJECT_ID --apply` to freeze the
+currently eligible members immediately. It leaves building, checks, reviews
+and publication to the train.
+
+For a misbehaving batch, first use `aq integration pause-batch BATCH_ID --apply`.
+It preserves the frozen inputs and blocks candidate and target publication.
+`aq integration resume-batch BATCH_ID --apply` restores open intent.
+`aq integration status PROJECT_ID` shows batch intent and member disposition.
+
+`aq integration eject --batch BATCH_ID --task TASK_ID --reason "isolate member" --apply`
+atomically aborts the old batch and freezes its remaining exact sources under
+a new identity. A paused batch produces a paused replacement. The original
+membership stays intact, and the removed task keeps its PR and approval,
+returns to pending, and can enter a new batch at the next cadence. An ordinary
+abort continues to withhold its frozen sources. Ejection refuses removal of an
+undelivered prerequisite that the remaining members need.
+
+These four supervisor controls default to preview; `--dry-run` explicitly
+requests it. Applying an ejection requires a nonblank reason. Paused batches
+can resume; aborted or promoted batches cannot.
 
 The git-first path still rebuilds on target movement. It does not implement
 `on_main_moved: wait` or a `max_wait_seconds` limit on candidate rebuilds;
@@ -97,8 +116,9 @@ and reviewed cutover evidence. There is no transfer back to the retired engine.
 
 GitHub App readiness remains available through `aq integration app-verify PROJECT_ID`. See [App-mode setup](../config/app-mode-train.md) for
 credentials and repository protection. Applying project policy does not change
-GitHub configuration. Root admission and publication are reconciler decisions;
-there is no manual sweep or operator ejection command.
+GitHub configuration. Root admission and publication are train decisions;
+supervisor controls adjust intent and membership without bypassing admission
+or publication gates.
 
 When GitHub rate-limits a visit, the train pauses every target of that
 repository instead of failing each one on every tick. The pause lasts 60 s and
