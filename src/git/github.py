@@ -70,6 +70,7 @@ class GitHubAccess:
             raise ValueError("GitHub auth and runner credential identities do not match")
         self.auth = auth
         self.runner = runner
+        self._bindings: dict[str, GitHubRepositoryBinding] = {}
 
     @classmethod
     def from_config(
@@ -326,6 +327,31 @@ class GitHubAccess:
                 "GitHub repository reference did not match the authorized repository",
             )
 
+        binding = self._bindings.get(full_name)
+        if binding is not None:
+            if expected_binding is not None and binding != expected_binding:
+                raise GitHubAccessError(
+                    "credentials", "authenticated repository identity did not match",
+                )
+            # Retain identity only, never a selected token. Every verification
+            # goes through the same expiry/401 recovery as other repository reads.
+            result = await self.run_read(
+                ["api", "--method", "GET", f"repos/{full_name}"],
+                repository=binding,
+            )
+            return self._verified_binding(
+                result, full_name=full_name, expected_binding=binding,
+            )
+
+        return await self._bind_new_repository(full_name, expected_binding=expected_binding)
+
+    async def _bind_new_repository(
+        self,
+        full_name: str,
+        *,
+        expected_binding: GitHubRepositoryBinding | None,
+    ) -> GitHubRepositoryBinding:
+        """Verify an unbound candidate; only a CLI authentication rejection is replayable."""
         candidate: AppTokenCandidate | None = None
         selected: AppTokenCandidate | GitHubCredential
         if self.auth.mode is GitHubCredentialMode.APP:
@@ -344,11 +370,26 @@ class GitHubAccess:
 
         verification_binding = binding if candidate is not None else expected_binding
         try:
-            result = await self.runner.run(
-                ["api", "--method", "GET", f"repos/{full_name}"],
-                repository=binding,
-                credential=selected,
-            )
+            try:
+                result = await self.runner.run(
+                    ["api", "--method", "GET", f"repos/{full_name}"],
+                    repository=binding,
+                    credential=selected,
+                )
+            except GitHubAccessError as exc:
+                if candidate is None or exc.category != "credentials":
+                    raise
+                await self.auth.discard_candidate(candidate)
+                candidate = await self.auth.candidate_for_repository(full_name)
+                if candidate.repository != binding:
+                    raise GitHubAccessError(
+                        "credentials", "authenticated repository identity did not match",
+                    )
+                result = await self.runner.run(
+                    ["api", "--method", "GET", f"repos/{full_name}"],
+                    repository=binding,
+                    credential=candidate,
+                )
             verified = self._verified_binding(
                 result,
                 full_name=full_name,
@@ -361,6 +402,8 @@ class GitHubAccess:
                         "authenticated repository identity did not match",
                     )
                 await self.auth.accept_candidate(candidate)
+            if candidate is not None:
+                self._bindings[full_name] = verified
             return verified
         except asyncio.CancelledError:
             if candidate is not None:
