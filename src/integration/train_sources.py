@@ -48,6 +48,7 @@ from src.integration.batches import (
     BatchObservation,
     BatchService,
     BatchStore,
+    SupersedeMemberUnavailable,
     candidate_ref,
     ejection_instruction,
 )
@@ -351,9 +352,12 @@ class DatabaseBatches:
                 return BatchSelection(blockers=({"code": "stack_" + outcome, "task_id": task_id,
                     "ref": task_id, "detail": "Prerequisite stack changed; take a fresh Git view"},))
         # One live batch owns a target: a replaced stale batch must not block the freeze.
-        await self.supersede_refreshed(target, service)
+        blockers = list(await self.supersede_refreshed(target, service))
+        if blockers:
+            # An unauditable refresh keeps its old batch and target ownership.
+            # Do not try to freeze a replacement without a release instruction.
+            return BatchSelection(blockers=tuple(blockers))
         current = await self.current(target)
-        blockers: list[dict[str, Any]] = []
         pending = None
         if not snapshot.error and snapshot.target_oid:
             pending = await self.pending(target, snapshot, blockers=blockers,
@@ -419,12 +423,24 @@ class DatabaseBatches:
         return next((batch for batch, refreshed in await self._open_batches(target)
                      if refreshed is None), None)
 
-    async def supersede_refreshed(self, target: TrainTarget, service: BatchService) -> None:
-        """Abort open batches whose stacked source was refreshed, releasing their inputs."""
+    async def supersede_refreshed(
+        self, target: TrainTarget, service: BatchService,
+    ) -> tuple[dict[str, Any], ...]:
+        """Supersede auditable refreshes; report unavailable members without releasing work."""
+        blockers = []
         for batch, refreshed in await self._open_batches(target):
             if refreshed is not None:
-                await service.store.supersede(batch, refreshed, reason=(
-                    f"stacked source of {refreshed} was refreshed; a new batch replaces it"))
+                try:
+                    await service.store.supersede(batch, refreshed, reason=(
+                        f"stacked source of {refreshed} was refreshed; a new batch replaces it"))
+                except SupersedeMemberUnavailable as exc:
+                    blockers.append({"code": exc.code, "ref": exc.task_id,
+                        "task_id": exc.task_id, "batch_id": batch.id,
+                        "detail": f"{exc}; restore an unambiguous task identity or have an "
+                                  f"operator use aq integration abort-batch {batch.id} "
+                                  "--reason <reason> --apply; an ordinary abort keeps the "
+                                  "batch's frozen inputs withheld"})
+        return tuple(blockers)
 
     async def _open_batches(self, target: TrainTarget) -> list[tuple[Batch, str | None]]:
         """Open batches oldest first, each with the member whose stack was refreshed."""

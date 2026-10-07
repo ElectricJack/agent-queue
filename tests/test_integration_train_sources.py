@@ -3706,15 +3706,22 @@ async def test_supersede_preserves_explicit_operator_hold(world, intent):
         assert await train.batches.pending(MAIN, await snapshot(world)) is None
 
 
-@pytest.mark.parametrize("task_id,reason", [("not-a-member", "refreshed"), ("a", " ")])
-async def test_supersede_requires_frozen_member_and_reason(world, task_id, reason):
+@pytest.mark.parametrize("task_id,reason,foreign", [
+    ("not-a-member", "refreshed", False), ("a", " ", False), ("a", "refreshed", True),
+])
+async def test_supersede_requires_frozen_member_project_and_reason(world, task_id, reason, foreign):
     await completed(world, "a")
     train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
     visit = await train.visit(MAIN)
     store = BatchStore(world.db)
     batch = await store.get(visit.batch_id)
-    with pytest.raises(ValueError, match="supersede"):
+    if foreign:
+        await world.db.create_project(Project(id="foreign", name="Foreign"))
+        async with world.db._engine.begin() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "a").values(project_id="foreign"))
+    with pytest.raises(ValueError, match="supersede") as refusal:
         await store.supersede(batch, task_id, reason=reason)
+    assert type(refusal.value) is ValueError  # Other refusals must not become recoverable blockers.
     assert (await store.get(batch.id)).intent == "open"
     async with world.db._engine.connect() as conn:
         assert await conn.scalar(select(integration_batches.c.ejection_record).where(
