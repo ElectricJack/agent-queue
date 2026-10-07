@@ -1025,6 +1025,12 @@ class Writer:
         train.live_sessions.discard(self.session_id)
         await train.db.update_session(self.session_id, state="stopped", desired_state="stopped")
         async with train.db.immediate() as conn:
+            # The real session reconciler finishes claim release after the
+            # harness stops. A stopped row with an active claim is still a
+            # writer and deliberately withholds a conflict continuation.
+            await conn.execute(
+                update(t.sessions).where(t.sessions.c.id == self.session_id).values(claim_phase=None)
+            )
             await conn.execute(
                 update(t.workspaces)
                 .where(t.workspaces.c.locked_by_task_id == self.task_id)
