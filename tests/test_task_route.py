@@ -12,12 +12,13 @@ from __future__ import annotations
 import json
 import re
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.commands.routing_commands import INVALID_OVERRIDE, NOT_PERMITTED, NOT_ROUTABLE
-from src.models import AgentProfile, SessionRecord, TaskStatus, TaskType
+from src.models import AgentProfile, RepoConfig, RepoSourceType, SessionRecord, TaskStatus, TaskType
 from src.profiles.capabilities import CapabilityPolicy
 from src.routing.filing import ROUTING_CHOICE_FORBIDDEN
 from src.routing.sources import OVERRIDE, ROLE, ROUTER, UNROUTED
@@ -270,6 +271,119 @@ async def test_override_by_the_supervisor(handler, orch):
     assert (comment["author_kind"], comment["author_id"]) == ("supervisor", "super")
 
 
+@pytest.mark.parametrize("ready_in_train", [False, True])
+async def test_override_and_restart_wake_only_the_new_route(
+    handler, orch, monkeypatch, ready_in_train,
+):
+    if ready_in_train:
+        await orch.db.create_repo(
+            RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.LINK)
+        )
+        await orch.db.update_project(
+            "p", hierarchical_integration_mode="train", integration_repository_id="repo",
+        )
+    guarded_restart = AsyncMock()
+    monkeypatch.setattr(handler, "_cmd_restart_task", guarded_restart)
+    await _create(orch.db, "t", retry_count=2,
+                  status=TaskStatus.READY if ready_in_train else TaskStatus.BLOCKED,
+                  profile_id="standard-high-codex", route_source=ROUTER,
+                  intelligence_class="standard-high")
+    observed = []
+
+    async def on_ready(entries):
+        task = await orch.db.get_task("t")
+        observed.append((task.status, task.profile_id, task.route_source, task.retry_count))
+
+    orch.db._ready_listener = on_ready
+    result = await handler.execute("task_route_override", {
+        "task_id": "t", "profile_id": "standard-high-claude", "reason": REASON,
+        "restart": True,
+    })
+    assert result["success"] and result["restarted"], result
+    task = await orch.db.get_task("t")
+    expected = (TaskStatus.READY, "standard-high-claude", OVERRIDE, 0)
+    assert (task.status, task.profile_id, task.route_source, task.retry_count) == expected
+    # A task already on the frontier stays there without a second ready event.
+    assert observed == ([] if ready_in_train else [expected])
+    guarded_restart.assert_not_awaited()
+
+
+@pytest.mark.parametrize("state,allowed", [("stopped", True), ("running", False),
+                                         ("starting", False), ("draining", False)])
+async def test_override_ready_after_stop_keeps_the_live_session_guard(handler, orch, state, allowed):
+    await _create(orch.db, "t", class_hint="standard-high")
+    await _router._session(orch.db, "old", task_id="t", state=state, desired_state="stopped")
+    result = await handler.execute("task_route_override", {
+        "task_id": "t", "profile_id": "standard-high-claude", "reason": REASON,
+    })
+    assert result["success"] is allowed, result
+    task = await orch.db.get_task("t")
+    assert task.status == TaskStatus.READY
+    assert task.route_source == (OVERRIDE if allowed else UNROUTED)
+
+
+@pytest.mark.parametrize("refused", [False, True])
+@pytest.mark.parametrize("origin", [None, "integration_repair"])
+async def test_override_restart_preserves_managed_branch_handoff(
+    handler, orch, monkeypatch, refused, origin,
+):
+    await orch.db.create_repo(
+        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.LINK)
+    )
+    await orch.db.update_project(
+        "p", hierarchical_integration_mode="train", integration_repository_id="repo",
+    )
+    await _create(orch.db, "t", status=TaskStatus.BLOCKED, class_hint="standard-high",
+                  created_by_kind=origin)
+
+    async def restart(args):
+        task = await orch.db.get_task(args["task_id"])
+        assert (task.status, task.profile_id, task.route_source) == (
+            TaskStatus.BLOCKED, "standard-high-claude", OVERRIDE,
+        )
+        if refused:
+            return {"error": "repair branch is still held"}
+        await orch.db.transition_task(task.id, TaskStatus.READY, context="restart_task")
+        return {"restarted": task.id}
+
+    guarded_restart = AsyncMock(side_effect=restart)
+    monkeypatch.setattr(handler, "_cmd_restart_task", guarded_restart)
+    result = await handler.execute("task_route_override", {
+        "task_id": "t", "profile_id": "standard-high-claude", "reason": REASON,
+        "restart": True,
+    })
+    guarded_restart.assert_awaited_once_with({"task_id": "t"})
+    assert result["success"] is not refused, result
+    task = await orch.db.get_task("t")
+    assert task.status == (TaskStatus.BLOCKED if refused else TaskStatus.READY)
+    if refused:
+        assert "Override saved, but restart refused" in result["error"]
+        assert result["restarted"] is False
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_override_does_not_retarget_work_started_during_validation(
+    handler, orch, monkeypatch, restart,
+):
+    await _create(orch.db, "t", class_hint="standard-high")
+    static_facts = handler._routing_static_facts
+
+    async def start_during_validation(*args, **kwargs):
+        facts = await static_facts(*args, **kwargs)
+        await orch.db.transition_task("t", TaskStatus.IN_PROGRESS, context="concurrent_claim")
+        return facts
+
+    monkeypatch.setattr(handler, "_routing_static_facts", start_during_validation)
+    result = await handler.execute("task_route_override", {
+        "task_id": "t", "profile_id": "standard-high-claude", "reason": REASON,
+        "restart": restart,
+    })
+    assert result["success"] is False and result["code"] == NOT_ROUTABLE, result
+    task = await orch.db.get_task("t")
+    assert task.status == TaskStatus.IN_PROGRESS
+    assert task.profile_id is None and task.route_source == UNROUTED
+
+
 async def test_override_refuses_workers_playbooks_and_tokens(handler, orch):
     """Acceptance 2: only the local operator and a live supervisor session."""
     await _create(orch.db, "t", class_hint="standard-high",
@@ -496,4 +610,3 @@ async def test_explain_gives_no_route_reason_for_a_container_or_claimable_legacy
     assert "route_waiting_for_compatible_agent" in legacy["reason_codes"]
     _ready(orch, "p")  # ready: a legacy route is no route (§6.1)
     assert _route_reason(await _explain(handler, "legacy"))["code"] == "awaiting_route"
-

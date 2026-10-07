@@ -1718,7 +1718,9 @@ _ALL_TOOL_DEFINITIONS = [
             "than moving it); the override is evented (task.route_overridden) and "
             "commented on the task. Refuses control, stage and "
             "role profiles, profiles that are not worker candidates, and a class the "
-            "profile cannot run. `aq task route` clears it."
+            "profile cannot run. With restart, install the override before waking "
+            "stopped work; repair branch handoff checks still apply. "
+            "`aq task route` clears it."
         ),
         "input_schema": {
             "type": "object",
@@ -1741,6 +1743,11 @@ _ALL_TOOL_DEFINITIONS = [
                         "Class to run at. Default: the profile's fixed class, else the "
                         "task's class hint. Must be one the profile can run."
                     ),
+                },
+                "restart": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Install the override and restart stopped work on that route.",
                 },
             },
             "required": ["task_id", "profile_id", "reason"],

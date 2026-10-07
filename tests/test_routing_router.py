@@ -161,6 +161,14 @@ async def test_plan_reads_the_live_catalog_and_writes_nothing(handler, orch):
     assert (task.profile_id, task.route_source) == (None, UNROUTED)
 
 
+async def test_system_filing_without_ordinary_input_keeps_its_routing_origin(handler, orch):
+    await _create(orch.db, "repair-looking", task_type=TaskType.BUGFIX,
+                  created_by_kind="system")
+    task = await orch.db.get_task("repair-looking")
+    facts = await handler._routing_task_facts(task, await orch.db.get_project("p"))
+    assert facts.created_by_kind == "system"
+
+
 def _context_profile(context, profile_id="standard-high-codex"):
     return next(p for p in context["profiles"] if p["profile_id"] == profile_id)
 

@@ -18,7 +18,7 @@ Two kinds of lane share the ``lanes`` map:
   ``classes`` map and ``requires`` flags, and is reached only through a kind
   marked ``narrow: true`` whose classification satisfies every flag.
 
-A harness a narrow lane names is reachable only through a narrow lane: the
+A harness a narrow lane matches is reachable only through a narrow lane: the
 general candidates of a task never include it.  That is what keeps an
 integration repair (``origins: {integration_repair: {narrow: false}}``) off
 OpenCode although OpenCode may have a rung at the repair's class.
@@ -71,6 +71,8 @@ class Lane(_Strict):
     """``lanes.<name>``: a design lane (``class``) or a narrow lane (``classes``)."""
 
     class_: str | None = Field(default=None, alias="class")
+    #: Harness ids or shell glob patterns, used for lane admission and
+    #: exclusion from general candidates.
     harnesses: tuple[str, ...] = Field(min_length=1)
     #: A design lane lists the harnesses tried first; a narrow lane says
     #: ``true`` to make its candidates the preferred tier.

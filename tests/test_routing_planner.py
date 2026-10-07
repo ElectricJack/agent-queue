@@ -82,6 +82,9 @@ balance:
 
 SHIPPED_POLICY = BALANCED_POLICY.replace(
     "narrow: true}", "narrow: true, prefer_harnesses: [codex]}",
+).replace(
+    "harnesses: [opencode-zen, opencode-zen-nemotron, opencode-zen-longcat]",
+    "harnesses: [opencode-zen*]",
 )
 
 POLICY, DIGEST = parse_policy(BALANCED_POLICY)
@@ -374,6 +377,48 @@ def test_a_repair_never_goes_to_opencode(origin) -> None:
 def _hosted_fleet() -> tuple[ProfileFacts, ...]:
     """The fleet plus one hosted OpenCode rung: OpenCode Zen, a pool of one."""
     return (*_fleet(), _rung("standard-high", "opencode-zen", slots=1))
+
+
+@pytest.mark.parametrize("origin", ["integration_repair", "development_repair"])
+@pytest.mark.parametrize("classification", [None, NARROW_YES])
+def test_repair_excludes_every_zen_variant_even_when_hosted_workers_are_busy(
+    origin, classification,
+) -> None:
+    policy, digest = parse_policy(SHIPPED_POLICY)
+    zen = [
+        _rung("standard-high", harness, slots=1)
+        for harness in (
+            "opencode-zen", "opencode-zen-nemotron", "opencode-zen-longcat",
+            "opencode-zen-new-preview", "opencode-zenfuture",
+        )
+    ]
+    result = plan_route(
+        _task(task_type="bugfix", class_hint="standard-high", created_by_kind=origin),
+        policy, _snapshot((*_fleet(), *zen), busy={
+            "standard-high-codex": 4, "standard-high-claude": 4,
+        }), policy_sha256=digest, classification=classification,
+    )
+    assert result.outcome == "planned", result
+    assert result.value["rule"] == f"kinds.bugfix+origins.{origin}"
+    assert {c["harness"] for c in result.value["candidates"]} == {"codex", "claude"}
+    assert result.value["profile_id"] in {"standard-high-codex", "standard-high-claude"}
+
+
+def test_new_zen_variant_is_reachable_only_through_the_narrow_hosted_lane() -> None:
+    policy, digest = parse_policy(SHIPPED_POLICY)
+    snapshot = _snapshot((
+        *_fleet(), _rung("standard-high", "opencode-zen-new-preview", slots=1),
+    ), busy={"standard-high-opencode": 1})
+    result = plan_route(_task(task_type="bugfix"), policy, snapshot,
+                        policy_sha256=digest, classification=NARROW_YES)
+    assert result.outcome == "planned", result
+    assert (result.value["profile_id"], result.value["lane"]) == (
+        "standard-high-opencode-zen-new-preview", "narrow-hosted",
+    )
+    result = plan_route(_task(task_type="bugfix"), policy, snapshot,
+                        policy_sha256=digest, classification=NARROW_NO)
+    assert result.outcome == "planned", result
+    assert {c["harness"] for c in result.value["candidates"]} == {"codex", "claude"}
 
 
 def test_hosted_opencode_takes_narrow_work_when_local_opencode_is_full() -> None:
