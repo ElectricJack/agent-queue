@@ -79,6 +79,7 @@ import {
   deleteAttachmentApiTasksTaskIdAttachmentsAttachmentIdDelete,
   uploadAttachmentApiTasksTaskIdAttachmentsPost,
   poolStatus,
+  poolRename,
   poolScale,
   poolSetEnabled,
   playbookActivate,
@@ -158,6 +159,7 @@ import type {
   InspectPlaybookRunResponse,
   CancelPlaybookRunResponse,
   PoolStatusResponse,
+  PoolRenameRequest,
   PoolStatusRow,
   PoolProjectStatus,
   PoolScaleRequest,
@@ -338,6 +340,29 @@ export function usePoolSessions() {
     staleTime: 2_000,
     // session.* and pool.* frames refresh this; the poll only reconciles.
     refetchInterval: 30_000,
+  });
+}
+
+export function usePoolRename() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: PoolRenameRequest) => {
+      const { data } = await poolRename({ body: input, throwOnError: true });
+      if (!data.success) throw new Error(data.error || "Could not rename this pool");
+      return data;
+    },
+    onSuccess: async (result, input) => {
+      await queryClient.cancelQueries({ queryKey: ["pools"] });
+      queryClient.setQueriesData<PoolStatusRow[]>({ queryKey: ["pools"] }, (rows) =>
+        rows?.map((row) => row.profile_id === input.profile_id
+          ? { ...row, name: result.name ?? input.name } : row),
+      );
+      void queryClient.invalidateQueries({ queryKey: ["pools"] });
+      void queryClient.invalidateQueries({ queryKey: ["profiles"] });
+      void queryClient.invalidateQueries({ queryKey: ["profile", input.profile_id] });
+      void queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
+      void queryClient.invalidateQueries({ queryKey: ["providers", "allocation"] });
+    },
   });
 }
 

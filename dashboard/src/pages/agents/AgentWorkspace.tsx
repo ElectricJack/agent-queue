@@ -91,7 +91,7 @@ export default function AgentWorkspace() {
           <DirectoryTabs view={view} onChange={setView} />
           {view === "providers" ? <ProvidersView /> : (
             <>
-              <PoolDirectory entries={pools} onOpen={(key) => select(key)} />
+              <PoolDirectory entries={pools} />
               <PoolDirectoryHint />
             </>
           )}
@@ -106,7 +106,7 @@ export default function AgentWorkspace() {
                 return (
                   <PoolWindow key={entry.key} entry={entry} instanceId={selection.instanceId}
                     onInstanceChange={(instanceId) => setInstance(id, instanceId)}
-                    onClose={() => close(id)} resetToken={resetToken}
+                    onClose={() => close(id)}
                     focusRequest={focusSelection?.key === selectionAddress(id) ? focusSelection.request : null} />
                 );
               }
