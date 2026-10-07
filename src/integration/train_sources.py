@@ -326,6 +326,18 @@ class DatabaseBatches:
             )
         if current is not None:
             members = frozen_members
+            # Retired members disappear from the pending frontier but remain
+            # in a frozen batch. Explain why its publication is now refused.
+            async with self.db._engine.connect() as conn:
+                from src.integration.source_delivery import superseded_source_repairs_on
+
+                superseded = await superseded_source_repairs_on(
+                    self.db, conn, [member.task_id for member in members],
+                    repository_id=target.repository_id,
+                )
+            reported = {(blocker["code"], blocker.get("task_id")) for blocker in blockers}
+            blockers.extend(blocker for task_id, blocker in sorted(superseded.items())
+                            if (blocker["code"], task_id) not in reported)
             # Also protect batches frozen before this guard was installed.
             if any(blocker.get("task_id") == member.task_id
                    and blocker.get("source_sha") == member.source_sha
@@ -374,6 +386,14 @@ class DatabaseBatches:
         """Exact pending inputs; report unknown delivery that prevents batching."""
         async with self.db._engine.connect() as conn:
             ids = await _pending_tasks(conn, target.project_id, target.repository_id, limit=None)
+            from src.integration.source_delivery import superseded_source_repairs_on
+
+            superseded = await superseded_source_repairs_on(
+                self.db, conn, ids, repository_id=target.repository_id,
+            )
+        if blockers is not None:
+            blockers.extend(superseded.values())
+        ids = [task_id for task_id in ids if task_id not in superseded]
         delivered_to_project = await self.delivered(target, snapshot, ids)
         ids = [task_id for task_id in ids if task_id not in delivered_to_project]
         async with self.db._engine.connect() as conn:
@@ -506,7 +526,8 @@ class DatabaseBatches:
         A merge of ``base..source`` retains source ancestry even when the target
         never received the base's tree changes. A later target sync can therefore
         delete those changes from their owning branch. Only an explicit blocks
-        prerequisite authorizes a base from another task's unpublished history.
+        prerequisite, or a source CI repair's own recorded source binding,
+        authorizes a base from another task's unpublished history.
         Use the visit's pinned OIDs, including branches still being worked on.
         """
         observed = snapshot.observation
@@ -525,6 +546,21 @@ class DatabaseBatches:
                 task_branch_origins.c.retired_at.is_(None),
                 task_branch_origins.c.materialized.is_(True),
             ).order_by(task_branch_origins.c.task_id))).mappings().all()
+            from src.integration.source_delivery import repair_bindings_on, repair_ids
+
+            # A source CI repair is branched from the exact source head it binds.
+            # That binding is the declaration this guard asks for; the retirement
+            # checks refuse the repair once the source completion is superseded.
+            bindings = await repair_bindings_on(
+                conn, [member.task_id for member in members.values()],
+                repository_id=target.repository_id,
+            )
+        declared = {
+            member.task_id
+            for record in bindings
+            for member in members.values()
+            if member.task_id in repair_ids(record) and member.base_sha == record["source_head"]
+        }
         unsafe = set()
 
         def block(member, code, detail, **facts):
@@ -561,6 +597,8 @@ class DatabaseBatches:
             for member in members.values():
                 if member.base_sha not in foreign or member.task_id == origin["task_id"]:
                     continue
+                if member.task_id in declared:
+                    continue
                 prerequisite = origin["task_id"]
                 if prerequisite in edges.get(member.task_id, set()):
                     available = prerequisite in members
@@ -592,6 +630,12 @@ class DatabaseBatches:
         """Ordinary identity is still current: completed, routed to this target."""
         ids = [member.task_id for member in members]
         async with self.db._engine.connect() as conn:
+            from src.integration.source_delivery import superseded_source_repairs_on
+
+            if await superseded_source_repairs_on(
+                self.db, conn, ids, repository_id=batch.repository_id,
+            ):
+                return False
             mode = (await conn.execute(
                 select(projects.c.hierarchical_integration_mode, projects.c.status)
                 .where(projects.c.id == batch.project_id)

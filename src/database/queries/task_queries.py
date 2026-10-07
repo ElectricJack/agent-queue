@@ -640,6 +640,7 @@ class TaskQueryMixin:
             values["route_source"] = declared_route_source(
                 values["profile_id"], values.get("route_source")
             )
+        retired = []
         async with self._engine.begin() as conn:
             comment_source_project = None
             if "project_id" in kwargs:
@@ -725,6 +726,11 @@ class TaskQueryMixin:
                 await self._upsert_meta(
                     task_id, INTEGRATION_REWORK_AT_KEY, values["updated_at"], conn=conn
                 )
+                from src.integration.source_delivery import retire_reopened_source_repairs_on
+
+                retired = await retire_reopened_source_repairs_on(
+                    self, conn, task_id, context="update_task",
+                )
             if result.rowcount == 0 and lifecycle & kwargs.keys():
                 paused = (await conn.execute(select(tasks.c.id).where(
                     tasks.c.id == task_id, ~_not_manually_paused()
@@ -742,6 +748,10 @@ class TaskQueryMixin:
             if PROJECTION_INPUT_COLUMNS & values.keys():
                 flipped = await self.recompute_blocked({task_id}, conn=conn)
         await self.log_blocked_flips(flipped)
+        for transition in retired:
+            await self.log_blocked_flips(transition.flipped)
+            await self._notify_settled(transition.settled)
+            await self._notify_ready(transition.ready)
 
     @staticmethod
     async def _moved_task_repo_id(conn, task_id: str, project_id: str) -> str | None:
@@ -1640,6 +1650,17 @@ class TaskQueryMixin:
                 await self._upsert_meta(
                     task_id, INTEGRATION_REWORK_AT_KEY, values["updated_at"], conn=conn
                 )
+                from src.integration.source_delivery import (
+                    SUPERSEDED, retire_reopened_source_repairs_on,
+                )
+
+                if context != SUPERSEDED:
+                    for transition in await retire_reopened_source_repairs_on(
+                        self, conn, task_id, context=context or "transition_task",
+                    ):
+                        result.flipped |= transition.flipped
+                        result.settled.extend(transition.settled)
+                        result.ready.extend(transition.ready)
 
             # Layout only cares about crossing the finished boundary (a
             # finished task leaves the ``active`` variant and restyles in
@@ -1669,7 +1690,7 @@ class TaskQueryMixin:
                     )
 
             if not stable and not _defer_projection:
-                result.flipped = await self.recompute_blocked({task_id}, conn=conn)
+                result.flipped |= await self.recompute_blocked({task_id}, conn=conn)
 
             # Terminal-BLOCKED bookkeeping (see TERMINAL_BLOCKED_META_KEY).
             # Same transaction as the status write, so the promotion cascade
