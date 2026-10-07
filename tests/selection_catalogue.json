@@ -1431,7 +1431,7 @@
       ]
     }
   },
-  "digest": "sha256:0651e1258da61c5da1c4b58267558a7ca0ba990d5b1bc4772307520b80508ebb",
+  "digest": "sha256:341aeb3bb057e0c5a85b92c771e96894fed1980c210c2baf2cb8a73bd87717fd",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6079,7 +6079,8 @@
         "src.profiles.capabilities"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Package 0 T-4 — ``ExecutionPrincipal`` is server-derived, never supplied."
     },

@@ -329,12 +329,56 @@ class TestClientSuppliedFieldsAreStripped:
         assert captured[0].profile_id == "narrow"
         assert captured[0].policy.aq_commands == frozenset({"probe"})
 
-    async def test_server_owned_keys_are_stripped_at_the_http_surface(self):
-        from src.api.execute import _SERVER_OWNED_ARG_KEYS
+    @pytest.mark.parametrize("caller", ["local", "session", "supervisor"])
+    async def test_server_owned_keys_are_stripped_at_the_http_surface(self, caller):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
 
-        assert set(_SERVER_OWNED_ARG_KEYS) == {
-            "_scope", "_principal", "_policy", "_profile_id", "_capabilities",
-        }
+        from starlette.requests import Request
+
+        from src.api.auth import LOCAL_SCOPE, RequestScope
+        from src.api.execute import ExecuteRequest, api_execute
+
+        scope = LOCAL_SCOPE if caller == "local" else RequestScope(
+            kind="session", session_id="s1", session_instance_token="t1",
+            task_id="held-task", project_id="p", elevated=caller == "supervisor",
+        )
+        request = Request({"type": "http"})
+        request.state.scope = scope
+        handler = SimpleNamespace(execute=AsyncMock(return_value={"success": True}))
+        public_args = {"project_id": "p", "title": "Untrusted filing"}
+
+        response = await api_execute(
+            ExecuteRequest(command="create_task", args={
+                **public_args,
+                "_scope": {"kind": "local"},
+                "_principal": {"kind": "local"},
+                "_policy": {"aq_commands": ["*"]},
+                "_profile_id": "supervisor",
+                "_capabilities": {"aq_commands": ["*"]},
+                "_created_by_kind": "integration_repair",
+                "_created_by_id": "spoofed",
+                "_future_private_field": "spoofed",
+            }),
+            ch=handler,
+            request=request,
+        )
+
+        assert response.status_code == 200
+        expected_args = dict(public_args)
+        if caller == "session":
+            expected_args.update(task_id="held-task", session_id="s1")
+        handler.execute.assert_awaited_once_with("create_task", {
+            **expected_args,
+            "_scope": {
+                "kind": scope.kind,
+                "session_id": scope.session_id,
+                "session_instance_token": scope.session_instance_token,
+                "task_id": scope.task_id,
+                "project_id": scope.project_id,
+                "elevated": scope.elevated,
+            },
+        })
 
 
 class TestReentrantExecute:
