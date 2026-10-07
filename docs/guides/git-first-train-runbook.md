@@ -32,9 +32,45 @@ recorded stall's Git, check, tree-review and task-transition evidence.
 - **Checks.** A development project's default branch runs its pinned development
   policy's validation commands as integration jobs on a retained snapshot of the exact
   candidate (`validation: none` publishes without jobs; `advisory` publishes on red).
-  Every other target requires the hosted checks named by the frozen policy's
-  `root.required_checks` (`parent.required_checks` for parent branches), from the
-  trusted producer only.
+  Every other target requires the checks named by the frozen policy's
+  `root.required_checks` (`parent.required_checks` for parent branches). The
+  policy's optional `ci` block chooses which runner produces them:
+  `source` is `hosted` (the default; GitHub Actions, from the trusted producer
+  only), `local` (the local job runner runs `ci.commands[<check name>]` on a
+  retained snapshot of the exact candidate and the train reads no GitHub CI) or
+  `hybrid` (candidates run locally, with hosted candidate checks and App
+  attestation where required). `ci.hosted_attestation` chooses those hybrid
+  boundaries: `{"root": true, "epic": false}` is the default. A hybrid root
+  requires both runners' checks and App attestation before publication; only an
+  explicit `root: false` in this map opts it out. Omitted map entries retain
+  their defaults. `epic: true` adds the same hosted requirements to hybrid epic
+  candidates. A hybrid root PR and promotion step still read hosted checks.
+  `root`, `epic` and `promotion` override
+  `source` per target kind. A `local` or `hybrid` boundary must name a command for
+  every one of its required checks, and a policy that does not is refused when it
+  is written. Local checks keep the boundary's check names and version, so
+  baselines, repair briefs and gate states read the same whichever runner
+  produced them. Local evidence also binds the boundary and command plan:
+  changing a command or execution bound invalidates an old green result even
+  without a version bump, and root and promotion evidence cannot overwrite each
+  other. A purely local candidate carries no hosted attestation. Local root PR
+  validation starts only after exact-head human approval and an eligible open,
+  same-repository, non-draft PR, including under automatic admission; unreviewed
+  member code cannot enter the trusted local job lane. Hybrid roots likewise
+  require this approval before admission to their local candidate gate. A local
+  promotion step runs the checks its trust manifest selects; when `ci.commands`
+  lacks one the step holds with `promotion_intent_invalid` and the error
+  `ci_command_missing:<name>`. A development pin
+  keeps its own validation commands; it has no `ci` block.
+  `aq integration status` reports the runner for each target kind as `ci_source`
+  (`origin: policy`, `development` or `default`), and `aq doctor --check
+  integration.ci_source` names projects that run checks locally and any stored `ci`
+  block that no longer validates (such a train reads hosted checks everywhere).
+  **Rollback hazard:** a stored `ci` block is an unknown policy field to older
+  daemons and makes the entire policy invalid. Before downgrading, the operator
+  must save the policy and remove its `ci` block through `aq project set <id>
+  integration-policy`; doctor names the affected projects. Changing live CI
+  policy remains an operator decision.
 - **Check evidence.** Each cached check keeps its own conclusion, even when its
   workflow fails. Baseline comparison uses those individual conclusions. A red
   repair brief names the failing checks, links their jobs (or the workflow when a

@@ -285,6 +285,7 @@ from .edit_project_request import EditProjectRequest
 from .edit_project_request_hierarchical_integration_policy_type_0 import (
     EditProjectRequestHierarchicalIntegrationPolicyType0,
 )
+from .edit_project_request_promotion_flow_type_1 import EditProjectRequestPromotionFlowType1
 from .edit_project_response import EditProjectResponse
 from .edit_project_response_422 import EditProjectResponse422
 from .edit_task_request import EditTaskRequest
@@ -2076,6 +2077,7 @@ __all__ = (
     "EditProfileResponse422",
     "EditProjectRequest",
     "EditProjectRequestHierarchicalIntegrationPolicyType0",
+    "EditProjectRequestPromotionFlowType1",
     "EditProjectResponse",
     "EditProjectResponse422",
     "EditTaskRequest",

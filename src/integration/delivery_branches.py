@@ -22,8 +22,8 @@ anything still need this branch?" (:func:`live_branch_references`):
   FAILED or abandoned tasks 14 days after they went terminal
   (:func:`expired_task_branches`).
 
-Only ``aq/`` branches are ever deleted, never the default branch, ``main`` or
-``gh-pages`` (:func:`deletable`, enforced inside :func:`delete_branches`).
+Only ``aq/`` branches are ever deleted, never the default branch, a promotion
+target or ``gh-pages`` (:func:`deletable`, enforced inside :func:`delete_branches`).
 Every deletion is restorable: a tip the default branch cannot reach is
 bundled first, every branch is logged with its sha before the push, and each
 delete is a lease on the head that was observed, so a branch somebody pushed
@@ -53,7 +53,9 @@ from src.database.tables import (
     integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
+    integration_subjects,
     projects,
+    repos,
     sessions,
     task_branch_origins,
     task_completion_records,
@@ -69,8 +71,8 @@ logger = logging.getLogger(__name__)
 #: Only branches in the daemon's own namespace are ever deleted.  A person's
 #: ``fix/...`` branch is theirs to tidy, whatever its ancestry says.
 TASK_BRANCH_PREFIX = "aq/"
-#: Never deleted, whatever else is true (the default branch is added per repo).
-PROTECTED_BRANCHES = frozenset({"main", "gh-pages"})
+#: Always protected; the default and promotion targets are added per repository.
+PROTECTED_BRANCHES = frozenset({"gh-pages"})
 #: Publisher assemblies: candidate snapshots and parent aggregates.
 ASSEMBLY_PREFIX = "aq/development/"
 #: Legacy integration branches (``IntegrationScheduler._integration_branch``);
@@ -416,12 +418,103 @@ async def remote_heads(run_git, store) -> dict[str, str]:
     return heads
 
 
-def deletable(branch: str, default_branch: str) -> bool:
+async def train_cleanup_hold(conn, *, repository_id: str, ref: str) -> str | None:
+    """Protect current writers and open collection targets during train cleanup.
+
+    A completed origin alone is not a hold: the caller separately proves the
+    exact remote tip reachable in Git and deletes under a managed ref lease.
+    """
+    name = branch_of(ref)
+    aliases = (name, f"refs/heads/{name}")
+    for table in (tasks, archived_tasks):
+        live = await conn.scalar(select(table.c.id).where(
+            table.c.repo_id == repository_id, table.c.branch_name.in_(aliases),
+            table.c.status.in_(LIVE_TASK_STATUSES),
+        ).limit(1))
+        if live:
+            return f"task {live} can still run"
+    session = await conn.scalar(select(tasks.c.id).join(
+        sessions, sessions.c.task_id == tasks.c.id,
+    ).where(tasks.c.repo_id == repository_id, tasks.c.branch_name.in_(aliases),
+            sessions.c.state.in_(LIVE_SESSION_STATES)).limit(1))
+    if session:
+        return f"task {session} has a live session"
+    target = await conn.scalar(select(integration_batches.c.id).where(
+        integration_batches.c.repository_id == repository_id,
+        integration_batches.c.lifecycle.in_(ACTIVE_BATCH_LIFECYCLES),
+        or_(integration_batches.c.target_ref == ref,
+            integration_batches.c.integration_branch == ref),
+    ).limit(1))
+    if target:
+        return f"batch {target} still needs this ref"
+    for table in (tasks, archived_tasks):
+        member = await conn.scalar(select(integration_batch_members.c.task_id)
+            .join(integration_batches,
+                  integration_batches.c.id == integration_batch_members.c.batch_id)
+            .outerjoin(table, table.c.id == integration_batch_members.c.task_id)
+            .where(integration_batches.c.repository_id == repository_id,
+                   integration_batches.c.lifecycle.in_(ACTIVE_BATCH_LIFECYCLES),
+                   or_(integration_batch_members.c.source_ref == ref,
+                       table.c.branch_name.in_(aliases))).limit(1))
+        if member:
+            return f"active batch still needs member {member}"
+    subject = await conn.scalar(select(integration_subjects.c.id).where(
+        integration_subjects.c.repository_id == repository_id,
+        integration_subjects.c.target_ref == ref,
+        integration_subjects.c.phase != "done",
+    ).limit(1))
+    if subject:
+        return f"subject {subject} still targets this ref"
+    discard = await conn.scalar(select(task_branch_origins.c.task_id).where(
+        task_branch_origins.c.repository_id == repository_id,
+        task_branch_origins.c.branch_name.in_(aliases),
+        task_branch_origins.c.discard_state == "pending",
+    ).limit(1))
+    return f"branch discard of {discard} is pending" if discard else None
+
+
+async def preserve_branch_tips(
+    run_git, store, heads: dict[str, str], *, target_sha: str, backup_dir: Path,
+    repository_id: str, now: float,
+) -> Path:
+    """Bundle unreachable tips without deleting or moving their branches."""
+    return await _bundle(run_git, store, heads, main_head=target_sha, backup_dir=backup_dir,
+                         repository_id=repository_id, now=now)
+
+
+
+
+def protected_branches(default_branch: str, promotion_flow=None) -> frozenset[str]:
+    """All flow targets stay protected, including ones in the ``aq/`` namespace."""
+    # The promotion lane builds on gitops -> development -> this module.
+    from src.integration.promotion_steps import flow_targets
+
+    return (PROTECTED_BRANCHES | {branch_of(default_branch)} | {
+        branch_of(target) for target in flow_targets(promotion_flow)
+    }) - {None}
+
+
+async def repository_protected_branches(
+    conn, repository_id: str, *, default_branch: str,
+) -> frozenset[str]:
+    row = (await conn.execute(
+        select(repos.c.default_branch, projects.c.promotion_flow)
+        .select_from(repos.join(projects, projects.c.id == repos.c.project_id))
+        .where(repos.c.id == repository_id)
+    )).one_or_none()
+    protected = protected_branches(default_branch)
+    if row is not None:
+        protected |= protected_branches(row.default_branch, row.promotion_flow)
+    return protected
+
+
+def deletable(branch: str, default_branch: str, *, protected: Iterable[str] = ()) -> bool:
     """The one rule no caller can override: ``aq/`` only, never a protected name."""
     return (
         branch.startswith(TASK_BRANCH_PREFIX)
         and branch != default_branch
         and branch not in PROTECTED_BRANCHES
+        and branch not in protected
     )
 
 
@@ -436,6 +529,7 @@ async def delete_branches(
     backup_dir: Path,
     repository_id: str,
     now: float | None = None,
+    protected: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Back up, record, then delete each ``branch -> {"head", "reason"}`` from ``origin``.
 
@@ -462,7 +556,8 @@ async def delete_branches(
     """
     if not targets:
         return {"outcomes": {}, "bundle": None, "bundled": [], "log": None}
-    refused = sorted(b for b in targets if not deletable(b, default_branch))
+    protected = frozenset(protected)
+    refused = sorted(b for b in targets if not deletable(b, default_branch, protected=protected))
     if refused:
         raise ValueError(f"refusing to delete protected or non-aq/ branches: {refused}")
     if not main_head:
@@ -738,6 +833,7 @@ async def find_stale_branches(
     holds: dict[str, str],
     released: dict[str, str] | None = None,
     expired: dict[str, str] | None = None,
+    protected: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Classify every branch of ``origin`` under the branch policy.
 
@@ -759,10 +855,11 @@ async def find_stale_branches(
     ``{"stale": [...], "held": [...], "kept": int, "out_of_scope": int,
     "main_head": sha}``; entries carry ``branch``, ``head`` (to lease the
     delete on), ``rule``, ``found_by`` and ``reason``.  Branches outside
-    ``aq/``, the default branch, ``main`` and ``gh-pages`` are only counted.
+    ``aq/``, the default branch, promotion targets and ``gh-pages`` are only counted.
     """
     released = released or {}
     expired = expired or {}
+    protected = frozenset(protected)
     heads = await remote_heads(run_git, store)
     main_head = heads.get(default_branch)
     if main_head is None:
@@ -808,7 +905,7 @@ async def find_stale_branches(
     stale, held = [], []
     kept = out_of_scope = 0
     for branch, head in sorted(heads.items()):
-        if not deletable(branch, default_branch):
+        if not deletable(branch, default_branch, protected=protected):
             if branch != default_branch:
                 out_of_scope += 1
             continue
@@ -875,6 +972,8 @@ __all__ = [
     "expired_task_branches",
     "find_stale_branches",
     "live_branch_references",
+    "protected_branches",
     "released_integration_refs",
     "remote_heads",
+    "repository_protected_branches",
 ]

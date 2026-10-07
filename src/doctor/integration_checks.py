@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import time
+
 from sqlalchemy import select
+
 from src.database.tables import integration_subjects
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 
@@ -55,6 +57,59 @@ async def _check_subjects_overdue(ctx):
 
 async def _check_subjects_held(ctx):
     return await _subjects(ctx, held=True)
+
+
+async def _check_legacy_deliveries(ctx: DoctorContext) -> CheckResult:
+    """Expose historical SHA claims which today's default branch cannot reach."""
+    from src.database.tables import integration_legacy_deliveries, repos
+    from src.git.github import GitHubAccess
+    from src.git.manager import GitError, GitManager
+    from src.integration.delivery_observer import DeliveryObserver, DeliveryTarget
+
+    check_id = "integration.legacy_deliveries"
+    if ctx.db is None:
+        return CheckResult(id=check_id, severity=Severity.INFO, detail="database unavailable")
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(select(integration_legacy_deliveries).order_by(
+            integration_legacy_deliveries.c.repository_id,
+            integration_legacy_deliveries.c.task_id,
+        ))).mappings().all()
+        repositories = {row["id"]: row for row in (await conn.execute(select(repos))).mappings()}
+    observer = getattr(ctx.db, "_delivery_observer", None)
+    if observer is None and rows:
+        integration = getattr(ctx.config, "integration", None)
+        observer = DeliveryObserver(ctx.db, git=GitManager(GitHubAccess.from_config(
+            getattr(integration, "github_app", None))), data_dir=ctx.config.data_dir)
+    snapshots, findings, unknown = {}, [], []
+    for row in rows:
+        repo = repositories.get(row["repository_id"])
+        identity = {"task_id": row["task_id"], "project_id": row["project_id"],
+                    "repository_id": row["repository_id"], "proof": row["proof"],
+                    "sha": row["delivered_sha"] or row["target_sha"]}
+        try:
+            if repo is None or not repo["url"]:
+                raise ValueError("repository unavailable")
+            if repo["id"] not in snapshots:
+                snapshots[repo["id"]] = await observer.snapshot(DeliveryTarget(
+                    row["project_id"], repo["id"], repo["url"],
+                    "refs/heads/" + repo["default_branch"].removeprefix("refs/heads/")))
+            snapshot = snapshots[repo["id"]]
+            observation = getattr(snapshot, "observation", snapshot)
+            if observation.error or not observation.target_oid:
+                raise ValueError(observation.error or "default branch unavailable")
+            reachable = await observer.git.ais_ancestor(
+                observation.store, identity["sha"], observation.target_oid, strict=True)
+            if reachable is None:
+                raise ValueError("SHA reachability unavailable")
+            if reachable is False:
+                findings.append({**identity, "target_oid": observation.target_oid})
+        except (GitError, OSError, ValueError) as exc:
+            unknown.append({**identity, "reason": str(exc)})
+    return CheckResult(id=check_id,
+        severity=Severity.WARN if findings or unknown else Severity.OK,
+        detail=f"{len(findings)} legacy delivery SHA(s) not reachable from the default branch; "
+               f"{len(unknown)} unknown",
+        data={"unreachable": findings, "unknown": unknown, "checked": len(rows)})
 
 
 async def _check_trust(ctx: DoctorContext) -> CheckResult:
@@ -303,8 +358,141 @@ async def _fix_finished_branch_owners(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_promotion_flow(ctx: DoctorContext) -> CheckResult:
+    """Re-run layers 1-3 on every stored promotion flow (R17, spec §3.11).
+
+    A flow that stopped validating (a manifest change, a default-branch rename,
+    a tightened schema) leaves its targets ``misconfigured`` and the train
+    promoting to the default branch; this names the first failing pointer per
+    project. Read-only: the flow is operator configuration, so nothing is
+    fixed here.
+    """
+    from src.integration.promotion_steps import recheck_stored_flows
+
+    check_id = "integration.promotion_flow"
+    if ctx.db is None or ctx.handler is None:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.INFO,
+            detail="promotion flow re-validation unavailable without database and command handler",
+        )
+    handler = ctx.handler
+    try:
+        found = await recheck_stored_flows(
+            ctx.db,
+            lambda project_id: handler.execute("promote_validate", {"project_id": project_id}),
+        )
+    except Exception as exc:  # noqa: BLE001 - any read failure is the named finding
+        return CheckResult(
+            id=check_id,
+            severity=Severity.ERROR,
+            detail="could not read stored promotion flows; check db.migrations",
+            data={"errors": [{"error": f"{type(exc).__name__}: {exc}"}]},
+        )
+    if not found:
+        return CheckResult(
+            id=check_id, severity=Severity.OK, detail="every stored promotion flow validates"
+        )
+    projects = [
+        {
+            "project_id": project_id,
+            "code": problems[0].get("code"),
+            "pointer": problems[0].get("pointer"),
+            "message": problems[0].get("message"),
+            "problems": problems,
+        }
+        for project_id, problems in sorted(found.items())
+    ]
+    named = "; ".join(
+        f"{entry['project_id']}: {entry['code']} at {entry['pointer']!r}" for entry in projects
+    )
+    return CheckResult(
+        id=check_id,
+        severity=Severity.ERROR,
+        detail=(
+            f"{len(projects)} stored promotion flow(s) no longer validate; their targets are "
+            f"misconfigured and the train promotes to the default branch ({named}). Fix the "
+            "flow with `aq promote validate --file` and `aq project set <id> promotion-flow`."
+        ),
+        data={"projects": projects},
+    )
+
+
+async def _check_ci_source(ctx: DoctorContext) -> CheckResult:
+    """Name the runner producing each project's required checks, per target kind.
+
+    A stored ``ci`` block that no longer validates is an error: the train's
+    lanes read it as unset and gate every target on hosted checks. Read-only:
+    the policy is operator configuration, written with
+    ``aq project set <id> integration-policy``.
+    """
+    from pydantic import ValidationError
+
+    from src.database.tables import projects
+    from src.integration.models import HierarchicalIntegrationPolicy, integration_ci_sources
+
+    check_id = "integration.ci_source"
+    if ctx.db is None:
+        return CheckResult(
+            id=check_id, severity=Severity.INFO,
+            detail="CI source report unavailable without database",
+        )
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(select(
+            projects.c.id, projects.c.hierarchical_integration_policy,
+        ).where(projects.c.hierarchical_integration_policy.is_not(None))
+         .order_by(projects.c.id))).all()
+    reported, invalid, rollback = [], [], []
+    for project_id, policy in rows:
+        if isinstance(policy, dict) and policy.get("ci") is not None:
+            rollback.append(project_id)
+        sources = integration_ci_sources(policy)
+        if isinstance(policy, dict) and policy.get("ci") is not None \
+                and sources["origin"] == "default":
+            try:
+                HierarchicalIntegrationPolicy.model_validate(policy)
+                error = "ci block is not an object"
+            except ValidationError as exc:
+                first = exc.errors()[0]
+                where = ".".join(str(part) for part in first["loc"])
+                error = f"{where}: {first['msg']}" if where else first["msg"]
+            except (TypeError, ValueError) as exc:
+                error = str(exc).splitlines()[0]
+            invalid.append({"project_id": project_id, "error": error})
+        if sources["origin"] != "default":
+            reported.append({"project_id": project_id, **sources})
+    rollback_note = (
+        " Rollback hazard: older daemons reject stored ci as an unknown policy field. "
+        "Before downgrading, have the operator remove the ci block with "
+        "`aq project set <id> integration-policy` for: " + ", ".join(rollback) + "."
+        if rollback else ""
+    )
+    if invalid:
+        named = "; ".join(f"{entry['project_id']}: {entry['error']}" for entry in invalid)
+        return CheckResult(
+            id=check_id, severity=Severity.ERROR,
+            detail=(
+                f"{len(invalid)} stored ci block(s) no longer validate, so their trains "
+                f"read hosted checks everywhere ({named}). Fix the policy with "
+                "`aq project set <id> integration-policy`." + rollback_note
+            ),
+            data={"projects": reported, "invalid": invalid, "rollback_projects": rollback},
+        )
+    local = [entry for entry in reported if "local" in entry.values()
+             or "hybrid" in entry.values()]
+    return CheckResult(
+        id=check_id, severity=Severity.OK,
+        detail=(f"{len(local)} project(s) run required checks locally; every other target "
+                "reads hosted checks" if local else "every project reads hosted checks")
+               + rollback_note,
+        data={"projects": reported, "rollback_projects": rollback},
+    )
+
+
 def integration_checks() -> list[DoctorCheck]:
     return [
+        DoctorCheck(id="integration.legacy_deliveries", run=_check_legacy_deliveries,
+                    owner=OWNER, timeout_s=300.0),
         DoctorCheck(
             id="integration.finished_branch_owners", run=_check_finished_branch_owners,
             fix=_fix_finished_branch_owners, owner=OWNER, timeout_s=30.0,
@@ -317,6 +505,13 @@ def integration_checks() -> list[DoctorCheck]:
         ),
         DoctorCheck(
             id="integration.trust", run=_check_trust, owner=OWNER, timeout_s=60.0
+        ),
+        DoctorCheck(
+            id="integration.promotion_flow", run=_check_promotion_flow, owner=OWNER,
+            timeout_s=60.0,
+        ),
+        DoctorCheck(
+            id="integration.ci_source", run=_check_ci_source, owner=OWNER, timeout_s=30.0
         ),
     ]
 

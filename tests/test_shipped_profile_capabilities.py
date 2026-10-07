@@ -171,3 +171,12 @@ def test_emergent_work_prime_matches_the_create_task_capability(profile_id):
 
     body = build_completion_protocol_section("t-1", allow_emergent_work=allows).body
     assert ("## Emergent work" in body) is allows
+
+
+def test_promotion_controls_keep_operator_approval_and_publish_out_of_agent_grants():
+    supervisor = set(_parsed("supervisor").capabilities["aq_commands"])
+    assert {"promote_request", "promote_cancel", "promote_status", "promote_list"} <= supervisor
+    for profile_id in PROFILE_IDS:
+        grants = set(_parsed(profile_id).capabilities["aq_commands"])
+        assert "integration_promotion_publish" not in grants
+        assert "promote_approve" not in grants

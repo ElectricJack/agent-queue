@@ -1669,22 +1669,39 @@ When `wait_for_tasks` is true and there are running tasks, the orchestrator is p
 
 #### `update_and_restart`
 
-Pulls the latest source from git and restarts the daemon. Determines the repo root from the source file location. Runs `git pull --ff-only` followed by `pip install -e .` to pick up dependency changes. Both commands are run in a thread via `asyncio.to_thread(subprocess.run, ...)` to avoid blocking the event loop. On success, logs a notification and triggers a restart via `SIGTERM`.
+Updates and restarts the daemon. With no `deploy.tag_glob`, the existing path
+runs `git pull --ff-only`, reinstalls Python dependencies, regenerates the
+TypeScript client and restarts even if git is already current. Local commits
+that permit a fast-forward pull remain supported.
 
-When `wait_for_tasks` is true and there are running tasks, the orchestrator is paused (no new tasks scheduled) and the command waits up to 5 minutes for running tasks to complete before sending the restart signal. The git pull and pip install happen first, so the code is already updated by the time the wait begins.
+With `deploy.tag_glob` configured, shared release preflight selects a deployment.
+A refusal returns an error and remediation; an already active deployment returns
+`status: up_to_date` without restarting. Otherwise the command launches a detached
+operator `aq update --yes` process which owns backup, stop, install and restart.
+`status: updating` acknowledges launch; the returned log carries the final outcome.
+
+When `wait_for_tasks` is true, the orchestrator waits up to five minutes for
+running tasks before restarting or launching the updater. Every prelaunch error
+and every updater exit that leaves this daemon running restores its prior pause
+state, including refusals and races that become up to date.
 
 **Parameters:**
-- `reason` (optional, default `"No reason provided"`): Human-readable reason for the update.
-- `wait_for_tasks` (optional, default `false`): If true, pause the orchestrator and wait for all running tasks to complete before restarting.
+- `reason` (optional, default `"No reason provided"`): Human-readable reason.
+- `wait_for_tasks` (optional, default `false`): Wait for running tasks to finish.
 
 **Returns on success:**
 ```python
-{"status": "updating", "message": "Update pulled and daemon restart initiated", "pull_output": <str>, "reason": <str>, "waited_for_tasks": <bool>}
+# Legacy path:
+{"status": "updating", "pull_output": <str>, "message": <str>, "reason": <str>, "waited_for_tasks": <bool>}
+# Release updater launch:
+{"success": True, "status": "updating", "pid": <int>, "log": <str>, "selector": <str>, "commit": <str>, "message": <str>, "reason": <str>, "waited_for_tasks": <bool>}
+# Selected deployment already active:
+{"success": True, "status": "up_to_date", "commit": <str>}
 ```
 
-**Errors:**
-- `git pull` failed (non-zero exit code).
-- `pip install` failed (non-zero exit code).
+**Errors:** Legacy pull/install/client generation failures, release preflight
+refusals, and failure to launch the updater. A later updater refusal/failure is
+recorded in the returned log.
 
 ---
 

@@ -34,6 +34,7 @@ GENERATED=(
     tests/selection_catalogue.json
     docs/reference/cli-command-inventory.json
     docs/reference/configuration-schema.json
+    docs/reference/promotion-flow-schema.json
     docs/reference/playbook-commands/README.md
     src/playbook_v2_schema.json
     src/tools/command_catalogue.json
@@ -96,6 +97,7 @@ regenerate() {
     fi
     step cli-command-inventory "$PYTHON" scripts/generate-cli-command-inventory.py
     step configuration-schema "$PYTHON" scripts/generate-config-schema-inventory.py
+    step promotion-flow-schema "$PYTHON" scripts/generate-promotion-flow-schema.py
     step playbook-command-docs "$PYTHON" scripts/gen-command-docs.py
     step playbook-schema "$PYTHON" scripts/generate-playbook-schema.py
     # openapi.json, packages/aq-client/ and the boilerplate digests.

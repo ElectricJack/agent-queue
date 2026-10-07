@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -23,6 +24,8 @@ from src.integration import outbox as outbox_module
 from src.integration.models import (
     DEFAULT_INTEGRATION_MAX_WAIT_SECONDS,
     HierarchicalIntegrationPolicy,
+    integration_ci_policy,
+    integration_ci_sources,
     integration_max_wait_seconds,
 )
 from src.integration.service import IntegrationService as _IntegrationService
@@ -228,6 +231,35 @@ def test_policy_max_wait_round_trips_a_configured_bound():
     assert HierarchicalIntegrationPolicy.model_validate(dumped) == policy
 
 
+def test_optional_train_policy_preserves_frozen_snapshots():
+    policy = HierarchicalIntegrationPolicy.model_validate(_minimal_policy_values())
+    frozen = policy.model_dump(mode="json")
+
+    assert policy.train is None
+    assert "train" not in frozen
+    assert "train" not in policy.model_dump()
+    assert "train" not in json.loads(policy.model_dump_json())
+    assert HierarchicalIntegrationPolicy.model_validate(frozen) == policy
+    assert HierarchicalIntegrationPolicy.model_validate(frozen).model_dump(mode="json") == frozen
+
+
+@pytest.mark.parametrize("train", [{}, {"cadence_seconds": 90, "settling_cap_seconds": 600}])
+def test_train_policy_defaults_and_configured_timing_round_trip(train):
+    policy = HierarchicalIntegrationPolicy.model_validate({**_minimal_policy_values(), "train": train})
+    assert policy.train.cadence_seconds == train.get("cadence_seconds", 300)
+    assert policy.train.settling_cap_seconds == train.get("settling_cap_seconds", 1800)
+    assert HierarchicalIntegrationPolicy.model_validate(policy.model_dump(mode="json")) == policy
+
+
+@pytest.mark.parametrize("field", ["cadence_seconds", "settling_cap_seconds"])
+@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan"), None, "soon"])
+def test_train_policy_requires_positive_seconds(field, value):
+    with pytest.raises(ValueError, match=field):
+        HierarchicalIntegrationPolicy.model_validate(
+            {**_minimal_policy_values(), "train": {field: value}}
+        )
+
+
 @pytest.mark.parametrize(
     "max_wait", [0, -1, float("inf"), float("-inf"), float("nan"), None, "soon"]
 )
@@ -249,6 +281,105 @@ def test_project_max_wait_falls_back_to_the_default_without_a_hierarchical_polic
     assert integration_max_wait_seconds({"validation": "none", "commands": []}) == 3600.0
     assert integration_max_wait_seconds({**configured, "max_wait_seconds": 0}) == 3600.0
     assert integration_max_wait_seconds("not a policy") == 3600.0
+
+
+CI_COMMANDS = {"unit": "aq test tests/test_x.py"}
+
+
+def test_ci_source_is_unset_by_default_without_changing_frozen_snapshots():
+    values = _minimal_policy_values()
+    policy = HierarchicalIntegrationPolicy.model_validate(values)
+
+    assert policy.ci is None
+    # In-flight batches compare stored snapshots by dict equality.
+    assert "ci" not in policy.model_dump(mode="json")
+    assert "ci" not in json.loads(policy.model_dump_json())
+    assert integration_ci_policy(values) is None
+    assert integration_ci_sources(values) == {
+        "root": "hosted", "epic": "hosted", "promotion": "hosted", "origin": "default"}
+
+
+def test_ci_source_round_trips_per_target_kind_overrides():
+    values = {**_minimal_policy_values(), "ci": {
+        "source": "local", "promotion": "hosted", "commands": CI_COMMANDS,
+        "queue_seconds": 30, "run_seconds": 60,
+    }}
+    policy = HierarchicalIntegrationPolicy.model_validate(values)
+
+    assert policy.ci.source_for("root") == policy.ci.source_for("epic") == "local"
+    assert policy.ci.source_for("promotion") == "hosted"
+    assert policy.ci.local_kinds() == ("root", "epic")
+    dumped = policy.model_dump(mode="json")
+    assert dumped["ci"]["commands"] == CI_COMMANDS
+    assert HierarchicalIntegrationPolicy.model_validate(dumped) == policy
+    assert integration_ci_policy(values) == policy.ci
+    assert integration_ci_sources(values) == {
+        "root": "local", "epic": "local", "promotion": "hosted", "origin": "policy"}
+
+
+def test_hybrid_promotion_reads_hosted_checks():
+    ci = HierarchicalIntegrationPolicy.model_validate({
+        **_minimal_policy_values(), "ci": {"source": "hybrid", "commands": CI_COMMANDS},
+    }).ci
+
+    # A promotion step has no candidate gate, only the PR checks GitHub enforces.
+    assert ci.source_for("promotion") == "hybrid"
+    assert ci.local_kinds() == ("root", "epic")
+    assert ci.requires_hosted("root") and ci.requires_hosted("promotion")
+    assert not ci.requires_hosted("epic")
+
+
+@pytest.mark.parametrize("requirements,root,epic", [
+    ({"root": False}, False, False), ({"epic": True}, True, True),
+    ({"root": False, "epic": True}, False, True),
+])
+def test_hybrid_hosted_requirements_are_explicit_per_boundary(requirements, root, epic):
+    policy = HierarchicalIntegrationPolicy.model_validate({
+        **_minimal_policy_values(), "ci": {"source": "hybrid", "commands": CI_COMMANDS,
+                                          "hosted_attestation": requirements},
+    })
+    assert policy.ci.requires_hosted("root") is root
+    assert policy.ci.requires_hosted("epic") is epic
+    assert policy.model_dump(mode="json")["ci"]["hosted_attestation"] == requirements
+
+
+def test_ci_hosted_requirement_defaults_preserve_existing_snapshot_shape():
+    values = {**_minimal_policy_values(), "ci": {
+        "source": "hybrid", "commands": CI_COMMANDS,
+    }}
+    policy = HierarchicalIntegrationPolicy.model_validate(values)
+    assert "hosted_attestation" not in policy.model_dump(mode="json")["ci"]
+
+
+@pytest.mark.parametrize("ci, error", [
+    ({"source": "local"}, "requires ci.commands"),
+    ({"source": "local", "commands": {"lint": "ruff check src"}},
+     "no command for required check(s) unit"),
+    ({"source": "hosted", "epic": "hybrid", "commands": {"lint": "ruff check src"}},
+     "ci source for epic is hybrid"),
+    ({"source": "local", "commands": {"unit": "sleep 1"}}, "not a finite job command"),
+    ({"source": "github"}, "source"),
+    ({"source": "local", "commands": CI_COMMANDS, "runner": "box"}, "runner"),
+])
+def test_local_ci_source_must_run_every_required_check(ci, error):
+    with pytest.raises(ValueError, match=re.escape(error)):
+        HierarchicalIntegrationPolicy.model_validate({**_minimal_policy_values(), "ci": ci})
+
+
+def test_hosted_ci_source_needs_no_local_commands():
+    policy = HierarchicalIntegrationPolicy.model_validate(
+        {**_minimal_policy_values(), "ci": {"source": "hosted"}})
+
+    assert policy.ci.local_kinds() == ()
+
+
+def test_stored_ci_block_that_no_longer_validates_reads_hosted():
+    stale = {**_minimal_policy_values(), "ci": {"source": "local", "commands": {}}}
+
+    assert integration_ci_policy(stale) is None
+    assert integration_ci_sources(stale)["origin"] == "default"
+    assert integration_ci_policy(None) is None and integration_ci_policy("x") is None
+
 
 @pytest.mark.parametrize(
     ("scope", "scope_identifier"),

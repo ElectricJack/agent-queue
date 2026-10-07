@@ -1811,6 +1811,31 @@ class ExecutionMixin:
                 new_status = TaskStatus.READY
                 context = "retry"
 
+        slot_restored = False
+        if ordinary_repair is not None and pool and workspace_path:
+            # Restore before accepting the close or releasing its lease. A
+            # managed job pin is a temporary refusal, not a failed repair:
+            # keep this exact claim and reservation for the worker's retry.
+            from src.jobs.policy import JobError
+
+            slot = await self._slot_workspace_at(workspace_path)
+            if slot is not None:
+                try:
+                    await self._worktree_slots().restore_slot_after_task(slot, task_id=task.id)
+                    slot_restored = True
+                except JobError as exc:
+                    if str(exc) != "jobs.workspace_busy":
+                        raise
+                    feedback = (
+                        "Close deferred: a managed job still pins this workspace. "
+                        "Wait for the job to settle, then retry close with the same claim."
+                    )
+                    return {
+                        "status": task.status.value, "pr_url": None, "pipeline_ok": False,
+                        "verification_retry": True, "close_deferred": "jobs.workspace_busy",
+                        "issues": [feedback], "feedback": feedback,
+                    }
+
         # Persist a pipeline-discovered PR on the row so the review policy
         # (final-reviewer trigger, downstream ``pr-merged`` gates) can see
         # it even when the agent never called ``aq task set --pr-url``.
@@ -2198,7 +2223,6 @@ class ExecutionMixin:
                 await BranchLock(self.db).release(ordinary_fence)
             release_needed = False
         handoff_unproven = False
-        slot_restored = False
         if release_needed:
             if failed_writer:
                 # Both handoff proofs end in ``detach_workspace_for_integration_handoff``,
