@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type React from "react";
@@ -29,35 +29,104 @@ const card = (status: string, over: Partial<TaskNodeData["hierarchy"]> = {}, ext
   ...extra,
 });
 
-describe("finished cards", () => {
+describe("card anatomy (§3.1)", () => {
   it("leaves the main card available as the node drag surface", () => {
     render(<TaskCard data={card("READY")} />);
     expect(screen.getByRole("button", { name: "Open task Ship it" })).not.toHaveClass("nodrag");
   });
 
-  it("still shows a (full) progress bar once a card is settled", () => {
-    render(<TaskCard data={card("COMPLETED")} />);
-    expect(screen.getByText("3/4 descendants completed")).toBeInTheDocument();
-    expect(screen.getByRole("progressbar", { name: "3 of 4 done" })).toBeInTheDocument();
+  it("names the status in plain words on the pill, the stored status in its tooltip", () => {
+    render(<TaskCard data={card("DEFINED", { childCount: 0, descendantCount: 0 })} />);
+    expect(screen.getByText("Not started").closest("[title]")).toHaveAttribute("title", "DEFINED");
+    expect(screen.queryByText("DEFINED")).not.toBeInTheDocument();
   });
 
-  it("keeps the live variant while work is still running underneath", () => {
-    render(<TaskCard data={card("COMPLETED", { runningCount: 1 })} />);
-    expect(screen.getByRole("progressbar", { name: "3 of 4 done" })).toBeInTheDocument();
-    expect(screen.getByText("1 running")).toBeInTheDocument();
+  it("reads an open task the daemon reports blocked as Blocked, with a left bar", () => {
+    const { container } = render(<TaskCard data={card("READY", { childCount: 0, descendantCount: 0 }, {
+      task: { id: "task-one", title: "Ship it", status: "READY", priority: 100, is_blocked: true },
+    })} />);
+    expect(screen.getByText("Blocked").closest("[title]")).toHaveAttribute("title", "READY · blocked by dependencies or gates");
+    expect(container.querySelector("[data-task-card]")).toHaveClass("border-l-4", "border-l-g-blocked");
   });
 
-  it("keeps the live variant for a card that has not finished", () => {
-    render(<TaskCard data={card("IN_PROGRESS")} />);
-    expect(screen.getByRole("progressbar", { name: "3 of 4 done" })).toBeInTheDocument();
+  it("stripes and pulses only a running card", () => {
+    const running = render(<TaskCard data={card("IN_PROGRESS", { childCount: 0, descendantCount: 0 })} />);
+    expect(running.container.querySelector("[data-task-card]")).toHaveClass("aq-stripe");
+    expect(running.container.querySelector(".aq-pulse")).not.toBeNull();
+    running.unmount();
+    const ready = render(<TaskCard data={card("READY", { childCount: 0, descendantCount: 0 })} />);
+    expect(ready.container.querySelector("[data-task-card]")).not.toHaveClass("aq-stripe");
+    expect(ready.container.querySelector(".aq-pulse")).toBeNull();
+  });
+
+  it("writes one reason sentence from the loaded neighbours", () => {
+    render(<TaskCard data={card("DEFINED", { childCount: 0, descendantCount: 0 }, {
+      relations: { blockerCount: 2, blockerTitle: "Schema", dependentTitle: null, readyAhead: null },
+    })} />);
+    expect(screen.getByText((_, el) => el?.hasAttribute("data-reason") === true)).toHaveTextContent("After Schema and 1 more");
+  });
+
+  it("splits a worker rung into class and harness tags and counts open gates", () => {
+    render(<TaskCard data={card("READY", { childCount: 0, descendantCount: 0 }, {
+      task: { id: "task-one", title: "Ship it", status: "READY", priority: 100, profile_id: "deep-high-codex", intelligence_class: "deep-high" },
+      gates: [{ gate_type: "review", status: "OPEN" }, { gate_type: "ci", status: "resolved" }] as TaskNodeData["gates"],
+    })} />);
+    expect(screen.getByText("deep-high")).toBeInTheDocument();
+    expect(screen.getByText("codex")).toBeInTheDocument();
+    expect(screen.getByText("1 gate")).toHaveAttribute("title", "review");
+  });
+
+  it("shows priority only when it is urgent", () => {
+    const urgent = render(<TaskCard data={card("READY", {}, { task: { id: "task-one", title: "Ship it", status: "READY", priority: 10 } })} />);
+    expect(screen.getByText("P10")).toBeInTheDocument();
+    urgent.unmount();
+    render(<TaskCard data={card("READY")} />);
+    expect(screen.queryByText(/^P\d+$/)).not.toBeInTheDocument();
+  });
+
+  it("marks a stub from another project and gives it no status pill", () => {
+    render(<TaskCard data={card("READY", { childCount: 0, descendantCount: 0 }, { stub: { foreign: true } })} />);
+    expect(screen.getByText("other project")).toBeInTheDocument();
+    expect(screen.queryByText("Ready")).not.toBeInTheDocument();
   });
 });
 
-describe("subtask progress", () => {
-  it("renders a bar for a card with subtasks", () => {
-    render(<TaskCard data={card("READY", {}, { subtasks: { total: 3, settled: 1 } })} />);
-    expect(screen.getByText("1/3 subtasks")).toBeInTheDocument();
-    expect(screen.getByRole("progressbar", { name: "1 of 3 done" })).toBeInTheDocument();
+describe("progress", () => {
+  it("still shows a (full) progress bar once a card is settled", () => {
+    render(<TaskCard data={card("COMPLETED")} />);
+    expect(screen.getByRole("progressbar", { name: "3 of 4 tasks done" })).toBeInTheDocument();
+    expect(screen.getByText("Done")).toBeInTheDocument();
+  });
+
+  it("counts running work underneath an epic on its reason line", () => {
+    render(<TaskCard data={card("COMPLETED", { runningCount: 1, blockedCount: 1 })} />);
+    expect(screen.getByRole("progressbar", { name: "3 of 4 tasks done" })).toBeInTheDocument();
+    expect(screen.getByText((_, el) => el?.hasAttribute("data-reason") === true)).toHaveTextContent("3 of 4 done · 1 running · 1 blocked");
+  });
+
+  it("renders a subtask bar and puts the share on a running card's pill", () => {
+    render(<TaskCard data={card("IN_PROGRESS", { childCount: 0, descendantCount: 0 }, { subtasks: { total: 3, settled: 1 } })} />);
+    expect(screen.getByRole("progressbar", { name: "1 of 3 subtasks settled" })).toBeInTheDocument();
+    expect(screen.getByText("In progress · 33%")).toBeInTheDocument();
+    expect(screen.getByText((_, el) => el?.hasAttribute("data-reason") === true)).toHaveTextContent("1 of 3 subtasks");
+  });
+
+  it("names a non-running card's subtask count in the bar's tooltip, and the bar still opens the task", async () => {
+    const onOpenTask = vi.fn();
+    render(<TaskCard data={card("READY", { childCount: 0, descendantCount: 0 }, { subtasks: { total: 4, settled: 1 }, onOpenTask })} />);
+    const bar = screen.getByRole("progressbar", { name: "1 of 4 subtasks settled" });
+    const hover = bar.closest("[data-bar-hover]")!;
+    expect(hover).toHaveAttribute("title", "1 of 4 subtasks settled");
+    expect(hover).toHaveClass("pointer-events-auto");
+    await userEvent.click(hover);
+    expect(onOpenTask).toHaveBeenCalledWith("task-one", expect.objectContaining({ id: "task-one" }));
+  });
+
+  it("paints the copy-id button in graph tokens only, never the gray default", () => {
+    render(<TaskCard data={card("READY")} />);
+    const copy = screen.getByRole("button", { name: "Copy task id task-one" });
+    expect(copy).toHaveClass("text-g-muted", "hover:bg-g-card-hover", "hover:text-g-text");
+    expect(copy.className).not.toMatch(/gray-/);
   });
 
   it("renders no subtask bar for a card without subtasks", () => {
@@ -73,24 +142,29 @@ describe("a container card is compact: you enter it, you never expand it", () =>
     render(<TaskCard data={card("READY", {}, { onFocus })} />);
     expect(screen.queryByRole("button", { name: /children of/i })).not.toBeInTheDocument();
     const enter = screen.getByRole("button", { name: "Enter Ship it" });
+    expect(enter.closest("[role=button][aria-label^='Open task']")).toBeNull();
     await userEvent.click(enter);
     expect(onFocus).toHaveBeenCalledWith("task-one");
   });
 
-  it("keeps the hidden count as information", () => {
-    render(<TaskCard data={card("READY")} />);
-    expect(screen.getByText("4 hidden")).toBeInTheDocument();
+  it("draws an epic as a labelled stack of sheets", () => {
+    const { container } = render(<TaskCard data={card("READY")} />);
+    expect(screen.getByText("Epic")).toBeInTheDocument();
+    const face = container.querySelector("[data-task-card]")!;
+    expect(face.previousElementSibling).toHaveAttribute("aria-hidden");
   });
 
-  it("shows no enter control on a leaf card", () => {
-    render(<TaskCard data={card("READY", { childCount: 0, descendantCount: 0 })} />);
+  it("shows no enter control, sheet or kind label on a leaf card", () => {
+    const { container } = render(<TaskCard data={card("READY", { childCount: 0, descendantCount: 0 })} />);
     expect(screen.queryByRole("button", { name: /^Enter/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("Epic")).not.toBeInTheDocument();
+    expect(container.querySelector("[data-task-card]")!.previousElementSibling).toBeNull();
     expect(screen.getByRole("button", { name: "Open task Ship it" })).toBeInTheDocument();
   });
 });
 
-describe("phase header", () => {
-  it("shows the phase order and label", () => {
+describe("phase label", () => {
+  it("shows the phase order and label as the card's kind", () => {
     render(<TaskCard data={card("DEFINED", {}, { phase: { order: 2, label: "Build" } })} />);
     expect(screen.getByText("Phase 2 · Build")).toBeInTheDocument();
   });
@@ -103,7 +177,7 @@ describe("phase header", () => {
     expect(screen.getByLabelText("Phase gated")).toBeInTheDocument();
   });
 
-  it("omits the header for a non-phase task", () => {
+  it("omits the label for a non-phase task", () => {
     render(<TaskCard data={card("READY")} />);
     expect(screen.queryByText(/^Phase /)).not.toBeInTheDocument();
   });
@@ -114,34 +188,33 @@ describe("epic cards", () => {
     card(status, { descendantCount: 5, completedCount: 5, childCount: 5 }, { delivery });
 
   it("separates implementation progress from a blocked delivery", () => {
-    render(<TaskCard data={epic("PAUSED", EPIC_DELIVERY.missingReceipt)} />);
-    expect(screen.getByText("5/5 tasks complete")).toBeInTheDocument();
+    const { container } = render(<TaskCard data={epic("PAUSED", EPIC_DELIVERY.missingReceipt)} />);
+    expect(screen.getByRole("progressbar", { name: "5 of 5 tasks done" })).toBeInTheDocument();
     expect(screen.getByText("Integration blocked - final fix not collected")).toBeInTheDocument();
-    expect(screen.getByText("Delivery blocked")).toBeInTheDocument();
+    expect(container.querySelector("[data-task-card]")).toHaveAttribute("data-status", "BLOCKED");
+    expect(screen.queryByText("Paused")).not.toBeInTheDocument();
     expect(screen.queryByText("PAUSED")).not.toBeInTheDocument();
-    expect(screen.queryByText(/descendants completed/)).not.toBeInTheDocument();
   });
 
   it("explains the stored status of an integration hold in the status tooltip", () => {
     render(<TaskCard data={epic("PAUSED", EPIC_DELIVERY.strandedReservation)} />);
-    expect(screen.getByText("Delivery blocked").closest("[title]")).toHaveAttribute(
-      "title",
-      "Delivery blocked · task status PAUSED (held by integration, not paused by anyone)",
-    );
+    const pill = screen.getByText(EPIC_DELIVERY.strandedReservation.label).closest("[title]")!;
+    expect(pill.getAttribute("title")).toMatch(/^Verification blocked - branch handoff required\. /);
+    expect(pill.getAttribute("title")).toMatch(/ · task status PAUSED \(held by integration, not paused by anyone\)$/);
   });
 
   it("reads Paused only for an operator hold", () => {
-    render(<TaskCard data={epic("PAUSED", EPIC_DELIVERY.manualPause)} />);
-    expect(screen.getByText("Paused")).toBeInTheDocument();
+    const { container } = render(<TaskCard data={epic("PAUSED", EPIC_DELIVERY.manualPause)} />);
     expect(screen.getByText("Paused by operator")).toBeInTheDocument();
+    expect(container.querySelector("[data-task-card]")).toHaveAttribute("data-status", "PAUSED");
   });
 
   it("pulses only with evidence of active work", () => {
     const { container, unmount } = render(<TaskCard data={epic("PAUSED", EPIC_DELIVERY.activeIntegration)} />);
-    expect(container.querySelector(".animate-pulse")).not.toBeNull();
+    expect(container.querySelector(".aq-pulse")).not.toBeNull();
     unmount();
     const queued = render(<TaskCard data={epic("PAUSED", EPIC_DELIVERY.queuedVerifier)} />);
-    expect(queued.container.querySelector(".animate-pulse")).toBeNull();
+    expect(queued.container.querySelector(".aq-pulse")).toBeNull();
     expect(screen.getByText("Verification queued - waiting for a worker")).toBeInTheDocument();
   });
 
@@ -150,15 +223,15 @@ describe("epic cards", () => {
     ["delivered", "Delivered"],
     ["staleEvidence", "Verification status stale"],
     ["unavailable", "Delivery evidence unavailable"],
-  ] as const)("%s shows its delivery label", (name, label) => {
+  ] as const)("%s shows its delivery headline", (name, label) => {
     render(<TaskCard data={epic("COMPLETED", EPIC_DELIVERY[name])} />);
     expect(screen.getAllByText(label).length).toBeGreaterThan(0);
   });
 
-  it("keeps the plain card for a node without a delivery projection", () => {
+  it("keeps the plain status pill for a node without a delivery projection", () => {
     render(<TaskCard data={card("PAUSED")} />);
-    expect(screen.getByText("PAUSED")).toBeInTheDocument();
-    expect(screen.getByText("3/4 descendants completed")).toBeInTheDocument();
+    expect(screen.getByText("Paused")).toBeInTheDocument();
+    expect(screen.getByText((_, el) => el?.hasAttribute("data-reason") === true)).toHaveTextContent("3 of 4 done");
   });
 });
 
@@ -183,42 +256,55 @@ describe("review waits", () => {
     inRouter(<TaskCard data={reviewCard([wait()])} />);
     const link = screen.getByRole("link", { name: /Waiting on spec review brisk-lantern-7 \(pending\)/ });
     expect(link).toHaveAttribute("href", "/reviews/brisk-lantern-7");
-    expect(link).toHaveTextContent("Awaiting review");
-    expect(link).toHaveTextContent("brisk-lantern-7");
-    expect(link).toHaveTextContent("pending");
+    expect(link).toHaveTextContent("Review brisk-lantern-7 · pending");
     expect(link).toHaveAttribute("data-review-wait", "blocking");
   });
 
-  it("marks the card itself as held by a review, not as a generic block", () => {
+  it("adds a second pill and a reason rather than recolouring the card (§3.3)", () => {
     const { container } = inRouter(<TaskCard data={reviewCard([wait()])} />);
     const shell = container.querySelector("[data-task-card]")!;
     expect(shell).toHaveAttribute("data-review-blocked");
-    expect(shell).toHaveClass("border-violet-400");
-    expect(shell).not.toHaveClass("border-yellow-300");
-    expect(screen.getByTitle("DEFINED · waiting on review brisk-lantern-7 (pending)")).toBeInTheDocument();
+    expect(shell).not.toHaveClass("border-g-accent");
+    expect(screen.getByTitle("DEFINED · waiting on review brisk-lantern-7 (pending)")).toHaveTextContent("Not started");
+    expect(screen.getByText((_, el) => el?.hasAttribute("data-reason") === true))
+      .toHaveTextContent("Waiting on your review of brisk-lantern-7");
+  });
+
+  it("keeps the status word whole: the review pill shrinks, the status pill never does", () => {
+    inRouter(<TaskCard data={reviewCard([wait({ review_state: "changes_requested" })])} />);
+    const status = screen.getByTitle("DEFINED · waiting on review brisk-lantern-7 (changes requested)");
+    expect(status).toHaveClass("shrink-0");
+    const link = screen.getByRole("link", { name: /brisk-lantern-7/ });
+    expect(link).toHaveClass("min-w-0", "shrink", "overflow-hidden");
+    expect(link).not.toHaveClass("shrink-0");
+    // Inside it the id gives way first, and the state word ellipsizes rather
+    // than painting past the pill when even "Review · changes" does not fit.
+    expect(within(link).getByText("brisk-lantern-7")).toHaveClass("min-w-0", "shrink-[100]", "truncate");
+    expect(within(link).getByText("· changes")).toHaveClass("min-w-0", "truncate");
   });
 
   it.each([
-    ["in_review", "pending"],
-    ["changes_requested", "changes requested"],
-    ["rejected", "rejected"],
-    ["withdrawn", "withdrawn"],
-  ])("names a blocking %s review %s", (state, label) => {
+    ["in_review", "pending", "pending", "bg-g-accent-soft"],
+    ["changes_requested", "changes requested", "changes", "bg-g-blocked-soft"],
+    ["rejected", "rejected", "rejected", "bg-g-failed-soft"],
+    ["withdrawn", "withdrawn", "withdrawn", "bg-g-pending-soft"],
+  ])("names a blocking %s review %s in its tone", (state, label, short, tone) => {
     inRouter(<TaskCard data={reviewCard([wait({ review_state: state })])} />);
-    expect(screen.getByRole("link", { name: new RegExp(`\\(${label}\\)`) })).toHaveTextContent(label);
+    const link = screen.getByRole("link", { name: new RegExp(`\\(${label}\\)`) });
+    expect(link).toHaveTextContent(`· ${short}`);
+    expect(link).toHaveClass(tone);
   });
 
-  it("still links an approved review that released the task, without the review border", () => {
+  it("still links an approved review that released the task, in the done tone", () => {
     const { container } = inRouter(<TaskCard data={reviewCard([
       wait({ review_state: "approved", gate_status: "resolved", blocking: false }),
     ])} />);
     const link = screen.getByRole("link", { name: /Gated on spec review brisk-lantern-7 \(approved\)/ });
-    expect(link).toHaveTextContent("Reviewed");
-    expect(link).toHaveTextContent("approved");
+    expect(link).toHaveTextContent("Review brisk-lantern-7 · approved");
+    expect(link).toHaveClass("bg-g-done-soft");
     expect(link).toHaveAttribute("data-review-wait", "released");
     const shell = container.querySelector("[data-task-card]")!;
     expect(shell).not.toHaveAttribute("data-review-blocked");
-    expect(shell).not.toHaveClass("border-violet-400");
   });
 
   it("follows the link without opening the task or reaching the canvas node", async () => {

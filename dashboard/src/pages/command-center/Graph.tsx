@@ -75,8 +75,6 @@ function GraphShell(props: ShellProps) {
         <span>{totalCount} {totalCount === 1 ? "task" : "tasks"} total</span>
         <span>{playbookCount} playbooks · recurring definitions stay visible</span>
         {loadingPlaybooks && <span role="status">Loading playbooks…</span>}
-        <span className="inline-flex items-center gap-1.5"><span className="w-5 border-t-2 border-indigo-400" /> Dependency</span>
-        <span className="inline-flex items-center gap-1.5"><span className="w-5 border-t border-dashed border-gray-400" /> Child task</span>
         {loading && <span role="status">Loading tasks…</span>}
       </div>
       <div className="relative min-h-0 flex-1" aria-busy={loading}>

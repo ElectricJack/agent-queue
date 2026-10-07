@@ -1,6 +1,148 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* Graph palette, from the approved graph-ui-redesign mockups. The shell can
+   adopt these tokens independently; its existing colour utilities stay intact. */
+:root, [data-theme="dark"] {
+  --g-ground: #0c0d12;      --g-grid: rgba(255,255,255,.045);
+  --g-panel: #11131a;       --g-panel-head: #151823;
+  --g-card: #171a24;        --g-card-hover: #1c2030;
+  --g-border: #262b3a;      --g-border-strong: #39405a;
+  --g-text: #e9ebf3;        --g-text-muted: #9aa3b8;   --g-text-dim: #7a84a0;
+  --g-accent: #a79bf7;      --g-accent-ink: #cfc8ff;   --g-accent-soft: rgba(167,155,247,.16);
+  --g-ring: rgba(167,155,247,.38);
+  --g-done: #6fd49a;        --g-done-soft: rgba(111,212,154,.14);
+  --g-run: var(--g-accent); --g-run-soft: rgba(167,155,247,.14);
+  --g-stripe: rgba(167,155,247,.11);
+  --g-ready: #5ec9d9;       --g-ready-soft: rgba(94,201,217,.14);
+  --g-blocked: #f0a35e;     --g-blocked-soft: rgba(240,163,94,.15);
+  --g-paused: #8fa3c7;      --g-paused-soft: rgba(143,163,199,.14);
+  --g-failed: #f2707d;      --g-failed-soft: rgba(242,112,125,.16);
+  --g-call: #f58aa0;        --g-call-soft: rgba(245,138,160,.13);
+  --g-pending: #6b7490;     --g-pending-soft: rgba(107,116,144,.10);
+  --g-cancel: var(--g-pending); --g-cancel-soft: var(--g-pending-soft);
+  --g-edge: rgba(154,163,184,.6); --g-edge-strong: var(--g-accent);
+  --g-shadow: 0 8px 24px rgba(0,0,0,.35);
+  --g-font: var(--font-sans);
+  --g-mono: var(--font-mono);
+}
+
+[data-theme="light"] {
+  --g-ground: #f4f5fa;      --g-grid: rgba(20,24,40,.06);
+  --g-panel: #ffffff;      --g-panel-head: #f7f8fc;
+  --g-card: #ffffff;       --g-card-hover: #f9f9fe;
+  --g-border: #dde1ec;     --g-border-strong: #b9c0d4;
+  --g-text: #171a26;       --g-text-muted: #525a70;   --g-text-dim: #6b7389;
+  --g-accent: #6a5ae0;     --g-accent-ink: #4b3fc4;   --g-accent-soft: rgba(106,90,224,.12);
+  --g-ring: rgba(106,90,224,.35);
+  --g-done: #156e40;       --g-done-soft: rgba(21,110,64,.12);
+  --g-run: var(--g-accent); --g-run-soft: rgba(106,90,224,.10);
+  --g-stripe: rgba(106,90,224,.08);
+  --g-ready: #0e6775;      --g-ready-soft: rgba(14,103,117,.12);
+  --g-blocked: #9a5306;    --g-blocked-soft: rgba(154,83,6,.12);
+  --g-paused: #4f6288;     --g-paused-soft: rgba(79,98,136,.12);
+  --g-failed: #b52a38;     --g-failed-soft: rgba(181,42,56,.12);
+  --g-call: #b02f51;       --g-call-soft: rgba(176,47,81,.10);
+  --g-pending: #7f879c;    --g-pending-soft: rgba(127,135,156,.10);
+  --g-cancel: var(--g-pending); --g-cancel-soft: var(--g-pending-soft);
+  --g-edge: rgba(82,90,112,.7); --g-edge-strong: var(--g-accent);
+  --g-shadow: 0 8px 24px rgba(20,24,40,.10);
+}
+
+/* Inline aliases keep utilities tied to the active palette rather than to
+   values resolved on a different ancestor. */
+@theme inline {
+  --color-g-ground: var(--g-ground);
+  --color-g-grid: var(--g-grid);
+  --color-g-panel: var(--g-panel);
+  --color-g-panel-head: var(--g-panel-head);
+  --color-g-card: var(--g-card);
+  --color-g-card-hover: var(--g-card-hover);
+  --color-g-border: var(--g-border);
+  --color-g-border-strong: var(--g-border-strong);
+  --color-g-edge: var(--g-edge);
+  --color-g-edge-strong: var(--g-edge-strong);
+  --color-g-text: var(--g-text);
+  --color-g-muted: var(--g-text-muted);
+  --color-g-dim: var(--g-text-dim);
+  --color-g-accent: var(--g-accent);
+  --color-g-accent-ink: var(--g-accent-ink);
+  --color-g-accent-soft: var(--g-accent-soft);
+  --color-g-ring: var(--g-ring);
+  --color-g-stripe: var(--g-stripe);
+  --color-g-done: var(--g-done);
+  --color-g-done-soft: var(--g-done-soft);
+  --color-g-run: var(--g-run);
+  --color-g-run-soft: var(--g-run-soft);
+  --color-g-ready: var(--g-ready);
+  --color-g-ready-soft: var(--g-ready-soft);
+  --color-g-blocked: var(--g-blocked);
+  --color-g-blocked-soft: var(--g-blocked-soft);
+  --color-g-paused: var(--g-paused);
+  --color-g-paused-soft: var(--g-paused-soft);
+  --color-g-failed: var(--g-failed);
+  --color-g-failed-soft: var(--g-failed-soft);
+  --color-g-call: var(--g-call);
+  --color-g-call-soft: var(--g-call-soft);
+  --color-g-pending: var(--g-pending);
+  --color-g-pending-soft: var(--g-pending-soft);
+  --color-g-cancel: var(--g-cancel);
+  --color-g-cancel-soft: var(--g-cancel-soft);
+  --font-g: var(--g-font);
+  --font-g-mono: var(--g-mono);
+  --shadow-g: var(--g-shadow);
+}
+
+/* Override React Flow's public variables, scoped to the task graph so other
+   diagrams can adopt the palette separately. */
+.aq-task-graph {
+  color-scheme: dark;
+  --xy-background-color: var(--g-ground);
+  --xy-background-pattern-color: var(--g-grid);
+  --xy-controls-button-background-color: var(--g-panel);
+  --xy-controls-button-background-color-hover: var(--g-card-hover);
+  --xy-controls-button-color: var(--g-text);
+  --xy-controls-button-color-hover: var(--g-accent-ink);
+  --xy-controls-button-border-color: var(--g-border);
+  --xy-controls-box-shadow: var(--g-shadow);
+}
+
+/* §3.3 stripes: an in-progress card wears faint diagonal stripes that drift
+   slowly so the running state is visible without stealing attention. The
+   canvas flips `.aq-static-stripes` on while zooming is low (below ~0.45)
+   or more than ~60 striped cards are on screen, so the animation never
+   becomes the most expensive frame on the page; it also stops under
+   `prefers-reduced-motion`. */
+[data-task-card].aq-stripe {
+  background-image: repeating-linear-gradient(
+    135deg, var(--g-stripe) 0 9px, transparent 9px 20px
+  );
+  background-repeat: repeat;
+  animation: aq-stripe-drift 2.8s linear infinite;
+}
+@keyframes aq-stripe-drift {
+  to { background-position: 28px 0; }
+}
+.aq-task-graph.aq-static-stripes [data-task-card].aq-stripe { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  [data-task-card].aq-stripe { animation: none; }
+}
+
+/* The running pill's dot breathes a ring under the same motion rules. */
+.aq-pulse { animation: aq-pulse 1.8s ease-out infinite; }
+@keyframes aq-pulse {
+  from { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); }
+  to { box-shadow: 0 0 0 5px transparent; }
+}
+.aq-task-graph.aq-static-stripes .aq-pulse { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .aq-pulse { animation: none; }
+}
+
+[data-theme="light"] .aq-task-graph {
+  color-scheme: light;
+}
+
 /* Collapsing or expanding a container reflows its siblings (the space it
    gave up is reclaimed). Sliding the cards there makes the move followable;
    without it the graph would jump-cut to a different arrangement. Pans and
@@ -16,21 +158,22 @@
 }
 
 .react-flow__node.aq-focused {
-  outline: 2px solid rgb(129 140 248);
+  outline: 2px solid var(--g-accent);
   outline-offset: 2px;
   border-radius: 6px;
 }
 
 /* Boundary markers: a task that exists outside the loaded tiles, drawn as a
-   muted dashed placeholder so it never reads as a real card. */
+   muted dashed placeholder so it never reads as a real card. It recedes by
+   its border, not by opacity, which would take its text under 4.5:1 (§4.2). */
 .react-flow__node.aq-stub {
-  opacity: 0.6;
   filter: grayscale(0.7);
 }
 
 /* The card only: `> *` would also dash React Flow's connection handles. */
 .react-flow__node.aq-stub [data-task-card] {
   border-style: dashed;
+  border-color: color-mix(in srgb, var(--g-border) 55%, transparent);
 }
 
 /* A count, not a card: it never takes pointer events or selection. */

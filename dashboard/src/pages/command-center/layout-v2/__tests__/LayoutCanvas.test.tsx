@@ -17,6 +17,7 @@ interface FlowNode {
 }
 
 interface FlowProps {
+  colorMode?: "light" | "dark" | "system";
   nodes: FlowNode[];
   edges: Edge[];
   children: ReactNode;
@@ -206,6 +207,7 @@ const base = {
 };
 
 beforeEach(() => {
+  delete document.documentElement.dataset.theme;
   tiles.store = mergeTiles(emptyStore(), ["0:0"], {
     nodes: [n("e", "collapsed", 0, 0), n("z", "card", 2, 0)],
     edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
@@ -238,9 +240,28 @@ beforeEach(() => {
   dashboardStateFake.docs.clear();
   dashboardStateFake.puts.length = 0;
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  delete document.documentElement.dataset.theme;
+});
 
 describe("LayoutCanvas", () => {
+  it("uses the dark default when the shell has not published a theme", () => {
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    expect(flow.current?.colorMode).toBe("dark");
+  });
+
+  it("reads the shell theme and updates an already-mounted canvas", async () => {
+    document.documentElement.dataset.theme = "light";
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    expect(flow.current?.colorMode).toBe("light");
+
+    await act(async () => { document.documentElement.dataset.theme = "dark"; });
+    expect(flow.current?.colorMode).toBe("dark");
+    await act(async () => { document.documentElement.dataset.theme = "light"; });
+    expect(flow.current?.colorMode).toBe("light");
+  });
+
   describe("viewport gestures", () => {
     beforeEach(() => {
       // Give the real React Flow pan/zoom engine a measurable, offset canvas.
@@ -463,6 +484,79 @@ describe("LayoutCanvas", () => {
       globalThis.ResizeObserver = observers;
       globalThis.requestAnimationFrame = raf;
     }
+  });
+
+  describe("static stripes (§3.3)", () => {
+    const running = (count: number) => {
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: Array.from({ length: count }, (_, i) => n(`r${i}`, "card", 0, 0, {
+          status: "IN_PROGRESS", agg_children: 0, agg_descendants: 0, agg_active: 0,
+        })),
+        edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+        variant_applied: "active",
+      } as unknown as TilesResponse);
+    };
+    const withSizedCanvas = (body: (move: (vp: { x: number; y: number; zoom: number }) => void) => void) => {
+      const observers = globalThis.ResizeObserver;
+      const raf = globalThis.requestAnimationFrame;
+      let notify: (entries: { contentRect: { width: number; height: number } }[]) => void = () => {};
+      class Stub {
+        constructor(cb: typeof notify) { notify = cb; }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+      globalThis.ResizeObserver = Stub as unknown as typeof ResizeObserver;
+      const frames: FrameRequestCallback[] = [];
+      globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => frames.push(cb)) as unknown as typeof requestAnimationFrame;
+      try {
+        body((vp) => {
+          act(() => flow.current!.onMove!(null, vp));
+          act(() => { for (const cb of frames.splice(0)) cb(0); });
+        });
+        act(() => notify([{ contentRect: { width: 1200, height: 800 } }]));
+      } finally {
+        globalThis.ResizeObserver = observers;
+        globalThis.requestAnimationFrame = raf;
+      }
+    };
+    const graph = () => document.querySelector(".aq-task-graph")!;
+
+    it("stops the drift once more than 60 striped cards are on screen", () => {
+      running(61);
+      withSizedCanvas((move) => {
+        render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+        move({ x: 0, y: 0, zoom: 1 });
+      });
+      expect(graph().classList.contains("aq-static-stripes")).toBe(true);
+    });
+
+    it("keeps 60 striped cards drifting, and a pan away from 61 resumes it", () => {
+      running(60);
+      withSizedCanvas((move) => {
+        render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+        move({ x: 0, y: 0, zoom: 1 });
+      });
+      expect(graph().classList.contains("aq-static-stripes")).toBe(false);
+      cleanup();
+
+      running(61);
+      let pan: (vp: { x: number; y: number; zoom: number }) => void = () => {};
+      withSizedCanvas((move) => {
+        render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+        pan = move;
+      });
+      act(() => pan({ x: -500000, y: -500000, zoom: 1 }));
+      expect(graph().classList.contains("aq-static-stripes")).toBe(false);
+    });
+
+    it("stops the drift below zoom 0.45 whatever is on screen", () => {
+      running(1);
+      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      expect(graph().classList.contains("aq-static-stripes")).toBe(false);
+      act(() => flow.current!.onMove!(null, { x: 0, y: 0, zoom: 0.4 }));
+      expect(graph().classList.contains("aq-static-stripes")).toBe(true);
+    });
   });
 
   it("waits for the focus node's layout: a 202 fits nothing, the real response fits once", () => {

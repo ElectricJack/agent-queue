@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { emptyStore, mergeTiles } from "../layoutStore";
-import { enteredBounds, enteredFrame, toFlowElements } from "../flowNodes";
+import { enteredBounds, enteredFrame, relationsByTask, toFlowElements } from "../flowNodes";
 import { EPIC_DELIVERY } from "../../../../testUtils/epicDelivery";
 
 const n = (id: string, kind: string, x: number, y: number, extra = {}) => ({
@@ -147,8 +147,10 @@ describe("toFlowElements", () => {
     expect(byId(again, "c")).toBe(byId(first, "c"));
     expect(again.edges[0]).toBe(first.edges[0]);
 
-    // One task changes: only that node is rebuilt.
-    const changed = { ...tiles, nodes: [n("a", "card", 0, 0, { status: "COMPLETED" }), tiles.nodes[1]!, tiles.nodes[2]!] };
+    // One task changes in a way no neighbour's reason line reads: only that
+    // node is rebuilt. (A status or title change also repaints the cards
+    // whose reason names it; the relationsByTask suite covers that.)
+    const changed = { ...tiles, nodes: [n("a", "card", 0, 0, { profile_id: "deep-high-codex" }), tiles.nodes[1]!, tiles.nodes[2]!] };
     const third = toFlowElements(
       mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(changed)) as never), ctx, again.cache);
     expect(byId(third, "a")).not.toBe(byId(again, "a"));
@@ -364,6 +366,17 @@ describe("toFlowElements", () => {
       const box = toFlowElements(entered(), inside).nodes.find((x) => x.id === "box")!;
       expect(box.height).toBeCloseTo((6.33 + 0.15) * 312 / 2);
     });
+    it("hands the Up target to the entered frame only", () => {
+      const onFocus = () => {};
+      const scope = { ...inside, handlers: { ...ctx.handlers, onFocus }, upTarget: { id: null, title: "Project" } };
+      const { nodes } = toFlowElements(entered(), scope);
+      const box = nodes.find((x) => x.id === "box")!.data as { upTarget?: unknown; onUp?: unknown; onFocus?: unknown };
+      expect(box.upTarget).toEqual({ id: null, title: "Project" });
+      expect(box.onUp).toBe(onFocus);
+      expect(box.onFocus).toBeUndefined();
+      const root = toFlowElements(entered(), { ...ctx, upTarget: null }).nodes.find((x) => x.id === "box")!.data as { upTarget?: unknown };
+      expect(root.upTarget).toBeUndefined();
+    });
     it("never grows the frame past its persisted box", () => {
       const store = mergeTiles(emptyStore(), ["0:0"], {
         nodes: [n("box", "container", 0, 0, { w: 1.2, h: 1.3 }), n("c", "card", 0.1, 0.25, { container_id: "box" })],
@@ -395,5 +408,81 @@ describe("toFlowElements", () => {
       const far = toFlowElements(entered(), ctx).nodes.find((x) => x.id === "far")!;
       expect(far.position).toEqual({ x: 6.15 * 240, y: 12.22 * 156 });
     });
+  });
+});
+
+describe("relationsByTask (reason-line neighbours, spec §3.4)", () => {
+  const edge = (from: string, to: string, dep_type = "blocks") => ({ from, to, dep_type, description: null, count: 1 });
+  const store = (nodes: unknown[], edges: unknown[], stubs: unknown[] = []) => mergeTiles(emptyStore(), ["0:0"], {
+    nodes, edges, stubs, stub_overflow: [], workers: [], gates: [], layout_version: 1,
+  } as never);
+
+  it("names the first open blocker and counts every open one; a settled blocker gates nothing", () => {
+    const rel = relationsByTask(store(
+      [n("a", "card", 0, 0, { status: "DEFINED", title: "Wire it" }), n("b", "card", 1, 0, { title: "Schema" }),
+        n("c", "card", 2, 0, { title: "Tokens" }), n("d", "card", 3, 0, { status: "COMPLETED", title: "Old" })],
+      [edge("a", "b"), edge("a", "c"), edge("a", "d")],
+    ));
+    expect(rel.get("a")).toMatchObject({ blockerCount: 2, blockerTitle: "Schema" });
+    expect(rel.get("b")).toMatchObject({ dependentTitle: "Wire it" });
+    expect(rel.get("d")?.dependentTitle).toBe("Wire it");
+  });
+
+  it("takes a blocker's title from a stub when the blocker lies outside the loaded tiles", () => {
+    const rel = relationsByTask(store(
+      [n("a", "card", 0, 0, { status: "DEFINED" })], [edge("a", "far")],
+      [{ id: "far", project_id: "p1", x: 5, y: 0, w: 1, h: 1, title: "Far away" }],
+    ));
+    expect(rel.get("a")).toMatchObject({ blockerCount: 1, blockerTitle: "Far away" });
+  });
+
+  it("ignores discovered-from provenance", () => {
+    const rel = relationsByTask(store(
+      [n("a", "card", 0, 0), n("b", "card", 1, 0)], [edge("a", "b", "discovered-from")],
+    ));
+    expect(rel.get("a")?.blockerCount ?? 0).toBe(0);
+  });
+
+  it("ranks READY tasks by priority and leaves a tie unknown (the frontier then sorts by age)", () => {
+    const leaf = (id: string, x: number, extra = {}) => n(id, "card", x, 0, { agg_children: 0, agg_descendants: 0, ...extra });
+    const rel = relationsByTask(store([
+      leaf("p10", 0, { priority: 10 }), leaf("p50", 1, { priority: 50 }),
+      leaf("t1", 2, { priority: 80 }), leaf("t2", 3, { priority: 80 }),
+      leaf("held", 4, { priority: 1, is_blocked: true }),
+      leaf("run", 5, { priority: 1, status: "IN_PROGRESS" }),
+      // A parent is never claimable (claim_queries' has_children rule), so a
+      // READY epic neither ranks nor pushes a leaf down the frontier.
+      n("epic", "card", 6, 0, { priority: 1 }),
+    ], []));
+    expect(rel.get("p10")?.readyAhead).toBe(0);
+    expect(rel.get("p50")?.readyAhead).toBe(1);
+    expect(rel.get("t1")?.readyAhead).toBeNull();
+    expect(rel.get("held")?.readyAhead ?? null).toBeNull();
+    expect(rel.get("run")?.readyAhead ?? null).toBeNull();
+    expect(rel.get("epic")?.readyAhead ?? null).toBeNull();
+  });
+
+  it("rebuilds a card when only a neighbour's title or status changes", () => {
+    const tiles = (title: string, status = "READY") => store(
+      [n("a", "card", 0, 0, { status: "DEFINED" }), n("b", "card", 1, 0, { title, status })], [edge("a", "b")],
+    );
+    const first = toFlowElements(tiles("Schema"), ctx);
+    const renamed = toFlowElements(tiles("Schema v2"), ctx, first.cache);
+    const a = (r: { nodes: { id: string; data: unknown }[] }) => r.nodes.find((x) => x.id === "a")!;
+    expect(a(renamed)).not.toBe(a(first));
+    expect((a(renamed).data as { relations: { blockerTitle: string } }).relations.blockerTitle).toBe("Schema v2");
+    const done = toFlowElements(tiles("Schema v2", "COMPLETED"), ctx, renamed.cache);
+    expect((a(done).data as { relations?: { blockerCount: number } }).relations?.blockerCount ?? 0).toBe(0);
+  });
+
+  it("marks a boundary stub, and whether it lives in another project", () => {
+    const { nodes } = toFlowElements(store(
+      [n("a", "card", 0, 0)], [edge("a", "near"), edge("a", "x")],
+      [{ id: "near", project_id: "p1", x: 5, y: 0, w: 1, h: 1, title: "Near" },
+        { id: "x", project_id: "p2", x: 5, y: 1, w: 1, h: 1, title: "Other" }],
+    ), ctx);
+    expect((nodes.find((x) => x.id === "near")!.data as { stub: unknown }).stub).toEqual({ foreign: false });
+    expect((nodes.find((x) => x.id === "x")!.data as { stub: unknown }).stub).toEqual({ foreign: true });
+    expect((nodes.find((x) => x.id === "a")!.data as { stub?: unknown }).stub).toBeUndefined();
   });
 });
