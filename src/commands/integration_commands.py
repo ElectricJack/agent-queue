@@ -63,6 +63,7 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+
     async def _cmd_integration_cutover_plan(self, args: dict) -> dict:
         return await self._integration_cutover(args, read_only=True)
 
@@ -110,6 +111,26 @@ class IntegrationCommandsMixin:
         except (ValueError, GitError, GitHubAccessError, OSError) as exc:
             return _failure("refused", str(exc))
         return {"success": result["outcome"] in {"planned", "preview", "configured"}, **result}
+
+    async def _cmd_integration_record_root_noop(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationRecordRootNoopArgs
+        from src.integration.train_controls import TrainControls
+
+        request = IntegrationRecordRootNoopArgs.model_validate(args)
+        task = await self.db.get_task(request.task_id)
+        operator, refusal = await integration_operator(self.db, task.project_id if task else None)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await TrainControls(self.db).record_root_noop(
+                request.task_id, dry_run=request.dry_run,
+                expected_head_sha=request.expected_head_sha, operator_id=operator,
+                reason=request.reason, expected_project_id=task.project_id if task else None,
+            )
+        except (ValueError, GitError, HierarchyError, BranchBusy, TimeoutError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
 
     async def _cmd_integration_pause_batch(self, args: dict) -> dict:
         return await self._integration_batch_intent(args, "paused")

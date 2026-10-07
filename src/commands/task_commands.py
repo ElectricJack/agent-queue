@@ -5168,6 +5168,16 @@ class TaskCommandsMixin:
                     "code": "hierarchy.open_children",
                     "open_children": open_children,
                 }
+            project = await self.db.get_project(task.project_id)
+            repo_id = task.repo_id or (project.integration_repository_id if project else None)
+            origin = await self.db.get_task_branch_origin_for_promotion(task.id, repo_id or "")
+            if task.branch_name or origin:
+                return {
+                    "error": "A task with a Git branch or origin needs completion provenance. "
+                    "Use task close for held work, or integration record-root-noop for an "
+                    "unheld no-change root whose published head equals its recorded base.",
+                    "code": "integration.completion_provenance_required",
+                }
         await self.db.transition_task(task_id, TaskStatus(new_status), context="admin_set_status")
         return {
             "task_id": task_id,

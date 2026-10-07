@@ -14,6 +14,7 @@ SESSION = RequestScope(kind="session", session_id="s1", task_id="t1", project_id
 #: the capability gate.
 EXPECTED_AGENT_COMMANDS = {
     "prime",
+    "dry_run_playbook",
     "get_schema",
     "task_show",
     "task_set",
@@ -175,7 +176,7 @@ class TestCheckCommandScope:
 
     def test_git_first_train_controls_are_operator_controls(self):
         assert {"integration_pause_batch", "integration_resume_batch", "integration_eject",
-                "integration_seal_now"} <= OPERATOR_INTEGRATION_CONTROLS
+                "integration_seal_now", "integration_record_root_noop"} <= OPERATOR_INTEGRATION_CONTROLS
 
     def test_review_decision_commands_remain_outside_worker_scope(self):
         """Only a held dispatch task can comment; no worker may decide."""

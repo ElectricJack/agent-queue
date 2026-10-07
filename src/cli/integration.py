@@ -151,6 +151,23 @@ def integration_seal_now(ctx, project_id, apply):
     _execute(ctx, "integration_seal_now", {"project_id": project_id, "dry_run": not apply})
 
 
+@integration.command("record-root-noop")
+@click.argument("task_id")
+@click.option("--apply/--dry-run", default=False, help="Record the completion; default is preview.")
+@click.option("--head", "expected_head_sha", help="Exact published head returned by preview.")
+@click.option("--reason", default="", help="Why the root produced no artifact.")
+@click.pass_context
+@_handle_errors
+def integration_record_root_noop(ctx, task_id, apply, expected_head_sha, reason):
+    """Verify and complete an unheld no-code root, retaining its Git evidence."""
+    if apply and (not expected_head_sha or not reason.strip()):
+        raise click.UsageError("--apply requires --head from preview and a nonblank --reason")
+    args = {"task_id": task_id, "dry_run": not apply, "reason": reason}
+    if expected_head_sha:
+        args["expected_head_sha"] = expected_head_sha
+    _execute(ctx, "integration_record_root_noop", args)
+
+
 @integration.command("abort-batch")
 @click.argument("batch_id")
 @click.option("--reason", default="", help="Required explanation when aborting.")

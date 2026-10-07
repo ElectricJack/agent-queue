@@ -96,6 +96,9 @@ somehow declares none.
     "knowledge_propose",
     "knowledge_proposal_show",
     "create_task",
+    "dry_run_playbook",
+    "task_children",
+    "task_progress",
     "formula_list",
     "formula_show",
     "get_schema",
@@ -162,6 +165,11 @@ somehow declares none.
   "plugin_tools": [
     "git_create_pr",
     "git_diff",
+    "get_git_status",
+    "git_log",
+    "git_branch",
+    "git_changed_files",
+    "git_pull",
     "git_push",
     "memory_save",
     "memory_search"

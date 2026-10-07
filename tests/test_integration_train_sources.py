@@ -2278,6 +2278,40 @@ async def test_unknown_source_is_visible_while_an_independent_batch_waits_for_ch
         ]
 
 
+@pytest.mark.parametrize("unknown_after_seal", [False, True])
+async def test_unknown_root_withholds_only_itself_and_dependents_while_healthy_batch_publishes(
+    world, unknown_after_seal,
+):
+    healthy = await completed(world, "healthy")
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)))
+
+    async def unknown_work():
+        await completed(world, "missing", done=False)
+        await close(world.db, "missing", [])
+        await completed(world, "dependent", needs=("missing",))
+
+    if not unknown_after_seal:
+        await unknown_work()
+    sealed = await train.visit(MAIN)
+    assert sealed.state == "testing"
+    if unknown_after_seal:
+        await unknown_work()
+    checks.green.add(sealed.candidate_sha)
+    published = await train.visit(MAIN)
+    assert published.state == "delivered"
+    assert published.batch_id == sealed.batch_id
+    assert [m.task_id for m in await BatchStore(world.db).members(sealed.batch_id)] == ["healthy"]
+    assert git(world.origin.url, "rev-parse", "main") == published.candidate_sha
+    git(world.origin.url, "merge-base", "--is-ancestor", healthy, "main")
+    await train.tick()
+    await train.drain()
+    status = IntegrationStatusService(world.db, git_first="active", train=train)
+    assert [b["code"] for b in (await status.task_blockers("missing"))["blockers"]] == [
+        "missing_git_provenance",
+    ]
+    assert not (await status.task_blockers("healthy"))["blockers"]
+
+
 class HostedGitHub:
     """Authenticated GitHub that has finished the required ``unit`` check on some SHAs.
 

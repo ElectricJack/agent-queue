@@ -339,3 +339,13 @@ __all__ = [
     "policy_digest",
     "selector_matches",
 ]
+
+
+def is_opencode_family(harness: str, provider: str = "", command: str = "") -> bool:
+    """Recognize OpenCode CLI families even when installed under a custom id."""
+    from pathlib import PurePath
+
+    return any(
+        value == "opencode" or value.startswith("opencode-")
+        for value in (harness, provider, PurePath(command).name.removesuffix(".exe"))
+    )

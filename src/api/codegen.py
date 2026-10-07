@@ -433,6 +433,7 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
                 for field in REFUSED_ROUTING_ARGS:
                     if field in raw_body and field not in args:
                         args[field] = raw_body[field]
+        args = {key: value for key, value in args.items() if not key.startswith("_")}
         for _key in SERVER_OWNED_ARG_KEYS:
             args.pop(_key, None)
 

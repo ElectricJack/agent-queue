@@ -95,6 +95,7 @@ class ProfileFacts:
     id: str
     harness: str
     provider: str
+    harness_family: str = ""
     lifecycle: str = "task"
     default_class: str = ""
     classes: frozenset[str] = frozenset()
@@ -581,12 +582,17 @@ def _candidates(
         fallback = [c for c in ordered if c.tier == FALLBACK]
         return _Pool(tuple(preferred + fallback), (), reason)
 
+    # OpenCode is eligible only through a narrow lane, independent of whether
+    # the active policy names every installed member of that CLI family.
+    from src.routing.policy import is_opencode_family
+
     general = [
         _candidate(profile, rule.class_id, tier=FALLBACK, lane=None,
                    preferred_hosted=profile.harness in rule.prefer_harnesses)
         for profile in _cells(
             snapshot, rule.class_id, None, exclude=policy.narrow_harnesses()
         )
+        if not is_opencode_family(profile.harness, profile.provider, profile.harness_family)
     ]
     general, reason = _filter(general, task, policy, kind=rule.kind)
     general.sort(key=_order_key(policy, None))

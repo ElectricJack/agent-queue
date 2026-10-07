@@ -605,6 +605,7 @@
         "tests/test_integration_records_and_gates.py",
         "tests/test_integration_replay.py",
         "tests/test_integration_root_adapters.py",
+        "tests/test_integration_root_noop.py",
         "tests/test_integration_root_scenarios.py",
         "tests/test_integration_schedule.py",
         "tests/test_integration_sealing.py",
@@ -2492,9 +2493,10 @@
         "api-contract"
       ],
       "default_arm": true,
-      "digest": "sha256:2e8f281fa839fd8186f426085d4d94c3827eb4e1b6172c005bc97664ca6ac6f8",
+      "digest": "sha256:0a79235b4eca65fe85a3c801c8dff4b7164c3c8673bd13e01cdb47c7b960d549",
       "imports": [
         "src.api",
+        "src.api.auth",
         "src.api.codegen",
         "src.api.dependencies",
         "src.tools"
@@ -2526,14 +2528,19 @@
         "api-contract"
       ],
       "default_arm": true,
-      "digest": "sha256:3c4d17c9d6d624fd08c07ab0ddaf0034a3106a4474e9d42b4abbaad9c523270e",
+      "digest": "sha256:dc1263bf71ef7eaa3a6c976d184ac55680e785cf8b00e29433f7a19e5677eace",
       "imports": [
         "src.api",
+        "src.api.auth",
         "src.api.codegen",
         "src.api.dependencies",
-        "src.api.execute"
+        "src.api.execute",
+        "src.api.middleware",
+        "src.commands.principal",
+        "src.models"
       ],
       "markers": [
+        "parametrize",
         "usefixtures"
       ],
       "summary": "Error-envelope parity between /api/execute and the typed routes (plan 10)."
@@ -6383,7 +6390,7 @@
         "capabilities"
       ],
       "default_arm": true,
-      "digest": "sha256:6815dc47988adb8c1865401ee3231585fe9ceb112b640fe9897cf19c52da9fd5",
+      "digest": "sha256:5887f53878e087844a6ed5b9b5fbd00d6d25de3c0e7c55b423548dc8f5881e60",
       "imports": [
         "src.api.auth",
         "src.api.execute",
@@ -6392,7 +6399,8 @@
         "src.profiles.capabilities"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Package 0 T-4 — ``ExecutionPrincipal`` is server-derived, never supplied."
     },
@@ -8941,6 +8949,34 @@
         "parametrize"
       ],
       "summary": "An operator authorizes one exact train root source while the train runs."
+    },
+    "tests/test_integration_root_noop.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:d5103f7c1344d06bd24a4decf41a79cce35e2619eb7440312dbedcbc48a78203",
+      "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.commands.task_commands",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.delivery_truth",
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.provenance",
+        "src.integration.train_controls",
+        "src.integration.train_sources",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Explicit unheld-root no-op completion over real PostgreSQL and Git."
     },
     "tests/test_integration_root_pull_requests.py": {
       "areas": [
@@ -14735,7 +14771,7 @@
         "task-routing"
       ],
       "default_arm": true,
-      "digest": "sha256:bcf5bd9a2866f6cec323fbd512d64f3f6b116d38c41d424622382600b2d32907",
+      "digest": "sha256:c861628b4ff7f457bbf98889ed9f1abbf18902aa732e8595c0d339430c3c6bef",
       "imports": [
         "src.commands.principal",
         "src.database.tables",
@@ -14745,9 +14781,12 @@
         "src.doctor.runner",
         "src.models",
         "src.playbooks.artifact_ref",
+        "src.playbooks.artifact_store",
+        "src.playbooks.definition",
         "src.profiles.capabilities",
         "src.routing.readiness",
-        "src.routing.sources"
+        "src.routing.sources",
+        "src.sessions.harness_parser"
       ],
       "markers": [
         "parametrize"
@@ -15818,7 +15857,7 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:2c3231ebe6acda15df64b77d5db33bfc87a671da515fb68bdc3072052e07cc45",
+      "digest": "sha256:7b4a32a6989e0f5bff2b6f9a019a2d7f6a37a9c71222cd5116693d158eb25b23",
       "imports": [
         "src.config",
         "src.doctor",
@@ -15833,7 +15872,9 @@
         "src.profiles.sync",
         "src.vault_watcher"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Additive sync of shipped capabilities into the vault supervisor profile."
     },
     "tests/test_supervisor_failure_triage.py": {

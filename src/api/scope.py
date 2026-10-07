@@ -15,6 +15,7 @@ from src.api.auth import RequestScope
 AGENT_COMMAND_SET: frozenset[str] = frozenset(
     {
         "prime",
+        "dry_run_playbook",
         "get_schema",
         "task_show",
         "task_set",
@@ -196,6 +197,7 @@ PROJECT_ONBOARDING_COMMANDS: frozenset[str] = frozenset(
 PROJECT_ONBOARDING_SCOPE_ERROR = "out of scope: project onboarding requires global admin"
 OPERATOR_INTEGRATION_CONTROLS = frozenset(
     {
+        "integration_record_root_noop",
         "integration_abort_batch",
         "integration_pause_batch",
         "integration_resume_batch",
@@ -409,7 +411,7 @@ _WORKER_GIT_READ_COMMANDS = frozenset({
 })
 #: ``push_branch`` is ``git_push``'s alias; it names its head ``branch_name``.
 _WORKER_GIT_WRITE_COMMANDS = frozenset({"git_push", "push_branch", "git_create_pr"})
-_WORKER_GIT_COMMANDS = _WORKER_GIT_READ_COMMANDS | _WORKER_GIT_WRITE_COMMANDS
+_WORKER_GIT_COMMANDS = _WORKER_GIT_READ_COMMANDS | _WORKER_GIT_WRITE_COMMANDS | {"git_pull"}
 
 
 async def held_task_for_session(db, scope: RequestScope):

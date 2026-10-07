@@ -257,6 +257,8 @@ class RoutingCommandsMixin:
             except Exception:  # noqa: BLE001 - a missing cap is "one slot"
                 global_cap = None
 
+        from src.routing.policy import is_opencode_family
+
         facts: list[ProfileFacts] = []
         keys: set[str] = set()
         for profile in await self.db.list_profiles(conn=conn):
@@ -279,6 +281,14 @@ class RoutingCommandsMixin:
                 id=profile.id,
                 harness=harness,
                 provider=key,
+                harness_family=(
+                    "opencode" if registry is not None and (
+                        is_opencode_family(
+                            harness, profile_provider(profile, registry, project_id),
+                            getattr(registry.get(harness, project_id), "command", ""),
+                        )
+                    ) else ""
+                ),
                 lifecycle=lifecycle,
                 default_class=str(getattr(profile, "default_class", "") or ""),
                 classes=frozenset(
@@ -443,12 +453,13 @@ class RoutingCommandsMixin:
             # routing origin without changing their claim/restart lifecycle.
             if await OrdinaryRepairService(self.db).input(task.id) is not None:
                 origin = "integration_repair"
-        elif origin == SOURCE_CI_REPAIR_ORIGIN or (
+        elif origin in {SOURCE_CI_REPAIR_ORIGIN, "integration_writer"} or (
             origin is None and await self.db.list_source_ci_inherited_oids(task.id)
         ):
-            # A source-CI repair routes as an integration repair; it keeps its
-            # own stored origin for the same reason.  The record lookup covers
-            # repairs filed before the origin was stamped.
+            # Source-CI repairs and integration writers (including verifier
+            # test tasks) use the repair policy, keeping every OpenCode lane
+            # excluded without changing their stored identity or lifecycle.
+            # The record lookup covers repairs filed before origin stamping.
             origin = "integration_repair"
         class_hint = (getattr(task, "class_hint", None) or "").strip() or None
         if class_hint is None and (getattr(task, "route_source", None) or UNROUTED) == UNROUTED:

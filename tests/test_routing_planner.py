@@ -1148,10 +1148,10 @@ def test_replay_routes_a_projected_repair_on_its_routed_origin():
     # bugfix rule would prefer the busy Codex cell and count a false change.
     records = [
         {"task_id": f"repair-{kind}", "created_by_kind": kind, "route": result.value}
-        for kind in ("system", "source_ci_repair")
+        for kind in ("system", "source_ci_repair", "integration_writer")
     ]
     report = replay_routes(records, policy, digest)
-    assert report["after"] == {"claude": 2} and report["changed"] == 0, report
+    assert report["after"] == {"claude": 3} and report["changed"] == 0, report
 
 
 # -- the per-task preference (mandatory routing §4) -------------------------------
@@ -1304,3 +1304,37 @@ def test_a_preference_survives_the_candidate_round_trip_through_a_plan():
     }), policy.balance)
     assert chosen.chosen.provider == "claude"
     assert chosen.took_preferred_target
+
+
+@pytest.mark.parametrize("origin", ["integration_repair", "development_repair", "integration_verifier", "integration_writer", None])
+@pytest.mark.parametrize("aliased", [False, True])
+def test_active_oct03_policy_never_admits_opencode_family_to_general_pool(origin, aliased):
+    policy_text = (Path(__file__).parent / "fixtures/routing/active-policy-2026-10-03.yaml").read_text()
+    policy, digest = parse_policy(policy_text)
+    profiles = [
+        _rung("standard-high", "codex", slots=1),
+        _rung("standard-high", "claude", slots=1),
+        _rung("standard-high", "opencode-zen-longcat", slots=10),
+        _rung("standard-high", "opencode-zen-nemotron", slots=10),
+    ]
+    if aliased:
+        profiles.append(_rung("standard-high", "custom-cli", provider="openrouter",
+                              harness_family="opencode", slots=10))
+    snapshot = _snapshot(profiles, busy={"standard-high-codex": 1, "standard-high-claude": 1})
+    result = plan_route(_task(task_type="bugfix", created_by_kind=origin), policy, snapshot,
+                        policy_sha256=digest, classification=NARROW_NO)
+    assert result.outcome == "planned", result
+    result = result.value
+    assert result["provider"] in {"codex", "claude"}
+    assert {c["harness"] for c in result["candidates"]} <= {"codex", "claude"}
+
+
+def test_active_oct03_policy_preserves_explicit_narrow_lane_admission():
+    policy, digest = parse_policy((Path(__file__).parent / "fixtures/routing/active-policy-2026-10-03.yaml").read_text())
+    result = plan_route(_task(task_type="bugfix"), policy,
+                        _snapshot([_rung("standard-high", "opencode-zen")]),
+                        policy_sha256=digest, classification=NARROW_YES)
+    assert result.outcome == "planned", result
+    result = result.value
+    assert result["provider"] == "opencode-zen"
+    assert result["candidates"][0]["lane"] == "narrow-hosted"

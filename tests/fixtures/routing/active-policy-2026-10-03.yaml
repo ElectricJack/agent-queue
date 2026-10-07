@@ -1,0 +1,47 @@
+# Extracted verbatim from artifact sha256:3aaae7857a491d7da711be96ce0fe25d449b626af37d08e19b410a2920e8c687
+version: 1
+class_order: [fast-off, fast-low, fast-high, standard-low, standard-high, deep-low, deep-high]
+default_kind: feature
+kinds:
+  design:   {class: deep-high,     max_class: deep-high,     lane: code-design}
+  art:      {class: deep-high,     max_class: deep-high,     lane: art-design}
+  research: {class: standard-high, max_class: deep-high}
+  feature:  {class: standard-high, max_class: deep-high,     narrow: true, prefer_harnesses: [codex]}
+  bugfix:   {class: standard-high, max_class: deep-high,     narrow: true, prefer_harnesses: [codex]}
+  refactor: {class: standard-high, max_class: deep-high,     narrow: true, prefer_harnesses: [codex]}
+  test:     {class: standard-high, max_class: standard-high, narrow: true, prefer_harnesses: [codex]}
+  docs:     {class: standard-high, max_class: standard-high, narrow: true, prefer_harnesses: [codex]}
+  chore:    {class: fast-high,     max_class: standard-high, narrow: true, prefer_harnesses: [codex]}
+  sync:     {class: fast-high,     max_class: standard-high, narrow: true, prefer_harnesses: [codex]}
+  plan:     {class: deep-high,     max_class: deep-high,     lane: code-design}
+origins:
+  integration_repair: {narrow: false}
+  development_repair: {narrow: false}
+  review_dispatch:    {lane: design-review}
+lanes:
+  code-design:   {class: deep-high, harnesses: [claude, codex], prefer: [claude]}
+  art-design:    {class: deep-high, harnesses: [codex], hold: true}
+  design-review: {class: deep-high, harnesses: [claude, codex]}
+  narrow:
+    harnesses: [opencode]
+    classes: {standard-high: standard-high, fast-high: fast-low, fast-low: fast-low}
+    requires: [narrow, test_verified]
+    prefer: true
+  narrow-unverified-model:
+    harnesses: [opencode]
+    classes: {fast-low: fast-off}
+    requires: [narrow, test_verified, independent_verifier]
+    prefer: true
+  narrow-hosted:
+    harnesses: [opencode-zen]
+    classes: {standard-high: standard-high}
+    requires: [narrow, test_verified]
+    prefer: true
+reserved:
+  - {class: deep-high, harness: claude, only_lanes: [code-design, design-review]}
+balance:
+  harness_weights: {claude: 1.0, codex: 1.0, opencode: 1.0, opencode-zen: 1.0}
+  usage_soft_percent: 80
+  usage_floor_factor: 0.1
+  degraded_factor: 0.5
+  tie_order: [codex, claude, opencode, opencode-zen]

@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from src.commands.contracts.builtin import register_builtin_contracts
 from src.commands.contracts.builtin import set_handler_provider
 from src.commands.contracts.integration import (
+    IntegrationRecordRootNoopArgs,
     IntegrationReevaluateRepairArgs,
     register_integration_contracts,
 )
@@ -45,6 +46,18 @@ DESIGN_EVENTS = {
     "task.integration_configuration_blocked",
     "integration.repair_delegate_closed",
 }
+
+
+@pytest.mark.parametrize("payload", [
+    {"dry_run": False},
+    {"dry_run": False, "expected_head_sha": "a" * 40},
+    {"dry_run": False, "reason": "no code"},
+    {"dry_run": False, "expected_head_sha": "bad", "reason": "no code"},
+    {"dry_run": False, "expected_head_sha": "a" * 40, "reason": "  "},
+])
+def test_root_noop_contract_requires_exact_apply_evidence(payload):
+    with pytest.raises(ValidationError):
+        IntegrationRecordRootNoopArgs(task_id="root", **payload)
 
 
 @pytest.mark.parametrize("missing", [
@@ -770,6 +783,11 @@ async def test_root_promotion_command_is_registered_and_strictly_typed():
 
 
 @pytest.mark.parametrize("name,payload,answer", [
+    ("integration_record_root_noop", {"task_id": "root"},
+     {"outcome": "preview", "task_id": "root", "completion_id": "root-noop-generation"}),
+    ("integration_record_root_noop", {"task_id": "root", "dry_run": False,
+                                     "expected_head_sha": "a" * 40, "reason": "no code"},
+     {"outcome": "recorded", "task_id": "root", "head_sha": "a" * 40, "dry_run": False}),
     ("integration_pause_batch", {"batch_id": "batch"},
      {"outcome": "preview", "batch_id": "batch", "intent": "open", "dry_run": True}),
     ("integration_resume_batch", {"batch_id": "batch"},

@@ -12,6 +12,13 @@ Playbooks are deterministic DAGs that fire on bus events (`task.created`,
 The framework runs them; no LLM is in the compile or dispatch path.
 Human-in-the-loop gates pause a run until a human answers.
 
+## Worker verification
+
+Workers can run `aq playbook dry-run --playbook-id <id> --event '{}'` for their
+held task. The daemon pins the event to that task and project. Steps and AI
+calls are simulated; this does not execute a routing change, approve a human
+gate, or activate a playbook. The API option `invoke_ai` requires supervisor authority.
+
 ## Inspect playbooks
 
 ```bash
