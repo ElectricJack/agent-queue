@@ -45,7 +45,8 @@ recorded stall's Git, check, tree-review and task-transition evidence.
   costs a visit the same single query. A daemon-written source-CI repair binding
   (`integration_source_ci`) counts as a declared prerequisite: the repair's recorded
   base is the exact source head it must merge, so the pair delivers in one batch,
-  source first. A source or repair already delivered to a target takes no part, and
+  source first. A red source enters only alongside that independently admitted
+  repair and retains its review authorization; the combined candidate must pass. A source or repair already delivered to a target takes no part, and
   the prerequisite named is the one that publishes the base, never a sibling that
   merely merged its branch.
 - **Conflicting source PRs.** An exact open, same-repository, non-draft PR with
@@ -53,7 +54,8 @@ recorded stall's Git, check, tree-review and task-transition evidence.
   reports it dirty and an authenticated check observation proves that its PR
   workflow never ran. Its missing PR checks are not passes; integration validity
   comes from the final combined candidate's own required checks. Genuine red
-  source checks, an executing workflow, an unavailable observation, unknown
+  source checks without an exact admitted source CI repair, an executing workflow,
+  an unavailable observation, unknown
   mergeability, explicit holds and withheld inputs still block admission. A
   conflicting epic joins the root candidate without an automatic per-epic
   refresh or another round of author checks. See the

@@ -235,15 +235,16 @@ async def _source_ci_prerequisites_on(conn, ids, bases, *, repository_id) -> dic
         return {}
     rows = (await conn.execute(select(
         integration_source_ci.c.repair_task_id, integration_source_ci.c.task_id,
-        integration_source_ci.c.source_head,
+        integration_source_ci.c.source_head, integration_source_ci.c.source_base,
     ).where(
         integration_source_ci.c.repository_id == repository_id,
         integration_source_ci.c.repair_task_id.in_(candidates),
         integration_source_ci.c.repair_task_id.is_not(None),
     ))).all()
     bindings: dict[str, set[str]] = {}
-    for repair_id, source_id, source_head in rows:
-        if source_id != repair_id and bases.get(repair_id or "") == source_head:
+    for repair_id, source_id, source_head, source_base in rows:
+        if (source_id != repair_id and bases.get(repair_id or "") == source_head
+                and bases.get(source_id) == source_base):
             bindings.setdefault(repair_id, set()).add(source_id)
     return bindings
 
@@ -349,8 +350,6 @@ class DatabaseTargets:
     """Every branch the train owns: each train-mode project's default ref, the
     parent branches its completed work routes to, and any open batch's target."""
 
-    STACK_CACHE_LIMIT = 256
-
     def __init__(self, db, *, limit: int = MEMBER_LIMIT, snapshot=project_snapshot,
                  probe_timeout_seconds: float = 5.0, flow_problems=None) -> None:
         self.db, self.limit = db, limit
@@ -454,6 +453,8 @@ def _conflict_action(refusal, snapshot, *, epic: bool, refresh=None):
 class DatabaseBatches:
     """The open batch of a target, frozen from exact undelivered completions."""
 
+    STACK_CACHE_LIMIT = 256
+
     def __init__(self, db, *, limit: int = MEMBER_LIMIT, clock: Callable[[], float] = time.time,
                  pr_gate: Callable | None = None, cleanup=None):
         self.db, self.limit, self.clock = db, limit, clock
@@ -534,7 +535,8 @@ class DatabaseBatches:
         from src.integration.stacked_branches import StackedBranches
 
         stacks = StackedBranches(self.db, clock=self.clock)
-        candidates = (await self._candidate_ids(target, snapshot)
+        admission_blockers = []
+        candidates = (await self._candidate_ids(target, snapshot, blockers=admission_blockers)
                       if not snapshot.error and snapshot.target_oid else [])
         async with self.db._engine.connect() as conn:
             stacked_ids = (await conn.execute(select(task_branch_origins.c.task_id).where(
@@ -555,6 +557,7 @@ class DatabaseBatches:
             # An unauditable refresh keeps its old batch and target ownership.
             # Do not try to freeze a replacement without a release instruction.
             return BatchSelection(blockers=tuple(blockers))
+        blockers.extend(admission_blockers)
         current = await self.current(target)
         frozen_members = await service.store.members(current.id) if current is not None else ()
         pending = None
@@ -874,8 +877,9 @@ class DatabaseBatches:
             self.db, ids, repository_id=target.repository_id, target_ref=target.target_ref,
             reduced=True,
         )
-        delivered_to_project = set()
         members: dict[str, BatchMember] = {}
+        refused_sources = {}
+        paired_sources = {}
         delivered: set[str] = set()
         from src.integration.stacked_branches import StackedBranches
 
@@ -947,12 +951,33 @@ class DatabaseBatches:
                         "detail": "root PR admission observer is unavailable",
                     })
                 if refusal:
+                    if refusal["code"] == "pr_checks_red":
+                        refused_sources[task_id] = (member, refusal)
                     if blockers is not None:
                         blockers.append(_conflict_action(refusal, snapshot, epic=task_id in epics))
                     continue
             members[task_id] = member
+        # A genuinely red source can travel only with its exact authorized,
+        # separately admitted repair. Review authorization is observed again;
+        # final candidate checks still validate both trees together.
+        admit_repaired = getattr(self.pr_gate, "admit_repaired_source", None)
+        if admit_repaired is not None:
+            for repair_id, sources in repair_bindings.items():
+                if repair_id not in members:
+                    continue
+                for source_id in sorted(sources):
+                    if source_id not in refused_sources or source_id not in edges.get(repair_id, set()):
+                        continue
+                    member, refusal = refused_sources[source_id]
+                    if member.source_sha != bases.get(repair_id):
+                        continue
+                    if await admit_repaired(target, member) is None:
+                        members[source_id] = member
+                        paired_sources.setdefault(source_id, set()).add(repair_id)
+                        if blockers is not None and refusal in blockers:
+                            blockers.remove(refusal)
         unsafe = await self._stacked_bases(
-            target, snapshot, members, edges, delivered | delivered_to_project, blockers,
+            target, snapshot, members, edges, delivered, blockers,
             frozen_ids=include_ids,
         )
         for task_id in unsafe:
@@ -980,7 +1005,13 @@ class DatabaseBatches:
         while changed:
             changed = False
             for task_id in list(members):
-                if edges.get(task_id, set()) & blocked:
+                if (edges.get(task_id, set()) & blocked
+                        or (task_id in paired_sources
+                            and not paired_sources[task_id] & members.keys())):
+                    if task_id in paired_sources and blockers is not None:
+                        refusal = refused_sources[task_id][1]
+                        if refusal not in blockers:
+                            blockers.append(refusal)
                     blocked.add(members.pop(task_id).task_id)
                     changed = True
         if not members:

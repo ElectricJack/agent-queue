@@ -11,6 +11,11 @@ the exact PR dirty, missing PR CI does not prevent freezing that source alongsid
 other compatible completions targeting the same delivery branch. It is never a
 passing check. A running workflow, red required checks, malformed or unavailable
 observations and unknown mergeability keep their existing admission gates.
+An exact daemon-bound source CI repair is the sole exception for a red source:
+both the source and its independently admitted repair freeze in the same batch,
+source first, with all configured review authorizations intact. A stale binding,
+unavailable repair, red repair or unfinished repair prerequisite keeps the pair
+out of the batch. Required final candidate checks validate the combined result.
 Required human approvals, including approval before trusted local execution,
 remain bound to the exact source head.
 

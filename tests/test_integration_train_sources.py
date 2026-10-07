@@ -418,7 +418,7 @@ async def test_stale_source_ci_repair_completion_is_blocked_at_admission_and_pub
     source = await completed(world, "source")
     repair = await completed_source_ci_repair(world, source)
     await source_ci_binding(world, "source", "repair", source)
-    batches = DatabaseBatches(world.db)
+    batches = fixture_batches(world.db)
     members, _, _ = await batches.pending(MAIN, await snapshot(world))
     batch = Batch("repair-batch", "p", "r", MAIN.target_ref)
     assert await batches.eligible(batch, members)
@@ -453,7 +453,7 @@ async def test_current_legacy_leaf_source_ci_repair_remains_eligible(world):
         ))
     repair = await completed_source_ci_repair(world, source)
     await source_ci_binding(world, "source", "repair", source)
-    assert await DatabaseBatches(world.db).eligible(
+    assert await fixture_batches(world.db).eligible(
         Batch("legacy-repair", "p", "r", MAIN.target_ref),
         (BatchMember("repair", repair, source),),
     )
@@ -477,7 +477,7 @@ async def test_current_source_ci_repair_still_delivers(world, source_delivered):
 
 
 async def test_reopen_refuses_frozen_source_ci_repair_publication_with_named_blocker(world):
-    source = await completed(world, "source")
+    source = await completed(world, "source", land=True)
     repair = await completed_source_ci_repair(world, source)
     await source_ci_binding(world, "source", "repair", source)
     # Match an independently batched repair: sealing the source itself would
@@ -567,7 +567,7 @@ async def test_flow_enumerates_promotion_targets_without_a_frontier(world, refs)
     }
     promotions = [target for target in targets if target.kind == "promotion"]
     assert {target.step_id for target in promotions} == {step["id"] for step in flow}
-    batches = DatabaseBatches(world.db)
+    batches = fixture_batches(world.db)
     service = SimpleNamespace(store=BatchStore(world.db), freeze=AsyncMock())
     for target in promotions:
         assert target.step == next(step for step in flow if step["target"] ==
@@ -596,7 +596,7 @@ async def test_promotion_current_ignores_other_triggers_and_other_refs(world):
             ))
     targets = await DatabaseTargets(world.db).targets(time.time())
     assert len(targets) == 3
-    batches = DatabaseBatches(world.db)
+    batches = fixture_batches(world.db)
     for target in targets:
         current = await batches.current(target)
         if target.kind == "promotion":
@@ -615,7 +615,7 @@ async def test_ordinary_eligibility_and_frontier_refuse_promotion_routing(world,
             await conn.execute(update(tasks).where(tasks.c.id == "promotion-work")
                                .values(task_type="promotion"))
     target = "main" if identity == "promotion-target" else "dev"
-    batches = DatabaseBatches(world.db)
+    batches = fixture_batches(world.db)
     batch = Batch("ordinary", "p", "r", f"refs/heads/{target}")
     assert not await batches.eligible(batch, (BatchMember("promotion-work", head, head),))
     if identity != "promotion-target":
@@ -817,7 +817,7 @@ async def test_unavailable_stack_probe_withholds_source_and_recovers(world, monk
     else:
         monkeypatch.setattr(transport, "arun_git_result", unavailable_history)
     blockers = []
-    batches = DatabaseBatches(world.db)
+    batches = fixture_batches(world.db)
     members, _, _ = await batches.pending(MAIN, observed, blockers=blockers)
     assert [m.task_id for m in members] == ["q"]
     assert [b["code"] for b in blockers] == ["stack_ancestry_unknown"]
@@ -874,18 +874,18 @@ async def test_stacked_base_scan_costs_no_call_per_unrelated_origin(world, monke
         assert [m.task_id for m in members] == ["p", "q"] and not blockers, blockers
         return calls
 
-    few = await scan(DatabaseBatches(world.db))
+    few = await scan(fixture_batches(world.db))
     unrelated = [
         await completed(world, f"unrelated-{index}", done=False) for index in range(8)
     ]
-    many = await scan(DatabaseBatches(world.db))
+    many = await scan(fixture_batches(world.db))
     assert len(many) == len(few)
     assert len(containment_queries(many)) == 1
     assert not [call for call in many if any(oid in str(call) for oid in unrelated)]
 
     # The same instance re-reads that answer while the refs and target stand,
     # which is what a visit waiting on a stacked member used to repeat.
-    batches = DatabaseBatches(world.db)
+    batches = fixture_batches(world.db)
     assert len(containment_queries(await scan(batches))) == 1
     assert not containment_queries(await scan(batches))
 
@@ -912,7 +912,7 @@ async def test_unreadable_unrelated_origin_does_not_withhold_a_stacked_member(
 
     monkeypatch.setattr(transport, "arun_git_result", unreadable_origin)
     blockers = []
-    members, _, _ = await DatabaseBatches(world.db).pending(
+    members, _, _ = await fixture_batches(world.db).pending(
         MAIN, observed, blockers=blockers,
     )
     assert [m.task_id for m in members] == ["p", "q"] and not blockers, blockers
@@ -4164,6 +4164,48 @@ async def test_root_pr_gate_refuses_before_freeze_then_admits_exact_green_head(w
     pull = await github.pull_request(url)
     assert pull["merged"] and pull["state"] == "closed"
     git(world.origin.url, "merge-base", "--is-ancestor", pull["merge_commit_sha"], "main")
+
+
+@pytest.mark.parametrize("condition", ["paired", "repair_red", "unfinished", "stale", "review",
+                                      "prerequisite"])
+async def test_red_source_requires_exact_admitted_repair_and_combined_candidate(world, condition):
+    base = git(world.origin.clone, "rev-parse", "origin/main")
+    source = await completed(world, "source")
+    repair = await source_ci_repair_of(world, source)
+    await bind_source_ci_repair(world, "source", "repair", source_base=base, source_head=source)
+    train, github, _ = await hosted_train(world)
+    github.pr_runs[source] = "failure"
+    if condition == "repair_red":
+        github.pr_runs[repair] = "failure"
+    elif condition == "unfinished":
+        await world.db.update_task("repair", status=TaskStatus.IN_PROGRESS)
+    elif condition == "stale":
+        async with world.db._engine.begin() as conn:
+            await conn.execute(update(integration_source_ci).values(source_head="a" * 40))
+    elif condition == "review":
+        project = await world.db.get_project("p")
+        policy = project.hierarchical_integration_policy
+        policy["root"]["admission"] = "reviewed"
+        await world.db.update_project("p", hierarchical_integration_policy=policy)
+        github.reviews = [{"id": 1, "commit_id": repair, "state": "APPROVED",
+                           "user": {"login": "alice", "type": "User"}}]
+    elif condition == "prerequisite":
+        await completed(world, "unready", done=False)
+        await world.db.add_dependency("repair", "unready")
+    observed = await train.visit(MAIN)
+    if condition != "paired":
+        assert observed.batch_id is None, observed
+        assert git(world.origin.url, "rev-parse", "main") == base
+        return
+    assert observed.state == "testing", observed
+    assert [member.task_id for member in await BatchStore(world.db).members(
+        observed.batch_id)] == ["source", "repair"]
+    for head in (source, repair):
+        git(world.origin.clone, "merge-base", "--is-ancestor", head, observed.candidate_sha)
+    assert git(world.origin.url, "rev-parse", "main") == base
+    github.runs[observed.candidate_sha] = "success"
+    assert (await train.visit(MAIN)).state == "delivered"
+    assert git(world.origin.url, "rev-parse", "main") == observed.candidate_sha
 
 
 async def test_root_pr_gate_admits_suppressed_checks_without_changing_source(world):

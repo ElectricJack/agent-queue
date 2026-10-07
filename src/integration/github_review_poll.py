@@ -80,6 +80,13 @@ class RootPullRequestGate:
         self._deferred = {}
 
     async def __call__(self, target, member):
+        return await self._observe(target, member)
+
+    async def admit_repaired_source(self, target, member):
+        """Authorize a source whose exact repair is admitted in the same batch."""
+        return await self._observe(target, member, repaired_source=True)
+
+    async def _observe(self, target, member, *, repaired_source=False):
         from src.integration.reviews import (
             ReviewerPermissionUnavailable,
             observe_pull_request_review_state,
@@ -109,7 +116,8 @@ class RootPullRequestGate:
                 del self._deferred[stale]
         previous = self._deferred.get(key)
         now = self.clock()
-        if previous and now < previous["retry_at"]:
+        if (previous and now < previous["retry_at"]
+                and not (repaired_source and previous["code"] == "pr_checks_red")):
             return previous
 
         def defer(code, *, due_at=None, **detail):
@@ -178,7 +186,8 @@ class RootPullRequestGate:
                     return computing()
             if result.state.value == "unknown" and not suppressed:
                 return defer("unknown", due_at=result.due_at, reason="PR checks unavailable")
-            if not result.green and not suppressed:
+            repaired_red = repaired_source and result.state.value == "red"
+            if not result.green and not suppressed and not repaired_red:
                 return defer("pr_checks_red" if result.state.value == "red"
                              else "awaiting_pr_checks", due_at=result.due_at)
             if reviewed and not local:
