@@ -120,7 +120,7 @@ class TrainQuiesce:
                 select(t.integration_batches.c.id).where(
                     t.integration_batches.c.project_id == request.project_id,
                     t.integration_batches.c.intent != "aborted",
-                    t.integration_batches.c.lifecycle != "promoted",
+                    t.integration_batches.c.lifecycle.not_in(("promoted", "empty", "failed", "aborted")),
                 ),
                 select(t.integration_batches.c.id).where(
                     t.integration_batches.c.project_id == request.project_id,

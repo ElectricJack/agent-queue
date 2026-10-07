@@ -432,3 +432,19 @@ async def test_quiesce_refuses_even_elevated_nonlocal_principal(world, kind):
         result = await handler._cmd_integration_quiesce(request.model_dump())
     assert not result["success"] and "local operator" in result["error"]
     assert (await world.db.get_integration_subject("idle-root"))["phase"] == "admitting"
+
+
+async def test_quiesce_does_not_treat_legacy_empty_batch_as_frozen_work(world):
+    from sqlalchemy import insert
+    from src.database import tables as t
+    from src.integration.quiesce import TrainQuiesce
+
+    request = await idle_train(world)
+    async with world.db._engine.begin() as conn:
+        await conn.execute(insert(t.integration_batches).values(
+            id="historical-empty", project_id="p", repository_id="r",
+            request_id="integration-sweep:p:0", trigger="periodic", lifecycle="empty",
+            intent="open", cleanup_state="complete", created_at=0, updated_at=0,
+            policy_snapshot={}, artifact_snapshot={}, source_manifest_digest="empty",
+        ))
+    assert (await TrainQuiesce(world.db).run(request))["outcome"] == "quiesced"
