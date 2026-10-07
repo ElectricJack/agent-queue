@@ -1429,7 +1429,7 @@
       ]
     }
   },
-  "digest": "sha256:cfa1c0cc1b124a858bacdfa1ba39fd350a4a967b02bc862b8231541cb4efb172",
+  "digest": "sha256:6154d95b963b824fffa3099437470b003a20fea4b77bdbacd883f54cf2314b4a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7640,12 +7640,15 @@
         "src.git.manager",
         "src.integration.batches",
         "src.integration.cutover",
+        "src.integration.delivery_observer",
         "src.integration.outbox",
+        "src.integration.provenance",
         "src.integration.records",
         "src.integration.removal_guard",
         "src.integration.service",
         "src.integration.shadow",
         "src.integration.train",
+        "src.integration.train_sources",
         "src.integration.trust_manifest",
         "src.models"
       ],

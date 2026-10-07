@@ -595,38 +595,41 @@ class ProjectCommandsMixin:
                     # is created: the exact-OID push updates
                     # ``origin/<branch>`` itself, which is what every reader
                     # of the default branch consults.
-                    old_remote = f"refs/remotes/origin/{old_branch}"
                     try:
-                        await git._arun(
-                            ["rev-parse", "--verify", f"{old_remote}^{{commit}}"],
-                            cwd=ws_path,
-                        )
-                    except Exception:
-                        # The recorded default was never pushed, so the
-                        # workspace HEAD is the only source — and nothing on
-                        # origin has vetted that tree.  A root delivery gates
-                        # every tracked path for daemon bookkeeping before
-                        # pushing the same resolved OID.
+                        old_remote = f"refs/remotes/origin/{old_branch}"
                         try:
-                            published_oid = await git.apush_validated_delivery(
-                                ws_path, None, "HEAD", branch)
-                        except GitError as exc:
-                            if str(exc).startswith("reserved delivery paths:"):
-                                return {
-                                    "error": (
-                                        f"refusing to create {branch} from the workspace "
-                                        f"HEAD: {exc}"
-                                    )
-                                }
-                            raise
-                    else:
-                        # The content is already on origin; pushing the
-                        # remote-tracking ref's exact OID is the whole delivery.
-                        published_oid = await git.apush_validated_ref(ws_path, old_remote, branch)
-                    branch_created = True
-                    verified = await git.als_remote_ref(ws_path, branch)
-                    if verified.state is not RemoteRefState.PRESENT or verified.oid != published_oid:
-                        raise GitError("new default branch was not verified on origin")
+                            await git._arun(
+                                ["rev-parse", "--verify", f"{old_remote}^{{commit}}"],
+                                cwd=ws_path,
+                            )
+                        except Exception:
+                            # The recorded default was never pushed, so the
+                            # workspace HEAD is the only source — and nothing on
+                            # origin has vetted that tree.  A root delivery gates
+                            # every tracked path for daemon bookkeeping before
+                            # pushing the same resolved OID.
+                            try:
+                                published_oid = await git.apush_validated_delivery(
+                                    ws_path, None, "HEAD", branch)
+                            except GitError as exc:
+                                if str(exc).startswith("reserved delivery paths:"):
+                                    return {
+                                        "error": (
+                                            f"refusing to create {branch} from the workspace "
+                                            f"HEAD: {exc}"
+                                        )
+                                    }
+                                raise
+                        else:
+                            # The content is already on origin; pushing the
+                            # remote-tracking ref's exact OID is the whole delivery.
+                            published_oid = await git.apush_validated_ref(ws_path, old_remote, branch)
+                        branch_created = True
+                        verified = await git.als_remote_ref(ws_path, branch)
+                        if verified.state is not RemoteRefState.PRESENT or verified.oid != published_oid:
+                            raise GitError("new default branch was not verified on origin")
+                    except Exception as exc:
+                        return {"error": f"could not verify/create default branch {branch}: {exc}"}
             except Exception as exc:
                 logger.warning(
                     "Could not verify/create branch %s for project %s: %s",
@@ -634,7 +637,6 @@ class ProjectCommandsMixin:
                     pid,
                     exc,
                 )
-                return {"error": f"could not verify/create default branch {branch}: {exc}"}
 
         await self.db.update_project(pid, repo_default_branch=branch)
 

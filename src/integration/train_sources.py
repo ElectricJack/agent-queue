@@ -145,7 +145,10 @@ def _branch(ref: str) -> str:
 
 async def _pending_tasks(conn, project_id: str, repository_id: str, *, limit: int | None) -> list[str]:
     """Completed tasks with a live branch origin in the repository, newest first."""
-    flow = await conn.scalar(select(projects.c.promotion_flow).where(projects.c.id == project_id))
+    from src.integration.promotion_routing import cutover_origin_clause
+
+    flow, cutover = (await conn.execute(select(projects.c.promotion_flow,
+        projects.c.default_branch_cutover).where(projects.c.id == project_id))).one()
     promotion_refs = {
         ref for name in flow_targets(flow) for ref in (name, _branch(name))
     }
@@ -159,7 +162,8 @@ async def _pending_tasks(conn, project_id: str, repository_id: str, *, limit: in
         .where(tasks.c.project_id == project_id, tasks.c.status == "COMPLETED",
                or_(tasks.c.task_type.is_(None), tasks.c.task_type != "promotion"),
                or_(task_branch_origins.c.parent_ref.is_(None),
-                   task_branch_origins.c.parent_ref.not_in(promotion_refs)))
+                   task_branch_origins.c.parent_ref.not_in(promotion_refs),
+                   cutover_origin_clause(cutover, repository_id)))
         .distinct()
         .order_by(tasks.c.id)
     )
@@ -771,7 +775,7 @@ class DatabaseBatches:
         async with self.db._engine.connect() as conn:
             mode = (await conn.execute(
                 select(projects.c.hierarchical_integration_mode, projects.c.status,
-                       projects.c.promotion_flow)
+                       projects.c.promotion_flow, projects.c.default_branch_cutover)
                 .where(projects.c.id == batch.project_id)
             )).first()
             routed = await delivery_targets(conn, ids, reduced=True)
@@ -779,6 +783,9 @@ class DatabaseBatches:
             promotion_refs = {
                 ref for name in flow_targets(flow) for ref in (name, _branch(name))
             }
+            from src.integration.promotion_routing import cutover_origin_clause
+
+            cutover = None if mode is None else mode.default_branch_cutover
             live = set((await conn.execute(
                 select(task_branch_origins.c.task_id)
                 .select_from(task_branch_origins.join(
@@ -789,7 +796,8 @@ class DatabaseBatches:
                     task_branch_origins.c.retired_at.is_(None),
                     or_(tasks.c.task_type.is_(None), tasks.c.task_type != "promotion"),
                     or_(task_branch_origins.c.parent_ref.is_(None),
-                        task_branch_origins.c.parent_ref.not_in(promotion_refs)),
+                        task_branch_origins.c.parent_ref.not_in(promotion_refs),
+                        cutover_origin_clause(cutover, batch.repository_id)),
                 )
             )).scalars().all())
         if mode is None or mode[0] not in TRAIN_MODES or mode[1] != "ACTIVE":

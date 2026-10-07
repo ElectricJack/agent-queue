@@ -15,7 +15,8 @@ from urllib.parse import quote, urlencode
 from types import SimpleNamespace
 
 import yaml
-from sqlalchemy import and_, insert, or_, select, text, update
+from sqlalchemy import and_, case, cast, func, insert, or_, select, text, update
+from sqlalchemy.dialects.postgresql import JSONB
 
 from src.database.tables import (
     archived_tasks, events, integration_batch_members, integration_batches, integration_branch_owners,
@@ -72,41 +73,66 @@ async def inventory_on(conn, project_id, repository_id, *, now):
             for name, statement in statements.items()}
 
 
+def branch_spellings(branch):
+    name = branch.removeprefix("refs/heads/")
+    return (name, "refs/heads/" + name)
+
+
+async def receipt_targets_on(conn, repository_id, branch, *, prior=None):
+    statement = select(task_delivery_receipts.c.id, task_delivery_receipts.c.target_branch).where(
+        task_delivery_receipts.c.repository_id == repository_id,
+        task_delivery_receipts.c.target_branch.in_(branch_spellings(branch)))
+    if prior is not None:
+        statement = statement.where(task_delivery_receipts.c.id.in_(prior))
+    return dict((await conn.execute(statement.order_by(task_delivery_receipts.c.id))).all())
+
+
 async def aborted_members_on(conn, project_id, repository_id, default_branch):
+    # Other event types may carry plain text. Do not parse them as JSON.
+    payload = case((events.c.event_type.in_(("integration.batch_intent",
+        "integration.batch_ejected", "integration.batch_superseded")),
+        cast(events.c.payload, JSONB)), else_=None)
+    aborted_at = select(func.min(events.c.timestamp)).where(
+        events.c.project_id == project_id,
+        payload["batch_id"].astext == integration_batches.c.id,
+        or_(and_(events.c.event_type == "integration.batch_intent",
+                 payload["intent"].astext == "aborted"),
+            events.c.event_type.in_(("integration.batch_ejected", "integration.batch_superseded"))),
+    ).correlate(integration_batches).scalar_subquery()
     return [dict(row) for row in (await conn.execute(select(
         integration_batch_members.c.batch_id, integration_batch_members.c.task_id,
         integration_batch_members.c.source_sha,
         integration_batches.c.human_abort_reason.label("abort_reason"),
-        integration_batches.c.updated_at.label("aborted_at")).join(integration_batches,
+        aborted_at.label("aborted_at")).join(integration_batches,
             integration_batches.c.id == integration_batch_members.c.batch_id).join(tasks,
                 tasks.c.id == integration_batch_members.c.task_id).where(
                     integration_batches.c.project_id == project_id,
                     integration_batches.c.repository_id == repository_id,
-                    integration_batches.c.target_ref == "refs/heads/" + default_branch,
+                    integration_batches.c.target_ref.in_(branch_spellings(default_branch)),
                     integration_batches.c.intent == "aborted", tasks.c.status == "COMPLETED",
                     ~select(task_delivery_receipts.c.id).where(
                         task_delivery_receipts.c.source_task_id == tasks.c.id,
                         task_delivery_receipts.c.repository_id == repository_id,
-                        task_delivery_receipts.c.target_branch == default_branch).exists(),
+                        task_delivery_receipts.c.target_branch.in_(
+                            branch_spellings(default_branch))).exists(),
                 ).order_by(integration_batch_members.c.batch_id,
                            integration_batch_members.c.task_id))).mappings()]
 
 
 async def origin_ids_on(conn, project_id, repository_id, default_branch, *, prior=None, lock=False):
+    # Roots include leaves and closed/archived containers. Filing origins remain immutable.
+    project_tasks = select(tasks.c.id).where(tasks.c.project_id == project_id).union(
+        select(archived_tasks.c.id).where(archived_tasks.c.project_id == project_id))
     statement = select(task_branch_origins.c.id).where(
+        task_branch_origins.c.task_id.in_(project_tasks),
         task_branch_origins.c.repository_id == repository_id,
-        task_branch_origins.c.parent_ref == default_branch)
+        task_branch_origins.c.retired_at.is_(None),
+        task_branch_origins.c.parent_task_id.is_(None),
+        or_(task_branch_origins.c.parent_repository_id.is_(None),
+            task_branch_origins.c.parent_repository_id == repository_id),
+        task_branch_origins.c.parent_ref.in_(branch_spellings(default_branch)))
     if prior is not None:
         statement = statement.where(task_branch_origins.c.id.in_(prior))
-    else:
-        children = tasks.alias("cutover_child")
-        archived_child = archived_tasks.alias("cutover_archived_child")
-        epics = select(tasks.c.id).where(
-            tasks.c.project_id == project_id, tasks.c.parent_task_id.is_(None),
-            or_(select(children.c.id).where(children.c.parent_task_id == tasks.c.id).exists(),
-                select(archived_child.c.id).where(
-                    archived_child.c.parent_task_id == tasks.c.id).exists()))
-        statement = statement.where(task_branch_origins.c.task_id.in_(epics))
     statement = statement.order_by(task_branch_origins.c.id)
     if lock:
         statement = statement.with_for_update()
@@ -360,14 +386,12 @@ class Cutover:
                     raise ValueError("invalid promotion flow: " + result.problems[0].code)
                 flow = result.flow
             inventory = await inventory_on(conn, project_id, repository.id, now=self.clock())
-            receipt_ids = list((await conn.execute(select(task_delivery_receipts.c.id).where(
-                task_delivery_receipts.c.repository_id == repository.id,
-                task_delivery_receipts.c.target_branch == repository.default_branch).order_by(
-                    task_delivery_receipts.c.id))).scalars())
-            if reverse:
-                receipt_ids = sorted(set(receipt_ids) & set(prior["receipt_ids"]))
+            receipt_targets = await receipt_targets_on(conn, repository.id,
+                repository.default_branch, prior=prior["receipt_ids"] if reverse else None)
+            receipt_ids = list(receipt_targets)
             origin_ids = await origin_ids_on(conn, project_id, repository.id,
-                repository.default_branch, prior=prior["origin_ids"] if reverse else None)
+                prior["old_default"] if reverse else repository.default_branch,
+                prior=prior["origin_ids"] if reverse else None)
             # The receipt projection is advisory, never delivery authority.
             missing = (await conn.execute(select(tasks.c.id).where(
                 tasks.c.project_id == project_id, tasks.c.status == "COMPLETED",
@@ -377,13 +401,17 @@ class Cutover:
                 ~select(task_delivery_receipts.c.id).where(
                     task_delivery_receipts.c.source_task_id == tasks.c.id,
                     task_delivery_receipts.c.repository_id == repository.id,
-                    task_delivery_receipts.c.target_branch == repository.default_branch).exists(),
+                    task_delivery_receipts.c.target_branch.in_(
+                        branch_spellings(repository.default_branch))).exists(),
             ).order_by(tasks.c.id))).scalars().all()
         targets = set(flow_targets(flow)) | set(flow_targets(project["promotion_flow"]))
         branches = {repository.default_branch, default, *targets}
         facts = await self.git.observe(project_id, repository, default, branches=branches)
         missing = await self.git.retained(project_id, repository, missing)
         blockers = barrier(inventory, allow_epics=allow_epics, targets=targets, project_id=project_id)
+        if not reverse and project["default_branch_cutover"]:
+            blockers.append({"code": "cutover_already_active",
+                             "control": "reverse the active cutover before replacing it"})
         if project["repo_default_branch"] != repository.default_branch:
             blockers.append({"code": "binding_mismatch",
                              "control": "reconcile project/repository default before cutover"})
@@ -412,11 +440,13 @@ class Cutover:
                 "old_default": repository.default_branch, "default_branch": default,
                 "binding": {"repository_url": repository.url,
                             "project_default": project["repo_default_branch"],
-                            "old_flow": project["promotion_flow"]},
+                            "old_flow": project["promotion_flow"],
+                            "cutover": project["default_branch_cutover"]},
                 "flow": flow, "reverse": reverse, "allow_epics": allow_epics,
                 "inventory": inventory, "undelivered_completions": list(missing),
                 "aborted_members": aborted,
-                "receipt_ids": receipt_ids, "receipt_count": len(receipt_ids),
+                "receipt_ids": receipt_ids, "receipt_targets": receipt_targets,
+                "receipt_count": len(receipt_ids),
                 "origin_ids": origin_ids, "origin_count": len(origin_ids),
                 "aborted_member_fence": aborted_fence,
                 "aborted_member_notice": "Aborted inputs with retained provenance will be selected "
@@ -429,6 +459,9 @@ class Cutover:
                      "finish or abort root batches; leave allowed epic targets running"},
                     {"id": "workflow", "change": f"deliver tests.yml PR triggers for {required}"},
                     {"id": "branch", "change": f"verify/create {default} from the captured root OID"},
+                    *[{"id": "flow_target_" + step["id"],
+                       "change": f"verify/create {step['target']} from {step['source']} "
+                       "at its exact OID if absent"} for step in flow or []],
                     {"id": "github", "manual": True,
                      "change": "Restore recorded rulesets/classic protection, remove added rulesets"
                      if reverse else "Install active branch rulesets: root integration attestation, "
@@ -447,6 +480,8 @@ class Cutover:
 
     async def run(self, project_id, flow, *, expected_generation=None, dry_run=True,
                   allow_epics=False, reverse=False, operator_id, baseline=None):
+        if not dry_run and baseline is None:
+            raise ValueError("apply requires the saved cutover plan; preview again")
         plan = await self.plan(project_id, flow, allow_epics=allow_epics, reverse=reverse)
         if plan["blockers"]:
             return {"outcome": "blocked", "plan": plan, "blockers": plan["blockers"]}
@@ -454,19 +489,19 @@ class Cutover:
             return {"outcome": "preview", "plan": plan, "dry_run": True}
         if expected_generation is None:
             raise ValueError("apply requires the generation returned by cutover-plan")
-        if baseline is not None:
-            state = baseline.get("remote_state")
-            if (not isinstance(state, dict)
-                    or not reverse and state.get("default_branch") != plan["old_default"]
-                    or not isinstance(state.get("rulesets"), list)
-                    or not isinstance(state.get("protection"), dict)):
-                raise ValueError("saved_plan_invalid: capture GitHub state before manual changes")
-            for key in ("project_id", "repository_id", "generation", "old_default", "default_branch",
-                        "flow", "cut_oid", "workflow_branches", "binding", "aborted_members",
-                        "aborted_member_fence", "reverse", "allow_epics", "receipt_ids", "origin_ids"):
-                if baseline.get(key) != plan[key]:
-                    raise ValueError(f"saved_plan_changed: {key}; regenerate cutover-plan")
-            plan["baseline"] = baseline
+        state = baseline.get("remote_state")
+        if (not isinstance(state, dict)
+                or not reverse and state.get("default_branch") != plan["old_default"]
+                or not isinstance(state.get("rulesets"), list)
+                or not isinstance(state.get("protection"), dict)):
+            raise ValueError("saved_plan_invalid: capture GitHub state before manual changes")
+        for key in ("project_id", "repository_id", "generation", "old_default", "default_branch",
+                    "flow", "cut_oid", "workflow_branches", "binding", "aborted_members",
+                    "aborted_member_fence", "reverse", "allow_epics", "receipt_ids",
+                    "receipt_targets", "origin_ids"):
+            if baseline.get(key) != plan[key]:
+                raise ValueError(f"plan changed; preview again: {key}")
+        plan["baseline"] = baseline
         repository = await self.db.get_repo(plan["repository_id"])
         result = await PolicyActivation(self.db, clock=self.clock).configure(
             project_id, updates={"integration_repository": {
@@ -500,6 +535,7 @@ class _Activation:
         if (repository is None or project["integration_repository_id"] != plan["repository_id"]
                 or project["repo_default_branch"] != plan["binding"]["project_default"]
                 or project["promotion_flow"] != plan["binding"]["old_flow"]
+                or project["default_branch_cutover"] != plan["binding"]["cutover"]
                 or repository["default_branch"] != plan["old_default"]
                 or repository["url"] != plan["binding"]["repository_url"]):
             return {"outcome": "refused", "error": "plan changed; preview again: binding"}
@@ -518,16 +554,14 @@ class _Activation:
                                            plan["old_default"])
         if aborted != plan["aborted_member_fence"]:
             return {"outcome": "refused", "error": "plan changed; preview again: aborted members"}
-        receipts = select(task_delivery_receipts.c.id).where(
-            task_delivery_receipts.c.repository_id == plan["repository_id"],
-            task_delivery_receipts.c.target_branch == plan["old_default"])
-        if plan["reverse"]:
-            receipts = receipts.where(task_delivery_receipts.c.id.in_(plan["prior"]["receipt_ids"]))
-        if sorted((await conn.execute(receipts)).scalars()) != plan["receipt_ids"]:
-            return {"outcome": "refused", "error": "plan changed; preview again: receipt count"}
-        if await origin_ids_on(conn, project["id"], plan["repository_id"], plan["old_default"],
+        receipts = await receipt_targets_on(conn, plan["repository_id"], plan["old_default"],
+            prior=plan["prior"]["receipt_ids"] if plan["reverse"] else None)
+        if receipts != plan["receipt_targets"]:
+            return {"outcome": "refused", "error": "plan changed; preview again: receipts"}
+        if await origin_ids_on(conn, project["id"], plan["repository_id"],
+                plan["prior"]["old_default"] if plan["reverse"] else plan["old_default"],
                 prior=plan["prior"]["origin_ids"] if plan["reverse"] else None) != plan["origin_ids"]:
-            return {"outcome": "refused", "error": "plan changed; preview again: epic origins"}
+            return {"outcome": "refused", "error": "plan changed; preview again: root origins"}
         enabled = await conn.scalar(text(
             "SELECT tgenabled::text FROM pg_trigger WHERE tgrelid = 'task_delivery_receipts'::regclass "
             "AND tgname = 'trg_task_delivery_receipts_update'"))
@@ -558,47 +592,51 @@ class _Activation:
 
     async def write_on(self, conn, project):
         plan, old, new = self.plan, self.plan["old_default"], self.default_branch
+        await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
         await conn.execute(text("LOCK TABLE task_delivery_receipts IN ACCESS EXCLUSIVE MODE"))
-        receipts = select(task_delivery_receipts.c.id).where(
-            task_delivery_receipts.c.repository_id == plan["repository_id"],
-            task_delivery_receipts.c.target_branch == old)
-        if plan["reverse"]:
-            receipts = receipts.where(task_delivery_receipts.c.id.in_(plan["prior"]["receipt_ids"]))
-        receipt_ids = list((await conn.execute(receipts)).scalars())
-        origin_ids = await origin_ids_on(conn, project["id"], plan["repository_id"], old,
+        receipts = await receipt_targets_on(conn, plan["repository_id"], old,
+            prior=plan["prior"]["receipt_ids"] if plan["reverse"] else None)
+        receipt_ids = list(receipts)
+        origin_ids = await origin_ids_on(conn, project["id"], plan["repository_id"],
+            plan["prior"]["old_default"] if plan["reverse"] else old,
             prior=plan["prior"]["origin_ids"] if plan["reverse"] else None, lock=True)
-        if sorted(receipt_ids) != plan["receipt_ids"] or origin_ids != plan["origin_ids"]:
-            raise ValueError("plan changed; preview again: receipt or origin count")
+        if receipts != plan["receipt_targets"] or origin_ids != plan["origin_ids"]:
+            raise ValueError("plan changed; preview again: receipts or root origins")
         if plan["reverse"] and (set(receipt_ids) != set(plan["prior"]["receipt_ids"])
                                 or set(origin_ids) != set(plan["prior"]["origin_ids"])):
             raise ValueError("cutover_data_changed: inspect audited rows before reversing")
         if receipt_ids:
-            # Legacy receipts are append-only. Suspend only their update guard
-            # while holding PostgreSQL's table lock, restore before commit, and
-            # change only this command's audited target_branch projection.
-            # PostgreSQL rolls back the trigger DDL as well as rows on failure.
+            # Suspend only the receipt update guard under the table lock.
+            # Transaction rollback restores both trigger DDL and rows on cancellation/failure.
             await conn.execute(text("ALTER TABLE task_delivery_receipts "
                                     "DISABLE TRIGGER trg_task_delivery_receipts_update"))
-            changed = await conn.execute(update(task_delivery_receipts).where(
-                task_delivery_receipts.c.id.in_(receipt_ids),
-                task_delivery_receipts.c.repository_id == plan["repository_id"],
-                task_delivery_receipts.c.target_branch == old).values(target_branch=new))
-            if changed.rowcount != plan["receipt_count"]:
-                raise ValueError("plan changed; preview again: receipt count")
+            changes = {}
+            for receipt_id, original in receipts.items():
+                target = (plan["prior"]["receipt_targets"][receipt_id] if plan["reverse"] else
+                          ("refs/heads/" if original.startswith("refs/heads/") else "") + new)
+                changes.setdefault((original, target), []).append(receipt_id)
+            for (original, target), ids in changes.items():
+                changed = await conn.execute(update(task_delivery_receipts).where(
+                    task_delivery_receipts.c.id.in_(ids),
+                    task_delivery_receipts.c.repository_id == plan["repository_id"],
+                    task_delivery_receipts.c.target_branch == original).values(target_branch=target))
+                if changed.rowcount != len(ids):
+                    raise ValueError("plan changed; preview again: receipts")
             await conn.execute(text("ALTER TABLE task_delivery_receipts "
                                     "ENABLE TRIGGER trg_task_delivery_receipts_update"))
-        changed = await conn.execute(update(task_branch_origins).where(
-            task_branch_origins.c.id.in_(origin_ids),
-            task_branch_origins.c.repository_id == plan["repository_id"],
-            task_branch_origins.c.parent_ref == old).values(parent_ref=new))
-        if changed.rowcount != plan["origin_count"]:
-            raise ValueError("plan changed; preview again: epic origin count")
+        cutover_at = self.service.clock()
+        await conn.execute(update(projects).where(projects.c.id == project["id"]).values(
+            default_branch_cutover=None if plan["reverse"] else {
+                "repository_id": plan["repository_id"], "old_default": old, "new_default": new,
+                "generation": project["hierarchical_integration_generation"] + 1,
+                "cutover_at": cutover_at}))
         await conn.execute(insert(events).values(
-            event_type="integration.cutover", project_id=project["id"], timestamp=self.service.clock(),
+            event_type="integration.cutover", project_id=project["id"], timestamp=cutover_at,
             payload=json.dumps({"repository_id": plan["repository_id"], "reverse": plan["reverse"],
                                 "old_default": old, "old_flow": project["promotion_flow"],
                                 "new_default": new, "new_flow": plan["flow"],
-                                "receipt_ids": receipt_ids, "origin_ids": origin_ids,
+                                "receipt_ids": receipt_ids, "receipt_targets": receipts,
+                                "origin_ids": origin_ids, "cutover_at": cutover_at,
                                 "workflow_branches": plan.get("baseline", plan)["workflow_branches"],
                                 "remote_state": plan.get("baseline", plan)["remote_state"],
                                 "operator": self.operator})))
