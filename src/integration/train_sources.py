@@ -526,8 +526,7 @@ class DatabaseBatches:
         A merge of ``base..source`` retains source ancestry even when the target
         never received the base's tree changes. A later target sync can therefore
         delete those changes from their owning branch. Only an explicit blocks
-        prerequisite, or a source CI repair's own recorded source binding,
-        authorizes a base from another task's unpublished history.
+        prerequisite authorizes a base from another task's unpublished history.
         Use the visit's pinned OIDs, including branches still being worked on.
         """
         observed = snapshot.observation
@@ -546,21 +545,6 @@ class DatabaseBatches:
                 task_branch_origins.c.retired_at.is_(None),
                 task_branch_origins.c.materialized.is_(True),
             ).order_by(task_branch_origins.c.task_id))).mappings().all()
-            from src.integration.source_ci_lineage import repair_bindings_on, repair_ids
-
-            # A source CI repair is branched from the exact source head it binds.
-            # That binding is the declaration this guard asks for; the retirement
-            # checks refuse the repair once the source completion is superseded.
-            bindings = await repair_bindings_on(
-                conn, [member.task_id for member in members.values()],
-                repository_id=target.repository_id,
-            )
-        declared = {
-            member.task_id
-            for record in bindings
-            for member in members.values()
-            if member.task_id in repair_ids(record) and member.base_sha == record["source_head"]
-        }
         unsafe = set()
 
         def block(member, code, detail, **facts):
@@ -596,8 +580,6 @@ class DatabaseBatches:
             foreign = set(result.stdout.split()) & bases.keys()
             for member in members.values():
                 if member.base_sha not in foreign or member.task_id == origin["task_id"]:
-                    continue
-                if member.task_id in declared:
                     continue
                 prerequisite = origin["task_id"]
                 if prerequisite in edges.get(member.task_id, set()):

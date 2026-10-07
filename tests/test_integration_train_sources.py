@@ -347,6 +347,19 @@ async def test_current_source_ci_repair_still_delivers(world, source_delivered):
     assert testing.state == "testing", testing
     checks.green.add(testing.candidate_sha)
     assert (await train.visit(MAIN)).state == "delivered"
+    if not source_delivered:
+        # A repair is branched from its source's completion head, so an
+        # undelivered source makes that base another task's unpublished history.
+        # The undeclared-stack guard withholds the repair until the source has
+        # landed, and says so by name rather than losing the repair silently.
+        assert [blocker["code"] for blocker in testing.detail["blockers"]] == [
+            "undeclared_stack_base",
+        ], testing.detail["blockers"]
+        assert testing.detail["blockers"][0]["task_id"] == "repair"
+        testing = await train.visit(MAIN)
+        assert testing.state == "testing", testing
+        checks.green.add(testing.candidate_sha)
+        assert (await train.visit(MAIN)).state == "delivered"
     tip = git(world.origin.url, "rev-parse", "main")
     git(world.origin.url, "merge-base", "--is-ancestor", repair, tip)
 
@@ -362,6 +375,18 @@ async def test_reopen_refuses_frozen_source_ci_repair_publication_with_named_blo
         (BatchMember("repair", repair, source),), trees={"repair": tree(world, repair)},
     )
     train, checks, _ = lane(world, LocalGit(Path(world.origin.url)))
+    # Both guards hold a frozen repair while its source is unpublished: the
+    # undeclared-stack guard withholds the member, so there is nothing to test.
+    undeclared = await train.visit(MAIN)
+    assert undeclared.state == "blocked", undeclared
+    assert [blocker["code"] for blocker in undeclared.detail["blockers"]] == [
+        "undeclared_stack_base",
+    ], undeclared.detail["blockers"]
+    assert undeclared.detail["blockers"][0]["batch_id"] == "repair-only"
+
+    # With the source on the target the base is declared history, and the repair
+    # publishes; only the superseded-source head then refuses it.
+    world.origin.land("source")
     testing = await train.visit(MAIN)
     assert testing.state == "testing", testing
     checks.green.add(testing.candidate_sha)
