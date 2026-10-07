@@ -1,29 +1,29 @@
 name: Tests
 
-# The full suite runs before a change reaches `main`, never after:
+# The full suite runs on candidate work before branch promotion:
 #
-# * `pull_request` into the default and each promotion-chain target tests
-#   the PR's merge with its base. `aq promote rulesets` prints this branch
-#   list from the flow; copy it here before a promotion-flow cutover.
+# * `pull_request` into `dev`, `staging` or `main` tests the PR merge with its base.
 # * A push to `aq/integration/**` tests the train's assembled candidate, and
-#   the train promotes that exact tested SHA to `main`.
+#   the train promotes that exact tested SHA to `dev`.
 # * A push to `aq/batches/**` tests the git-first train's batch candidate
 #   (`src/integration/batches.py:candidate_ref`) the same way.
 # * A push to `aq/promote/**` tests the exact promotion source SHA.
 # * A push to `aq/parent/**` tests an immutable parent snapshot ref that
 #   `src/integration/parent_ci.py` publishes and then reads the run from.
 #
-# `main` itself is not a trigger. Everything that reaches it was validated
+# The delivery branches themselves are not push triggers. Their work is validated
 # first, by one of the runs above or by the development publisher's
 # pre-publish validation, so a run per `main` commit only repeated that work.
 # `workflow_dispatch` runs the suite by hand on any branch, `main` included.
 # `workflow_call` is the break-glass audit: `main-attestation.yml` calls this
-# workflow for a push to `main` that carries no valid integration attestation.
+# workflow for a delivery-branch push that carries no valid branch attestation.
 # Its checks are named `unattested-ci / Tests (...)`, so they never collide
 # with the required check names the train observes on a candidate.
 on:
   pull_request:
     branches:
+      - dev
+      - staging
       - main
     types: [opened, synchronize, reopened, ready_for_review]
   push:
