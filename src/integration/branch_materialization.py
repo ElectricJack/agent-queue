@@ -56,6 +56,7 @@ class BranchMaterializationService:
         db: Any,
         *,
         hierarchy_service_factory: Any,
+        legacy_container_collection: bool = True,
         clock=time.time,
     ) -> None:
         self.db = db
@@ -63,6 +64,17 @@ class BranchMaterializationService:
         #: factory rather than an instance because the daemon builds that
         #: service lazily, from the command handler's repository closures.
         self.hierarchy_service_factory = hierarchy_service_factory
+        #: Whether a released code-bearing container may be given a *legacy*
+        #: collection episode (:meth:`_drain`'s second pass).  It is the parent
+        #: runtime's own entry point, so it is only true while that engine
+        #: exists: ``integration.git_first: active`` replaces every subject
+        #: runtime with the train, which collects a container's children into
+        #: its own branch and never reads the episode.  Reserving one there
+        #: pauses a container that nothing can settle — orphan reconciliation
+        #: cancels the reserved operation and no collector ever runs
+        #: (grand-lantern-78, quick-current-13, 2026-10-07).  Branch
+        #: materialization itself is unaffected: a reservation is still cut.
+        self.legacy_container_collection = legacy_container_collection
         self.clock = clock
         #: Two loops drive this drain: ``Orchestrator.run_one_cycle`` (so a
         #: freshly filed child is materialized before the same cycle schedules)
@@ -167,7 +179,13 @@ class BranchMaterializationService:
                     "Branch materialization for aq/%s failed: %s", row["task_id"], exc
                 )
         # A code-bearing epic can be a container with no producer session.
-        # Its untouched materialized origin is its initial checkpoint.
+        # Its untouched materialized origin is its initial checkpoint — but
+        # only for a runtime that collects it.  Under git_first the train is
+        # that collector, so no episode is reserved here (see
+        # ``legacy_container_collection``).
+        if not self.legacy_container_collection:
+            logger.debug("Legacy container collection is off; the train collects containers")
+            return results
         async with self.db._engine.connect() as conn:
             containers = (await conn.execute(
                 select(tasks.c.id).join(task_integration_checkpoints,
