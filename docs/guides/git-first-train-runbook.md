@@ -208,6 +208,34 @@ and cancellation propagate to all waiting readers without repeated GitHub calls.
 Setup does not fetch again; each later visit fetches afresh. Targets in different
 repositories remain independent.
 
+Validated completion records are cached by observer store, repository,
+completion identity and pinned provenance OIDs. Delivery proofs bind all current task inputs,
+the source base and the exact target OID. These bounded in-memory caches avoid
+revalidating the same immutable Git objects on every scheduler tick. Changed
+generations, refs, repositories or bases miss the cache; failed proofs are retried.
+Writers still fetch and revalidate ordinary database inputs and remote freshness
+before acting. Multi-target delivery views check remote refs in one call per
+repository. Advisory reads retain each target's original 30-second snapshot
+window. Reduced explain and pool diagnostics consume existing proofs without
+launching Git; missing proofs withhold work until a background reader observes them.
+
+To reproduce the cost of repeated train/frontier delivery proofs over 137
+completions, use the disposable local benchmark:
+
+```bash
+python scripts/benchmark-git-truth.py --members 137 --passes 3 --profile /tmp/truth.prof
+python -c 'import pstats; pstats.Stats("/tmp/truth.prof").sort_stats("tottime").print_stats(20)'
+```
+
+It reports wall time, Python CPU time and Git command counts for a cold pass and
+subsequent warm passes, excluding repository setup. At a five-second cadence its
+CPU percentage is the measured Python CPU seconds divided by five; child Git CPU,
+SQL, network and other daemon work are outside this benchmark. On the 2026-10-07
+development host, warm passes fell from 1,096 Git commands and 3.6 seconds to zero
+commands and 8–19 milliseconds. Measure production idle CPU and explain latency
+after deploying; the local proof benchmark does not establish either service-wide
+target.
+
 ## Reading blockers
 
 | Code | Meaning | Operator action |

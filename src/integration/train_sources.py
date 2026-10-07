@@ -243,10 +243,10 @@ async def project_delivered(db, ids, *, project_id, repository_id, target_ref, s
         if task_id in delivered or request.task_status != "COMPLETED":
             continue
         try:
-            record = await provenance.read_completion(CompletionIdentity(
+            record = await snapshot.read_completion(CompletionIdentity(
                 project_id, repository_id, task_id,
                 request.completion_id or request.legacy_generation,
-            ), refs=observed.source_heads)
+            ))
             if record is None:
                 continue
             source = record["source_oid"]
@@ -345,13 +345,32 @@ class DatabaseTargets:
                 TrainTarget(project_id, repository_id, ref, "epic") for ref in sorted(refs)]
 
 
-def _conflict_action(refusal, snapshot, *, epic: bool):
+def _conflict_action(refusal, snapshot, *, epic: bool, refresh=None):
     """Name who resolves a root PR that conflicts with the default branch."""
     if refusal.get("code") != "pr_conflicting":
         return refusal
-    action = ("the train refreshes the epic from the default branch" if epic else
-              "merge the default branch into the task branch, push it and close the task again")
-    return {**refusal, "default_sha": snapshot.target_oid, "epic": epic, "action": action,
+    action = "merge the default branch into the task branch, push it and close the task again"
+    detail = {}
+    if epic:
+        action = "the train will try to refresh the epic from the default branch"
+        if refresh is not None:
+            action = {
+                "started": "the train started an epic refresh from the default branch",
+                "running": "an epic refresh is running on the epic branch",
+                "pending": "another batch owns the epic; the train will retry its refresh "
+                           "after that batch settles",
+                "settled": "the refresh for this head pair has settled; the epic still needs "
+                           "a conflict-free PR with green exact-head checks",
+                "current": "the epic already contains the default branch; its PR still needs "
+                           "green exact-head checks",
+                "unavailable": f"the epic refresh is unavailable ({refresh.get('reason')}); "
+                               "the train will retry",
+            }[refresh["outcome"]]
+            detail["refresh"] = refresh
+            if refresh["outcome"] == "unavailable":
+                detail.update(code="refresh_unavailable", retry_at=refresh["retry_at"],
+                              retry_seconds=refresh["retry_seconds"])
+    return {**refusal, **detail, "default_sha": snapshot.target_oid, "epic": epic, "action": action,
             "detail": f"root {refusal['task_id']} PR conflicts with the default branch at "
                       f"{snapshot.target_oid}: {action}"}
 
@@ -384,28 +403,47 @@ class DatabaseBatches:
                 continue
             task_id = blocker["task_id"]
             pair = (blocker["source_sha"], blocker["default_sha"])
-            started = self._conflict_refreshes.get(task_id)
-            if started is None or started[0] != pair:
-                try:
+            cached = self._conflict_refreshes.get(task_id)
+            previous = cached[1] if cached is not None and cached[0] == pair else None
+            refresh = previous
+            try:
+                if refresh is not None and refresh["outcome"] in {"started", "running"}:
+                    async with self.db._engine.connect() as conn:
+                        open_id = await conn.scalar(_open_batch_rows(
+                            target.project_id, target.repository_id,
+                        ).with_only_columns(integration_batches.c.id).where(
+                            integration_batches.c.id == refresh["batch_id"]))
+                    # A running batch can belong to an older head pair. Once
+                    # it settles, start() must reconsider this pair. Its durable
+                    # batch identity still prevents repeating a settled pair.
+                    refresh = {**refresh, "outcome": "running"} if open_id else None
+                if (refresh is not None and refresh["outcome"] == "unavailable"
+                        and self.clock() >= refresh["retry_at"]):
+                    refresh = None
+                if refresh is None:
                     result = await EpicRefresh(self.db, clock=self.clock).start(
                         task_id, snapshot=snapshot)
-                except (ValueError, GitError) as exc:
-                    # Not started: the next visit tries this pair again.
-                    blockers[index] = {**blocker, "refresh": {
-                        "outcome": "unavailable", "reason": str(exc)[:500]}}
-                    continue
-                refresh = {key: result[key] for key in ("outcome", "batch_id") if key in result}
-                if result["outcome"] == "started":
-                    await self.db.log_event(
-                        "integration.epic_refresh", project_id=target.project_id,
-                        task_id=task_id, payload=json.dumps({
-                            **result, "trigger": "pr_conflicting", "pr_url": blocker["pr_url"]}))
-                # A child batch still owns the epic: try this pair again later.
-                if result["outcome"] == "pending":
-                    blockers[index] = {**blocker, "refresh": refresh}
-                    continue
-                started = self._conflict_refreshes[task_id] = (pair, refresh)
-            blockers[index] = {**blocker, "refresh": started[1]}
+                    refresh = {key: result[key] for key in ("outcome", "batch_id") if key in result}
+                    if result["outcome"] == "started":
+                        await self.db.log_event(
+                            "integration.epic_refresh", project_id=target.project_id,
+                            task_id=task_id, payload=json.dumps({
+                                **result, "trigger": "pr_conflicting", "pr_url": blocker["pr_url"]}))
+            except Exception as exc:
+                # A local refresh failure withholds only this epic, allowing
+                # unrelated roots through their own PR gates. Retry with capped
+                # backoff; exception text can contain credentials or DB inputs.
+                logger.warning("Automatic epic refresh unavailable for %s", task_id,
+                               exc_info=True)
+                delay = min((previous or {}).get("retry_seconds", 30) * 2, 600)
+                refresh = {"outcome": "unavailable", "reason": type(exc).__name__,
+                           "retry_at": self.clock() + delay, "retry_seconds": delay}
+            # An ordinary child batch still owns the epic: try again next visit.
+            if refresh["outcome"] == "pending":
+                self._conflict_refreshes.pop(task_id, None)
+            else:
+                self._conflict_refreshes[task_id] = (pair, refresh)
+            blockers[index] = _conflict_action(blocker, snapshot, epic=True, refresh=refresh)
 
     async def open_batch(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, service: BatchService, *,

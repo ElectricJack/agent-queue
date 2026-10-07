@@ -105,6 +105,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import insert, select, update
+from sqlalchemy.exc import SQLAlchemyError
 
 from src.database import Database
 from src.database.tables import (
@@ -147,11 +148,11 @@ from src.integration.status import IntegrationStatusService
 from src.integration.train import CandidateChecks, IntegrationTrain, TrainLane, TrainTarget
 from src.integration.train_controls import TrainControls
 from src.integration.train_sources import (
+    RETAINED_CANDIDATE_PREFIX,
     DaemonLanes,
     DatabaseBatches,
     DatabaseTargets,
     LeasedPublish,
-    RETAINED_CANDIDATE_PREFIX,
     _never_trusted,
     _pending_tasks,
     _push_branch_allowed,
@@ -865,8 +866,8 @@ class TrainCleanupForge:
     """Only the GitHub comment boundary is substituted; Git proof stays real."""
 
     def __init__(self, heads=()):
-        self.prs = {number: dict(repository_numeric_id=123, repository_full_name="test/repo",
-                                head_sha=head, state="closed") for number, head in heads}
+        self.prs = {number: {"repository_numeric_id": 123, "repository_full_name": "test/repo",
+                             "head_sha": head, "state": "closed"} for number, head in heads}
         self.comments = []
         self.markers = set()
 
@@ -1065,7 +1066,11 @@ async def test_epic_refresh_cleanup_never_schedules_its_own_epic_target(world, t
 async def test_promoted_train_cleanup_protects_open_subject_target(world, tmp_path):
     from src.database.tables import integration_subjects, playbook_artifacts
     from src.integration.subjects import (
-        PolicyArtifactPin, Subject, SubjectKind, SubjectPhase, SubjectSchedule,
+        PolicyArtifactPin,
+        Subject,
+        SubjectKind,
+        SubjectPhase,
+        SubjectSchedule,
     )
 
     head = await completed(world, "epic", land=True, pr=False)
@@ -1594,6 +1599,14 @@ async def test_cross_epic_frontier_requires_exact_default_proof(world, delivery)
     await db._delivery_observer.prerequisite_view("p", task_id="child")
     assert not [item for item in await db.claim_frontier_exclusions("child")
                 if "prerequisite" in item["code"]]
+    assert not await db.is_hierarchy_task_runnable("child")
+    assert "frontier_epic_refresh_pending" in {
+        item["code"] for item in await db.claim_frontier_exclusions("child")}
+    # The epic needs the same proven source, including squash/patch delivery.
+    git(origin.clone, "checkout", "-B", "aq/epic", "origin/aq/epic")
+    git(origin.clone, "merge", "--no-ff", "-m", "contain default prerequisite", "origin/main")
+    git(origin.clone, "push", "origin", "aq/epic")
+    await db._delivery_observer.prerequisite_view("p", task_id="child")
     assert await db.is_hierarchy_task_runnable("child")
 
 
@@ -1603,7 +1616,8 @@ async def test_cross_epic_completed_policy_is_explicit_legacy_admission(world):
     policy = {"cross_epic_prerequisites": "completed"}
     await db.update_project("p", hierarchical_integration_policy=policy)
     assert not [item for item in await db.claim_frontier_exclusions("child")
-                if "prerequisite" in item["code"]]
+                if "prerequisite" in item["code"] or item["code"] == "frontier_epic_refresh_pending"]
+    assert await db.is_hierarchy_task_runnable("child")
 
 
 @pytest.mark.parametrize("changed", [False, True])
@@ -1641,6 +1655,15 @@ async def test_empty_completion_root_releases_child_and_has_no_train_blocker(wor
     proof = await (await snapshot(world)).is_delivered(requests["no-change"], source_base=base)
     assert proof.state is (DeliveryState.CONTAINED if changed else DeliveryState.NO_CHANGE)
     assert proof.satisfied
+    if changed:
+        # Root delivery alone cannot release a cross-epic child whose parent
+        # still lacks the exact source, regardless of descriptive close commits.
+        assert not await db.is_hierarchy_task_runnable("child")
+        assert "frontier_epic_refresh_pending" in {
+            item["code"] for item in await db.claim_frontier_exclusions("child")}
+        git(origin.clone, "checkout", "-B", "aq/epic", "origin/aq/epic")
+        git(origin.clone, "merge", "--no-ff", "-m", "contain root prerequisite", "origin/main")
+        git(origin.clone, "push", "origin", "aq/epic")
     assert await db.is_hierarchy_task_runnable("child")
     assert not [item for item in await db.claim_frontier_exclusions("child")
                 if "prerequisite" in item["code"]]
@@ -1740,7 +1763,7 @@ async def test_epic_refresh_preview_apply_attestation_lease_and_origin(world):
     assert pending["outcome"] == "pending" and pending["state"] == "testing"
     assert git(origin.url, "rev-parse", "aq/epic") == epic
     reasons = await db.claim_frontier_exclusions("child")
-    assert "frontier_prerequisite_not_on_default_branch" in {item["code"] for item in reasons}
+    assert "frontier_epic_refresh_pending" in {item["code"] for item in reasons}
     checks.green.add(pending["candidate_sha"])
     # Checks alone cannot bypass attestation or another writer's epic lease.
     train_lane = await train.lane_for(target)
@@ -1771,11 +1794,14 @@ async def test_epic_refresh_preview_apply_attestation_lease_and_origin(world):
     assert recorded["base_refresh"]["default_sha"] == default
 
 
-async def test_epic_refresh_conflict_files_ordinary_repair_on_epic(world):
-    from src.integration.stacked_branches import EpicRefresh
+@pytest.mark.parametrize("repair_contains_prerequisite", [True, False])
+async def test_epic_refresh_conflict_files_ordinary_repair_on_epic(
+    world, repair_contains_prerequisite,
+):
+    from src.integration.stacked_branches import EpicRefresh, EpicRefreshPending
 
     db, origin = world.db, world.origin
-    _, _, target = await cross_epic_world(world)
+    _, prerequisite, target = await cross_epic_world(world)
     git(origin.clone, "checkout", "-B", "aq/epic", "origin/aq/epic")
     (origin.clone / "base.txt").write_text("epic edit\n")
     git(origin.clone, "commit", "-am", "epic edit")
@@ -1794,16 +1820,21 @@ async def test_epic_refresh_conflict_files_ordinary_repair_on_epic(world):
     assert repair.branch_name == target.target_ref.removeprefix("refs/heads/")
     owner = await BranchLock(db).get(BranchKey(repository_id="r", branch=target.target_ref))
     assert owner.holder == repair.id
-    assert "frontier_prerequisite_not_on_default_branch" in {
+    assert "frontier_epic_refresh_pending" in {
         item["code"] for item in await db.claim_frontier_exclusions("child")}
 
-    # An ordinary repair publishes its resolved merge on the epic under its
-    # allocated lease. The refresh still owes checks and attestation afterward.
+    # A repair can publish the resolved merge or only fix the conflicting
+    # content. The refresh still owes checks and attestation in either case.
     git(origin.clone, "checkout", "-B", "aq/epic", "origin/aq/epic")
-    conflict = subprocess.run(["git", "merge", "--no-commit", "origin/main"],
-                              cwd=origin.clone, capture_output=True)
+    conflict = await transport.arun_git_result(
+        ["merge", "--no-commit", "origin/main"], cwd=origin.clone,
+    )
     assert conflict.returncode == 1
-    (origin.clone / "base.txt").write_text("resolved epic and default edit\n")
+    if repair_contains_prerequisite:
+        (origin.clone / "base.txt").write_text("resolved epic and default edit\n")
+    else:
+        git(origin.clone, "merge", "--abort")
+        (origin.clone / "base.txt").write_text("default edit\n")
     git(origin.clone, "add", "base.txt")
     git(origin.clone, "commit", "-m", "resolve default refresh")
     repaired = git(origin.clone, "rev-parse", "HEAD")
@@ -1815,7 +1846,23 @@ async def test_epic_refresh_conflict_files_ordinary_repair_on_epic(world):
     await locks.release(owner.grant())
     checking = await EpicRefresh(db, train).refresh("epic", dry_run=False)
     assert checking["state"] == "testing"
+    assert git(origin.url, "rev-parse", "aq/epic") == repaired
+    assert checking["candidate_sha"] not in checks.green
+    (await train.lane_for(target)).service.attest.assert_not_awaited()
+    # Containment and completion of the open refresh are independent gates.
+    # Both repair forms still owe checks and attestation before child admission.
+    view = await db._delivery_observer.prerequisite_view("p", task_id="child")
+    assert view.default.satisfied("prerequisite")
+    assert view.parent_containment == {"child": {"prerequisite": repair_contains_prerequisite}}
     assert not await db.is_hierarchy_task_runnable("child")
+    assert "frontier_epic_refresh_pending" in {
+        item["code"] for item in await db.claim_frontier_exclusions("child")}
+    task = await db.get_task("child")
+    filing = await db.get_task_branch_origin_for_promotion("child", "r")
+    if repair_contains_prerequisite:
+        git(origin.url, "merge-base", "--is-ancestor", prerequisite, repaired)
+    with pytest.raises(EpicRefreshPending, match="epic refresh pending"):
+        await EpicRefresh(db, train).child_base(task, filing)
     checks.green.add(checking["candidate_sha"])
     delivered = await EpicRefresh(db, train).refresh("epic", dry_run=False)
     assert delivered["outcome"] == "refreshed"
@@ -1837,7 +1884,7 @@ async def test_epic_refresh_serializes_with_open_collection(world):
     pending = await EpicRefresh(world.db).refresh("epic", dry_run=False)
     assert pending["outcome"] == "pending" and pending["batch_id"] == collection.id
     assert not await world.db.is_hierarchy_task_runnable("child")
-    assert "frontier_prerequisite_not_on_default_branch" in {
+    assert "frontier_epic_refresh_pending" in {
         item["code"] for item in await world.db.claim_frontier_exclusions("child")
     }
 
@@ -1908,7 +1955,11 @@ async def test_epic_refresh_authorization_uses_cached_visit_git(world, monkeypat
 async def test_epic_refresh_failed_ci_repair_starts_at_candidate(world, failure):
     from src.integration.candidate_baseline import Baseline
     from src.integration.checks import (
-        ChecksResult, ChecksState, CommitCheck, Conclusion, RequiredChecks,
+        ChecksResult,
+        ChecksState,
+        CommitCheck,
+        Conclusion,
+        RequiredChecks,
     )
     from src.integration.stacked_branches import EpicRefresh
     from src.orchestrator.workspace import WorkspaceMixin
@@ -3484,25 +3535,38 @@ async def test_root_pr_gate_retries_unknown_mergeability_soon_then_backs_off(wor
     assert (await train.visit(MAIN)).state == "testing"
 
 
-@pytest.mark.parametrize("collected_epic", ["controlled_clock"], indirect=True)
-async def test_conflicting_epic_pr_starts_one_attested_refresh_per_head_pair(collected_epic):
-    from src.integration.stacked_branches import EpicRefresh
-
-    case = collected_epic
+async def conflicting_epic_pr(case, *, content_conflict=False):
+    """A collected, reviewed epic whose PR no longer merges onto the default."""
+    if content_conflict:
+        git(case.origin.clone, "fetch", "-q", "origin")
+        git(case.origin.clone, "checkout", "-q", "-B", "aq/epic", "origin/aq/epic")
+        (case.origin.clone / "base.txt").write_text("epic edit\n")
+        git(case.origin.clone, "commit", "-qam", "epic edit")
+        git(case.origin.clone, "push", "-q", "origin", "aq/epic")
     head = await collect_epic(case)
     await review_epic(case)
     [opened] = (await case.train.visit(case.target)).detail["epic_completions"]
     url = opened["pr_url"]
     git(case.origin.clone, "fetch", "-q", "origin")
     git(case.origin.clone, "checkout", "-q", "-B", "main", "origin/main")
-    (case.origin.clone / "unrelated.txt").write_text("default moves on\n")
-    git(case.origin.clone, "add", "unrelated.txt")
+    path = "base.txt" if content_conflict else "unrelated.txt"
+    (case.origin.clone / path).write_text("default moves on\n")
+    git(case.origin.clone, "add", path)
     git(case.origin.clone, "commit", "-qm", "default moves on")
     git(case.origin.clone, "push", "-q", "origin", "main")
     default = git(case.origin.url, "rev-parse", "main")
     case.github.pr_runs.pop(head, None)
     case.github.mergeability[url] = "dirty"
     assert case.github.runs[head] == "success"  # Push-event runs are not PR checks.
+    return head, default, url
+
+
+@pytest.mark.parametrize("collected_epic", ["controlled_clock"], indirect=True)
+async def test_conflicting_epic_pr_starts_one_attested_refresh_per_head_pair(collected_epic):
+    from src.integration.stacked_branches import EpicRefresh
+
+    case = collected_epic
+    head, default, url = await conflicting_epic_pr(case)
 
     async def refreshes():
         async with case.db._engine.connect() as conn:
@@ -3518,6 +3582,8 @@ async def test_conflicting_epic_pr_starts_one_attested_refresh_per_head_pair(col
     assert (conflict["task_id"], conflict["pr_url"], conflict["source_sha"],
             conflict["default_sha"], conflict["epic"]) == ("epic", url, head, default, True)
     assert conflict["refresh"]["outcome"] == "started"
+    assert "started an epic refresh" in conflict["action"]
+    assert conflict["action"] in conflict["detail"]
     [batch_id], [event] = await refreshes()
     assert conflict["refresh"]["batch_id"] == batch_id
     assert (event["trigger"], event["pr_url"], event["target_sha"], event["default_sha"]) == (
@@ -3531,7 +3597,9 @@ async def test_conflicting_epic_pr_starts_one_attested_refresh_per_head_pair(col
         case.now[0] += advance
         again = await case.train.visit(MAIN)
         [repeat] = [b for b in again.detail["blockers"] if b["code"] == "pr_conflicting"]
-        assert repeat["refresh"] == conflict["refresh"]
+        assert repeat["refresh"] == {**conflict["refresh"], "outcome": "running"}
+        assert "is running on the epic branch" in repeat["action"]
+        assert repeat["action"] in repeat["detail"]
     restarted = await EpicRefresh(case.db).start("epic")
     assert (restarted["outcome"], restarted["batch_id"]) == ("running", batch_id)
     assert await refreshes() == ([batch_id], [event])
@@ -3566,6 +3634,163 @@ async def test_conflicting_epic_pr_starts_one_attested_refresh_per_head_pair(col
     assert admitted.state == "testing", admitted
     frozen = await BatchStore(case.db).members(admitted.batch_id)
     assert [(m.task_id, m.source_sha) for m in frozen] == [("epic", refreshed)]
+
+
+@pytest.mark.parametrize("collected_epic", ["controlled_clock"], indirect=True)
+@pytest.mark.parametrize("error", [OSError, SQLAlchemyError, ValueError])
+async def test_conflicting_epic_refresh_error_does_not_block_leaf_admission(
+    collected_epic, monkeypatch, error, caplog,
+):
+    from src.integration.stacked_branches import EpicRefresh
+
+    case = collected_epic
+    head, default, url = await conflicting_epic_pr(case)
+    leaf = await completed(case.world, "leaf")
+    case.github.reviews.append({"id": 100, "state": "APPROVED", "commit_id": leaf,
+                               "user": {"login": "jack", "type": "User"}})
+    start = AsyncMock(side_effect=error("private refresh input must not escape"))
+    monkeypatch.setattr(EpicRefresh, "start", start)
+    visit = await case.train.visit(MAIN)
+    assert visit.state == "testing", visit
+    frozen = await BatchStore(case.db).members(visit.batch_id)
+    assert [(m.task_id, m.source_sha) for m in frozen] == [("leaf", leaf)]
+    [blocker] = visit.detail["blockers"]
+    assert (blocker["code"], blocker["task_id"], blocker["pr_url"], blocker["source_sha"],
+            blocker["default_sha"]) == ("refresh_unavailable", "epic", url, head, default)
+    assert blocker["refresh"] == {"outcome": "unavailable", "reason": error.__name__,
+                                  "retry_at": case.now[0] + 60, "retry_seconds": 60}
+    assert "is unavailable" in blocker["action"] and error.__name__ in blocker["action"]
+    assert blocker["action"] in blocker["detail"]
+    assert "private refresh input" not in json.dumps(visit.detail)
+    [warning] = [record for record in caplog.records
+                 if record.name == "src.integration.train_sources"
+                 and record.getMessage() == "Automatic epic refresh unavailable for epic"]
+    assert warning.levelname == "WARNING"
+    assert warning.exc_info[0] is error
+    assert str(warning.exc_info[1]) == "private refresh input must not escape"
+    assert warning.exc_info[2] is not None
+    assert start.await_count == 1
+    assert await case.train.batches.current(case.target) is None
+    assert git(case.origin.url, "rev-parse", "aq/epic") == head
+    assert git(case.origin.url, "rev-parse", "main") == default
+
+
+@pytest.mark.parametrize("collected_epic", ["controlled_clock"], indirect=True)
+async def test_conflicting_epic_refresh_unavailable_backs_off_and_recovers(collected_epic, monkeypatch):
+    from src.integration.stacked_branches import EpicRefresh
+
+    case = collected_epic
+    await conflicting_epic_pr(case)
+    original = EpicRefresh.start
+    start = AsyncMock(side_effect=OSError("private error"))
+    monkeypatch.setattr(EpicRefresh, "start", start)
+    first = await case.train.visit(MAIN)
+    assert first.state == "blocked" and first.batch_id is None
+    [blocker] = first.detail["blockers"]
+    delays = (60, 120, 240, 480, 600, 600)
+    for attempt, delay in enumerate(delays, start=1):
+        assert blocker["code"] == "refresh_unavailable"
+        assert blocker["retry_seconds"] == delay
+        assert blocker["retry_at"] == case.now[0] + delay
+        calls = start.await_count
+        assert (await case.train.visit(MAIN)).detail["blockers"] == [blocker]
+        assert start.await_count == calls
+        case.now[0] += delay
+        if attempt < len(delays):
+            [blocker] = (await case.train.visit(MAIN)).detail["blockers"]
+            assert start.await_count == calls + 1
+    monkeypatch.setattr(EpicRefresh, "start", original)
+    recovered = await case.train.visit(MAIN)
+    assert recovered.state == "blocked" and recovered.batch_id is None
+    [blocker] = recovered.detail["blockers"]
+    assert blocker["code"] == "pr_conflicting" and blocker["refresh"]["outcome"] == "started"
+    assert "started an epic refresh" in blocker["action"]
+    assert (await case.train.batches.current(case.target)).id == blocker["refresh"]["batch_id"]
+
+
+@pytest.mark.parametrize("collected_epic", ["controlled_clock"], indirect=True)
+async def test_conflicting_epic_retries_new_pair_after_older_refresh_aborted(collected_epic):
+    from src.integration.stacked_branches import EpicRefresh
+
+    case = collected_epic
+    head, default, _ = await conflicting_epic_pr(case)
+    older = await EpicRefresh(case.db).start("epic")
+    assert older["outcome"] == "started"
+    (case.origin.clone / "new-default.txt").write_text("default advances again\n")
+    git(case.origin.clone, "add", "new-default.txt")
+    git(case.origin.clone, "commit", "-qm", "new default head")
+    git(case.origin.clone, "push", "-q", "origin", "main")
+    new_default = git(case.origin.url, "rev-parse", "main")
+    assert new_default != default
+    for _ in range(2):
+        visit = await case.train.visit(MAIN)
+        [blocker] = visit.detail["blockers"]
+        assert (blocker["source_sha"], blocker["default_sha"]) == (head, new_default)
+        assert blocker["refresh"] == {"outcome": "running", "batch_id": older["batch_id"]}
+        assert "is running" in blocker["action"]
+    await BatchStore(case.db).set_intent(older["batch_id"], "aborted")
+    [retried] = (await case.train.visit(MAIN)).detail["blockers"]
+    assert retried["refresh"]["outcome"] == "started"
+    new_batch = retried["refresh"]["batch_id"]
+    assert new_batch != older["batch_id"]
+    assert (await BatchStore(case.db).members(new_batch))[0].source_sha == new_default
+    # The new pair's own aborted refresh remains settled, never restarted.
+    await BatchStore(case.db).set_intent(new_batch, "aborted")
+    for _ in range(2):
+        [settled] = (await case.train.visit(MAIN)).detail["blockers"]
+        assert settled["refresh"] == {"outcome": "settled", "batch_id": new_batch}
+        assert "has settled" in settled["action"]
+        assert settled["action"] in settled["detail"]
+        assert await case.train.batches.current(case.target) is None
+    async with case.db._engine.connect() as conn:
+        assert len((await conn.execute(select(integration_batches.c.id).where(
+            integration_batches.c.id.like("train-epic-refresh-%")))).all()) == 2
+
+
+@pytest.mark.parametrize("collected_epic", ["controlled_clock"], indirect=True)
+async def test_conflicting_epic_refresh_pending_collection_retries_next_visit(collected_epic):
+    case = collected_epic
+    await conflicting_epic_pr(case)
+    batch = Batch("existing-child-collection", "p", "r", case.target.target_ref)
+    await BatchStore(case.db).freeze(
+        batch, [BatchMember("child-a", case.children[0], case.base)],
+        trees={"child-a": tree(case.world, case.children[0])},
+    )
+    for _ in range(2):
+        visit = await case.train.visit(MAIN)
+        assert visit.state == "blocked" and visit.batch_id is None
+        [blocker] = visit.detail["blockers"]
+        assert blocker["refresh"] == {"outcome": "pending", "batch_id": batch.id}
+        assert "another batch owns the epic" in blocker["action"]
+        assert blocker["action"] in blocker["detail"]
+    await BatchStore(case.db).set_intent(batch.id, "aborted")
+    [retried] = (await case.train.visit(MAIN)).detail["blockers"]
+    assert retried["refresh"]["outcome"] == "started"
+    assert (await case.train.batches.current(case.target)).epic_refresh
+
+
+@pytest.mark.parametrize("collected_epic", ["controlled_clock"], indirect=True)
+async def test_conflicting_epic_automatic_refresh_files_ordinary_conflict_repair(collected_epic):
+    case = collected_epic
+    head, default, _ = await conflicting_epic_pr(case, content_conflict=True)
+    [blocker] = (await case.train.visit(MAIN)).detail["blockers"]
+    assert blocker["refresh"]["outcome"] == "started"
+    batch_id = blocker["refresh"]["batch_id"]
+    # The root visit freezes only; the epic's own visit files its repair.
+    assert git(case.origin.url, "rev-parse", "aq/epic") == head
+    repair_visit = await case.train.visit(case.target)
+    assert repair_visit.state == "repair" and repair_visit.batch_id == batch_id, repair_visit
+    [repair] = [task for task in await case.db.list_tasks("p") if task.dedup_key
+                and task.dedup_key.startswith(f"repair:{batch_id}:")]
+    assert repair.branch_name == case.target.target_ref.removeprefix("refs/heads/")
+    owner = await BranchLock(case.db).get(BranchKey(repository_id="r", branch=case.target.target_ref))
+    assert owner.holder == repair.id
+    again = await case.train.visit(case.target)
+    assert again.state == "repair" and again.batch_id == batch_id
+    assert len([task for task in await case.db.list_tasks("p") if task.dedup_key
+                and task.dedup_key.startswith(f"repair:{batch_id}:")]) == 1
+    assert git(case.origin.url, "rev-parse", "aq/epic") == head
+    assert git(case.origin.url, "rev-parse", "main") == default
 
 
 async def test_train_opens_three_child_epic_pr_from_completion_ref(collected_epic):
@@ -4686,8 +4911,8 @@ async def test_local_epic_completion_reads_plan_bound_green_and_invalidates_chan
     assert len(jobs_after) > before
     assert any(job["input_ref"] == head and job["state"] == "queued" for job in jobs_after)
     # Policy projection uses the same command-bound producer as the reader.
-    from src.integration.train_sources import epic_policy_on
     from src.integration.subjects import HeadIdentity
+    from src.integration.train_sources import epic_policy_on
     async with case.db._engine.connect() as conn:
         row = (await conn.execute(select(tasks).where(tasks.c.id == "epic"))).mappings().one()
         project = (await conn.execute(select(projects).where(projects.c.id == "p"))).mappings().one()

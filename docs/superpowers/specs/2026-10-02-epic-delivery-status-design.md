@@ -64,6 +64,14 @@ question of the same observer.
   still apply to every reused observation; cached geometry is not delivery proof.
   `snapshot_unavailable` explains that delivery evidence has not loaded yet,
   rather than attributing a cold or expired cache to missing Git provenance.
+  A repository fetch warms every target it captures, retaining one fetch timestamp
+  and independent freshness results for each target. An unchecked target must not
+  be marked stale because another target failed its freshness check.
+  Explain reports a display cache miss as `delivery_evidence_unavailable`, with
+  unknown claimability, rather than a frontier exclusion or a delivery failure.
+  Known delivery failures and structural frontier exclusions retain their codes.
+  These display diagnostics never supply evidence to claims, scheduling or pool
+  sizing; those decisions keep their existing Git observations and guards.
 * Each identity it evaluated is then **rechecked on a fresh read**
   (`DeliveryView.verified_on`). A task reopened, re-completed, re-targeted or
   rebound since the observation is reported `unknown`/`stale`, never with the
