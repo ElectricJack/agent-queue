@@ -57,7 +57,7 @@ async def inventory_on(conn, project_id, repository_id, *, now):
         "owners": select(integration_branch_owners).where(
             integration_branch_owners.c.repository_id == repository_id,
             or_(and_(integration_branch_owners.c.handoff_state != "released",
-                     ~terminal_reservation_clause()),
+                     ~terminal_reservation_clause(allow_cleanup_history=True)),
                 and_(integration_branch_owners.c.holder.is_not(None),
                      integration_branch_owners.c.expires_at > now))),
         "intents": select(integration_promotion_intents).where(

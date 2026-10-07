@@ -324,6 +324,20 @@ with fresh fences and an operator audit event. Tasks, refs and retained work sta
 intact. It changes no integration mode and does not authorize completion; the
 normal generation-fenced configuration control still governs the later cutover.
 
+Historical claim records remain provenance when their exact named session is
+stopped in both observed and desired state. Unknown or revivable holders still
+block. An ended operation's pushed resolution remains audit history only when
+its terminal batch and exact applied ref mutation acknowledge the resolved SHA.
+
+Rollout may retain unfinished legacy cleanup fences without treating them as
+active train writers. This exception requires a detached collector on its exact
+`refs/heads/aq/integration/*` branch, a promoted legacy batch with no target ref,
+a completed or cancelled owning batch operation, and no reserved ref mutation
+or unsettled root intent. It applies only to rollout checks. The owner, fence,
+cleanup backlog and publication evidence remain intact; cleanup still gates
+owner release. This classification establishes ended authority and does not
+assert delivery, completed cleanup, or permission to delete any ref.
+
 ## Expired mutation read-back recovery
 
 The local operator may use `integration_reconcile_expired_mutation` to preview or

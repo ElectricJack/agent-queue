@@ -461,16 +461,22 @@ async def test_quiesce_does_not_treat_legacy_empty_batch_as_frozen_work(world):
     assert (await TrainQuiesce(world.db).run(request))["outcome"] == "quiesced"
 
 
-async def expired_mutation(world, *, landed=False):
+async def expired_mutation(world, *, landed=False, sealing=False, branch="aq/attempt"):
     from sqlalchemy import insert
     from src.database import tables as t
     from src.commands.contracts.integration import IntegrationReconcileExpiredMutationArgs
 
     delivered = await source(world)
     head = delivered.source_sha if landed else delivered.base_sha
-    git(world.origin.clone, "push", "-q", "origin", head + ":refs/heads/aq/attempt")
+    git(
+        world.origin.clone,
+        "push",
+        "-q",
+        "origin",
+        head + ":refs/heads/" + branch.removeprefix("refs/heads/"),
+    )
     fence = await BranchOwnership(world.db).acquire(
-        BranchKey(repository_id="r", branch="aq/attempt"), "ended-operation", "collector"
+        BranchKey(repository_id="r", branch=branch), "ended-operation", "collector"
     )
     async with world.db._engine.begin() as conn:
         await conn.execute(
@@ -480,9 +486,9 @@ async def expired_mutation(world, *, landed=False):
                 repository_id="r",
                 request_id="old-request",
                 base_sha=delivered.base_sha,
-                integration_branch="refs/heads/aq/attempt",
-                lifecycle="aborted",
-                intent="aborted",
+                integration_branch="refs/heads/" + branch.removeprefix("refs/heads/"),
+                lifecycle="sealing" if sealing else "aborted",
+                intent="open" if sealing else "aborted",
                 cleanup_state="complete",
                 created_at=1,
                 updated_at=1,
@@ -496,7 +502,7 @@ async def expired_mutation(world, *, landed=False):
                 batch_id="ended-batch",
                 revision=0,
                 construction_base_sha=delivered.base_sha,
-                state="superseded",
+                state="constructing" if sealing else "superseded",
                 created_at=1,
                 updated_at=1,
             )
@@ -522,8 +528,8 @@ async def expired_mutation(world, *, landed=False):
                 revision=0,
                 purpose="candidate_partial",
                 repository_id="r",
-                branch="refs/heads/aq/attempt",
-                target_branch="refs/heads/aq/attempt",
+                branch="refs/heads/" + branch.removeprefix("refs/heads/"),
+                target_branch="refs/heads/" + branch.removeprefix("refs/heads/"),
                 expected_old_sha=delivered.base_sha,
                 desired_sha=delivered.source_sha,
                 operation_id="ended-operation",
@@ -712,3 +718,195 @@ async def test_local_controls_distinguish_ended_claim_history_from_live_authorit
         assert (await run(preview))["outcome"] == "preview"
     # These controls inspect the historical proof rather than erasing it.
     assert await world.db.get_task_meta("external", "claimed_by_session") == "exact-holder"
+
+
+@pytest.mark.parametrize("guard", [None, "reserved", "remote", "operation", "binding"])
+async def test_quiesce_retains_exact_pushed_resolution_of_ended_promoted_operation(world, guard):
+    from sqlalchemy import insert, null
+    from src.database import tables as t
+    from src.integration.quiesce import TrainQuiesce
+    from src.models import SessionRecord
+
+    await expired_mutation(world, sealing=True)
+    request = await idle_train(world)
+    await world.db.create_session(
+        SessionRecord(
+            id="repair-history",
+            project_id="p",
+            profile_id="worker-test",
+            harness="codex",
+            provider="fake",
+            name="repair-history",
+            lifecycle="pool",
+            work_dir="/unused",
+            epoch="test",
+            instance_token="repair-instance",
+            started_at=1,
+            state="stopped",
+            desired_state="stopped",
+        )
+    )
+    async with world.db._engine.begin() as conn:
+        await conn.execute(
+            insert(t.workspaces).values(
+                id="repair-workspace",
+                project_id="p",
+                workspace_path="/unused",
+                source_type="link",
+                created_at=1,
+            )
+        )
+        await conn.execute(
+            insert(t.integration_batch_members).values(
+                batch_id="ended-batch",
+                ordinal=0,
+                task_id="external",
+                repository_id="r",
+                source_sha="b" * 40,
+                source_base_sha="a" * 40,
+                reviewed_head_sha="b" * 40,
+                reviewed_tree_sha="d" * 40,
+                review_evidence={},
+            )
+        )
+        await conn.execute(
+            insert(t.integration_candidate_member_results).values(
+                batch_id="ended-batch",
+                revision=0,
+                member_ordinal=0,
+                input_head_sha="a" * 40,
+                input_tree_sha="b" * 40,
+                result="conflict",
+                created_at=1,
+                updated_at=1,
+            )
+        )
+        await conn.execute(
+            update(t.integration_batches)
+            .where(
+                t.integration_batches.c.id == "ended-batch",
+            )
+            .values(lifecycle="promoted")
+        )
+        await conn.execute(
+            insert(t.integration_repair_stages).values(
+                operation_id="ended-operation",
+                ordinal=0,
+                policy={},
+                starting_sha="a" * 40,
+                state="passed",
+            )
+        )
+        await conn.execute(
+            insert(t.integration_candidate_resolutions).values(
+                id="historical-resolution",
+                batch_id="ended-batch",
+                revision=0,
+                member_ordinal=0,
+                operation_id="ended-operation",
+                operation_episode_id="ended-batch",
+                stage_ordinal=0,
+                stage_deadline_at=5,
+                project_id="p",
+                repair_task_id="external",
+                repair_session_id="repair-history",
+                repair_session_instance_token="repair-instance",
+                repair_workspace_id="repair-workspace",
+                repair_workspace_path="/unused",
+                repository_id="r",
+                branch="refs/heads/aq/attempt",
+                target_branch="refs/heads/repair",
+                target_kind="qualified",
+                fence_owner_id="external",
+                fence_token=1,
+                partial_head_sha="a" * 40,
+                source_base_sha="a" * 40,
+                source_head_sha="b" * 40,
+                resolved_head_sha="c" * 40,
+                resolved_tree_sha="d" * 40,
+                repair_commit_shas=["c" * 40],
+                state="reserved" if guard == "reserved" else "pushed",
+                push_evidence=null() if guard == "reserved" else {"remote_sha": "c" * 40},
+                created_at=1,
+                updated_at=1,
+            )
+        )
+        historical = dict(
+            (await conn.execute(select(t.integration_candidate_ref_mutations))).mappings().one()
+        )
+        await conn.execute(update(t.integration_candidate_ref_mutations).values(state="superseded"))
+        historical.update(
+            id="historical-mutation",
+            nonce="historical-nonce",
+            state="applied",
+            purpose="repair_resolution",
+            resolution_id="historical-resolution",
+            member_ordinal=0,
+            target_branch="refs/heads/repair",
+            desired_sha="e" * 40 if guard == "remote" else "c" * 40,
+            remote_sha="e" * 40 if guard == "remote" else "c" * 40,
+            operation_stage=1 if guard == "binding" else 0,
+        )
+        await conn.execute(insert(t.integration_candidate_ref_mutations).values(**historical))
+        if guard == "operation":
+            await conn.execute(
+                update(t.integration_repair_operations)
+                .where(
+                    t.integration_repair_operations.c.id == "ended-operation",
+                )
+                .values(state="active")
+            )
+    if guard:
+        with pytest.raises(ValueError):
+            await TrainQuiesce(world.db).run(request.model_copy(update={"dry_run": True}))
+    else:
+        assert (await TrainQuiesce(world.db).run(request.model_copy(update={"dry_run": True})))[
+            "outcome"
+        ] == "preview"
+    async with world.db._engine.connect() as conn:
+        assert await conn.scalar(select(t.integration_candidate_resolutions.c.state)) == (
+            "reserved" if guard == "reserved" else "pushed"
+        )
+
+
+@pytest.mark.parametrize("guard", [None, "active_operation", "new_train", "holder", "mutation"])
+async def test_rollout_retains_only_ended_legacy_ephemeral_cleanup_fences(world, guard):
+    from src.database import tables as t
+    from src.integration.cutover import inventory_on
+    from src.integration.drain_owners import retained_cleanup_reservation_clause
+    from src.integration.records import PolicyActivation
+
+    await expired_mutation(world, sealing=True, branch="refs/heads/aq/integration/old-batch")
+    async with world.db._engine.begin() as conn:
+        if guard != "mutation":
+            await conn.execute(
+                update(t.integration_candidate_ref_mutations).values(state="superseded")
+            )
+        await conn.execute(
+            update(t.integration_batches).values(
+                lifecycle="promoted",
+                intent="open",
+                cleanup_state="pending",
+                final_main_sha="a" * 40,
+                target_ref="refs/heads/main" if guard == "new_train" else None,
+            )
+        )
+        if guard == "active_operation":
+            await conn.execute(update(t.integration_repair_operations).values(state="active"))
+        elif guard == "holder":
+            await conn.execute(
+                update(t.integration_branch_owners).values(
+                    holder="live-writer", fence=1, expires_at=1000
+                )
+            )
+    async with world.db._engine.connect() as conn:
+        retained = await conn.scalar(
+            select(t.integration_branch_owners.c.id).where(retained_cleanup_reservation_clause())
+        )
+        inventory = await inventory_on(conn, "p", "r", now=100)
+        assert bool(retained) is (guard is None)
+        assert bool(inventory["owners"]) is (guard is not None)
+        assert await PolicyActivation._has_active_work_on(conn, "p") is (guard is not None)
+        # Neither boundary mutates the historical cleanup fence or its backlog.
+        assert await conn.scalar(select(t.integration_branch_owners.c.handoff_state)) == "reserved"
+        assert await conn.scalar(select(t.integration_batches.c.cleanup_state)) == "pending"
