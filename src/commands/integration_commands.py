@@ -63,6 +63,20 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_reconcile_expired_mutation(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationReconcileExpiredMutationArgs
+        from src.integration.mutation_recovery import ExpiredMutationRecovery
+
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.LOCAL:
+            return _failure("refused", "expired mutation recovery requires the local operator")
+        request = IntegrationReconcileExpiredMutationArgs.model_validate(args)
+        try:
+            result = await ExpiredMutationRecovery(self.db).run(request)
+        except (ValueError, GitError, HierarchyError, BranchBusy, TimeoutError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
 
     async def _cmd_integration_cutover_plan(self, args: dict) -> dict:
         return await self._integration_cutover(args, read_only=True)

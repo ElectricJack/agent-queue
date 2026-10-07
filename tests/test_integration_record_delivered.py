@@ -441,10 +441,223 @@ async def test_quiesce_does_not_treat_legacy_empty_batch_as_frozen_work(world):
 
     request = await idle_train(world)
     async with world.db._engine.begin() as conn:
-        await conn.execute(insert(t.integration_batches).values(
-            id="historical-empty", project_id="p", repository_id="r",
-            request_id="integration-sweep:p:0", trigger="periodic", lifecycle="empty",
-            intent="open", cleanup_state="complete", created_at=0, updated_at=0,
-            policy_snapshot={}, artifact_snapshot={}, source_manifest_digest="empty",
-        ))
+        await conn.execute(
+            insert(t.integration_batches).values(
+                id="historical-empty",
+                project_id="p",
+                repository_id="r",
+                request_id="integration-sweep:p:0",
+                trigger="periodic",
+                lifecycle="empty",
+                intent="open",
+                cleanup_state="complete",
+                created_at=0,
+                updated_at=0,
+                policy_snapshot={},
+                artifact_snapshot={},
+                source_manifest_digest="empty",
+            )
+        )
     assert (await TrainQuiesce(world.db).run(request))["outcome"] == "quiesced"
+
+
+async def expired_mutation(world, *, landed=False):
+    from sqlalchemy import insert
+    from src.database import tables as t
+    from src.commands.contracts.integration import IntegrationReconcileExpiredMutationArgs
+
+    delivered = await source(world)
+    head = delivered.source_sha if landed else delivered.base_sha
+    git(world.origin.clone, "push", "-q", "origin", head + ":refs/heads/aq/attempt")
+    fence = await BranchOwnership(world.db).acquire(
+        BranchKey(repository_id="r", branch="aq/attempt"), "ended-operation", "collector"
+    )
+    async with world.db._engine.begin() as conn:
+        await conn.execute(
+            insert(t.integration_batches).values(
+                id="ended-batch",
+                project_id="p",
+                repository_id="r",
+                request_id="old-request",
+                base_sha=delivered.base_sha,
+                integration_branch="refs/heads/aq/attempt",
+                lifecycle="aborted",
+                intent="aborted",
+                cleanup_state="complete",
+                created_at=1,
+                updated_at=1,
+                source_manifest_digest="test",
+                policy_snapshot={},
+                artifact_snapshot={},
+            )
+        )
+        await conn.execute(
+            insert(t.integration_candidate_revisions).values(
+                batch_id="ended-batch",
+                revision=0,
+                construction_base_sha=delivered.base_sha,
+                state="superseded",
+                created_at=1,
+                updated_at=1,
+            )
+        )
+        await conn.execute(
+            insert(t.integration_repair_operations).values(
+                id="ended-operation",
+                target_kind="batch",
+                batch_id="ended-batch",
+                episode_id="ended-batch",
+                state="cancelled",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="v1",
+                created_at=1,
+                updated_at=1,
+            )
+        )
+        await conn.execute(
+            insert(t.integration_candidate_ref_mutations).values(
+                id="expired-attempt",
+                batch_id="ended-batch",
+                revision=0,
+                purpose="candidate_partial",
+                repository_id="r",
+                branch="refs/heads/aq/attempt",
+                target_branch="refs/heads/aq/attempt",
+                expected_old_sha=delivered.base_sha,
+                desired_sha=delivered.source_sha,
+                operation_id="ended-operation",
+                operation_episode_id="ended-batch",
+                operation_stage=0,
+                lease_owner_id="old-sealer",
+                lease_fence_token=1,
+                branch_owner_id="ended-operation",
+                branch_owner_role="collector",
+                branch_fence_token=fence.token,
+                nonce="old-nonce",
+                state="reserved",
+                expires_at=1,
+                created_at=0,
+                updated_at=0,
+            )
+        )
+    return IntegrationReconcileExpiredMutationArgs(
+        project_id="p",
+        mutation_id="expired-attempt",
+        expected_nonce="old-nonce",
+        expected_branch_fence=fence.token,
+        expected_lease_fence=1,
+        reason="Stopped operator reconciles the abandoned attempt using actual Git",
+        dry_run=False,
+    )
+
+
+@pytest.mark.parametrize("landed", [False, True])
+async def test_expired_mutation_recovery_records_actual_remote_without_changing_git_or_task(
+    world, landed
+):
+    from src.database import tables as t
+    from src.integration.mutation_recovery import ExpiredMutationRecovery
+
+    request = await expired_mutation(world, landed=landed)
+    before = git(world.origin.clone, "ls-remote", "origin", "refs/heads/aq/attempt")
+    control = ExpiredMutationRecovery(world.db)
+    preview = await control.run(request.model_copy(update={"dry_run": True}))
+    assert preview["outcome"] == "preview"
+    result = await control.run(request)
+    assert result["outcome"] == ("applied" if landed else "superseded")
+    async with world.db._engine.connect() as conn:
+        row = (
+            (
+                await conn.execute(
+                    select(t.integration_candidate_ref_mutations).where(
+                        t.integration_candidate_ref_mutations.c.id == request.mutation_id
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert row["state"] == result["disposition"]
+    assert row["remote_sha"] == (result["remote_sha"] if landed else None)
+    assert (await world.db.get_task("external")).status is TaskStatus.BLOCKED
+    assert git(world.origin.clone, "ls-remote", "origin", "refs/heads/aq/attempt") == before
+
+
+@pytest.mark.parametrize(
+    "guard",
+    ["nonce", "fence", "operation", "expiry", "claim", "foreign", "remote_error", "remote_moves"],
+)
+async def test_expired_mutation_recovery_refuses_changed_or_live_evidence(
+    world, guard, monkeypatch
+):
+    from src.database import tables as t
+    from src.git.manager import GitManager, RemoteRefResult, RemoteRefState
+    from src.integration.mutation_recovery import ExpiredMutationRecovery
+
+    request = await expired_mutation(world)
+    if guard == "nonce":
+        request = request.model_copy(update={"expected_nonce": "wrong"})
+    elif guard == "fence":
+        request = request.model_copy(update={"expected_branch_fence": 7})
+    elif guard == "foreign":
+        request = request.model_copy(update={"project_id": "foreign"})
+    elif guard == "claim":
+        await world.db.set_task_meta("external", "claimed_by_session", "stopped")
+    elif guard in ("operation", "expiry"):
+        async with world.db._engine.begin() as conn:
+            if guard == "operation":
+                await conn.execute(
+                    update(t.integration_repair_operations)
+                    .where(t.integration_repair_operations.c.id == "ended-operation")
+                    .values(state="active")
+                )
+            else:
+                await conn.execute(
+                    update(t.integration_candidate_ref_mutations)
+                    .where(t.integration_candidate_ref_mutations.c.id == "expired-attempt")
+                    .values(expires_at=1e12)
+                )
+    elif guard == "remote_error":
+        monkeypatch.setattr(
+            GitManager,
+            "als_remote_ref",
+            AsyncMock(return_value=RemoteRefResult(RemoteRefState.ERROR)),
+        )
+    else:
+        original = GitManager.als_remote_ref
+        calls = 0
+
+        async def moving(git_manager, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            result = await original(git_manager, *args, **kwargs)
+            if calls == 1:
+                head = git(world.origin.clone, "rev-parse", "origin/aq/external")
+                git(world.origin.clone, "push", "-q", "origin", head + ":refs/heads/aq/attempt")
+            return result
+
+        monkeypatch.setattr(GitManager, "als_remote_ref", moving)
+    with pytest.raises(ValueError):
+        await ExpiredMutationRecovery(world.db).run(request)
+    async with world.db._engine.connect() as conn:
+        assert (
+            await conn.scalar(
+                select(t.integration_candidate_ref_mutations.c.state).where(
+                    t.integration_candidate_ref_mutations.c.id == "expired-attempt"
+                )
+            )
+            == "reserved"
+        )
+
+
+@pytest.mark.parametrize(
+    "kind", [PrincipalKind.SESSION, PrincipalKind.SERVICE, PrincipalKind.PLAYBOOK]
+)
+async def test_expired_mutation_recovery_requires_local_operator(world, kind):
+    request = await expired_mutation(world)
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    with principal_context(ExecutionPrincipal(kind=kind, policy=DENY_ALL, elevated=True)):
+        result = await handler._cmd_integration_reconcile_expired_mutation(request.model_dump())
+    assert not result["success"] and "local operator" in result["error"]

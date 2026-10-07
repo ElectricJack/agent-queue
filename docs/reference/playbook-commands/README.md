@@ -88,6 +88,8 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_cleanup`](integration_cleanup.md) | Advance integration cleanup | Materialize and advance bounded cleanup for one terminal root batch. |
 | [`integration_close_delivered_pr`](integration_close_delivered_pr.md) | Integration Close Delivered Pr | Authenticated hierarchical integration operational control. |
 | [`integration_complete_parent`](integration_complete_parent.md) | Integration Complete Parent | Complete a verified parent task at its exact verified generation and head. |
+| [`integration_cutover`](integration_cutover.md) | Integration Cutover | Authenticated hierarchical integration operational control. |
+| [`integration_cutover_plan`](integration_cutover_plan.md) | Integration Cutover Plan | Authenticated hierarchical integration operational control. |
 | [`integration_delivery_readiness`](integration_delivery_readiness.md) | Integration Delivery Readiness | Read whether every child of one parent has delivered, changing nothing. |
 | [`integration_development_engine_transfer`](integration_development_engine_transfer.md) | Development engine transfer | Preview or transfer every Development subject of one project to the reconciler, at the exact previewed versions; the same command rolls it back. |
 | [`integration_eject`](integration_eject.md) | Integration Eject | Authenticated hierarchical integration operational control. |
@@ -102,6 +104,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_quiesce`](integration_quiesce.md) | Quiesce idle train admission | Local operator closes an unfrozen root and releases explicitly fenced idle reservations. |
 | [`integration_rebind_detached_repair`](integration_rebind_detached_repair.md) | Integration Rebind Detached Repair | Authenticated hierarchical integration operational control. |
 | [`integration_rebind_repair`](integration_rebind_repair.md) | Integration Rebind Repair | Authenticated hierarchical integration operational control. |
+| [`integration_reconcile_expired_mutation`](integration_reconcile_expired_mutation.md) | Reconcile an expired mutation after its operation ended | Local operator verifies nonce, fences, stopped authority and actual remote target. |
 | [`integration_reconcile_promotion`](integration_reconcile_promotion.md) | Reconcile prepared promotion | Compare a durable prepared intent with the remote and finalize its receipt. |
 | [`integration_record_delivered`](integration_record_delivered.md) | Record exact externally delivered completion | Local operator verifies exact source on the designated default and records shipped work. |
 | [`integration_record_noop`](integration_record_noop.md) | Record verified no-code child disposition | Bind a child's current no-op completion and exact Git head to its parent receipt. |
@@ -205,6 +208,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`promote_cancel`](promote_cancel.md) | Promote Cancel | Close an unpublished promotion PR and abort its intent. |
 | [`promote_list`](promote_list.md) | Promote List | List promotion history using the local evidence cache. |
 | [`promote_request`](promote_request.md) | Promote Request | Open an idempotent promotion intent and a PR pinned to its source commit. |
+| [`promote_rulesets`](promote_rulesets.md) | Promote Rulesets | Authenticated hierarchical integration operational control. |
 | [`promote_schema`](promote_schema.md) | Promote Schema | Authenticated hierarchical integration operational control. |
 | [`promote_status`](promote_status.md) | Promote Status | Read promotion intents and cached check and PR review evidence. |
 | [`promote_validate`](promote_validate.md) | Promote Validate | Authenticated hierarchical integration operational control. |
