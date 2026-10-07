@@ -79,7 +79,7 @@ class IntegrationStatusService:
     def __init__(
         self, db, *, clock: Callable[[], float] = time.time, delivery: Any = None,
         git_first: str = "shadow", train: Any = None,
-        flow_problems: Any = None,
+        flow_problems: Any = None, cached_only: bool = False,
     ) -> None:
         self.db = db
         self.clock = clock
@@ -92,6 +92,7 @@ class IntegrationStatusService:
         # visit per target; without it only durable facts are reported.
         self.git_first = git_first
         self.train = train
+        self.cached_only = cached_only
         # Git delivery truth (a DeliveryObserver).  The daemon registers one
         # on its database; without it nothing is claimed about delivery.
         self.delivery = (
@@ -111,7 +112,8 @@ class IntegrationStatusService:
         if self.delivery is None or not ids:
             return None
         return await self.delivery.observe(
-            ids, max_age=getattr(self.delivery, "READ_MAX_AGE", 0.0)
+            ids, max_age=getattr(self.delivery, "READ_MAX_AGE", 0.0),
+            **({"cached_only": True} if self.cached_only else {}),
         )
 
     async def _delivery_candidates(

@@ -1,5 +1,6 @@
 import { useId, useState } from "react";
 import { usePoolScale, type PoolStatusRow } from "../../api/hooks";
+import { poolDisplayName } from "./pools";
 
 export interface BoundsDraft { min: string; max: string }
 
@@ -63,7 +64,7 @@ export default function PoolScaleFields({ pool }: { pool: PoolStatusRow }) {
   };
 
   return (
-    <div aria-label={pool.profile_id + " pool bounds"} className="space-y-3">
+    <div aria-label={poolDisplayName(pool) + " pool bounds"} className="space-y-3">
       <div className="grid gap-4 sm:grid-cols-2">
         <label className="text-xs text-gray-400" htmlFor={id + "-min"}>
           Minimum active workers

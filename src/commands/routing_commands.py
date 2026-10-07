@@ -19,6 +19,7 @@ from collections import Counter
 from dataclasses import replace
 from typing import Any
 
+from src.commands.integration_commands import SOURCE_CI_REPAIR_ORIGIN
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 from src.database.queries.routing_queries import ROUTABLE_STATUSES, RoutingBusyError
 from src.models import TASK_TYPE_VALUES, TaskStatus
@@ -398,7 +399,13 @@ class RoutingCommandsMixin:
             global_cap=self.orchestrator._pool_global_cap(),
             workspace_capacity=workspace_capacity, quarantine=quarantine, headroom_out=headroom,
         )
-        return replace(snapshot, context=context, headroom=headroom)
+        registry = getattr(self.orchestrator, "harness_registry", None)
+        installed = {profile.harness for profile in profiles if profile.harness}
+        if registry is not None:
+            installed |= {h.id for h in registry.list_for_scope(task.project_id) if h.id}
+        return replace(
+            snapshot, context=context, headroom=headroom, harnesses=frozenset(installed)
+        )
 
     async def _preferred_provider_serves(
         self, project_id: str, provider: str, class_id: str | None
@@ -427,6 +434,22 @@ class RoutingCommandsMixin:
         labels = await self.db.get_task_labels(task.id)
         exclude = route_constraints(task).get("exclude_providers") or []
         task_type = getattr(task.task_type, "value", task.task_type)
+        origin = getattr(task, "created_by_kind", None)
+        if origin == "system":
+            from src.integration.repair import OrdinaryRepairService
+
+            # Ordinary train repairs are system filings, not legacy stage
+            # delegates. Their immutable, identity-checked input supplies the
+            # routing origin without changing their claim/restart lifecycle.
+            if await OrdinaryRepairService(self.db).input(task.id) is not None:
+                origin = "integration_repair"
+        elif origin == SOURCE_CI_REPAIR_ORIGIN or (
+            origin is None and await self.db.list_source_ci_inherited_oids(task.id)
+        ):
+            # A source-CI repair routes as an integration repair; it keeps its
+            # own stored origin for the same reason.  The record lookup covers
+            # repairs filed before the origin was stamped.
+            origin = "integration_repair"
         class_hint = (getattr(task, "class_hint", None) or "").strip() or None
         if class_hint is None and (getattr(task, "route_source", None) or UNROUTED) == UNROUTED:
             # Rows filed before creation recorded the filer's class as
@@ -441,7 +464,7 @@ class RoutingCommandsMixin:
             description=task.description or "",
             task_type=str(task_type) if task_type else None,
             class_hint=class_hint,
-            created_by_kind=getattr(task, "created_by_kind", None),
+            created_by_kind=origin,
             exclude_providers=frozenset(str(p) for p in exclude if p),
             prefer_target=getattr(task, "prefer_target", None) or None,
             prefer_mode=getattr(task, "prefer_mode", None) or PREFER_SOFT,

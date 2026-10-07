@@ -5862,6 +5862,29 @@
       }
     },
     {
+      "name": "pool_rename",
+      "description": "Rename a global pool's display name while keeping its profile ID, routing, bounds and task assignments unchanged. Saves the name to the profile source with a backup and emits pool.renamed. Backs `aq pool rename`.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "description": "Stable pool profile ID."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name: 1\u2013120 characters, without control characters.",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        },
+        "required": [
+          "profile_id",
+          "name"
+        ]
+      }
+    },
+    {
       "name": "pool_scale",
       "description": "Set a pool profile's min/max active-session bounds on the system profile (they apply to every project; each project's max_concurrent_agents still caps its own pool). Validates min >= 0, max >= 1, and max >= min; max may be null for no profile limit. With `now: true`, also terminates idle sessions above the effective max, oldest first. Backs `aq pool scale`.",
       "input_schema": {
@@ -15427,6 +15450,7 @@
     "provider_allocation_preview": "provider",
     "provider_allocation_apply": "provider",
     "pool_status": "pool",
+    "pool_rename": "pool",
     "pool_scale": "pool",
     "pool_set_lifecycle": "pool",
     "pool_set_enabled": "pool",

@@ -1307,6 +1307,83 @@
         107
       ]
     },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_abort_batch']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        119,
+        119
+      ],
+      "baseline_span": [
+        119,
+        119
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_eject']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        120,
+        120
+      ],
+      "baseline_span": [
+        120,
+        120
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_pause_batch']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        117,
+        117
+      ],
+      "baseline_span": [
+        117,
+        117
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_refresh_epic']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        115,
+        115
+      ],
+      "baseline_span": [
+        115,
+        115
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_resume_batch']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        118,
+        118
+      ],
+      "baseline_span": [
+        118,
+        118
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_retire_origin']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        116,
+        116
+      ],
+      "baseline_span": [
+        116,
+        116
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_seal_now']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        109,
+        114
+      ],
+      "baseline_span": [
+        109,
+        114
+      ]
+    },
     "src/cli/client.py::_COMMAND_TIMEOUTS['integration_trust_manifest']": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -1962,6 +2039,9 @@
         69,
         72
       ]
+    },
+    "src/commands/routing_commands.py::import from src.commands.integration_commands import SOURCE_CI_REPAIR_ORIGIN": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. The router projects a source-CI repair's stored origin to integration_repair in RoutingCommandsMixin._routing_task_facts; no delivery state, ref mutation or storage write."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._close_task_obsolete": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -12539,6 +12619,15 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
+    "src/commands/pool_admin.py::rename_pool::86546be0a111fd801cb74165b8a70f19a9daab1dfeee5d339799e5985c673cca": {
+      "line": 227,
+      "owner": "rename_pool",
+      "call": "log_event",
+      "owner_fingerprint": "220b25eeb1a8021d0c0db02d654b198cd516b31f82add3ebd6b3da5d68d31b40",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Pool display-name audit records the stable profile ID, old and new names, and backup path; no integration lifecycle state or ref replay authority."
+    },
     "src/commands/proposal_commands.py::TaskProposalCommandsMixin._cmd_task_batch_commit::16fbcb5f600718c2c0564535d1ed4e1a82537afa8ac1a07311dd43bc5b9c93f4": {
       "line": 431,
       "owner": "TaskProposalCommandsMixin._cmd_task_batch_commit",
@@ -14439,10 +14528,10 @@
       "reason": "Audit of an obsolete batch superseded after prerequisite refresh. The batch-owned ejection record authorizes input release; this event never replays refs or asserts delivery."
     },
     "src/integration/stacked_branches.py::EpicRefresh.refresh::85c997f17278e49c5a7a51cb1d2aaa7efb3367004ec68ae50f173b3772c77128": {
-      "line": 1015,
+      "line": 1002,
       "owner": "EpicRefresh.refresh",
       "call": "log_event",
-      "owner_fingerprint": "ad434e515d6ed61722f7ea7edbbdafb8b87b0b7e0fcf383e1e1c6afcd2c35a76",
+      "owner_fingerprint": "da94a4fb509abae8b7b7919a5a932c73135fd3c2c12ee713b94481999d9e9891",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Audit of a requested epic refresh with principal and observed train state. Frozen batch inputs and exact Git/check proofs remain authoritative; this event cannot replay refs or authorize delivery."
@@ -14464,6 +14553,15 @@
       "integration_signal": false,
       "disposition": "intent",
       "reason": "Write-once authorization for this exact promotion request, source and target after its live PR gate and attestation pass. Permits missing-tag recovery only after Git independently proves target containment; the record does not assert publication, delivery or successful ref mutation."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._refresh_conflicting_epics::23794b0f2bbfe8599ed5c73366232ec30ac62261b170aa38dfd61beb1d944bf4": {
+      "line": 399,
+      "owner": "DatabaseBatches._refresh_conflicting_epics",
+      "call": "log_event",
+      "owner_fingerprint": "9c8d0b47a2e4a3fc5313c07904f802b48b6c74e777bde18872e3aeb36a76f3ec",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Audit of an epic refresh the train started because the epic's root PR conflicts with the default branch, with the PR URL and the (epic head, default head) pair. The deterministic frozen refresh batch is the once-per-pair record; this event cannot replay refs or authorize delivery."
     }
   },
   "generic_dependencies": {

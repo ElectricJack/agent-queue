@@ -137,6 +137,25 @@ profile: the profile is shown but disabled, and a submit is refused, because
 such a worker becomes a pool instance the flock files under its pool entry —
 which reads as a creation that silently failed.
 
+### Renaming a pool and opening its settings
+
+The Pools directory on the Agents page opens a pool's settings when you click
+its row or its **Settings** link. **Back to pools** returns to the directory.
+The settings URL can be bookmarked or shared, and the Display name field
+changes the name shown in the directory, flock rail and pool window.
+
+The same operation is available from the CLI:
+
+```bash
+aq pool rename --profile-id <id-from-aq-agent-list-profiles> --name 'Space Bunny'
+```
+
+Names contain 1–120 characters. The profile ID stays fixed, so routes, pool
+bounds, workers and task assignments keep their existing identities. The
+command saves only the vault frontmatter name with an exact backup and records
+`pool.renamed` in the audit log. Database-only profiles get a row backup.
+Persistence failures are reported and leave the original name in place.
+
 ### The pool-only config keys
 
 These live in the (system) profile's own `## Config` block, not in
@@ -431,6 +450,13 @@ instance list, never pool identity: the bounds and the aggregate counters stay
 fleet-wide whether or not you pass one, because filtering them would misreport
 the pool the sizer actually acts on. A profile with no standing in the named
 project drops out of the listing entirely.
+
+`pool status` and `task explain` use cached delivery observations without network
+Git calls. A cold or expired observation withholds delivery-dependent demand
+until a background consumer refreshes it; task explanations report unknown
+delivery evidence. Claiming still obtains and validates its own fresh evidence.
+Displaying a retired intelligence class leaves its model settings unresolved
+without repeating launch warnings; launch validation continues to report it.
 
 Over the API the shape matches: `PoolStatusRow` carries `projects[]`
 (`PoolProjectStatus`: `ready`, the four counters, `max_concurrent_agents`,

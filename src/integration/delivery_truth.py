@@ -186,6 +186,9 @@ class DeliverySnapshot:
     error: str | None = None
     _cache: dict[DeliveryRequest, DeliveryEvidence] = field(default_factory=dict, repr=False)
     _identities: dict[str, DeliveryRequest] = field(default_factory=dict, repr=False)
+    # Shared only by copies of the same fetched observation. Diagnostics must
+    # respect a freshness failure already seen by a background consumer.
+    _freshness: dict[str, bool] = field(default_factory=dict, repr=False, compare=False)
 
     def for_request(self):
         """The same fetched observation without another request's cached answers."""
@@ -196,6 +199,11 @@ class DeliverySnapshot:
         return set(requests) == set(self._cache) and graph_inputs == current_graph_inputs
 
     async def is_fresh(self, *, repository_url=None, target_ref=None):
+        fresh = await self._remote_is_fresh(repository_url=repository_url, target_ref=target_ref)
+        self._freshness[self.target_ref] = fresh
+        return fresh
+
+    async def _remote_is_fresh(self, *, repository_url=None, target_ref=None):
         if self.error or not self.target_oid:
             return False
         if repository_url is not None and repository_url != self.repository_url:

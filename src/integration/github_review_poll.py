@@ -34,12 +34,17 @@ from src.git.github import GitHubAccess
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError
 from src.integration.source_ancestry import SourceAncestryInvalid, SourceAncestryObservation
+from src.integration.source_ci import pull_request_conflicts
 from src.models import TaskStatus
 from src.projects.github import GitHubError
 
 logger = logging.getLogger(__name__)
 
 _UNREAD = object()
+
+#: GitHub computes a PR's mergeability in the background after a read; the
+#: first ``null`` is looked at again this soon rather than after the backoff.
+MERGEABILITY_RETRY_SECONDS = 15
 
 
 def pull_request_mismatch(pull, binding, *, branch, base_ref, head_sha):
@@ -114,6 +119,16 @@ class RootPullRequestGate:
             self._deferred[key] = result
             return result
 
+        def computing():
+            # A repeated null falls back to the ordinary backoff.
+            if (previous or {}).get("mergeable") == "unknown":
+                return defer("awaiting_pr_checks", mergeable="unknown")
+            result = blocker("awaiting_pr_checks", mergeable="unknown",
+                             retry_at=now + MERGEABILITY_RETRY_SECONDS,
+                             retry_seconds=(previous or {}).get("retry_seconds", 30))
+            self._deferred[key] = result
+            return result
+
         try:
             binding, client = await self.repository(target)
             number = GitHubAccess.validate_pr_url(binding, url)
@@ -150,6 +165,13 @@ class RootPullRequestGate:
                 raise ValueError("PR required checks observer is unavailable")
             result = await exact.refresh_if_due(HeadIdentity(repository_id=target.repository_id,
                 ref="refs/heads/" + pull["head"]["ref"], sha=member.source_sha, generation=0))
+            if not result.green and result.state.value != "red":
+                # GitHub runs no pull_request workflow for a PR that conflicts
+                # with its base: these exact-head checks would never arrive.
+                if pull_request_conflicts(pull):
+                    return defer("pr_conflicting", reason="PR conflicts with its base branch")
+                if result.state.value != "unknown" and pull.get("mergeable") is None:
+                    return computing()
             if result.state.value == "unknown":
                 return defer("unknown", due_at=result.due_at, reason="PR checks unavailable")
             if not result.green:

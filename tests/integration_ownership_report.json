@@ -3034,6 +3034,9 @@
         72
       ]
     },
+    "src/commands/routing_commands.py::import from src.commands.integration_commands import SOURCE_CI_REPAIR_ORIGIN": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. The router projects a source-CI repair's stored origin to integration_repair in RoutingCommandsMixin._routing_task_facts; no delivery state, ref mutation or storage write."
+    },
     "src/commands/session_commands.py::SessionCommandsMixin._close_task_obsolete": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -9324,6 +9327,83 @@
     },
     "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._episode_completion_token": {
       "reason": "Reads a container's collection episode checkpoint and repair operation under the caller's lock to admit only a cancelled train episode to guarded completion; refuses a live episode."
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_abort_batch']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        119,
+        119
+      ],
+      "baseline_span": [
+        119,
+        119
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_eject']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        120,
+        120
+      ],
+      "baseline_span": [
+        120,
+        120
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_pause_batch']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        117,
+        117
+      ],
+      "baseline_span": [
+        117,
+        117
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_refresh_epic']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        115,
+        115
+      ],
+      "baseline_span": [
+        115,
+        115
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_resume_batch']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        118,
+        118
+      ],
+      "baseline_span": [
+        118,
+        118
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_retire_origin']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        116,
+        116
+      ],
+      "baseline_span": [
+        116,
+        116
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_seal_now']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        109,
+        114
+      ],
+      "baseline_span": [
+        109,
+        114
+      ]
     }
   },
   "shared_state": {

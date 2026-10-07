@@ -57,6 +57,13 @@ question of the same observer.
   isolated stores and opens its own connections, so no publisher lock and no
   projection read is held across the fetch. Only a read-only surface may
   reuse a snapshot fetched inside `DeliveryObserver.READ_MAX_AGE`.
+  Interactive graph tiles, lists, node reads and the task inspector **only** reuse such a snapshot:
+  they never fetch or wait for a network Git operation. A cold or expired
+  observer snapshot produces `unknown` / unavailable delivery evidence until
+  another daemon delivery consumer refreshes it. Identity and target rechecks
+  still apply to every reused observation; cached geometry is not delivery proof.
+  `snapshot_unavailable` explains that delivery evidence has not loaded yet,
+  rather than attributing a cold or expired cache to missing Git provenance.
 * Each identity it evaluated is then **rechecked on a fresh read**
   (`DeliveryView.verified_on`). A task reopened, re-completed, re-targeted or
   rebound since the observation is reported `unknown`/`stale`, never with the
