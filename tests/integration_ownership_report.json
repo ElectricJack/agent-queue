@@ -9542,6 +9542,12 @@
     },
     "src/prompts/reviewed_playbooks/promotion-request/source.md::## Rule: visit-intent": {
       "reason": "Reviewed promotion policy invokes the server-owned build, gate, attestation and publication sequence; waits and refusal notifications carry no bypass authority."
+    },
+    "src/playbooks/runtime.py::import from src.playbooks.services import INTEGRATION_LIFECYCLE_PLAYBOOK_IDS, PROMOTION_POLICY_EVENTS, IntegrationRouteTarget, build_v2_engine, is_integration_route_event, resolve_integration_route": {
+      "reason": "Imports the retained promotion event names used by the no-consumer proof guard. This is policy-routing ownership, not a writer or separate delivery lifecycle."
+    },
+    "src/playbooks/services.py::PROMOTION_POLICY_EVENTS": {
+      "reason": "Retained promotion notification event names shared by project-scoped policy routing and healthy activation/subscriber no-consumer proofs. No storage or write authority is introduced."
     }
   },
   "shared_state": {
@@ -9945,8 +9951,8 @@
     "task_metadata": "Generic key/value mechanism remains task-owned. Every direct SQL/metadata API writer has an audited call and enclosing-code identity; duplicate delivery/repair state is marked retire."
   },
   "takeover_review": {
-    "reviewed_revision": "9bbfdce876ce251fe534a63d604bd05197625fca",
-    "owned_definition_additions": 25,
+    "reviewed_revision": "ce219f3d96b62034251b6ab0d2e57554ce346848",
+    "owned_definition_additions": 27,
     "refreshed_owner_fingerprints": 33,
     "new_storage_sites": {
       "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_hotfix::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": "ordinary",
@@ -9959,7 +9965,7 @@
       "src/integration/mutation_recovery.py::ExpiredMutationRecovery.run::176aea4d5c84eb7ac1cf9fb5ee9b601fc81bea4aeb469555480653be0ecefd83": "ordinary"
     },
     "current_owned_groups": {
-      "shared": 47575,
+      "shared": 47581,
       "companions": 12508,
       "engine": 87254,
       "policy_sources": 1999,
@@ -9967,11 +9973,12 @@
       "ui": 333,
       "guards": 639
     },
-    "current_owned_total": 150788,
+    "current_owned_total": 150794,
     "current_table_count": 45,
     "unknown_definitions": [],
     "unknown_storage_sites": [],
     "fixed_baseline_and_caps_unchanged": true,
-    "ruleset_reader_review": "Explicit LOCAL verification may supplement hidden bypass actors using the existing operator login only for the exact repository and ruleset id, after App and operator policy documents agree. App bypass observations remain App-owned; no writer, replay journal, duplicate lifecycle state, storage classification or baseline/cap changed."
+    "ruleset_reader_review": "Explicit LOCAL verification may supplement hidden bypass actors using the existing operator login only for the exact repository and ruleset id, after App and operator policy documents agree. App bypass observations remain App-owned; no writer, replay journal, duplicate lifecycle state, storage classification or baseline/cap changed.",
+    "published_ci_repair_review": "Train parent completion produces exact review evidence through retained RepositoryGit; its fixture rejects the legacy service hook. Promotion notification no-consumer proof retains healthy activation and loaded-rule checks. The retained promotion event names and runtime import are explicitly owned. No storage authority, baseline/cap or writer disposition changed."
   }
 }

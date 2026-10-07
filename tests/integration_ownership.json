@@ -8471,6 +8471,12 @@
     },
     "src/prompts/reviewed_playbooks/promotion-request/source.md::## Rule: visit-intent": {
       "reason": "Reviewed promotion policy invokes the server-owned build, gate, attestation and publication sequence; waits and refusal notifications carry no bypass authority."
+    },
+    "src/playbooks/runtime.py::import from src.playbooks.services import INTEGRATION_LIFECYCLE_PLAYBOOK_IDS, PROMOTION_POLICY_EVENTS, IntegrationRouteTarget, build_v2_engine, is_integration_route_event, resolve_integration_route": {
+      "reason": "Imports the retained promotion event names used by the no-consumer proof guard. This is policy-routing ownership, not a writer or separate delivery lifecycle."
+    },
+    "src/playbooks/services.py::PROMOTION_POLICY_EVENTS": {
+      "reason": "Retained promotion notification event names shared by project-scoped policy routing and healthy activation/subscriber no-consumer proofs. No storage or write authority is introduced."
     }
   },
   "exclusions": {
@@ -12437,7 +12443,9 @@
     "5c38788248a432e1f59e1cac3b2f4611f202c9dce5c9cda3fe7627dc9595aad9",
     "6dc53e72699f31ce9c89c26eb979120a8729c29f5bbffaa2564b2727e3337b27",
     "a978ebd22389e6928ea8b90a3a7df9f839306a69413dccde69c13ea1aafa1020",
-    "a9a2995cc9355388cd8a85285754257f7aac11c559938c9ca4a5d25fbb12cf5d"
+    "a9a2995cc9355388cd8a85285754257f7aac11c559938c9ca4a5d25fbb12cf5d",
+    "50997d22a685f65da27688c96a59e585adfccf87cca856642aa86bf159b9c3ea",
+    "5a0d1c9f8bfb6410d320da01e0890a78a185ad0bd01bd9079c56481c3a0f26e0"
   ],
   "owned_file_fingerprints": [
     "020e0abc4dae8c8c3a3671fab609db3a5b1308dba6bd380a94fccfb591c63c4d",
