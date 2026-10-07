@@ -1431,7 +1431,7 @@
       ]
     }
   },
-  "digest": "sha256:e6e9ea24c63ff9b69804f872bb9cf07e990e5a2b3eede6be6f8ff5ee601c22a6",
+  "digest": "sha256:ba268d0dc446f6401cb64447be92241bdfbb5ecc61b8c39c73c8a99a02f35604",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4776,6 +4776,8 @@
         "src.commands.principal",
         "src.config",
         "src.database",
+        "src.integration.batches",
+        "src.integration.repair",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
@@ -14033,11 +14035,13 @@
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.commands.handler",
+        "src.commands.integration_commands",
         "src.commands.principal",
         "src.commands.routing_commands",
         "src.config",
         "src.database",
         "src.database.queries.routing_queries",
+        "src.database.tables",
         "src.event_schemas",
         "src.intelligence_classes",
         "src.models",

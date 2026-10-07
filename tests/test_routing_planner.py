@@ -28,7 +28,7 @@ from src.routing.planner import (
     reselect,
     worker_classes,
 )
-from src.routing.policy import PolicyError, parse_policy
+from src.routing.policy import PolicyError, parse_policy, selector_matches
 
 #: Original balanced policy; retained to check backwards compatibility and replay.
 BALANCED_POLICY = """\
@@ -82,6 +82,9 @@ balance:
 
 SHIPPED_POLICY = BALANCED_POLICY.replace(
     "narrow: true}", "narrow: true, prefer_harnesses: [codex]}",
+).replace(
+    "harnesses: [opencode-zen, opencode-zen-nemotron, opencode-zen-longcat]",
+    "harnesses: [opencode-zen*]",
 )
 
 POLICY, DIGEST = parse_policy(BALANCED_POLICY)
@@ -374,6 +377,104 @@ def test_a_repair_never_goes_to_opencode(origin) -> None:
 def _hosted_fleet() -> tuple[ProfileFacts, ...]:
     """The fleet plus one hosted OpenCode rung: OpenCode Zen, a pool of one."""
     return (*_fleet(), _rung("standard-high", "opencode-zen", slots=1))
+
+
+@pytest.mark.parametrize("origin", ["integration_repair", "development_repair"])
+@pytest.mark.parametrize("classification", [None, NARROW_YES])
+def test_repair_excludes_every_zen_variant_even_when_hosted_workers_are_busy(
+    origin, classification,
+) -> None:
+    policy, digest = parse_policy(SHIPPED_POLICY)
+    zen = [
+        _rung("standard-high", harness, slots=1)
+        for harness in (
+            "opencode-zen", "opencode-zen-nemotron", "opencode-zen-longcat",
+            "opencode-zen-new-preview", "opencode-zenfuture",
+        )
+    ]
+    result = plan_route(
+        _task(task_type="bugfix", class_hint="standard-high", created_by_kind=origin),
+        policy, _snapshot((*_fleet(), *zen), busy={
+            "standard-high-codex": 4, "standard-high-claude": 4,
+        }), policy_sha256=digest, classification=classification,
+    )
+    assert result.outcome == "planned", result
+    assert result.value["rule"] == f"kinds.bugfix+origins.{origin}"
+    assert {c["harness"] for c in result.value["candidates"]} == {"codex", "claude"}
+    assert result.value["profile_id"] in {"standard-high-codex", "standard-high-claude"}
+
+
+def test_new_zen_variant_is_reachable_only_through_the_narrow_hosted_lane() -> None:
+    policy, digest = parse_policy(SHIPPED_POLICY)
+    snapshot = _snapshot((
+        *_fleet(), _rung("standard-high", "opencode-zen-new-preview", slots=1),
+    ), busy={"standard-high-opencode": 1})
+    result = plan_route(_task(task_type="bugfix"), policy, snapshot,
+                        policy_sha256=digest, classification=NARROW_YES)
+    assert result.outcome == "planned", result
+    assert (result.value["profile_id"], result.value["lane"]) == (
+        "standard-high-opencode-zen-new-preview", "narrow-hosted",
+    )
+    result = plan_route(_task(task_type="bugfix"), policy, snapshot,
+                        policy_sha256=digest, classification=NARROW_NO)
+    assert result.outcome == "planned", result
+    assert {c["harness"] for c in result.value["candidates"]} == {"codex", "claude"}
+
+
+def test_a_selector_names_one_harness_or_a_prefix() -> None:
+    assert selector_matches("opencode-zen", "opencode-zen")
+    assert selector_matches("opencode-zenfuture", "opencode-zen*")
+    assert selector_matches("opencode-zen", "opencode-zen*")
+    assert not selector_matches("opencode-zen", "opencode")
+    assert not selector_matches("opencode", "opencode-zen*")
+
+
+@pytest.mark.parametrize(
+    "selector",
+    ["opencode-zen[", "opencode-zen[ab]", "opencode-zen?", "*zen", "open*code",
+     "opencode-zen**", ""],
+)
+def test_a_malformed_lane_selector_stops_the_policy(selector: str) -> None:
+    # fnmatch read "opencode-zen[" as a literal that matched no harness, so a
+    # Zen rung fell into a repair's general candidates; now it is no policy.
+    text = SHIPPED_POLICY.replace("harnesses: [opencode-zen*]", f"harnesses: ['{selector}']")
+    assert text != SHIPPED_POLICY
+    with pytest.raises(PolicyError, match="harness selectors"):
+        parse_policy(text)
+
+
+def test_a_design_lane_prefers_exact_harnesses_only() -> None:
+    text = BALANCED_POLICY.replace(
+        "harnesses: [claude, codex], prefer: [claude]",
+        "harnesses: [claude*, codex], prefer: [claude*]",
+    )
+    assert text != BALANCED_POLICY
+    with pytest.raises(PolicyError, match="prefer"):
+        parse_policy(text)
+    parse_policy(text.replace("prefer: [claude*]", "prefer: [claude]"))
+
+
+def test_lane_selectors_matching_no_installed_harness_are_reported() -> None:
+    policy, digest = parse_policy(SHIPPED_POLICY)
+    fleet = [p for p in _fleet() if p.harness != "opencode"]
+    snapshot = replace(_snapshot(fleet), harnesses=frozenset({"claude", "codex", "gemini"}))
+    result = plan_route(_task(task_type="bugfix"), policy, snapshot, policy_sha256=digest,
+                        classification=NARROW_NO)
+    # An install without OpenCode still routes; the report names every selector.
+    assert result.outcome == "planned", result
+    assert (
+        "lane selectors match no installed harness: narrow:opencode, "
+        "narrow-unverified-model:opencode, narrow-hosted:opencode-zen*"
+    ) in result.value["reason"]
+
+    snapshot = replace(
+        _snapshot(_hosted_fleet()),
+        harnesses=frozenset({"claude", "codex", "opencode", "opencode-zen"}),
+    )
+    result = plan_route(_task(task_type="bugfix"), policy, snapshot, policy_sha256=digest,
+                        classification=NARROW_NO)
+    assert result.outcome == "planned", result
+    assert "match no installed harness" not in result.value["reason"]
 
 
 def test_hosted_opencode_takes_narrow_work_when_local_opencode_is_full() -> None:
@@ -1029,6 +1130,28 @@ def test_historical_replay_quantifies_changes_and_reports_missing_evidence():
     assert report["changed"] == 1 and report["skipped"] == 2
     assert report["missing_observations"]["headroom_and_snapshot_age_unknown"] == 2
     assert "measured quota savings" in report["limitations"][1]
+
+
+def test_replay_routes_a_projected_repair_on_its_routed_origin():
+    from src.routing.replay import replay_routes
+
+    policy, _digest = routine_policy()
+    body = policy.model_dump(mode="json", by_alias=True)
+    body["origins"]["integration_repair"]["prefer_harnesses"] = []
+    policy, digest = parse_policy(json.dumps(body))
+    result = plan_route(_task(task_type="bugfix", created_by_kind="integration_repair"), policy,
+                        _snapshot(busy={"standard-high-codex": 1}), policy_sha256=digest,
+                        classification=NARROW_NO)
+    assert result.value["rule"] == "kinds.bugfix+origins.integration_repair"
+    assert result.value["provider"] == "claude"
+    # Stored origins the router projects to ``integration_repair``: a plain
+    # bugfix rule would prefer the busy Codex cell and count a false change.
+    records = [
+        {"task_id": f"repair-{kind}", "created_by_kind": kind, "route": result.value}
+        for kind in ("system", "source_ci_repair")
+    ]
+    report = replay_routes(records, policy, digest)
+    assert report["after"] == {"claude": 2} and report["changed"] == 0, report
 
 
 # -- the per-task preference (mandatory routing §4) -------------------------------

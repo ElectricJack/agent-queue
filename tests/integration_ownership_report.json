@@ -3034,6 +3034,9 @@
         72
       ]
     },
+    "src/commands/routing_commands.py::import from src.commands.integration_commands import SOURCE_CI_REPAIR_ORIGIN": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. The router projects a source-CI repair's stored origin to integration_repair in RoutingCommandsMixin._routing_task_facts; no delivery state, ref mutation or storage write."
+    },
     "src/commands/session_commands.py::SessionCommandsMixin._close_task_obsolete": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
