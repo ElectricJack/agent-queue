@@ -408,7 +408,9 @@ def prerequisite_observer(db):
     return None
 
 
-async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None, cached_only=False):
+async def hierarchy_frontier_modes(
+    db, *, project_ids=None, task_id=None, cached_only=False, display_unavailable=None,
+):
     """Request-scoped Git prerequisite evidence for scheduling and diagnostics.
 
     A cycle shares these modes between the scheduler and pool measurement.
@@ -418,6 +420,8 @@ async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None, cached
     Claim activation fetches and revalidates its own view under the task locks.
     ``cached_only`` pins existing evidence for interactive diagnostics without
     fetching or checking remote freshness; database identities are still checked.
+    ``display_unavailable`` optionally receives cache misses by project and target
+    kind. It is diagnostic metadata, never part of the admission modes.
 
     Shadow observers preserve receipt admission. An unstable active view supplies
     an empty delivered set, so it cannot fall back to a stale receipt.
@@ -448,6 +452,7 @@ async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None, cached
         try:
             modes[project.id] = await asyncio.wait_for(_project_frontier_mode(
                 db, observer, project, mode, task_id=task_id, cached_only=cached_only,
+                display_unavailable=display_unavailable,
             ), timeout)
         except TimeoutError:
             # Fail closed for this read: no Git-proven prerequisite admits work,
@@ -470,7 +475,9 @@ FRONTIER_MODE_TIMEOUT_SECONDS = 60.0
 FRONTIER_DISPLAY_TIMEOUT_SECONDS = 10.0
 
 
-async def _project_frontier_mode(db, observer, project, mode, *, task_id, cached_only):
+async def _project_frontier_mode(
+    db, observer, project, mode, *, task_id, cached_only, display_unavailable=None,
+):
     from dataclasses import replace
 
     view = await observer.prerequisite_view(
@@ -479,13 +486,18 @@ async def _project_frontier_mode(db, observer, project, mode, *, task_id, cached
     )
     verified_mode = replace(mode, delivered_prerequisite_ids=frozenset())
     if cached_only:
+        if display_unavailable is not None:
+            unavailable = {
+                kind: frozenset(tid for tid, proof in delivery.evidence.items()
+                                if proof.reason == "snapshot_unavailable")
+                for kind, delivery in (("siblings", view.siblings), ("default", view.default))
+            }
+            if any(unavailable.values()):
+                display_unavailable[project.id] = unavailable
         fresh = all(snapshot._freshness.get(snapshot.target_ref, True)
                     for snapshot in view.snapshots)
     else:
         fresh = await view.fresh()
-        if not fresh:
-            for snapshot in view.snapshots:
-                snapshot._freshness[snapshot.target_ref] = False
     if fresh:
         async with db._engine.connect() as conn:
             verified_mode = await view.mode(mode, conn=conn)
@@ -557,6 +569,7 @@ class DeliveryObserver:
         path = self.store_path(target.repository_id)
         recent = self._recent.get(target)
         if (max_age > 0 and recent is not None and time.monotonic() - recent[0] <= max_age
+            and (recent[1].error is None or cached_only)
             and (not cached_only or recent[1]._freshness.get(target.target_ref, True))):
             return recent[1]
         if cached_only:
@@ -582,8 +595,29 @@ class DeliveryObserver:
                         repository_id=target.repository_id,
                         repository_url=target.repository_url, target_ref=target.target_ref,
                     )
-            if snapshot.error is None:
-                self._recent[target] = (time.monotonic(), snapshot)
+            if snapshot.error in {None, "missing_target"}:
+                # The fetch captured every remote branch. Preserve its timestamp
+                # for every covered target, including previously cached branches
+                # that have since disappeared, without extending reused evidence.
+                stamp = time.monotonic()
+                covered = {target} | {
+                    cached for cached in self._recent
+                    if (cached.project_id, cached.repository_id, cached.repository_url)
+                    == (target.project_id, target.repository_id, target.repository_url)
+                } | {
+                    replace(target, target_ref="refs/heads/" + ref.removeprefix(
+                        "refs/remotes/origin/"))
+                    for ref in snapshot.source_heads
+                    if ref.startswith("refs/remotes/origin/") and ref != "refs/remotes/origin/HEAD"
+                }
+                for covered_target in covered:
+                    oid = snapshot.source_heads.get("refs/remotes/origin/" +
+                                                    covered_target.target_ref.removeprefix(
+                                                        "refs/heads/"))
+                    self._recent[covered_target] = (stamp, replace(
+                        snapshot, target_ref=covered_target.target_ref, target_oid=oid,
+                        error=None if oid else "missing_target",
+                    ))
             return snapshot
         except Exception as exc:  # noqa: BLE001 - any failure is an unknown observation
             logger.warning(
@@ -755,7 +789,7 @@ class DeliveryObserver:
             repositories = {}
             for target, group in sorted(groups.items(), key=lambda item: item[0].repository_id):
                 shared = None
-                if self.truth is not None:
+                if self.truth is not None and not cached_only:
                     from src.integration.git_truth import GitTruthSnapshot
 
                     key = target.project_id, target.repository_id, target.repository_url

@@ -147,11 +147,11 @@ from src.integration.status import IntegrationStatusService
 from src.integration.train import CandidateChecks, IntegrationTrain, TrainLane, TrainTarget
 from src.integration.train_controls import TrainControls
 from src.integration.train_sources import (
+    RETAINED_CANDIDATE_PREFIX,
     DaemonLanes,
     DatabaseBatches,
     DatabaseTargets,
     LeasedPublish,
-    RETAINED_CANDIDATE_PREFIX,
     _never_trusted,
     _pending_tasks,
     _push_branch_allowed,
@@ -865,8 +865,8 @@ class TrainCleanupForge:
     """Only the GitHub comment boundary is substituted; Git proof stays real."""
 
     def __init__(self, heads=()):
-        self.prs = {number: dict(repository_numeric_id=123, repository_full_name="test/repo",
-                                head_sha=head, state="closed") for number, head in heads}
+        self.prs = {number: {"repository_numeric_id": 123, "repository_full_name": "test/repo",
+                             "head_sha": head, "state": "closed"} for number, head in heads}
         self.comments = []
         self.markers = set()
 
@@ -1065,7 +1065,11 @@ async def test_epic_refresh_cleanup_never_schedules_its_own_epic_target(world, t
 async def test_promoted_train_cleanup_protects_open_subject_target(world, tmp_path):
     from src.database.tables import integration_subjects, playbook_artifacts
     from src.integration.subjects import (
-        PolicyArtifactPin, Subject, SubjectKind, SubjectPhase, SubjectSchedule,
+        PolicyArtifactPin,
+        Subject,
+        SubjectKind,
+        SubjectPhase,
+        SubjectSchedule,
     )
 
     head = await completed(world, "epic", land=True, pr=False)
@@ -1771,11 +1775,14 @@ async def test_epic_refresh_preview_apply_attestation_lease_and_origin(world):
     assert recorded["base_refresh"]["default_sha"] == default
 
 
-async def test_epic_refresh_conflict_files_ordinary_repair_on_epic(world):
-    from src.integration.stacked_branches import EpicRefresh
+@pytest.mark.parametrize("repair_contains_prerequisite", [True, False])
+async def test_epic_refresh_conflict_files_ordinary_repair_on_epic(
+    world, repair_contains_prerequisite,
+):
+    from src.integration.stacked_branches import EpicRefresh, EpicRefreshPending
 
     db, origin = world.db, world.origin
-    _, _, target = await cross_epic_world(world)
+    _, prerequisite, target = await cross_epic_world(world)
     git(origin.clone, "checkout", "-B", "aq/epic", "origin/aq/epic")
     (origin.clone / "base.txt").write_text("epic edit\n")
     git(origin.clone, "commit", "-am", "epic edit")
@@ -1797,13 +1804,18 @@ async def test_epic_refresh_conflict_files_ordinary_repair_on_epic(world):
     assert "frontier_prerequisite_not_on_default_branch" in {
         item["code"] for item in await db.claim_frontier_exclusions("child")}
 
-    # An ordinary repair publishes its resolved merge on the epic under its
-    # allocated lease. The refresh still owes checks and attestation afterward.
+    # A repair can publish the resolved merge or only fix the conflicting
+    # content. The refresh still owes checks and attestation in either case.
     git(origin.clone, "checkout", "-B", "aq/epic", "origin/aq/epic")
-    conflict = subprocess.run(["git", "merge", "--no-commit", "origin/main"],
-                              cwd=origin.clone, capture_output=True)
+    conflict = await transport.arun_git_result(
+        ["merge", "--no-commit", "origin/main"], cwd=origin.clone,
+    )
     assert conflict.returncode == 1
-    (origin.clone / "base.txt").write_text("resolved epic and default edit\n")
+    if repair_contains_prerequisite:
+        (origin.clone / "base.txt").write_text("resolved epic and default edit\n")
+    else:
+        git(origin.clone, "merge", "--abort")
+        (origin.clone / "base.txt").write_text("default edit\n")
     git(origin.clone, "add", "base.txt")
     git(origin.clone, "commit", "-m", "resolve default refresh")
     repaired = git(origin.clone, "rev-parse", "HEAD")
@@ -1815,7 +1827,23 @@ async def test_epic_refresh_conflict_files_ordinary_repair_on_epic(world):
     await locks.release(owner.grant())
     checking = await EpicRefresh(db, train).refresh("epic", dry_run=False)
     assert checking["state"] == "testing"
-    assert not await db.is_hierarchy_task_runnable("child")
+    assert git(origin.url, "rev-parse", "aq/epic") == repaired
+    assert checking["candidate_sha"] not in checks.green
+    (await train.lane_for(target)).service.attest.assert_not_awaited()
+    # Fresh Git proof, rather than the open batch, decides whether the child
+    # already has its required input. Content-only repairs still withhold it.
+    view = await db._delivery_observer.prerequisite_view("p", task_id="child")
+    assert view.default.satisfied("prerequisite")
+    assert view.parent_containment == {"child": {"prerequisite": repair_contains_prerequisite}}
+    assert await db.is_hierarchy_task_runnable("child") is repair_contains_prerequisite
+    task = await db.get_task("child")
+    filing = await db.get_task_branch_origin_for_promotion("child", "r")
+    if repair_contains_prerequisite:
+        git(origin.url, "merge-base", "--is-ancestor", prerequisite, repaired)
+        assert await EpicRefresh(db, train).child_base(task, filing) == repaired
+    else:
+        with pytest.raises(EpicRefreshPending, match="epic refresh pending"):
+            await EpicRefresh(db, train).child_base(task, filing)
     checks.green.add(checking["candidate_sha"])
     delivered = await EpicRefresh(db, train).refresh("epic", dry_run=False)
     assert delivered["outcome"] == "refreshed"
@@ -1908,7 +1936,11 @@ async def test_epic_refresh_authorization_uses_cached_visit_git(world, monkeypat
 async def test_epic_refresh_failed_ci_repair_starts_at_candidate(world, failure):
     from src.integration.candidate_baseline import Baseline
     from src.integration.checks import (
-        ChecksResult, ChecksState, CommitCheck, Conclusion, RequiredChecks,
+        ChecksResult,
+        ChecksState,
+        CommitCheck,
+        Conclusion,
+        RequiredChecks,
     )
     from src.integration.stacked_branches import EpicRefresh
     from src.orchestrator.workspace import WorkspaceMixin
@@ -4686,8 +4718,8 @@ async def test_local_epic_completion_reads_plan_bound_green_and_invalidates_chan
     assert len(jobs_after) > before
     assert any(job["input_ref"] == head and job["state"] == "queued" for job in jobs_after)
     # Policy projection uses the same command-bound producer as the reader.
-    from src.integration.train_sources import epic_policy_on
     from src.integration.subjects import HeadIdentity
+    from src.integration.train_sources import epic_policy_on
     async with case.db._engine.connect() as conn:
         row = (await conn.execute(select(tasks).where(tasks.c.id == "epic"))).mappings().one()
         project = (await conn.execute(select(projects).where(projects.c.id == "p"))).mappings().one()

@@ -356,7 +356,9 @@ async def test_explain_and_pool_status_only_read_cached_development_delivery(
         monkeypatch.setattr(observer.git, name, forbidden[name])
     result = await handler._cmd_explain_task({"task_id": "waiting"})
     delivery = [reason for reason in result["reasons"]
-                if reason["code"] == "development_dependency_delivery"]
+                if reason["code"] in {
+                    "development_dependency_delivery", "delivery_evidence_unavailable",
+                }]
     assert "awaiting_pool_session" in result["reason_codes"]
     if cache_state == "warm":
         assert [reason["ref"] for reason in delivery] == ["reopened"]
@@ -364,6 +366,8 @@ async def test_explain_and_pool_status_only_read_cached_development_delivery(
     else:
         assert {reason["ref"] for reason in delivery} == {"done", "reopened"}
         assert all("snapshot_unavailable" in reason["detail"] for reason in delivery)
+        assert all(reason["code"] == "delivery_evidence_unavailable" for reason in delivery)
+        assert all("has not loaded yet" in reason["detail"] for reason in delivery)
     status = await handler._cmd_pool_status({})
     assert next(row for row in status["pools"] if row["profile_id"] == "worker")["ready"] == 0
     for call in forbidden.values():
@@ -397,6 +401,33 @@ async def test_cached_display_delivery_never_supplies_fresh_admission(world, mon
     assert admission.reasons["waiting"][0]["code"] == "development_dependency_delivery"
     assert "pending" in admission.reasons["waiting"][0]["detail"]
     assert admission.snapshots[0] is not display.snapshots[0]
+
+
+async def test_display_cache_miss_never_withholds_fresh_admission(world, monkeypatch):
+    from src.integration.admission import observe_admission
+
+    db, _origin, observer, service = world
+    service.git = observer.git
+    service._delivery_observer = observer
+    await db.create_task(Task(
+        id="waiting", project_id="p", repo_id="r", title="waiting", description="",
+        status=TaskStatus.READY,
+    ))
+    await db.add_dependency("waiting", "done")
+    fetch = AsyncMock(wraps=observer.git.afetch_origin)
+    monkeypatch.setattr(observer.git, "afetch_origin", fetch)
+    display = await observe_admission(db, ["waiting"], service, cached_only=True)
+    assert display.allowed == set()
+    assert display.reasons["waiting"][0]["code"] == "delivery_evidence_unavailable"
+    fetch.assert_not_awaited()
+
+    admission = await observe_admission(db, ["waiting"], service)
+    fetch.assert_awaited_once()
+    assert admission.allowed == {"waiting"}
+    assert admission.reasons == {}
+    assert await admission.is_fresh("waiting")
+    assert await admission.matches(task_id="waiting")
+
 
 async def test_branch_cleanup_holds_what_git_cannot_prove(world):
     _db, _origin, _observer, service = world
@@ -675,6 +706,14 @@ async def test_registered_prerequisite_observer_releases_pool_demand_without_rec
                                 truth=GitTruth(transport))
     db.set_prerequisite_observer(truthful)
     assert prerequisite_observer(db) is truthful
+    # A diagnostic miss describes uncertainty without fetching or changing
+    # the actual claim frontier. The next decision independently loads Git.
+    truthful._store = AsyncMock(wraps=truthful._store)
+    cold = await db.claim_frontier_exclusions("dependent", cached_only=True)
+    assert [reason["code"] for reason in cold] == ["delivery_evidence_unavailable"]
+    truthful._store.assert_not_awaited()
+    assert (await db.count_ready_by_profile("p")).get("worker") == 1
+    truthful._store.assert_awaited()
     modes = await hierarchy_frontier_modes(db, project_ids={"p"})
     assert modes["p"].delivered_prerequisite_ids == frozenset({"done"})
     assert (await db.count_ready_by_profile("p")).get("worker") == 1
@@ -773,3 +812,168 @@ async def test_delivery_freshness_batches_all_targets_and_marks_moved_refs(world
     assert snapshots[2]._freshness["refs/heads/aq/second"] is False
     unavailable = await observer.snapshot(second, max_age=30, cached_only=True)
     assert unavailable.error == "snapshot_unavailable"
+
+
+async def test_multi_target_fetch_warms_every_target_without_renewing_age(world, tmp_path):
+    from src.integration.delivery_observer import delivery_targets
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, _service = world
+    git(origin.clone, "push", "origin", "main:aq/epic", "main:aq/other")
+    await db.create_task(Task(
+        id="other-epic", project_id="p", repo_id="r", title="other", description="",
+        branch_name="aq/other",
+    ))
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic")
+                           .values(branch_name="aq/epic", repo_id="r"))
+        await conn.execute(update(tasks).where(tasks.c.id == "reopened")
+                           .values(parent_task_id="other-epic"))
+        await conn.execute(update(tasks).where(tasks.c.id == "missing")
+                           .values(parent_task_id=None))
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "multi-target",
+                                truth=GitTruth(transport))
+    observer.truth.snapshot = AsyncMock(wraps=observer.truth.snapshot)
+    ids = {"done", "reopened", "missing"}
+    view = await observer.observe(ids)
+    assert len(view.snapshots) == 3
+    observer.truth.snapshot.assert_awaited_once()
+    assert view.satisfied("done")
+    async with db._engine.connect() as conn:
+        targets = await delivery_targets(conn, ids, reduced=True)
+    stamps = {observer._recent[target][0] for target in targets.values()}
+    assert len(stamps) == 1
+
+    observer._store = AsyncMock(side_effect=AssertionError("display attempted fetch"))
+    warm = await observer.observe(ids, max_age=30, cached_only=True)
+    assert {tid: (proof.state, proof.reason) for tid, proof in warm.evidence.items()} == {
+        tid: (proof.state, proof.reason) for tid, proof in view.evidence.items()
+    }
+    assert {observer._recent[target][0] for target in targets.values()} == stamps
+    observer._store.assert_not_awaited()
+    observer.truth.snapshot.assert_awaited_once()
+
+
+async def test_cache_miss_does_not_hide_another_targets_warm_evidence(world, tmp_path):
+    from dataclasses import replace
+
+    from src.integration.delivery_observer import DeliveryTarget
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, _service = world
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "mixed-targets",
+                                truth=GitTruth(transport))
+    await observer.observe(["done"])
+    main = DeliveryTarget("p", "r", origin.url, "refs/heads/main")
+
+    async def targets(_conn, _ids):
+        # The cold target deliberately comes first in this repository.
+        return {"missing": replace(main, target_ref="refs/heads/absent"), "done": main}
+
+    observer._store = AsyncMock(side_effect=AssertionError("display attempted fetch"))
+    view = await observer.observe(["missing", "done"], target_loader=targets,
+                                  max_age=30, cached_only=True)
+    assert view.get("missing").reason == "snapshot_unavailable"
+    assert view.satisfied("done")
+    observer._store.assert_not_awaited()
+
+
+async def test_missing_target_fetch_warms_peers_but_decisions_refetch_it(world, tmp_path):
+    from src.integration.delivery_observer import DeliveryTarget
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, _service = world
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "missing-target",
+                                truth=GitTruth(transport))
+    missing = DeliveryTarget("p", "r", origin.url, "refs/heads/absent")
+    observer.truth.snapshot = AsyncMock(wraps=observer.truth.snapshot)
+    assert (await observer.snapshot(missing)).observation.error == "missing_target"
+    observer.truth.snapshot.assert_awaited_once()
+    warm = await observer.observe(["done"], max_age=30, cached_only=True)
+    assert warm.satisfied("done")
+    assert (await observer.snapshot(missing, max_age=30, cached_only=True)
+            ).observation.error == "missing_target"
+    observer.truth.snapshot.assert_awaited_once()
+    assert (await observer.snapshot(missing, max_age=30)).observation.error == "missing_target"
+    assert observer.truth.snapshot.await_count == 2
+
+
+async def test_frontier_cache_uncertainty_preserves_known_delivery_exclusions(world, tmp_path):
+    from src.database.tables import task_branch_origins
+    from src.integration.delivery_observer import DeliveryTarget, hierarchy_frontier_modes
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, _service = world
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    await db.create_task(Task(
+        id="dependent", project_id="p", repo_id="r", title="dependent", description="",
+        status=TaskStatus.READY, branch_name="aq/dependent",
+    ))
+    await db.add_dependency("dependent", "epic", "parent-child")
+    await db.add_dependency("dependent", "done")
+    await db.add_dependency("dependent", "reopened")
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic")
+                           .values(branch_name="aq/epic", repo_id="r"))
+        await conn.execute(update(tasks).where(tasks.c.id == "done").values(parent_task_id=None))
+        await conn.execute(update(tasks).where(tasks.c.id == "dependent").values(is_blocked=False))
+        await conn.execute(insert(task_branch_origins).values(
+            id="dependent-origin", task_id="dependent", repository_id="r",
+            branch_name="aq/dependent", parent_task_id="epic", parent_repository_id="r",
+            parent_ref="aq/epic", base_sha=git(origin.clone, "rev-parse", "main"),
+            creation_generation=0, reserved=True, materialized=True, created_at=time.time(),
+        ))
+    await db.update_project("p", hierarchical_integration_mode="train")
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "frontier-mixed",
+                                truth=GitTruth(transport))
+    db.set_prerequisite_observer(observer)
+    await hierarchy_frontier_modes(db, project_ids={"p"})
+    main = DeliveryTarget("p", "r", origin.url, "refs/heads/main")
+    observer._recent[main] = (0, observer._recent[main][1])
+    observer._store = AsyncMock(side_effect=AssertionError("display attempted fetch"))
+    reasons = await db.claim_frontier_exclusions("dependent", cached_only=True)
+    codes = {reason["code"] for reason in reasons}
+    assert "frontier_sibling_prerequisite_not_delivered" in codes
+    assert "frontier_prerequisite_not_on_default_branch" not in codes
+    assert "prerequisite_not_on_default_branch" not in codes
+    assert "delivery_evidence_unavailable" in codes
+    assert any(reason["ref"] == "done" and reason["code"] == "delivery_evidence_unavailable"
+               for reason in reasons)
+    observer._store.assert_not_awaited()
+
+
+async def test_frontier_freshness_failure_does_not_poison_unchecked_targets(
+    world, monkeypatch,
+):
+    from src.integration.delivery_observer import (
+        DeliveryTarget, DeliveryView, PrerequisiteView, hierarchy_frontier_modes,
+    )
+    from src.integration.delivery_truth import DeliverySnapshot
+    from src.integration.git_truth import GitTruth
+
+    db, origin, observer, _service = world
+    git(origin.clone, "push", "origin", "main:aq/peer")
+    main = DeliveryTarget("p", "r", origin.url, "refs/heads/main")
+    peer = DeliveryTarget("p", "r", origin.url, "refs/heads/aq/peer")
+    await observer.snapshot(main)
+    first = observer._recent[main][1]
+    unchecked = observer._recent[peer][1]
+    assert not first._freshness
+    remote = AsyncMock(return_value=False)
+    monkeypatch.setattr(DeliverySnapshot, "_remote_is_fresh", remote)
+    observer.truth = GitTruth(observer.git)
+    db.set_prerequisite_observer(observer)
+    await db.update_project("p", hierarchical_integration_mode="train")
+    observer.prerequisite_view = AsyncMock(return_value=PrerequisiteView(
+        DeliveryView(db, snapshots=(first, unchecked)), DeliveryView(db),
+    ))
+    modes = await hierarchy_frontier_modes(db, project_ids={"p"})
+    assert modes["p"].delivered_prerequisite_ids == frozenset()
+    remote.assert_awaited_once()
+    assert first._freshness == {main.target_ref: False}
+    assert peer.target_ref not in unchecked._freshness
+    assert (await observer._snapshot(peer, max_age=30, cached_only=True)).error is None

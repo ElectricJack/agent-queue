@@ -516,22 +516,56 @@ class ClaimQueryMixin:
         """
         from src.integration.delivery_observer import hierarchy_frontier_modes
 
-        modes = await hierarchy_frontier_modes(self, task_id=task_id, cached_only=cached_only)
+        unavailable = {}
+        modes = await hierarchy_frontier_modes(
+            self, task_id=task_id, cached_only=cached_only,
+            **({"display_unavailable": unavailable} if cached_only else {}),
+        )
         predicates = claim_frontier_predicates(modes)
         if router_ready is not None:
             predicates["route_not_claimable"] = route_claimable(router_ready)
+        display_predicates = {}
+        if unavailable:
+            from dataclasses import replace
+
+            # These counterfactual predicates classify diagnostic uncertainty
+            # only. The actual modes and all decision queries remain fail closed.
+            display_modes = {
+                pid: replace(
+                    mode,
+                    delivered_prerequisite_ids=(mode.delivered_prerequisite_ids or frozenset())
+                    | unavailable.get(pid, {}).get("siblings", frozenset()),
+                    default_prerequisite_ids=mode.default_prerequisite_ids
+                    | unavailable.get(pid, {}).get("default", frozenset()),
+                ) for pid, mode in modes.items()
+            }
+            display_predicates = {
+                name: predicate for name, predicate in claim_frontier_predicates(display_modes).items()
+                if name in {
+                    "sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
+                }
+            }
         async with self._engine.connect() as conn:
             row = (await conn.execute(
-                select(*(predicate.label(name) for name, predicate in predicates.items()))
+                select(
+                    *(predicate.label(name) for name, predicate in predicates.items()),
+                    *(predicate.label("display_" + name)
+                      for name, predicate in display_predicates.items()),
+                )
                 .where(tasks.c.id == task_id, tasks.c.status == TaskStatus.READY.value)
             )).mappings().one_or_none()
         if row is None:
             return []
         exclusions = [
             {
-                "code": f"frontier_{name}",
+                "code": ("delivery_evidence_unavailable"
+                         if name in display_predicates and row["display_" + name]
+                         else f"frontier_{name}"),
                 "detail": (
-                    "Pool claim frontier excludes this READY task: "
+                    "Delivery evidence has not loaded yet; claim frontier eligibility "
+                    f"for {name} is unknown (snapshot_unavailable)"
+                    if name in display_predicates and row["display_" + name]
+                    else "Pool claim frontier excludes this READY task: "
                     + FRONTIER_PREDICATE_DETAILS[name]
                 ),
                 "ref": task_id,
@@ -553,20 +587,17 @@ class ClaimQueryMixin:
                            source.c.status == "COMPLETED",
                            source.c.parent_task_id.is_distinct_from(dependent.c.parent_task_id)
                            | source.c.parent_task_id.is_(None)))).all()
-            exclusions.extend({"code": "prerequisite_not_on_default_branch", "ref": tid,
-                "epic_id": parent, "detail": f"Prerequisite {tid} (epic {parent or tid}) "
-                "is not proven on the default branch"}
+            missing = set().union(*(entry["default"] for entry in unavailable.values()))
+            exclusions.extend({
+                "code": ("delivery_evidence_unavailable" if tid in missing
+                         else "prerequisite_not_on_default_branch"),
+                "ref": tid, "epic_id": parent,
+                "detail": (f"Prerequisite {tid}: delivery evidence has not loaded yet; "
+                           "default-branch delivery is unknown (snapshot_unavailable)"
+                           if tid in missing else f"Prerequisite {tid} (epic {parent or tid}) "
+                           "is not proven on the default branch"),
+                }
                 for tid, parent in sources if mode is None or tid not in mode.default_prerequisite_ids)
-        if cached_only:
-            for exclusion in exclusions:
-                if exclusion["code"] in {
-                    "frontier_sibling_prerequisite_not_delivered",
-                    "frontier_prerequisite_not_on_default_branch",
-                    "prerequisite_not_on_default_branch",
-                }:
-                    exclusion["detail"] += (
-                        "; delivery read is cache-only; missing or stale evidence withholds work"
-                    )
         return exclusions
 
     async def take_claim_slot(self, conn, session_id: str, *, now: float, cap: int | None):
