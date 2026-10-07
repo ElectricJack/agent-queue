@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import time
+
 from sqlalchemy import select
+
 from src.database.tables import integration_subjects
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 
@@ -55,6 +57,59 @@ async def _check_subjects_overdue(ctx):
 
 async def _check_subjects_held(ctx):
     return await _subjects(ctx, held=True)
+
+
+async def _check_legacy_deliveries(ctx: DoctorContext) -> CheckResult:
+    """Expose historical SHA claims which today's default branch cannot reach."""
+    from src.database.tables import integration_legacy_deliveries, repos
+    from src.git.github import GitHubAccess
+    from src.git.manager import GitError, GitManager
+    from src.integration.delivery_observer import DeliveryObserver, DeliveryTarget
+
+    check_id = "integration.legacy_deliveries"
+    if ctx.db is None:
+        return CheckResult(id=check_id, severity=Severity.INFO, detail="database unavailable")
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(select(integration_legacy_deliveries).order_by(
+            integration_legacy_deliveries.c.repository_id,
+            integration_legacy_deliveries.c.task_id,
+        ))).mappings().all()
+        repositories = {row["id"]: row for row in (await conn.execute(select(repos))).mappings()}
+    observer = getattr(ctx.db, "_delivery_observer", None)
+    if observer is None and rows:
+        integration = getattr(ctx.config, "integration", None)
+        observer = DeliveryObserver(ctx.db, git=GitManager(GitHubAccess.from_config(
+            getattr(integration, "github_app", None))), data_dir=ctx.config.data_dir)
+    snapshots, findings, unknown = {}, [], []
+    for row in rows:
+        repo = repositories.get(row["repository_id"])
+        identity = {"task_id": row["task_id"], "project_id": row["project_id"],
+                    "repository_id": row["repository_id"], "proof": row["proof"],
+                    "sha": row["delivered_sha"] or row["target_sha"]}
+        try:
+            if repo is None or not repo["url"]:
+                raise ValueError("repository unavailable")
+            if repo["id"] not in snapshots:
+                snapshots[repo["id"]] = await observer.snapshot(DeliveryTarget(
+                    row["project_id"], repo["id"], repo["url"],
+                    "refs/heads/" + repo["default_branch"].removeprefix("refs/heads/")))
+            snapshot = snapshots[repo["id"]]
+            observation = getattr(snapshot, "observation", snapshot)
+            if observation.error or not observation.target_oid:
+                raise ValueError(observation.error or "default branch unavailable")
+            reachable = await observer.git.ais_ancestor(
+                observation.store, identity["sha"], observation.target_oid, strict=True)
+            if reachable is None:
+                raise ValueError("SHA reachability unavailable")
+            if reachable is False:
+                findings.append({**identity, "target_oid": observation.target_oid})
+        except (GitError, OSError, ValueError) as exc:
+            unknown.append({**identity, "reason": str(exc)})
+    return CheckResult(id=check_id,
+        severity=Severity.WARN if findings or unknown else Severity.OK,
+        detail=f"{len(findings)} legacy delivery SHA(s) not reachable from the default branch; "
+               f"{len(unknown)} unknown",
+        data={"unreachable": findings, "unknown": unknown, "checked": len(rows)})
 
 
 async def _check_trust(ctx: DoctorContext) -> CheckResult:
@@ -305,6 +360,8 @@ async def _fix_finished_branch_owners(ctx: DoctorContext) -> CheckResult:
 
 def integration_checks() -> list[DoctorCheck]:
     return [
+        DoctorCheck(id="integration.legacy_deliveries", run=_check_legacy_deliveries,
+                    owner=OWNER, timeout_s=300.0),
         DoctorCheck(
             id="integration.finished_branch_owners", run=_check_finished_branch_owners,
             fix=_fix_finished_branch_owners, owner=OWNER, timeout_s=30.0,

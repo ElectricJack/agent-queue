@@ -31,6 +31,58 @@ def integration() -> None:
     """Inspect integration Subjects and apply current recovery proofs."""
 
 
+@integration.command("pause-batch")
+@click.argument("batch_id")
+@click.option("--reason", default="", help="Explanation recorded with the intent.")
+@click.option("--apply/--dry-run", default=False, help="Pause publication; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_pause_batch(ctx, batch_id, reason, apply):
+    """Preview or pause an unpromoted Git-first BATCH_ID."""
+    _execute(ctx, "integration_pause_batch", {
+        "batch_id": batch_id, "reason": reason, "dry_run": not apply,
+    })
+
+
+@integration.command("resume-batch")
+@click.argument("batch_id")
+@click.option("--reason", default="", help="Explanation recorded with the intent.")
+@click.option("--apply/--dry-run", default=False, help="Resume publication; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_resume_batch(ctx, batch_id, reason, apply):
+    """Preview or resume a paused Git-first BATCH_ID."""
+    _execute(ctx, "integration_resume_batch", {
+        "batch_id": batch_id, "reason": reason, "dry_run": not apply,
+    })
+
+
+@integration.command("eject")
+@click.option("--batch", "batch_id", required=True, help="Frozen Git-first batch id.")
+@click.option("--task", "task_id", required=True, help="Member to return to pending.")
+@click.option("--reason", default="", help="Required explanation when ejecting.")
+@click.option("--apply/--dry-run", default=False, help="Replace the batch; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_eject(ctx, batch_id, task_id, reason, apply):
+    """Abort a batch and freeze its remainder without changing PR approvals."""
+    if apply and not reason.strip():
+        raise click.UsageError("--apply needs a nonblank --reason")
+    _execute(ctx, "integration_eject", {
+        "batch_id": batch_id, "task_id": task_id, "reason": reason, "dry_run": not apply,
+    })
+
+
+@integration.command("seal-now")
+@click.option("--project", "project_id", required=True, help="Project whose root target to seal.")
+@click.option("--apply/--dry-run", default=False, help="Bypass cadence once; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_seal_now(ctx, project_id, apply):
+    """Freeze currently eligible root inputs immediately."""
+    _execute(ctx, "integration_seal_now", {"project_id": project_id, "dry_run": not apply})
+
+
 @integration.command("abort-batch")
 @click.argument("batch_id")
 @click.option("--reason", default="", help="Required explanation when aborting.")
@@ -44,6 +96,16 @@ def integration_abort_batch(ctx, batch_id, reason, apply):
     _execute(ctx, "integration_abort_batch", {
         "batch_id": batch_id, "reason": reason, "dry_run": not apply,
     })
+
+
+@integration.command("refresh-epic")
+@click.option("--task", "task_id", required=True, help="Epic whose branch needs the default branch.")
+@click.option("--apply", is_flag=True, help="Start or advance the attested refresh; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_refresh_epic(ctx, task_id, apply):
+    """Preview or refresh an epic; pending checks/repairs continue through the train."""
+    _execute(ctx, "integration_refresh_epic", {"task_id": task_id, "dry_run": not apply})
 
 
 @integration.command("retire-origin")

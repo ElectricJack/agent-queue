@@ -780,6 +780,7 @@ class RootPrimitiveAdapters:
             batch_id=subject.batch_id,
             task_id=args.member_task_id,
             reason=args.reason,
+            dry_run=False,
         )
         if result.get("outcome") == "ejected":
             batch = await self.db.get_integration_batch(subject.batch_id)

@@ -100,6 +100,9 @@ class Service:
 
 
 class Repair:
+    async def settle_green(self, batch_id, head_sha):
+        pass
+
     def __init__(self):
         self.calls = []
 

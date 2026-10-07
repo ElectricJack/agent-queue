@@ -234,6 +234,12 @@ class HostedChecks:
     ) -> None:
         self.producer, self.diagnose = producer, diagnose
         self.required = RequiredChecks.from_trust(producer.trust)
+        if producer.observer.expected_event == "pull_request":
+            # A PR run tests the merge ref. It must never satisfy bare-head
+            # candidate checks, even when the source OID and names are identical.
+            self.required = self.required.model_copy(update={
+                "producer_id": self.required.producer_id + ":pull_request",
+            })
 
     async def request(self, head: HeadIdentity) -> ProducerRequest:
         return ProducerRequest(outcome="already_running", reason="candidate_push_triggers_checks")
@@ -476,6 +482,17 @@ class ExactChecks:
                 for check in rows:
                     await conn.execute(_upsert(check))
         return await self.read(head)
+
+    async def refresh_if_due(self, head: HeadIdentity) -> ChecksResult:
+        """Reuse unfinished evidence until due; final checks get a fresh observation.
+
+        Explicit refresh remains available for reruns and publication proofs.
+        Final PR checks must be refreshed to detect reruns on an unchanged head.
+        """
+        cached = await self.read(head)
+        if cached.due_at is not None and self.clock() < cached.due_at:
+            return cached
+        return await self.refresh(head)
 
     async def _bound_missing_push(self, head, observed, previous, now):
         """Retain the grace period in the exact-head cache across visits/restarts.

@@ -197,6 +197,56 @@ Admitting observations omit incomplete roots, retired or delivered sources and
 closed PRs. Missing local source objects defer to the fetching admission reader
 without blocking other sources. Sealed manifests remain immutable.
 
+## PR admission boundaries (2026-10-06)
+
+New hosted root batches require an open PR matching the repository, source branch,
+base and exact completion head. Its PR checks must be green, and reviewed admission
+also requires a current human approval with no outstanding request for changes.
+Unavailable hosted observations remain unknown and cannot admit a source. This
+gate runs before freezing a new batch; subsequent observations cannot undo its
+immutable membership or Git-proven delivery.
+
+PR admission refusals retain their named blocker and retry time. Repeated visits
+reuse that observation with exponential backoff from 60 seconds up to 600 seconds;
+a changed source, PR, branch or policy invalidates it. Unfinished exact-head check
+evidence is read from the database until its `due_at`. Final check observations
+refresh at the gate's retry boundary to detect reruns. GitHub rate-limit errors,
+including those from required-check observation, propagate to the repository-wide
+train pause, which honors GitHub's retry time.
+
+A GitHub approval counts only from a human with current repository `write` or
+`admin` permission. An explicitly supplied `ReviewRequirements.reviewers` set
+can further restrict those identities; it cannot authorize a repository outsider.
+The daemon lane passes these requirements to its hosted PR gate. Permission
+lookup failures, including 404, produce `pr_review_permission_unavailable` with
+the same refusal backoff; rate limits still reach the shared train pause. The
+GitHub review poller applies the same human write/admin check before recording
+tree evidence, so outsider reviews cannot supply epic reviewer identities.
+Permissions use GitHub's [repository permission endpoint](https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user).
+A retained URL for a closed PR produces `pr_closed` in admission and PR opening
+instead of `awaiting_pr` or `already_open`. Reopening that PR is the recovery;
+the gate re-observes it after the retry window without creating a duplicate.
+Repeating a durable parent completion with its PR already recorded returns
+`already_completed` without a GitHub read. Completion does not authorize PR
+admission; the admission gate still checks its current state and exact head.
+
+Hosted CI rate limits also propagate from the shared CI primitive adapter and
+development observer to the subject reconciler's infrastructure retry, without
+recording a CI attempt or spending a repair generation. The development trusted
+green resolver propagates the same error, so publication cannot claim green or
+publish on an unavailable observation. These legacy subject callers retain their
+bounded subject retry schedules; repository-wide train backoff belongs to the
+train caller.
+
+Development targets and roots using a retained, reviewed development policy for
+local validation keep their existing Git-based admission. The daemon must load
+and validate that pinned artifact before selecting local admission; a missing or
+invalid artifact cannot bypass the hosted gate. Local candidate jobs and their
+focused, advisory or none policy still decide publication. A local source does
+not need a hosted PR, GitHub credentials or a hosted attestation. The disposable
+CLI S20 scenario exercises this path; hosted admission is covered separately by
+the real train lane tests with deterministic GitHub transport.
+
 ## Reconciler repair close handoff
 
 A root repair delegate closes through its owning reconciler, including a failed

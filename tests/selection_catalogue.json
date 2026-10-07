@@ -596,6 +596,7 @@
         "tests/test_integration_settling.py",
         "tests/test_integration_size.py",
         "tests/test_integration_source_ancestry.py",
+        "tests/test_integration_stacked_branches.py",
         "tests/test_integration_stale_schedule.py",
         "tests/test_integration_stall_recovery.py",
         "tests/test_integration_state.py",
@@ -1420,7 +1421,7 @@
       ]
     }
   },
-  "digest": "sha256:1786c8f65358c318fb59d74f0080b8da59e3905f13ec832220d82080cf9c6e4e",
+  "digest": "sha256:d3aa1708ca5042b7d672bd5344b672917fb144321cfbf0ddcff9b29d07dfb29f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3084,6 +3085,7 @@
         "src.integration.ownership",
         "src.integration.provenance",
         "src.integration.repair",
+        "src.integration.stacked_branches",
         "src.integration.status",
         "src.integration.train",
         "src.integration.train_sources",
@@ -5703,11 +5705,14 @@
       "imports": [
         "src.database",
         "src.database.tables",
+        "src.git.github_contracts",
         "src.integration.records",
         "src.integration.root_pull_requests",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "A finished train epic opens one pull request for its collected children."
     },
     "tests/test_epic_pr_review_evidence.py": {
@@ -5729,10 +5734,12 @@
         "src.integration.promotion",
         "src.integration.provenance",
         "src.integration.review_evidence",
+        "src.integration.reviews",
         "src.integration.scheduler",
         "src.integration.settling",
         "src.integration.source_ci",
         "src.integration.source_delivery",
+        "src.integration.train_sources",
         "src.models",
         "src.orchestrator",
         "src.vault"
@@ -7427,6 +7434,7 @@
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.checks",
+        "src.integration.ci",
         "src.integration.ci_producers",
         "src.integration.root_runtime",
         "src.integration.subjects"
@@ -7497,6 +7505,7 @@
         "src.integration.ci",
         "src.integration.ci_adapters",
         "src.integration.ci_producers",
+        "src.integration.development_runtime",
         "src.integration.main_promotion",
         "src.integration.subjects",
         "src.jobs.adapters",
@@ -7612,13 +7621,18 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.cli.exceptions",
         "src.cli.integration",
         "src.database.tables",
         "src.integration.repair",
         "src.integration.scheduler",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Manual ejection preserves review approval and restores future eligibility."
     },
     "tests/test_integration_epics.py": {
@@ -8574,6 +8588,27 @@
       "markers": [],
       "summary": "A train source whose recorded base is not its ancestor never strands a batch."
     },
+    "tests/test_integration_stacked_branches.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.integration.batches",
+        "src.integration.gitops",
+        "src.integration.stacked_branches",
+        "src.integration.train",
+        "src.integration.train_controls",
+        "src.integration.train_sources",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Stacked source admission and refresh over real Git and disposable PostgreSQL."
+    },
     "tests/test_integration_stale_owners.py": {
       "areas": [
         "integration-ownership"
@@ -8707,15 +8742,19 @@
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
+        "src.commands.surface_commands",
         "src.commands.task_commands",
         "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.attestation",
         "src.integration.batches",
         "src.integration.candidate_baseline",
+        "src.integration.checks",
         "src.integration.ci",
         "src.integration.cleanup",
         "src.integration.delivery_observer",
@@ -8729,11 +8768,15 @@
         "src.integration.regeneration",
         "src.integration.repair",
         "src.integration.reviews",
+        "src.integration.root_pull_requests",
+        "src.integration.stacked_branches",
         "src.integration.status",
+        "src.integration.subjects",
         "src.integration.train",
         "src.integration.train_controls",
         "src.integration.train_sources",
         "src.models",
+        "src.orchestrator.workspace",
         "src.profiles.capabilities",
         "src.test_selection",
         "src.test_selection.catalogue"
@@ -10527,7 +10570,8 @@
         "src.integration.delivery_truth",
         "src.integration.development",
         "src.integration.provenance",
-        "src.integration.publishable_artifact"
+        "src.integration.publishable_artifact",
+        "src.models"
       ],
       "markers": [
         "migration"
