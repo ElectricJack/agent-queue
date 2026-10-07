@@ -14047,8 +14047,12 @@
         "api-contract"
       ],
       "default_arm": true,
-      "digest": "sha256:f27de644d320324530341a40f9117c342d01b24c75f26a40288adad4c81f6881",
-      "imports": [],
+      "digest": "sha256:c2ff0cd2fed553ade1eef539c56a94e3b9a8204f8e49700ccf021221851e9e5e",
+      "imports": [
+        "src.integration",
+        "src.integration.regeneration",
+        "src.sessions.env"
+      ],
       "markers": [
         "parametrize"
       ],
