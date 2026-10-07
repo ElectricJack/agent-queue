@@ -98,6 +98,7 @@ EXPECTED_AGENT_COMMANDS = {
     # Promotion validation and cached history reads are pinned to the worker's project.
     "promote_schema",
     "promote_validate",
+    "promote_rulesets",
     "promote_status",
     "promote_list",
     "integration_resolve_candidate_member",

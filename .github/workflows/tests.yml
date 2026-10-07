@@ -2,11 +2,14 @@ name: Tests
 
 # The full suite runs before a change reaches `main`, never after:
 #
-# * `pull_request` into `main` tests the PR's merge with its base.
+# * `pull_request` into the default and each promotion-chain target tests
+#   the PR's merge with its base. `aq promote rulesets` prints this branch
+#   list from the flow; copy it here before a promotion-flow cutover.
 # * A push to `aq/integration/**` tests the train's assembled candidate, and
 #   the train promotes that exact tested SHA to `main`.
 # * A push to `aq/batches/**` tests the git-first train's batch candidate
 #   (`src/integration/batches.py:candidate_ref`) the same way.
+# * A push to `aq/promote/**` tests the exact promotion source SHA.
 # * A push to `aq/parent/**` tests an immutable parent snapshot ref that
 #   `src/integration/parent_ci.py` publishes and then reads the run from.
 #
@@ -28,6 +31,7 @@ on:
       - 'aq/parent/**'
       - 'aq/integration/**'
       - 'aq/batches/**'
+      - 'aq/promote/**'
   workflow_dispatch:
   workflow_call:
 

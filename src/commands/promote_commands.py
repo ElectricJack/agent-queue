@@ -127,21 +127,77 @@ class PromoteCommandsMixin:
                     }
                 )
             result = FlowSchema.validate(document, default_branch=default_branch, manifest=manifest)
+        remote = {}
         if request.remote and result.valid:
-            warnings.append(
-                {
-                    "code": "not_implemented",
-                    "pointer": "",
-                    "layer": 4,
-                    "message": "Remote promotion validation is available in phase 2.",
-                }
-            )
+            from src.integration.promotion_steps import validate_promotion_remote
+
+            try:
+                binding, client, app_id = await self._promotion_client(repository)
+                remote = await validate_promotion_remote(
+                    client, binding, result.flow, default_branch=default_branch, app_id=app_id,
+                )
+                warnings.extend(remote.pop("warnings"))
+            except Exception as exc:  # noqa: BLE001 - layer four is diagnostic, never a refusal
+                warnings.append({
+                    "code": "remote_unverifiable", "pointer": "", "layer": 4,
+                    "message": f"Remote validation is unavailable: {type(exc).__name__}.",
+                })
         return {
             "success": result.valid,
             "outcome": "valid" if result.valid else "invalid",
             "project_id": project_id,
             **result.as_dict(),
             "warnings": warnings,
+            **remote,
+        }
+
+    # E1 read-only configuration commands. Keep separate from intent/PR
+    # commands so those can register independently in the shared group.
+    async def _promotion_client(self, repository):
+        from src.git.github_contracts import credential_identity_from_client
+
+        resolver = getattr(self.orchestrator, "github_repository_binding_resolver", None)
+        factory = getattr(self.orchestrator, "github_client_factory", None)
+        if repository is None or resolver is None or factory is None:
+            raise ValueError("Repository client is unavailable.")
+        binding = resolver(repository)
+        if inspect.isawaitable(binding):
+            binding = await binding
+        if binding is None:
+            raise ValueError("Repository binding is unavailable.")
+        client = factory(binding)
+        if inspect.isawaitable(client):
+            client = await client
+        if client is None or client.repository != binding:
+            raise ValueError("Repository client does not match its binding.")
+        identity = credential_identity_from_client(client)
+        if identity.app_id is None:
+            raise ValueError("Rulesets require the daemon's App identity.")
+        return binding, client, identity.app_id
+
+    async def _cmd_promote_rulesets(self, args: dict) -> dict:
+        """Print admin-owned rulesets and copyable workflow triggers; never write GitHub."""
+        from src.integration.promotion_steps import promotion_rulesets, promotion_workflow_triggers
+
+        result = await self._cmd_promote_validate({**args, "remote": False})
+        if not result.get("valid"):
+            return result
+        project = await self.db.get_project(args["project_id"])
+        repository = await self.db.get_repo(project.integration_repository_id) \
+            if project.integration_repository_id else None
+        if repository is not None and repository.project_id != args["project_id"]:
+            repository = None
+        try:
+            _binding, _client, app_id = await self._promotion_client(repository)
+        except Exception as exc:  # noqa: BLE001 - configuration boundary
+            return {"success": False, "outcome": "not_found", "error": str(exc)}
+        default_branch = repository.default_branch
+        return {
+            **result, "outcome": "rulesets", "app_id": app_id,
+            "rulesets": promotion_rulesets(result["flow"], default_branch=default_branch,
+                                          app_id=app_id),
+            "workflow_triggers": promotion_workflow_triggers(result["flow"],
+                                                            default_branch=default_branch),
         }
 
     async def _promotion_inputs(self, project_id, *, read=False, command=None):

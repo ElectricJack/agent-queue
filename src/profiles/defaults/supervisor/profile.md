@@ -229,6 +229,7 @@ start code work, tests or QA from a digest author turn.
     "promote_cancel",
     "promote_schema",
     "promote_validate",
+    "promote_rulesets",
     "promote_status",
     "promote_list",
     "provider_allocation_preview",

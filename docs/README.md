@@ -63,6 +63,9 @@ local policy, not as a universal default.
 | Configure digests and answer an escalation | [Escalations](guides/escalations.md) |
 | Diagnose a daemon, task, session, or delivery issue | [Operations](guides/operations.md) |
 | Deliver development branches | [Development integration](guides/development-integration.md) |
+| Operate train batch controls | [Git-first train runbook](guides/git-first-train-runbook.md#supervisor-controls) |
+| Configure promotion branches and their PR gates | [Promotion flows](guides/promotion-flow.md) — draft with task-marked pending mechanisms |
+| Prepare, deploy or recover a release | [Releases](guides/releases.md) — shipped deploy/restore and task-marked preparation work |
 | Understand database migration authority | [Migrations](guides/migrations.md) |
 
 ## Reference
