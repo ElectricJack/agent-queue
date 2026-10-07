@@ -37,8 +37,10 @@ from src.database.queries.hierarchy_queries import (
     cross_parent_prerequisites_on_default,
     delivered_prerequisites_for_projects,
     delivered_same_parent_prerequisites_when_hierarchical,
+    epic_refresh_ready,
     materialized_origin_when_hierarchical,
     never_leaseable_container,
+    open_epic_refresh_batches,
 )
 from src.database.queries.session_queries import _row_to_session
 from src.database.queries.task_queries import (
@@ -49,10 +51,12 @@ from src.database.queries.task_queries import (
 )
 from src.database.tables import (
     agents,
+    integration_batches,
     integration_branch_owners,
     integration_repair_stages,
     projects,
     sessions,
+    task_branch_origins,
     task_completion_records,
     task_delivery_receipts,
     task_integration_checkpoints,
@@ -93,6 +97,7 @@ def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
             delivered_same_parent_prerequisites_when_hierarchical(hierarchy_mode)
         ),
         "prerequisite_not_on_default_branch": cross_parent_prerequisites_on_default(hierarchy_mode),
+        "epic_refresh_pending": epic_refresh_ready(hierarchy_mode),
         # Containers settle when their children finish. A worker holding one
         # could never close it and would block the settlement it waits for.
         "container_settles_without_worker": ~container_flag_exists(),
@@ -376,6 +381,7 @@ CLAIM_PREPARATION_METADATA_KEYS = (
     # for the wait, so it goes stale at exactly the same boundary as the
     # ladder it throttles.
     "branch_fenced",
+    "stack_prerequisites_conflict",
 )
 
 #: Matches exactly what PostgreSQL's ``double precision`` input accepts here:
@@ -415,7 +421,25 @@ def numeric_meta_value(column, *, default: str = "0"):
 
 
 def _claim_preparation_predicates():
+    origin = task_branch_origins.alias("claim_stack_origin")
+    repair = tasks.alias("claim_stack_repair")
+    completion = task_completion_records.alias("claim_stack_completion")
+    latest_outcome = (
+        select(completion.c.outcome).where(completion.c.task_id == repair.c.id)
+        .order_by(completion.c.completed_at.desc()).limit(1).correlate(repair).scalar_subquery()
+    )
+    repair_passed = exists(select(literal(1)).where(
+        repair.c.id == origin.c.stack_snapshot["preparation_conflict"]["repair_task_id"].astext,
+        repair.c.status == TaskStatus.COMPLETED.value,
+        latest_outcome == "pass",
+    ).correlate(origin))
     return {
+        "stack_prerequisites_conflict": ~exists(select(literal(1)).where(
+            origin.c.task_id == tasks.c.id,
+            origin.c.retired_at.is_(None),
+            origin.c.stack_snapshot.op("?")("preparation_conflict"),
+            ~repair_passed,
+        )),
         "workspace_requirement": ~exists(select(literal(1)).where(
             task_workspace_requirements.c.task_id == tasks.c.id,
             task_workspace_requirements.c.kind_id.notin_(("project-repo", "vault")),
@@ -438,17 +462,24 @@ def claim_frontier_predicates(hierarchy_modes=None):
     predicates["sibling_prerequisite_not_delivered"] = delivered_prerequisites_for_projects(
         hierarchy_modes, cross_parent=False
     )
-    predicates["prerequisite_not_on_default_branch"] = case(
-        {pid: cross_parent_prerequisites_on_default(mode) for pid, mode in (hierarchy_modes or {}).items()},
-        value=tasks.c.project_id, else_=cross_parent_prerequisites_on_default(),
-    ) if hierarchy_modes else cross_parent_prerequisites_on_default()
+    for name, predicate in (
+        ("prerequisite_not_on_default_branch", cross_parent_prerequisites_on_default),
+        ("epic_refresh_pending", epic_refresh_ready),
+    ):
+        predicates[name] = case(
+            {pid: predicate(mode) for pid, mode in hierarchy_modes.items()},
+            value=tasks.c.project_id, else_=predicate(),
+        ) if hierarchy_modes else predicate()
     return predicates
 
 
 FRONTIER_PREDICATE_DETAILS = {
     "prerequisite_not_on_default_branch": (
-        "a cross-epic prerequisite needs exact source containment on the default branch, "
-        "and an epic refresh must finish before its children start"
+        "a cross-epic prerequisite needs exact source containment on the default branch"
+    ),
+    "epic_refresh_pending": (
+        "the epic must contain every proven cross-epic source and its open epic-refresh "
+        "batch must finish before its children start"
     ),
     "supervisor_profile": "profile_id must not be supervisor",
     "dependency_blocked": "is_blocked must be false",
@@ -469,6 +500,7 @@ FRONTIER_PREDICATE_DETAILS = {
     "retired_repair_delegate": "repair delegate stage must be active or awaiting_completion",
     "workspace_requirement": "workspace requirements must be project-repo or vault",
     "claim_prepare_backoff": "claim_prepare_backoff_until must not be in the future",
+    "stack_prerequisites_conflict": "the prerequisite stack repair needs a passing completion",
     "hold_label": "no hold:* label may be present",
     "route_not_claimable": (
         "route_source must be router, override or role with a profile (legacy too while "
@@ -486,7 +518,7 @@ class ClaimQueryMixin:
     """
 
     async def claim_frontier_exclusions(
-        self, task_id: str, *, router_ready: bool | None = None
+        self, task_id: str, *, router_ready: bool | None = None, cached_only: bool = False,
     ) -> list[dict]:
         """Evaluate the real claim filters for one READY task, without scheduler guesses.
 
@@ -495,28 +527,73 @@ class ClaimQueryMixin:
         """
         from src.integration.delivery_observer import hierarchy_frontier_modes
 
-        modes = await hierarchy_frontier_modes(self, task_id=task_id)
+        unavailable = {}
+        modes = await hierarchy_frontier_modes(
+            self, task_id=task_id, cached_only=cached_only,
+            **({"display_unavailable": unavailable} if cached_only else {}),
+        )
         predicates = claim_frontier_predicates(modes)
         if router_ready is not None:
             predicates["route_not_claimable"] = route_claimable(router_ready)
+        display_predicates = {}
+        if unavailable:
+            from dataclasses import replace
+
+            # These counterfactual predicates classify diagnostic uncertainty
+            # only. The actual modes and all decision queries remain fail closed.
+            display_modes = {
+                pid: replace(
+                    mode,
+                    delivered_prerequisite_ids=(mode.delivered_prerequisite_ids or frozenset())
+                    | unavailable.get(pid, {}).get("siblings", frozenset()),
+                    default_prerequisite_ids=mode.default_prerequisite_ids
+                    | unavailable.get(pid, {}).get("default", frozenset()),
+                ) for pid, mode in modes.items()
+            }
+            display_predicates = {
+                name: predicate for name, predicate in claim_frontier_predicates(display_modes).items()
+                if name in {
+                    "sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
+                }
+            }
         async with self._engine.connect() as conn:
             row = (await conn.execute(
-                select(*(predicate.label(name) for name, predicate in predicates.items()))
+                select(
+                    *(predicate.label(name) for name, predicate in predicates.items()),
+                    *(predicate.label("display_" + name)
+                      for name, predicate in display_predicates.items()),
+                )
                 .where(tasks.c.id == task_id, tasks.c.status == TaskStatus.READY.value)
             )).mappings().one_or_none()
         if row is None:
             return []
         exclusions = [
             {
-                "code": f"frontier_{name}",
+                "code": ("delivery_evidence_unavailable"
+                         if name in display_predicates and row["display_" + name]
+                         else f"frontier_{name}"),
                 "detail": (
-                    "Pool claim frontier excludes this READY task: "
+                    "Delivery evidence has not loaded yet; claim frontier eligibility "
+                    f"for {name} is unknown (snapshot_unavailable)"
+                    if name in display_predicates and row["display_" + name]
+                    else "Pool claim frontier excludes this READY task: "
                     + FRONTIER_PREDICATE_DETAILS[name]
                 ),
                 "ref": task_id,
             }
             for name in predicates if not row[name]
         ]
+        if not row["epic_refresh_pending"]:
+            async with self._engine.connect() as conn:
+                batches = (await conn.execute(
+                    open_epic_refresh_batches().where(tasks.c.id == task_id)
+                    .order_by(integration_batches.c.id)
+                )).scalars().all()
+            for exclusion in exclusions:
+                if exclusion["code"] == "frontier_epic_refresh_pending" and batches:
+                    exclusion["batch_id"] = batches[0]
+                    exclusion["batch_ids"] = batches
+                    exclusion["detail"] += "; blocking epic-refresh batch: " + ", ".join(batches)
         if not row["prerequisite_not_on_default_branch"]:
             from src.database.tables import task_dependencies
 
@@ -532,10 +609,28 @@ class ClaimQueryMixin:
                            source.c.status == "COMPLETED",
                            source.c.parent_task_id.is_distinct_from(dependent.c.parent_task_id)
                            | source.c.parent_task_id.is_(None)))).all()
-            exclusions.extend({"code": "prerequisite_not_on_default_branch", "ref": tid,
-                "epic_id": parent, "detail": f"Prerequisite {tid} (epic {parent or tid}) "
-                "is not proven on the default branch"}
+            missing = set().union(*(entry["default"] for entry in unavailable.values()))
+            exclusions.extend({
+                "code": ("delivery_evidence_unavailable" if tid in missing
+                         else "prerequisite_not_on_default_branch"),
+                "ref": tid, "epic_id": parent,
+                "detail": (f"Prerequisite {tid}: delivery evidence has not loaded yet; "
+                           "default-branch delivery is unknown (snapshot_unavailable)"
+                           if tid in missing else f"Prerequisite {tid} (epic {parent or tid}) "
+                           "is not proven on the default branch"),
+                }
                 for tid, parent in sources if mode is None or tid not in mode.default_prerequisite_ids)
+        if cached_only:
+            for exclusion in exclusions:
+                if exclusion["code"] in {
+                    "frontier_sibling_prerequisite_not_delivered",
+                    "frontier_prerequisite_not_on_default_branch",
+                    "frontier_epic_refresh_pending",
+                    "prerequisite_not_on_default_branch",
+                }:
+                    exclusion["detail"] += (
+                        "; delivery read is cache-only; missing or stale evidence withholds work"
+                    )
         return exclusions
 
     async def take_claim_slot(self, conn, session_id: str, *, now: float, cap: int | None):

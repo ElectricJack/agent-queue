@@ -1232,8 +1232,17 @@ class ClaimCommandsMixin:
                 # Retry only after the failed transaction unwinds; never run
                 # permanent failure cleanup for a database conflict.
                 raise
-            from src.integration.stacked_branches import EpicRefreshPending
+            from src.integration.stacked_branches import EpicRefreshPending, StackPrerequisitesConflict
 
+            if isinstance(exc, StackPrerequisitesConflict):
+                remove_claim_file_if_matches(row.work_dir, task.id, epoch)
+                await self.db.release_claim(
+                    session.id, task_status=TaskStatus.READY, context=exc.code,
+                    now=time.time(), result="no_ready_work", needs_attention=exc.code,
+                    prepare_backoff=True,
+                )
+                self._resolve_claim_waiters(session.id, epoch, "no_ready_work")
+                return self._simple(ClaimResult.NO_READY_WORK, str(exc), row, cap)
             if isinstance(exc, EpicRefreshPending):
                 remove_claim_file_if_matches(row.work_dir, task.id, epoch)
                 await self.db.release_claim(

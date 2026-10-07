@@ -7,7 +7,8 @@ retain the command's exact error dict. An absent bounds key leaves it unchanged;
 explicit ``max: None`` removes the ceiling.
 
 Optional correlation metadata is added to events without overriding domain fields.
-Vault persistence retains the commands' DB-first, logged-failure behavior.
+Bounds and lifecycle edits retain DB-first, logged-failure vault persistence.
+Display-name edits require a backup and durable source write before updating the DB.
 """
 
 from __future__ import annotations
@@ -143,6 +144,101 @@ async def _write_pool_profile_config_to_vault(handler, profile_id: str, updates:
         logger.warning(
             "pool profile edit: wrote %s but the DB re-sync failed: %s", path, result.errors
         )
+
+
+async def rename_pool(handler, args: dict) -> dict:
+    """Persist a display name without round-tripping a profile's configuration."""
+    import asyncio
+    import dataclasses
+    import json
+    import time
+    import unicodedata
+    from pathlib import Path
+
+    from src.commands.profile_commands import _patch_frontmatter_fields
+    from src.profiles.drift import _atomic_write_bytes
+    from src.profiles.parser import parse_profile
+
+    profile_id = args.get("profile_id")
+    if not isinstance(profile_id, str) or not profile_id.strip():
+        return {"success": False, "error": "profile_id is required"}
+    profile_id = profile_id.strip()
+    if any(char in profile_id for char in "/\\:") or profile_id in {".", ".."}:
+        return {"success": False, "error": "profile_id must be a global profile ID"}
+    raw_name = args.get("name")
+    if not isinstance(raw_name, str) or not raw_name.strip():
+        return {"success": False, "error": "name must not be empty"}
+    if any(unicodedata.category(char) == "Cc" for char in raw_name):
+        return {"success": False, "error": "name must not contain control characters"}
+    name = raw_name.strip()
+    if len(name) > 120:
+        return {"success": False, "error": "name must be 120 characters or fewer"}
+    target = await _pool_profile_target(handler, profile_id, require_pool=True)
+    if target is None:
+        return {"success": False, "error": f"no pool profile '{profile_id}'"}
+
+    path = Path(_system_profile_path(handler, profile_id))
+
+    def persist():
+        if path.is_file():
+            original = path.read_bytes()
+            markdown = _patch_frontmatter_fields(original.decode("utf-8"), {"name": name})
+            parsed = parse_profile(markdown)
+            if (
+                not parsed.is_valid
+                or parsed.frontmatter.id not in {"", profile_id}
+                or parsed.frontmatter.name != name
+            ):
+                raise ValueError("vault profile must have valid frontmatter with the matching ID")
+            if original == markdown.encode("utf-8") and target.name == name:
+                return None, None
+            backup_path = f"{path}.bak-{time.time_ns()}"
+            _atomic_write_bytes(backup_path, original, fallback_mode_source=str(path))
+            _atomic_write_bytes(str(path), markdown.encode("utf-8"))
+            return backup_path, original
+        if target.name == name:
+            return None, None
+        # Older database-only profiles have no vault source to patch. Preserve
+        # their complete row before changing the one display field.
+        backup_path = str(
+            Path(handler.config.data_dir) / "backups" / "profiles"
+            / f"{profile_id}-{time.time_ns()}.json"
+        )
+        _atomic_write_bytes(
+            backup_path, json.dumps(dataclasses.asdict(target), indent=2).encode("utf-8")
+        )
+        return backup_path, None
+
+    try:
+        backup_path, original = await asyncio.to_thread(persist)
+    except (OSError, UnicodeError, ValueError) as exc:
+        return {"success": False, "error": f"Could not persist pool name: {exc}"}
+    if backup_path is None:
+        return {"success": True, "profile_id": profile_id, "name": name, "changed": False}
+    payload = {
+        "profile_id": profile_id,
+        "old_name": target.name,
+        "name": name,
+        "backup_path": backup_path,
+    }
+    try:
+        # Do not resync or reconstruct a derived stub: only this column changes.
+        await handler.db.update_profile(profile_id, name=name)
+        seq = await handler.db.log_event("pool.renamed", payload=json.dumps(payload))
+    except Exception:
+        if original is not None:
+            await asyncio.to_thread(_atomic_write_bytes, str(path), original)
+        await handler.db.update_profile(profile_id, name=target.name)
+        logger.exception("Could not update pool name for %s (backup %s)", profile_id, backup_path)
+        return {"success": False, "error": "Could not update or audit pool name in the database"}
+    await _emit(handler, None, "pool.renamed", {**payload, "seq": seq})
+    return {
+        "success": True,
+        "profile_id": profile_id,
+        "name": name,
+        "changed": True,
+        "backup_path": backup_path,
+    }
 
 
 async def set_pool_lifecycle(

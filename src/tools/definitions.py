@@ -400,6 +400,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "provider_allocation_apply": "provider",
     # worker pools — sizing and bounds (swarm-work-model §11)
     "pool_status": "pool",
+    "pool_rename": "pool",
     "pool_scale": "pool",
     "pool_set_lifecycle": "pool",
     "pool_set_enabled": "pool",
@@ -6833,6 +6834,27 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                 },
             },
+        },
+    },
+    {
+        "name": "pool_rename",
+        "description": (
+            "Rename a global pool's display name while keeping its profile ID, routing, "
+            "bounds and task assignments unchanged. Saves the name to the profile source "
+            "with a backup and emits pool.renamed. Backs `aq pool rename`."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "profile_id": {"type": "string", "description": "Stable pool profile ID."},
+                "name": {
+                    "type": "string",
+                    "description": "Display name: 1–120 characters, without control characters.",
+                    "minLength": 1,
+                    "maxLength": 120,
+                },
+            },
+            "required": ["profile_id", "name"],
         },
     },
     {

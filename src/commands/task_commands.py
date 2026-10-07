@@ -3716,7 +3716,8 @@ class TaskCommandsMixin:
             from src.integration.epic_delivery import EpicDeliveryProjection, lease_ttl_from
 
             projection = EpicDeliveryProjection(
-                self.db, lease_ttl=lease_ttl_from(getattr(self.orchestrator, "config", None))
+                self.db, lease_ttl=lease_ttl_from(getattr(self.orchestrator, "config", None)),
+                cached_only=True,
             )
             info["delivery_status"] = (await projection.for_tasks([task.id])).get(task.id)
 
@@ -5425,11 +5426,12 @@ class TaskCommandsMixin:
         reasons.extend(await self.db.claim_frontier_exclusions(
             str(task_id),
             router_ready=await orchestrator_router_ready(self.orchestrator, task.project_id),
+            cached_only=True,
         ))
 
         from src.integration.admission import observe_admission
         admission = await observe_admission(
-            self.db, [str(task_id)], self._development_integration()
+            self.db, [str(task_id)], self._development_integration(), cached_only=True,
         )
         reasons.extend(admission.reasons.get(str(task_id), []))
         if str(task_id) not in admission.allowed and not admission.reasons.get(str(task_id)):
@@ -5560,11 +5562,19 @@ class TaskCommandsMixin:
         # 5. Pool-routed work never reaches the push scheduler at all, so the
         # capacity reasons below (which describe *that* path) would answer a
         # question this task never asks. Say what it is actually waiting on.
-        pool_reason = await self._pool_wait_reason(task)
+        measurement = None
+
+        async def measure_pools():
+            nonlocal measurement
+            if measurement is None:
+                measurement = await self.orchestrator._measure_pools(for_display=True)
+            return measurement
+
+        pool_reason = await self._pool_wait_reason(task, measure_pools=measure_pools)
         if pool_reason is not None:
             reroute = getattr(self.orchestrator, "provider_reroute", None)
             if pool_reason["code"] == "awaiting_pool_session" and reroute is not None:
-                spill = await reroute.spill_state(task)
+                spill = await reroute.spill_state(task, pool_measure=measure_pools)
                 if spill is not None:
                     pool_reason["detail"] += (
                         f"; capacity spill: {spill['kind']} — {spill['detail']}"
@@ -5609,6 +5619,7 @@ class TaskCommandsMixin:
             self.db,
             git_first=getattr(self.config.integration, "git_first", "shadow"),
             train=getattr(self.orchestrator, "integration_train", None),
+            cached_only=True,
         ).task_blockers(str(task_id))
         if integration is not None and integration["integration_active"]:
             reasons.extend(
@@ -5762,7 +5773,7 @@ class TaskCommandsMixin:
             task.id, router=router, run=run, emitted_at=emitted.get(task.id), now=now,
         ))
 
-    async def _pool_wait_reason(self, task):
+    async def _pool_wait_reason(self, task, *, measure_pools=None):
         """``awaiting_pool_session`` for a task routed to a ``lifecycle: pool`` profile.
 
         ``Orchestrator._schedule`` filters these tasks out and
@@ -5859,7 +5870,8 @@ class TaskCommandsMixin:
                 detail += f": {quarantine_reason}"
             return Reason(code="awaiting_pool_session", detail=detail, ref=profile_id)
 
-        measurement = await orchestrator._measure_pools()
+        measurement = await (measure_pools() if measure_pools is not None
+                             else orchestrator._measure_pools(for_display=True))
         from src.scheduler import PoolKey
 
         # The cap is fleet-wide. Keep the project slice for context, but

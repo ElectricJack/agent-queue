@@ -92,10 +92,18 @@ async def test_root_noop_reuses_existing_passing_noop_generation(world):
     )
     result = await record(world, dry_run=False, head=base)
     assert result["completion_id"] == "existing-noop"
-    assert len(await world.db.get_task_completions("noop")) == 1
-    assert (await world.db._delivery_observer.observe(["noop"])).get(
-        "noop"
-    ).state is DeliveryState.NO_ARTIFACT
+    completions = await world.db.get_task_completions("noop")
+    assert len(completions) == 1
+    assert completions[0].commits == []
+    proof = GitProvenance(GitManager(), str(world.origin.clone), repository_url=world.origin.url)
+    await proof.git.afetch_origin(
+        str(world.origin.clone), repository_url=world.origin.url, all_heads=True
+    )
+    retained = await proof.read_completion(CompletionIdentity("p", "r", "noop", "existing-noop"))
+    assert retained["artifact"] is False and retained["source_oid"] == base
+    evidence = (await world.db._delivery_observer.observe(["noop"])).get("noop")
+    assert evidence.state is DeliveryState.NO_CHANGE
+    assert evidence.source_oid == evidence.source_base == base
 
 
 async def test_root_noop_reopened_root_gets_a_new_generation(world):

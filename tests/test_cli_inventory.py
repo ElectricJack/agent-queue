@@ -11,7 +11,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from src.cli.inventory import build_cli_inventory
+from src.cli.inventory import build_cli_inventory, inventory_counts
 
 ROOT = Path(__file__).resolve().parent.parent
 ARTIFACT = ROOT / "docs" / "reference" / "cli-command-inventory.json"
@@ -35,7 +35,8 @@ def test_committed_inventory_is_generated_from_the_live_tree():
     assert committed == expected, (
         "CLI inventory drifted; run `python scripts/generate-cli-command-inventory.py`"
     )
-    assert committed["counts"]["leaf_commands"] == len(committed["commands"])
+    assert "counts" not in committed
+    assert inventory_counts(committed)["leaf_commands"] == len(committed["commands"])
 
 
 def test_start_terminal_has_the_documented_project_option():
@@ -85,7 +86,8 @@ def test_acceptance_statuses_are_conservative_and_preserve_removed_surfaces():
     # evidence that earns it, and no command may regress into broken/unsupported.
     # "untested" is deliberately derived rather than pinned so that a CLI command
     # added after the audit lands there and does not turn this gate red on its own.
-    counts = inventory["counts"]["acceptance_status"]
+    totals = inventory_counts(inventory)
+    counts = totals["acceptance_status"]
     assert {k: counts[k] for k in ("working", "broken", "obsolete", "unsupported")} == {
         # +4: `aq dashboard start|stop|restart|status`, earned by
         # tests/test_cli_dashboard_server.py against a real server process.
@@ -95,7 +97,7 @@ def test_acceptance_statuses_are_conservative_and_preserve_removed_surfaces():
         "unsupported": 0,
     }
     assert counts["untested"] >= 261
-    assert sum(counts.values()) == inventory["counts"]["leaf_commands"]
+    assert sum(counts.values()) == totals["leaf_commands"]
     historical = {row["path"]: row for row in inventory["historical_commands"]}
     assert historical["aq task ask-human"]["acceptance_status"] == "unsupported"
     assert historical["aq task tree"]["acceptance_status"] == "obsolete"
