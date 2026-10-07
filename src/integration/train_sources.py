@@ -345,6 +345,17 @@ class DatabaseTargets:
                 TrainTarget(project_id, repository_id, ref, "epic") for ref in sorted(refs)]
 
 
+def _conflict_action(refusal, snapshot, *, epic: bool):
+    """Name who resolves a root PR that conflicts with the default branch."""
+    if refusal.get("code") != "pr_conflicting":
+        return refusal
+    action = ("the train refreshes the epic from the default branch" if epic else
+              "merge the default branch into the task branch, push it and close the task again")
+    return {**refusal, "default_sha": snapshot.target_oid, "epic": epic, "action": action,
+            "detail": f"root {refusal['task_id']} PR conflicts with the default branch at "
+                      f"{snapshot.target_oid}: {action}"}
+
+
 class DatabaseBatches:
     """The open batch of a target, frozen from exact undelivered completions."""
 
@@ -354,6 +365,47 @@ class DatabaseBatches:
         self.pr_gate = pr_gate
         self.cleanup = cleanup
         self._refresh_snapshots = {}
+        #: epic task id -> ((epic head, default head), refresh detail)
+        self._conflict_refreshes: dict[str, tuple[tuple[str, str], dict[str, Any]]] = {}
+
+    async def _refresh_conflicting_epics(self, target, snapshot, blockers) -> None:
+        """Start one epic refresh per conflicting (epic head, default head) pair.
+
+        GitHub runs no pull_request checks for a PR that conflicts with its
+        base, so the root PR of a stale epic would wait for them forever. The
+        refresh is the attested one ``refresh-epic --apply`` starts: a frozen
+        batch on the epic that this train's own visits test and publish. The
+        refreshed head then needs its own exact-head PR checks.
+        """
+        from src.integration.stacked_branches import EpicRefresh
+
+        for index, blocker in enumerate(blockers):
+            if blocker.get("code") != "pr_conflicting" or not blocker.get("epic"):
+                continue
+            task_id = blocker["task_id"]
+            pair = (blocker["source_sha"], blocker["default_sha"])
+            started = self._conflict_refreshes.get(task_id)
+            if started is None or started[0] != pair:
+                try:
+                    result = await EpicRefresh(self.db, clock=self.clock).start(
+                        task_id, snapshot=snapshot)
+                except (ValueError, GitError) as exc:
+                    # Not started: the next visit tries this pair again.
+                    blockers[index] = {**blocker, "refresh": {
+                        "outcome": "unavailable", "reason": str(exc)[:500]}}
+                    continue
+                refresh = {key: result[key] for key in ("outcome", "batch_id") if key in result}
+                if result["outcome"] == "started":
+                    await self.db.log_event(
+                        "integration.epic_refresh", project_id=target.project_id,
+                        task_id=task_id, payload=json.dumps({
+                            **result, "trigger": "pr_conflicting", "pr_url": blocker["pr_url"]}))
+                # A child batch still owns the epic: try this pair again later.
+                if result["outcome"] == "pending":
+                    blockers[index] = {**blocker, "refresh": refresh}
+                    continue
+                started = self._conflict_refreshes[task_id] = (pair, refresh)
+            blockers[index] = {**blocker, "refresh": started[1]}
 
     async def open_batch(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, service: BatchService, *,
@@ -390,6 +442,7 @@ class DatabaseBatches:
         if not snapshot.error and snapshot.target_oid:
             pending = await self.pending(target, snapshot, blockers=blockers,
                                          gate_pr=current is None)
+            await self._refresh_conflicting_epics(target, snapshot, blockers)
         if current is not None:
             if target.kind == "root":
                 await self._clear_admissions(target)
@@ -698,7 +751,7 @@ class DatabaseBatches:
                 })
                 if refusal:
                     if blockers is not None:
-                        blockers.append(refusal)
+                        blockers.append(_conflict_action(refusal, snapshot, epic=task_id in epics))
                     continue
             members[task_id] = member
         # A member never lands ahead of undelivered work it depends on that
