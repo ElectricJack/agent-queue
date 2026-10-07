@@ -410,6 +410,8 @@ class _Lane:
     #: The (batch, reason) a promotion is waiting on, and how many visits in a row.
     wait: tuple[str | None, str] | None = None
     waits: int = 0
+    #: The in-flight visit's progress facts (stage, batch); shown before its first result.
+    progress: dict | None = None
 
 
 @dataclass
@@ -518,11 +520,17 @@ class IntegrationTrain:
         """The latest visit per target, plus whether one is running now."""
         rows = []
         for key, lane in sorted(self._lanes.items()):
+            running = lane.task is not None and not lane.task.done()
             row = lane.last.as_dict() if lane.last else {
                 "project_id": key[0], "repository_id": key[1], "target_ref": key[2],
-                "state": "unvisited",
+                # A first visit already under way is not "unvisited": say so,
+                # and how far it has got, until its result replaces this row.
+                "state": "visiting" if running else "unvisited",
             }
-            row["running"] = lane.task is not None and not lane.task.done()
+            row["running"] = running
+            if running and lane.progress:
+                row["progress"] = dict(lane.progress)
+                row["visit_started_at"] = lane.started_at
             row["visits"], row["errors"] = lane.visits, lane.errors
             if lane.not_before:
                 row["deferred_until"] = lane.not_before
@@ -554,6 +562,7 @@ class IntegrationTrain:
 
     async def _bounded(self, target: TrainTarget, lane: _Lane) -> None:
         progress = {"stage": "lane_setup"}
+        lane.progress = progress
         token = _PROGRESS.set(progress)
         try:
             visit = await asyncio.wait_for(self.visit(target), self.visit_timeout_seconds)
@@ -580,6 +589,7 @@ class IntegrationTrain:
                 logger.exception("integration train visit failed for %s", target.key)
         finally:
             _PROGRESS.reset(token)
+            lane.progress = None
         pause = self._pauses.get(target.key[:2])
         if (pause is not None and lane.start > pause.since
                 and (visit.detail or {}).get("reason") != "rate_limited"):

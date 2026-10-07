@@ -825,6 +825,7 @@ areas:
     description: "aq doctor: the check registry and runner, exit codes, built-in checks, platform health diagnostics, the operator stall sweep, sustained event-loop lag reports and installed-skill drift."
     match:
       - tests/test_doctor.py
+      - tests/test_doctor_cli_timeout.py
       - tests/test_doctor_stall_checks.py
       - tests/test_doctor_skill_checks.py
       - tests/test_doctor_perf_checks.py
