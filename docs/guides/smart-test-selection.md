@@ -123,7 +123,10 @@ The mandatory/rule inputs are authored, not learned:
 - `tests/selection_areas.yaml` — the area map every test module belongs to.
 - `tests/selection_rules.yaml` — the named rules: mandatory globs, critical
   modules, global invalidators.
-- `tests/selection_catalogue.json` — the generated digest of the map.
+- `tests/selection_catalogue.json` — the generated map with per-module integrity
+  hashes. Its overall digest is computed when loaded, keeping unrelated module
+  changes from rewriting one shared hash line. Version 1 historical blobs retain
+  their original digest validation.
 
 The catalogue records each module's areas and the `src` modules it imports,
 so after adding, moving or renaming a test module, or changing what one

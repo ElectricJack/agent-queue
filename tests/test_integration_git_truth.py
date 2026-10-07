@@ -9,7 +9,13 @@ import pytest
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, GitManager
 from src.integration.delivery_truth import DeliveryRequest, DeliveryState
-from src.integration.git_truth import GitTruth, commits_added, epic_complete, repair_progress
+from src.integration.git_truth import (
+    GitTruth,
+    SharedFetchCancelled,
+    commits_added,
+    epic_complete,
+    repair_progress,
+)
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 
 
@@ -415,6 +421,71 @@ async def test_explicit_retained_no_artifact_is_distinct_from_missing_source(rep
     assert (await (await repo.snapshot()).is_delivered(request)).state == DeliveryState.NO_ARTIFACT
 
 
+async def test_passing_empty_completion_at_its_contained_base_is_no_change(repository):
+    repo = repository
+    request = replace(await repo.retain(repo.base), completion_outcome="pass", completion_commits=())
+    # The proof binds the retained generation, even after its branch moves and
+    # the default branch advances beyond the recorded base.
+    await repo.commit("later-source-work")
+    await repo.run("checkout", "main")
+    await repo.commit("later-default-work")
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    proof = await snapshot.is_delivered(request, source_base=repo.base)
+    assert (proof.state, proof.reason, proof.source_oid) == (
+        DeliveryState.NO_CHANGE, "git_no_change", repo.base,
+    )
+    assert proof.satisfied
+    assert await snapshot.usable(proof, request, current_source_base=repo.base)
+    assert not await snapshot.usable(proof, replace(request, completion_outcome="fail"),
+                                     current_source_base=repo.base)
+    assert await epic_complete(snapshot, [request], green_oid=snapshot.target_oid,
+                               source_bases={"task": repo.base})
+
+
+@pytest.mark.parametrize("scenario", ["missing", "failed", "changed", "missing_base", "off_default"])
+async def test_empty_completion_requires_unambiguous_head_base_and_pass(repository, scenario):
+    repo = repository
+    source = repo.base
+    if scenario in {"changed", "off_default"}:
+        source = await repo.commit("undelivered")
+    request = replace(await repo.retain(source), completion_outcome="pass", completion_commits=())
+    base = source if scenario == "off_default" else repo.base
+    if scenario == "missing":
+        request = replace(request, completion_id="unretained")
+    elif scenario == "failed":
+        request = replace(request, completion_outcome="fail")
+    elif scenario == "missing_base":
+        base = None
+    proof = await (await repo.snapshot()).is_delivered(request, source_base=base)
+    assert proof.state != DeliveryState.NO_CHANGE
+    assert (proof.state, proof.reason) == (
+        (DeliveryState.PENDING, "no_change_base_not_delivered") if scenario == "off_default" else
+        (DeliveryState.UNKNOWN, "missing_git_provenance") if scenario == "missing" else
+        (DeliveryState.PENDING, "source_not_delivered") if scenario == "changed" else
+        (DeliveryState.CONTAINED, "ancestor")
+    )
+    assert proof.satisfied is (scenario in {"failed", "missing_base"})
+
+
+@pytest.mark.parametrize("contained", [False, True])
+async def test_empty_commit_list_preserves_exact_source_containment(repository, contained):
+    repo = repository
+    head = await repo.commit("real-work")
+    request = replace(await repo.retain(head), completion_outcome="pass", completion_commits=())
+    if contained:
+        await repo.publish()
+    snapshot = await repo.snapshot()
+    proof = await snapshot.is_delivered(request, source_base=repo.base)
+    assert (proof.state, proof.reason) == (
+        (DeliveryState.CONTAINED, "ancestor") if contained else
+        (DeliveryState.PENDING, "source_not_delivered")
+    )
+    assert proof.satisfied is contained
+    assert await epic_complete(snapshot, [request], green_oid=snapshot.target_oid,
+                               source_bases={"task": repo.base}) is contained
+
+
 @pytest.mark.parametrize("operation,step,exception", [
     ("read_completion", "completion_provenance", KeyError("private provenance content")),
     ("ancestor", "source_ancestry", GitError("fatal: bad object private content")),
@@ -608,6 +679,80 @@ async def test_cached_facts_skip_repeat_ancestry_and_cache_is_bounded(repository
     snapshot = await repo.snapshot(truth=truth)
     assert (await snapshot.is_delivered(request)).state == DeliveryState.PENDING
     assert list(truth._cache) == [("r", str(repo.remote), head, repo.base)]
+
+
+async def test_warm_completion_proofs_do_not_launch_git_processes(repository, monkeypatch):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    assert (await snapshot.is_delivered(request)).satisfied
+    run = AsyncMock(side_effect=AssertionError("warm proof launched Git"))
+    monkeypatch.setattr(repo.git, "arun_git_result", run)
+    # A new request/cycle still uses immutable Git facts; ordinary metadata
+    # edits must recheck the completion binding without repeating validation.
+    for index in range(137):
+        current = replace(request, task_version=index, branch_name=f"renamed-{index}")
+        assert (await snapshot.is_delivered(current)).satisfied
+    run.assert_not_awaited()
+
+
+async def test_cached_only_proofs_withhold_cold_changed_and_evicted_inputs(repository, monkeypatch):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.publish()
+    truth = GitTruth(repo.git, cache_limit=1)
+    snapshot = await repo.snapshot(truth=truth)
+    display = replace(snapshot, cached_only=True)
+    run = AsyncMock(wraps=repo.git.arun_git_result)
+    monkeypatch.setattr(repo.git, "arun_git_result", run)
+    assert (await display.is_delivered(request)).reason == "proof_unavailable"
+    run.assert_not_awaited()
+    proof = await snapshot.is_delivered(request)
+    run.reset_mock()
+    assert await display.is_delivered(request) == proof
+    for changed in (replace(request, completion_id="close-2"),
+                    replace(request, task_version=2), replace(request, task_status="READY")):
+        assert not (await display.is_delivered(changed)).satisfied
+    assert not (await display.is_delivered(request, source_base=repo.base)).satisfied
+    moved_target = replace(display, observation=replace(display.observation, target_oid=repo.base))
+    assert not (await moved_target.is_delivered(request)).satisfied
+    # Ref retargeting invalidates the proof even when task, source and target
+    # are unchanged. Only the newly pinned marker may bind this generation.
+    refs = dict(display.observation.source_heads)
+    identity = CompletionIdentity("p", "r", "task", "close-1")
+    refs["refs/remotes/origin/" + identity.branch] = repo.base
+    moved_marker = replace(display, observation=replace(display.observation, source_heads=refs))
+    assert not (await moved_marker.is_delivered(request)).satisfied
+    other_store = replace(display, observation=replace(display.observation,
+                                                       store=str(repo.path / "missing")))
+    assert not (await other_store.is_delivered(request)).satisfied
+    other_url = replace(display, observation=replace(display.observation, repository_url="other"))
+    assert not (await other_url.is_delivered(request)).satisfied
+    run.assert_not_awaited()
+    # Eviction is a miss, never a request to revalidate in an interactive read.
+    assert (await snapshot.is_delivered(replace(request, task_version=2))).satisfied
+    assert (await display.is_delivered(request)).reason == "proof_unavailable"
+    assert all(len(cache) <= 1 for cache in (truth._proofs, truth._completions, truth._objects))
+
+
+async def test_cached_completion_records_cannot_be_mutated_by_consumers(repository, monkeypatch):
+    repo = repository
+    head = await repo.commit("one")
+    await repo.retain(head)
+    snapshot = await repo.snapshot()
+    identity = CompletionIdentity("p", "r", "task", "close-1")
+    record = await snapshot.read_completion(identity)
+    record["source_oid"] = repo.base
+    record["identity"]["generation"] = "other"
+    run = AsyncMock(side_effect=AssertionError("cached record launched Git"))
+    monkeypatch.setattr(repo.git, "arun_git_result", run)
+    cached = await snapshot.read_completion(identity)
+    assert cached["source_oid"] == head
+    assert cached["identity"]["generation"] == "close-1"
+    run.assert_not_awaited()
 
 
 async def test_pinned_completion_ref_and_two_targets_share_one_fetch(repository, monkeypatch):
@@ -918,7 +1063,7 @@ async def test_shared_fetch_cancellation_does_not_strand_other_readers(repositor
         await cancelled
     release.set()
     if cancel_leader:
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(SharedFetchCancelled, match="shared fetch was cancelled"):
             await survivor
     else:
         assert (await survivor).target_oid == repo.base

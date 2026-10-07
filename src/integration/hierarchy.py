@@ -157,8 +157,14 @@ def _workspace_precondition(precondition: str, detail: str, **context) -> Hierar
     )
 
 
-async def resolve_workspace_checkpoint(db, git, task: dict, repo: RepoConfig) -> str:
-    """Return an owned writer workspace's clean, exactly-pushed current HEAD."""
+async def resolve_workspace_checkpoint(
+    db, git, task: dict, repo: RepoConfig, *, unchanged_base: str | None = None,
+) -> str:
+    """Return an owned writer workspace's clean, exactly-pushed current HEAD.
+
+    A no-change completion may instead supply its recorded exact origin base:
+    equality proves no task commits need publishing, without borrowing a ref.
+    """
     workspace = await db.get_workspace_for_task(task["id"])
     if workspace is None:
         raise _workspace_precondition(
@@ -202,6 +208,10 @@ async def resolve_workspace_checkpoint(db, git, task: dict, repo: RepoConfig) ->
     actual_head = (await git._arun(["rev-parse", "HEAD"], cwd=checkout)).lower()
     if not is_valid_git_oid(actual_head):
         raise HierarchyError("dirty", "workspace HEAD is not an exact Git OID")
+    if unchanged_base is not None:
+        if not is_valid_git_oid(unchanged_base) or actual_head != unchanged_base:
+            raise HierarchyError("dirty", "no-change workspace HEAD differs from its recorded base")
+        return actual_head
     from src.git.manager import RemoteRefState
 
     remote = await git.als_remote_ref(checkout, task["branch_name"].removeprefix("refs/heads/"))

@@ -386,12 +386,18 @@ async def observe_admission(db, candidate_ids, service, *, cached_only=False):
                 continue  # Non-development dependencies use the graph predicate.
             proof = evidence.get(dep_id)
             if request.task_status != "COMPLETED" or proof is None or not proof.satisfied:
+                unavailable = (cached_only and proof is not None
+                               and proof.reason == "snapshot_unavailable")
+                detail = f"{proof.state} ({proof.reason})" if proof else "unknown"
+                if unavailable:
+                    detail = ("delivery evidence has not loaded yet; claimability is unknown "
+                              "(snapshot_unavailable)")
                 reasons.append(
                     {
-                        "code": "development_dependency_delivery",
+                        "code": ("delivery_evidence_unavailable" if unavailable
+                                 else "development_dependency_delivery"),
                         "ref": dep_id,
-                        "detail": f"Development prerequisite {dep_id}: "
-                        + (f"{proof.state} ({proof.reason})" if proof else "unknown"),
+                        "detail": f"Development prerequisite {dep_id}: {detail}",
                     }
                 )
         if reasons:

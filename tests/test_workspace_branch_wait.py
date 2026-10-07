@@ -154,6 +154,20 @@ async def test_plain_task_branch_busy_is_not_a_sibling_wait(env):
     assert env.orch._workspace_wait_reasons["calm-flare"] == "branch_held"
 
 
+async def test_hierarchy_stack_conflict_reports_its_named_workspace_wait(env):
+    from src.integration.stacked_branches import StackPrerequisitesConflict
+
+    await env.db.create_repo(RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE))
+    await env.db.update_project("p", hierarchical_integration_mode="train",
+                                integration_repository_id="repo")
+    task = await _task(env, "stack-dependent")
+    env.orch._hierarchy_origin_and_fence = AsyncMock(side_effect=StackPrerequisitesConflict({
+        "files": ["source.py"], "repair_task_id": "repair",
+    }))
+    assert await env.orch._prepare_workspace(task, await env.db.get_agent("agent")) is None
+    assert env.orch._workspace_wait_reasons[task.id] == "stack_prerequisites_conflict"
+
+
 async def test_plan_subtask_still_waits_for_its_sibling(env):
     """The sibling wait survives for the case it was written for."""
     parent = await _task(env, "plan", branch_name="aq/plan")

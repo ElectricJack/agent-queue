@@ -78,6 +78,48 @@ async def test_expiry_cannot_be_renewed_and_same_holder_gets_new_fence(env):
         await env.lock.renew(old)
 
 
+async def test_expired_lease_can_be_renewed_with_allow_expired_and_matching_session(env):
+    old = await env.lock.acquire(TARGET, "worker", ttl_seconds=10)
+    async with env.db.immediate() as conn:
+        await conn.execute(
+            update(owners).where(owners.c.holder == "worker").values(
+                session_id="sess", workspace_id="ws"
+            )
+        )
+    env.now += 10
+    with pytest.raises(StaleFence, match="expired"):
+        await env.lock.renew(old)
+    # Wrong session_id should fail
+    with pytest.raises(StaleFence, match="expired"):
+        await env.lock.renew(old, session_id="other", allow_expired=True)
+    # No session_id should fail
+    with pytest.raises(StaleFence, match="expired"):
+        await env.lock.renew(old, allow_expired=True)
+    # Correct session_id should succeed
+    renewed = await env.lock.renew(old, session_id="sess", allow_expired=True)
+    assert renewed > env.now
+    assert (await env.lock.get(TARGET)).holder == "worker"
+    assert (await env.lock.get(TARGET)).fence == old.token
+
+
+@pytest.mark.parametrize("allow_expired", [False, True])
+async def test_null_expiry_fails_closed_even_with_matching_session(env, allow_expired, monkeypatch):
+    fence = await env.lock.acquire(TARGET, "worker")
+    async with env.db.immediate() as conn:
+        row = dict((await conn.execute(select(owners))).mappings().one())
+    # PostgreSQL's binding constraint rejects this row. Exercise the defensive
+    # check at the lock-read seam without weakening the database constraint.
+    row.update(session_id="sess", expires_at=None)
+    monkeypatch.setattr(env.lock, "lock_on", AsyncMock(return_value=row))
+    with pytest.raises(StaleFence, match="expired"):
+        await env.lock.renew(fence, session_id="sess", allow_expired=allow_expired)
+    transport = SimpleNamespace(apush_repository_oid=AsyncMock(return_value=NEW))
+    with pytest.raises(StaleFence, match="expired"):
+        await push(env.lock, fence, transport)
+    transport.apush_repository_oid.assert_not_awaited()
+    assert (await env.lock.get(TARGET)).expires_at is None
+
+
 async def test_acquire_replay_does_not_extend_but_heartbeat_does(env):
     first = await env.lock.acquire(TARGET, "worker", ttl_seconds=10)
     env.now += 5

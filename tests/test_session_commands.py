@@ -1436,6 +1436,103 @@ class TestEndToEndOnFakeProvider:
         ]
 
     @pytest.mark.parametrize("mode", ["train", "hierarchy", "development"])
+    @pytest.mark.parametrize("vault_only", [False, True])
+    async def test_empty_close_retains_no_change_proof_in_every_train_mode(
+        self, db, real_orch, real_handler, tmp_path, mode, vault_only,
+    ):
+        from sqlalchemy import insert
+        from src.integration.delivery_truth import DeliveryState, load_delivery_requests
+        from src.integration.git_truth import GitTruth
+        from src.integration.provenance import CompletionIdentity, GitProvenance
+
+        wd, git, base = await self._setup_development_git(db, real_orch, tmp_path, artifact=False)
+        await db.update_project("p1", hierarchical_integration_mode=mode)
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(task_branch_origins).values(
+                id="t1-origin", task_id="t1", repository_id="repo", branch_name="aq/t1",
+                base_sha=base, creation_generation=0, reserved=True, materialized=True,
+                created_at=time.time(),
+            ))
+        if vault_only:
+            await db.create_workspace(Workspace(
+                id="vault", project_id="p1", workspace_path=str(tmp_path / "vault"),
+                source_type=RepoSourceType.LINK, kind_id="vault",
+            ))
+            await db.add_task_workspace_requirements("t1", [("vault", None)])
+            await git._arun(["push", "origin", "--delete", "aq/t1"], cwd=wd)
+        close = await real_handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "summary": "no source changes",
+            "work_outcome": "shipped" if vault_only else "no-op",
+        })
+        assert close["success"] and close["status"] == "COMPLETED", close
+        completion = await db.get_task_completion("t1")
+        assert completion.outcome == "pass" and completion.commits == []
+        repo = await db.get_repo("repo")
+        # Read from a fresh store after task-ref deletion: close itself must
+        # have retained the immutable head; no live branch can supply proof.
+        if not vault_only:
+            await git._arun(["push", "origin", "--delete", "aq/t1"], cwd=wd)
+        retained = str(tmp_path / "retained")
+        await git._arun(["clone", repo.url, retained], cwd=str(tmp_path))
+        store = GitProvenance(git, retained, repository_url=repo.url)
+        record = await store.read_completion(CompletionIdentity("p1", "repo", "t1", completion.id))
+        assert record["source_oid"] == base
+        request = (await load_delivery_requests(
+            db, ["t1"], repository_id="repo", target_ref="refs/heads/main",
+        ))["t1"]
+        snapshot = await GitTruth(git).snapshot(
+            retained, project_id="p1", repository_id="repo", repository_url=repo.url,
+            target_ref="refs/heads/main",
+        )
+        proof = await snapshot.is_delivered(request, source_base=base)
+        assert proof.state == DeliveryState.NO_CHANGE and proof.satisfied
+
+    @pytest.mark.parametrize("failure", ["changed_head", "missing_base", "dirty", "publication", "moved_source"])
+    async def test_vault_empty_close_refuses_unbound_or_unretained_source(
+        self, db, real_orch, real_handler, tmp_path, monkeypatch, failure,
+    ):
+        from pathlib import Path
+        from sqlalchemy import insert
+        from src.git.manager import GitError
+        from src.integration.provenance import GitProvenance
+
+        wd, git, base = await self._setup_development_git(
+            db, real_orch, tmp_path, artifact=failure == "changed_head",
+        )
+        await db.create_workspace(Workspace(
+            id="vault", project_id="p1", workspace_path=str(tmp_path / "vault"),
+            source_type=RepoSourceType.LINK, kind_id="vault",
+        ))
+        await db.add_task_workspace_requirements("t1", [("vault", None)])
+        if failure != "missing_base":
+            async with db._engine.begin() as conn:
+                await conn.execute(insert(task_branch_origins).values(
+                    id="t1-origin", task_id="t1", repository_id="repo", branch_name="aq/t1",
+                    base_sha=base, creation_generation=0, reserved=True, materialized=True,
+                    created_at=time.time(),
+                ))
+        if failure == "dirty":
+            (Path(wd) / "dirty").write_text("uncommitted source")
+        elif failure == "publication":
+            async def failed(*args, **kwargs):
+                raise GitError("provenance publication failed")
+            monkeypatch.setattr(GitProvenance, "write_completion", failed)
+        elif failure == "moved_source":
+            original = GitProvenance.write_completion
+            async def moved(store, *args, **kwargs):
+                result = await original(store, *args, **kwargs)
+                await git._arun(["commit", "--allow-empty", "-m", "racing commit"], cwd=wd)
+                return result
+            monkeypatch.setattr(GitProvenance, "write_completion", moved)
+        close = await real_handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "summary": "vault delivery", "work_outcome": "shipped",
+        })
+        assert close["result"] == "verification_failed", close
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+        assert await db.get_task_completion("t1") is None
+
+    @pytest.mark.parametrize("mode", ["train", "hierarchy", "development"])
     @pytest.mark.parametrize("failure", ["old_commit", "unpublished_provenance", "moved_source", "branchless_artifact"])
     async def test_development_provenance_refusal_retains_claim_and_completion_history(
         self, db, real_orch, real_handler, tmp_path, monkeypatch, failure, mode

@@ -52,10 +52,19 @@ class RegenerationFailure(RuntimeError):
 class GeneratedMergeConflict(RuntimeError):
     """A source conflict or regeneration failure, with the original Git evidence."""
 
-    def __init__(self, result, reason: str | None = None):
+    def __init__(self, result, reason: str | None = None, *, files=()):
         self.stdout, self.stderr = result.stdout, result.stderr
         self.reason = reason
+        self.files = tuple(files)
         super().__init__(reason or result.stdout or result.stderr or "merge conflict")
+
+
+class GeneratedRegenerationFailure(GitError):
+    """Retryable clean-merge failure carrying the artifact paths for repair."""
+
+    def __init__(self, reason: str, files):
+        self.files = tuple(files)
+        super().__init__(reason)
 
 
 class MissingRegenerator(RegenerationFailure):
@@ -79,6 +88,7 @@ async def merge_generated_tree(
     command: str | None = DEFAULT_REGENERATE_COMMAND,
     timeout_seconds: int = REGENERATION_TIMEOUT_SECONDS,
     regenerate: bool = True,
+    regenerations: list[dict] | None = None,
 ) -> str:
     """Merge exact inputs and rebuild overlapping generated artifacts.
 
@@ -151,7 +161,7 @@ async def merge_generated_tree(
     if not shlex.split(command or ""):
         raise MissingRegenerator(f"no regenerate command is configured ({command!r})")
     try:
-        return await regenerated_tree(
+        rebuilt = await regenerated_tree(
             git, store, tree, command=command, timeout_seconds=timeout_seconds,
             restore_from=current, restore_paths=tuple(sorted(conflicts)),
         )
@@ -163,8 +173,18 @@ async def merge_generated_tree(
         if exc.retryable and not merged.returncode:
             # A clean merge has no conflict to record; an infrastructure
             # failure must stay retryable instead of parking the member.
-            raise GitError(f"generated regeneration failed: {exc.reason}") from exc
-        raise GeneratedMergeConflict(merged, f"generated regeneration failed: {exc.reason}") from exc
+            raise GeneratedRegenerationFailure(
+                f"generated regeneration failed: {exc.reason}", sorted(generated),
+            ) from exc
+        raise GeneratedMergeConflict(
+            merged, f"generated regeneration failed: {exc.reason}", files=sorted(generated),
+        ) from exc
+    if regenerations is not None:
+        regenerations.append({
+            "files": sorted(generated), "merged_tree": tree, "regenerated_tree": rebuilt,
+            "parents": [current, other],
+        })
+    return rebuilt
 
 
 def _subprocess_env() -> dict[str, str]:
