@@ -59,6 +59,8 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_release",
         "integration_cleanup",
         "integration_status",
+        "integration_cutover_plan",
+        "integration_cutover",
         "integration_abort_batch",
         "integration_pause_batch",
         "integration_resume_batch",
@@ -140,6 +142,31 @@ class IntegrationAbortBatchArgs(CommandArgs):
     batch_id: str = Field(min_length=1)
     reason: str = ""
     dry_run: bool = True
+
+
+class IntegrationCutoverArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    flow: Any = None
+    allow_epics: bool = False
+    reverse: bool = False
+    dry_run: bool = True
+    expected_generation: StrictInt | None = Field(default=None, ge=0)
+    baseline: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def require_saved_plan(self):
+        if not self.dry_run and self.baseline is None:
+            raise ValueError("apply requires the saved cutover-plan baseline")
+        return self
+
+
+class IntegrationCutoverValue(CommandValue):
+    project_id: str | None = None
+    generation: int | None = None
+    dry_run: bool | None = None
+    fields: tuple[str, ...] = ()
+    plan: dict[str, Any] | None = None
+    blockers: tuple[dict[str, Any], ...] = ()
 
 
 class IntegrationRetireOriginArgs(CommandArgs):
@@ -2949,6 +2976,27 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     declaration together.  Unavailable security-sensitive mutations remain
     outside the allowlist.
     """
+    for name in ("integration_cutover_plan", "integration_cutover"):
+        if registry.get(name) is not None:
+            continue
+        read_only = name == "integration_cutover_plan"
+        outcomes = ("planned",) if read_only else ("preview", "configured", "blocked", "stale",
+                                                   "busy", "invalid", "in_use", "not_found")
+        outcomes += ("refused",)
+        contract = _operational_contract(
+            name, IntegrationCutoverArgs, outcomes,
+            successes=frozenset({"planned", "preview", "configured"}),
+            side_effect=SideEffectClass.READ if read_only else SideEffectClass.COMPOSITE,
+            result_model=IntegrationCutoverValue, supports_preview=not read_only)
+
+        async def cutover_control(args, ctx, command=name, outcomes=outcomes):
+            return await _hierarchy_adapter(command, args, ctx, IntegrationCutoverValue, set(outcomes))
+
+        async def cutover_preview(args, ctx, invoke=cutover_control):
+            return await invoke(args.model_copy(update={"dry_run": True}), ctx)
+
+        registry.register(CommandRegistration(
+            name, contract, cutover_control, None if read_only else cutover_preview))
     for name, args_model, applied, value_model in (
         ("integration_abort_batch", IntegrationAbortBatchArgs, "aborted", IntegrationTrainControlValue),
         ("integration_pause_batch", IntegrationAbortBatchArgs, "paused", IntegrationTrainControlValue),

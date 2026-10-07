@@ -10689,6 +10689,134 @@
         "type": "object"
       }
     },
+    "integration_cutover": {
+      "name": "integration_cutover",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "flow": {
+            "default": null,
+            "title": "Flow"
+          },
+          "allow_epics": {
+            "default": false,
+            "title": "Allow Epics",
+            "type": "boolean"
+          },
+          "reverse": {
+            "default": false,
+            "title": "Reverse",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Generation"
+          },
+          "baseline": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Baseline"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationCutoverArgs",
+        "type": "object"
+      }
+    },
+    "integration_cutover_plan": {
+      "name": "integration_cutover_plan",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "flow": {
+            "default": null,
+            "title": "Flow"
+          },
+          "allow_epics": {
+            "default": false,
+            "title": "Allow Epics",
+            "type": "boolean"
+          },
+          "reverse": {
+            "default": false,
+            "title": "Reverse",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Generation"
+          },
+          "baseline": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Baseline"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationCutoverArgs",
+        "type": "object"
+      }
+    },
     "integration_delivery_readiness": {
       "name": "integration_delivery_readiness",
       "description": "Read whether every child of one parent has delivered, changing nothing.",

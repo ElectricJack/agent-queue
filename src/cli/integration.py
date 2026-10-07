@@ -31,6 +31,74 @@ def integration() -> None:
     """Inspect integration Subjects and apply current recovery proofs."""
 
 
+def _cutover(ctx, command, project_id, flow_file, reverse, allow_epics,
+             apply=False, expected_generation=None, plan_file=None):
+    import json
+    from pathlib import Path
+
+    import yaml
+
+    if not reverse and flow_file is None:
+        raise click.UsageError("forward cutover requires --flow FILE")
+    if reverse and flow_file is not None:
+        raise click.UsageError("--reverse restores the prior flow; omit --flow")
+    if apply and expected_generation is None:
+        raise click.UsageError("--apply requires --expected-generation from cutover-plan")
+    if apply and plan_file is None:
+        raise click.UsageError("--apply requires --plan FILE saved before manual GitHub changes")
+    args = {"project_id": project_id, "reverse": reverse, "allow_epics": allow_epics,
+            "dry_run": not apply, "expected_generation": expected_generation}
+    if flow_file is not None:
+        try:
+            args["flow"] = yaml.safe_load(Path(flow_file).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
+            raise click.UsageError(f"cannot read flow: {exc}") from exc
+    if plan_file is not None:
+        try:
+            document = json.loads(Path(plan_file).read_text(encoding="utf-8"))
+            document = document.get("data", document)
+            document = document.get("value", document)
+            args["baseline"] = document.get("plan", document)
+        except (OSError, UnicodeError, ValueError, AttributeError) as exc:
+            raise click.UsageError(f"cannot read saved plan: {exc}") from exc
+
+    async def run():
+        async with _get_client(ctx.obj.get("api_url") if ctx.obj else None) as client:
+            return await client.execute(command, args)
+
+    emit(ctx, _run(run()), render=lambda value: click.echo(json.dumps(value, indent=2)))
+
+
+@integration.command("cutover-plan")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.option("--flow", "flow_file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--reverse", is_flag=True, help="Plan restoration of the last cutover.")
+@click.option("--allow-epics", is_flag=True, help="Permit live aq/epic targets at the barrier.")
+@click.pass_context
+@_handle_errors
+def integration_cutover_plan(ctx, project_id, flow_file, reverse, allow_epics):
+    """Print ordered changes, live authority and PRs without writing state."""
+    _cutover(ctx, "integration_cutover_plan", project_id, flow_file, reverse, allow_epics)
+
+
+@integration.command("cutover")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.option("--flow", "flow_file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--reverse", is_flag=True, help="Restore the prior binding, flow and data fixes.")
+@click.option("--allow-epics", is_flag=True, help="Keep live aq/epic targets intact.")
+@click.option("--apply/--dry-run", default=False, help="Apply the plan; default is preview.")
+@click.option("--expected-generation", type=click.IntRange(min=0))
+@click.option("--plan", "plan_file", type=click.Path(exists=True, dir_okay=False),
+              help="Saved cutover-plan JSON from before manual GitHub changes.")
+@click.pass_context
+@_handle_errors
+def integration_cutover(ctx, project_id, flow_file, reverse, allow_epics, apply,
+                        expected_generation, plan_file):
+    """Preview or atomically rebind the train after its quiescence barrier."""
+    _cutover(ctx, "integration_cutover", project_id, flow_file, reverse, allow_epics,
+             apply, expected_generation, plan_file)
+
+
 @integration.command("pause-batch")
 @click.argument("batch_id")
 @click.option("--reason", default="", help="Explanation recorded with the intent.")
