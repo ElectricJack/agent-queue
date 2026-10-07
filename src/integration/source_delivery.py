@@ -48,6 +48,15 @@ against the exact source identity the observation names, may withhold work.
 An unclaimed READY delegate can be retired by the command handler after a
 fresh proof and a locked identity check. A claimed delegate keeps its writer;
 its completed repair remains deliverable even after the original lands.
+
+Discarding the source completion revokes the purpose of every bound delegate.
+Reopen retirement fences writers and retires completed repairs in that same
+transaction. Train admission and publication recheck the current source head,
+including the full lineage of repairs of repairs: that recheck is
+:func:`~src.integration.delivery_truth.superseded_source_repairs_on`, which
+lives beside the delivery requests it reads in
+:mod:`src.integration.delivery_truth` because the reduced train must not
+import this module. Only the write side stays here.
 """
 
 from __future__ import annotations
@@ -57,9 +66,17 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 
 from src.database.tables import integration_source_ci, tasks
+from src.integration.delivery_truth import (
+    REOPEN_DISPOSITION,
+    RETIREMENT_KEY,
+    SUPERSEDED,
+    repair_bindings_on,
+    repair_ids,
+    superseded_source_repairs_on,
+)
 
 #: Key under which a source-CI observation's evidence records what was
 #: observed.  Audit only: no eligibility decision reads it back.
@@ -71,7 +88,71 @@ DELIVERED = "delivered"
 UNDELIVERED = "undelivered"
 #: No canonical answer was obtainable; never a licence to skip.
 UNKNOWN = "unknown"
-RETIREMENT_KEY = "source_ci_retirement"
+
+
+async def retire_reopened_source_repairs_on(db, conn, task_id, *, context, source_head=None):
+    """Cancel all delegates of a discarded completion in its transaction.
+
+    Retire origins and fence held writers before any reader can see the reopen.
+    Keep lineage and comments, and recurse through repair-of-repair attempts.
+    The caller merges transition notifications into its post-commit result.
+    """
+    from src.database.tables import task_branch_origins, task_metadata
+    from src.models import TaskStatus
+
+    pending, seen, transitions = {task_id}, {task_id}, []
+    while pending:
+        statement = select(integration_source_ci).where(
+            integration_source_ci.c.task_id.in_(pending))
+        if source_head is not None and pending == {task_id}:
+            statement = statement.where(integration_source_ci.c.source_head == source_head)
+        rows = (await conn.execute(statement)).mappings().all()
+        pending = set()
+        for row in rows:
+            for repair_id in sorted(repair_ids(row) - seen):
+                seen.add(repair_id)
+                pending.add(repair_id)
+                repair = (await conn.execute(select(tasks).where(
+                    tasks.c.id == repair_id,
+                ).with_for_update())).mappings().one_or_none()
+                if repair is None:
+                    continue  # Archived tasks cannot enter the completion frontier.
+                existing = await conn.scalar(select(task_metadata.c.value).where(
+                    task_metadata.c.task_id == repair_id,
+                    task_metadata.c.key == RETIREMENT_KEY,
+                ))
+                if existing and json.loads(existing).get("disposition") == REOPEN_DISPOSITION:
+                    continue
+                now = time.time()
+                reason = (f"Source CI repair superseded by reopen of {task_id} ({context}); "
+                          f"bound source {row['task_id']} head {row['source_head']}")
+                retirement = {
+                    "disposition": REOPEN_DISPOSITION, "source_task_id": row["task_id"],
+                    "source_head": row["source_head"], "source_base": row["source_base"],
+                    "generation": row["generation"], "repository_id": row["repository_id"],
+                    "reopened_task_id": task_id, "context": context,
+                    "reason": reason, "retired_at": now,
+                }
+                await db._upsert_meta(repair_id, RETIREMENT_KEY, retirement, conn=conn)
+                await db._upsert_meta(repair_id, "work_outcome", "abandoned", conn=conn)
+                await conn.execute(update(task_branch_origins).where(
+                    task_branch_origins.c.task_id == repair_id,
+                    task_branch_origins.c.retired_at.is_(None),
+                ).values(retired_at=now))
+                transitions.append(await db._apply_transition(
+                    conn, repair_id, TaskStatus.FAILED, context=SUPERSEDED, force=True,
+                    _manual_pause_control=True, assigned_agent_id=None,
+                    retry_count=repair["max_retries"],
+                ))
+                await db.add_task_comment(
+                    repair_id, reason, author_kind="agent",
+                    author_id="service:integration-source-ci", conn=conn,
+                )
+                await db.log_event(
+                    "integration.source_ci_repair_superseded", project_id=repair["project_id"],
+                    task_id=repair_id, payload=json.dumps(retirement), conn=conn,
+                )
+    return transitions
 
 
 def source_identity(task_id: str, source) -> tuple[str, str, str, str, int]:
@@ -422,7 +503,9 @@ def record_delivery_evidence(
 __all__ = [
     "DELIVERED",
     "DELIVERY_KEY",
+    "REOPEN_DISPOSITION",
     "RETIREMENT_KEY",
+    "SUPERSEDED",
     "UNDELIVERED",
     "UNKNOWN",
     "SourceDeliveryProof",
@@ -431,5 +514,8 @@ __all__ = [
     "prove_source_delivered",
     "queued_source_repairs",
     "record_delivery_evidence",
+    "repair_bindings_on",
+    "repair_ids",
     "retire_delivered_queued_repairs",
+    "superseded_source_repairs_on",
 ]

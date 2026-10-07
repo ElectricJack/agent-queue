@@ -23,6 +23,9 @@ from src.integration.checks import (
     Conclusion,
     RequiredChecks,
 )
+from src.integration.selection_metrics import selection_count, selection_stage
+from src.messages.delivery import MessageDeliveryEngine
+from src.models import Message
 from src.integration.train import (
     BatchSelection,
     CandidateChecks,
@@ -1250,15 +1253,16 @@ async def test_a_rate_limit_pauses_every_target_of_the_repository_behind_one_pro
     # The next probe succeeds and releases every target of the repository.
     limited["r"] = False
     clock[0] = 280.0
-    assert (await t.tick())["started"] == [a, s]
-    assert (await t.tick())["deferred"] == [b]
+    # The sibling that has waited longest gets this probe.
+    assert (await t.tick())["started"] == [b, s]
+    assert (await t.tick())["deferred"] == [a]
     await t.drain()
     clock[0] = 281.0
     assert (await t.tick())["started"] == [a, b, s]
     await t.drain()
     assert [v for v in visits if v[2] == "r"] == [
         (100.0, "refs/heads/a", "r"), (100.0, "refs/heads/b", "r"),
-        (160.0, "refs/heads/a", "r"), (280.0, "refs/heads/a", "r"),
+        (160.0, "refs/heads/a", "r"), (280.0, "refs/heads/b", "r"),
         (281.0, "refs/heads/a", "r"), (281.0, "refs/heads/b", "r"),
     ]
 
@@ -1283,7 +1287,7 @@ async def test_a_cancelled_probe_does_not_hold_the_repository_paused():
     clock[0] = 160.0
     assert (await t.tick())["started"] == ["p/r/refs/heads/a"]
     await t.stop()
-    assert (await t.tick())["started"] == ["p/r/refs/heads/a"]
+    assert (await t.tick())["started"] == ["p/r/refs/heads/b"]
     await t.stop()
 
 
@@ -1489,6 +1493,136 @@ async def test_overlapping_ticks_do_not_double_start():
     gate.set()
     assert (await first)["started"] == ["p/r/refs/heads/main"]
     await t.drain()
+
+
+async def test_repository_budget_admits_new_work_and_keeps_inbox_reconciliation_running():
+    old = [TrainTarget("p", "r", f"refs/heads/old-{i}") for i in range(55)]
+    fresh = TrainTarget("p", "r", "refs/heads/fresh")
+    other = TrainTarget("q", "s", "refs/heads/main")
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    active, peak, calls = 0, 0, []
+
+    class SlowBatches(Batches):
+        async def open_batch(self, target, snapshot, service):
+            nonlocal active, peak
+            if target in old:
+                active += 1
+                peak = max(peak, active)
+                calls.append(target.key)
+                if active == 4:
+                    entered.set()
+                try:
+                    with selection_stage("root_delivery", items=1):
+                        await release.wait()
+                finally:
+                    active -= 1
+                return BatchSelection(blockers=({"code": "missing_provenance"},))
+            return BatchSelection()
+
+    targets = Targets(*old, other)
+    lanes = {target.key: lane(Service()) for target in [*old, fresh, other]}
+    t = train(targets, SlowBatches(), lanes)
+    try:
+        scheduled = await t.tick()
+        assert len(scheduled["started"]) == 5  # four here, one in another repository
+        assert len(scheduled["deferred"]) == 51
+        await entered.wait()
+        assert peak == 4 and len(calls) == 4
+        # These are running visits, not 51 additional tasks queued on a semaphore.
+        assert sum(lane.task is not None for lane in t._lanes.values()) == 5
+        row = next(row for row in t.status() if row["target_ref"] == old[0].target_ref)
+        assert row["timing"]["selection"]["stages"]["root_delivery"]["items"] == 1
+
+        db = SimpleNamespace(
+            get_pending_recipients=AsyncMock(return_value=[("user", "dashboard", "p")]),
+            get_pending_messages=AsyncMock(return_value=[Message(
+                "inbox-1", "p", "system", "benchmark", "user", "dashboard", "pending")]),
+            mark_delivered=AsyncMock(return_value=True),
+        )
+        inbox = MessageDeliveryEngine(db, None, SimpleNamespace(max_inject_per_prompt=10))
+        assert (await inbox.run_delivery_pass())["delivered"] == 1
+        db.mark_delivered.assert_awaited_once_with("inbox-1", via="platform")
+        # Requested visits use the same budget and never bypass occupied slots.
+        assert await t.request_visit(fresh) is None
+        targets.items.append(fresh)
+        release.set()
+        await t.drain()
+        for _ in range(14):
+            scheduled = await t.tick()
+            assert all("old-0" not in label for label in scheduled["started"])
+            await t.drain()
+            if "/".join(fresh.key) in scheduled["started"]:
+                break
+        else:
+            pytest.fail("new work did not get a turn within one bounded frontier sweep")
+        assert peak == 4
+    finally:
+        release.set()
+        await t.stop()
+
+
+async def test_repository_fairness_rotates_idle_targets_and_releases_cancelled_slots():
+    targets = [TrainTarget("p", "r", f"refs/heads/target-{i}") for i in range(3)]
+    t = train(Targets(*targets), Batches(), {x.key: lane(Service()) for x in targets},
+              repository_concurrency=1)
+    for target in targets * 2:
+        assert (await t.tick())["started"] == ["/".join(target.key)]
+        await t.drain()
+    await t.tick()
+    await t.stop()
+    assert len((await t.tick())["started"]) == 1
+    await t.drain()
+
+
+async def test_unchanged_blockers_back_off_with_bounded_retry_and_wake():
+    from src.integration.train import TrainVisit
+
+    clock = [100.0]
+    t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service())})
+    t.clock = lambda: clock[0]
+    result = TrainVisit(ROOT, "blocked", target_sha=TARGET_SHA,
+                        detail={"blockers": [{"code": "missing_provenance"}]})
+    t.visit = AsyncMock(return_value=result)
+    for delay in (10, 20, 40, 60, 60):
+        assert (await t.tick())["started"]
+        await t.drain()
+        assert t.status()[0]["deferred_until"] == clock[0] + delay
+        assert not (await t.tick())["started"]
+        clock[0] += delay
+    # A changed exact target resets the retry sequence; wake also resets it.
+    t.visit.return_value = replace(result, target_sha="d" * 40)
+    await t.tick()
+    await t.drain()
+    assert t.status()[0]["deferred_until"] == clock[0] + 10
+    assert t.wake("p", "r", ROOT.target_ref) == 1
+    assert (await t.tick())["started"]
+    await t.drain()
+    assert t.status()[0]["deferred_until"] == clock[0] + 10
+
+
+async def test_selection_metrics_retain_interrupted_operations_without_cross_visit_leaks():
+    async def measured_fetch():
+        selection_count("completion_cache_misses")
+        with selection_stage("provenance", items=7):
+            await asyncio.Event().wait()
+
+    t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service(), fetch=measured_fetch)},
+              visit_timeout_seconds=0.01)
+    await t.tick()
+    await t.drain()
+    metrics = t.status()[0]["timing"]["selection"]
+    assert metrics["counts"] == {"completion_cache_misses": 1}
+    assert metrics["stages"]["provenance"]["items"] == 7
+    assert metrics["stages"]["provenance"]["seconds"] > 0
+    await t.tick()
+    await t.drain()
+    assert t.status()[0]["timing"]["selection"]["counts"] == metrics["counts"]
+
+
+def test_repository_concurrency_must_be_positive():
+    with pytest.raises(ValueError, match="repository concurrency"):
+        train(Targets(), Batches(), {}, repository_concurrency=0)
 
 
 def test_visit_timeout_must_be_positive():

@@ -5182,7 +5182,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:3a66ba3ee5e0a100ce1e8c34ccc4544cd69db9729a517063e6edd7fb35dcba44",
+      "digest": "sha256:103525f49d949b84f60f89771b2cce26da828dbd8ae7d136c50943d552285de1",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -5194,7 +5194,9 @@
         "src.sessions.provider",
         "src.sessions.spec"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "P3 end-to-end delivery integration test — supervisor-agent §5/§7/§8."
     },
     "tests/test_delivery_precondition_refusals.py": {
@@ -6825,13 +6827,14 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:b42c429f2b76f893a6f43c37ef581e952e4b4b7b3acf1b9a90151da178cb9298",
+      "digest": "sha256:f72ec62a5d3362d4a389d3b09efe0395c418325d25b3dbaac8953d738b1b687a",
       "imports": [
         "src.event_bus",
         "src.git.github_contracts",
         "src.git.manager",
         "src.models",
-        "src.orchestrator.git_ops"
+        "src.orchestrator.git_ops",
+        "src.orchestrator.workspace_attachments"
       ],
       "markers": [
         "asyncio",
@@ -8186,14 +8189,15 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:26e9c0545700b9706f8c7683a2b8fa981ba87edc101c057c676d42886e69c841",
+      "digest": "sha256:b2493aa12f33f51350c05b221caf611262c8bf44e8dfa340ddf90dca681de402",
       "imports": [
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
         "src.integration.delivery_truth",
         "src.integration.git_truth",
-        "src.integration.provenance"
+        "src.integration.provenance",
+        "src.integration.selection_metrics"
       ],
       "markers": [
         "parametrize"
@@ -9298,7 +9302,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:7e4f481a0b4695f24ec110dedc30cbbdee5060ae2ba4f4e1e3aa80fd68db9c0c",
+      "digest": "sha256:4f2eb72c51f1cfd7acff92ac601c0a1cf56eba53fefda1ebfe11537febfd2beb",
       "imports": [
         "src.api.codegen",
         "src.cli.auto_commands",
@@ -9317,9 +9321,11 @@
         "src.integration.models",
         "src.integration.provenance",
         "src.integration.repair",
+        "src.integration.selection_metrics",
         "src.integration.train",
         "src.integration.train_sources",
         "src.mcp_registration",
+        "src.messages.delivery",
         "src.models",
         "src.profiles.capabilities",
         "src.tools.definitions"
@@ -9348,7 +9354,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:6b77e5171043e9f09d674253cd6aa48cb38267ab96644d653c332c948a08bc90",
+      "digest": "sha256:6bda849d8d850d4f746edff66d0e8dcab68968458021501a13c17b577fba8a50",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -9356,11 +9362,13 @@
         "src.commands.task_commands",
         "src.database",
         "src.database.queries.hierarchy_queries",
+        "src.database.queries.task_queries",
         "src.database.tables",
         "src.doctor.integration_checks",
         "src.doctor.models",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
         "src.integration.attestation",
         "src.integration.batches",
         "src.integration.candidate_baseline",
@@ -9381,6 +9389,7 @@
         "src.integration.reviews",
         "src.integration.root_pull_requests",
         "src.integration.scheduler",
+        "src.integration.selection_metrics",
         "src.integration.source_delivery",
         "src.integration.stacked_branches",
         "src.integration.status",
@@ -10702,7 +10711,7 @@
         "messages"
       ],
       "default_arm": true,
-      "digest": "sha256:8a973112aada206b2c89f33bd6e414ba495cc7443f792f87654a4804f2e1f674",
+      "digest": "sha256:aaa08ed2adf60e74f41f0f003ae32ce4271c3ac99e0bd88537bec3f655db9d77",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -10710,7 +10719,9 @@
         "src.config",
         "src.database",
         "src.database.tables",
+        "src.event_bus",
         "src.messages.delivery",
+        "src.messages.service",
         "src.models",
         "src.orchestrator.core",
         "src.profiles.capabilities",
@@ -14156,8 +14167,12 @@
         "api-contract"
       ],
       "default_arm": true,
-      "digest": "sha256:f27de644d320324530341a40f9117c342d01b24c75f26a40288adad4c81f6881",
-      "imports": [],
+      "digest": "sha256:c2ff0cd2fed553ade1eef539c56a94e3b9a8204f8e49700ccf021221851e9e5e",
+      "imports": [
+        "src.integration",
+        "src.integration.regeneration",
+        "src.sessions.env"
+      ],
       "markers": [
         "parametrize"
       ],

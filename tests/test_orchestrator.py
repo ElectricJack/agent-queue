@@ -220,6 +220,43 @@ class TestSchedulerBlockerLogging:
         assert caplog.messages == []
 
 
+async def test_message_pointer_arrives_while_scheduler_git_work_is_blocked(orch, monkeypatch):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def stalled_git(_now):
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(orch, "_drain_branch_materializations", stalled_git)
+    monkeypatch.setattr(orch.session_lens, "activity", AsyncMock(return_value="idle"))
+    nudge = AsyncMock(return_value=True)
+    monkeypatch.setattr(orch.session_lens, "nudge", nudge)
+    orch.config.messages.delivery_interval = 0.1
+    scheduler = asyncio.create_task(orch.run_one_cycle())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        msg = await orch.db.create_message(
+            project_id=None, from_kind="user", from_id="cli", to_kind="session",
+            to_id="global-session-uuid", body="Verify the queued request",
+        )
+        await orch.bus.emit("message.sent", {
+            "message_id": msg.id, "project_id": None, "from_kind": "user",
+            "to_kind": "session", "to_id": msg.to_id,
+        })
+        async with asyncio.timeout(15):
+            while (stored := await orch.db.get_message(msg.id)).delivered_at is None:
+                await asyncio.sleep(0.02)
+        assert not scheduler.done()
+        assert stored.via == "nudge" and stored.read_at is None
+        nudge.assert_awaited_once_with(
+            kind="session", target_id=msg.to_id, project_id=None,
+            text=f"Handle `aq message status {msg.id} --json`.",
+        )
+    finally:
+        scheduler.cancel()
+        await asyncio.gather(scheduler, return_exceptions=True)
+
+
 async def test_orchestrator_owns_single_integration_service_loop(orch):
     service = orch.integration_service
     # No GitHub App config must not leave the entire integration transport unwired.

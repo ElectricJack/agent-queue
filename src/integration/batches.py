@@ -710,21 +710,21 @@ class BatchService:
             if not await self._authorized(batch, members):
                 return BatchObservation("held", candidate, target)
             # A repaired candidate is reusable only while it retains this target
-            # and proves every complete source via ancestry or exact AQ trailers.
-            reusable = bool(candidate and await self.gitops.is_ancestor(repo, target, candidate))
+            # and contains every frozen source as an ancestor. Source trailers
+            # remain historical delivery evidence, never repair completeness.
+            retains_target = bool(candidate and await self.gitops.is_ancestor(repo, target, candidate))
+            reusable = retains_target
             if reusable:
-                trailers = await self.gitops.run(repo, "log", "--format=%B", f"{target}..{candidate}")
-                from src.integration.source_trailer import parse_source_trailers
-
-                identities = parse_source_trailers(trailers)
-                from src.integration.source_trailer import SourceIdentity
-
                 reusable = all([
-                    await self.gitops.is_ancestor(repo, member.source_sha, candidate) or
-                    SourceIdentity(member.task_id, member.source_sha) in identities for member in members
+                    await self.gitops.is_ancestor(repo, member.source_sha, candidate)
+                    for member in members
                 ])
             if not reusable:
-                result = await self.gitops.merge_sources(repo, target, members,
+                # Continue a partial repair from its resolved overlay while the
+                # target is still an ancestor. Rebuilding from the target would
+                # discard the repair of the first conflict before later members.
+                result = await self.gitops.merge_sources(repo, candidate if retains_target else target,
+                                                        members,
                                                         created_at=batch.created_at)
                 if result["outcome"] != "merged":
                     logger.warning("integration batch %s build %s on %s: %s",

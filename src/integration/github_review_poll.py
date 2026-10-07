@@ -80,6 +80,13 @@ class RootPullRequestGate:
         self._deferred = {}
 
     async def __call__(self, target, member):
+        return await self._observe(target, member)
+
+    async def admit_repaired_source(self, target, member):
+        """Authorize a source whose exact repair is admitted in the same batch."""
+        return await self._observe(target, member, repaired_source=True)
+
+    async def _observe(self, target, member, *, repaired_source=False):
         from src.integration.reviews import (
             ReviewerPermissionUnavailable,
             observe_pull_request_review_state,
@@ -109,7 +116,8 @@ class RootPullRequestGate:
                 del self._deferred[stale]
         previous = self._deferred.get(key)
         now = self.clock()
-        if previous and now < previous["retry_at"]:
+        if (previous and now < previous["retry_at"]
+                and not (repaired_source and previous["code"] == "pr_checks_red")):
             return previous
 
         def defer(code, *, due_at=None, **detail):
@@ -165,16 +173,21 @@ class RootPullRequestGate:
                 raise ValueError("PR required checks observer is unavailable")
             result = await exact.refresh_if_due(HeadIdentity(repository_id=target.repository_id,
                 ref="refs/heads/" + pull["head"]["ref"], sha=member.source_sha, generation=0))
-            if not result.green and result.state.value != "red":
-                # GitHub runs no pull_request workflow for a PR that conflicts
-                # with its base: these exact-head checks would never arrive.
-                if pull_request_conflicts(pull):
-                    return defer("pr_conflicting", reason="PR conflicts with its base branch")
+            # A successful authenticated listing can prove that no PR workflow
+            # exists for this exact head. GitHub suppresses that workflow for
+            # dirty PRs; the frozen candidate owns integration and its own CI.
+            # An outage, an executing run or a genuine failure never qualifies.
+            suppressed = (pull_request_conflicts(pull) and bool(result.checks)
+                          and all(check.detail.get("missing_pr_run") is True
+                                  for check in result.checks)
+                          and result.state.value in {"pending", "unknown"})
+            if not result.green and not suppressed and result.state.value != "red":
                 if result.state.value != "unknown" and pull.get("mergeable") is None:
                     return computing()
-            if result.state.value == "unknown":
+            if result.state.value == "unknown" and not suppressed:
                 return defer("unknown", due_at=result.due_at, reason="PR checks unavailable")
-            if not result.green:
+            repaired_red = repaired_source and result.state.value == "red"
+            if not result.green and not suppressed and not repaired_red:
                 return defer("pr_checks_red" if result.state.value == "red"
                              else "awaiting_pr_checks", due_at=result.due_at)
             if reviewed and not local:

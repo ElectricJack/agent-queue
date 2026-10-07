@@ -388,6 +388,22 @@ async def record_worker_completion(
     if commit and commit != source:
         raise ValueError("--commit must identify the exact final source, not an earlier commit")
     store = GitProvenance(git, checkout, repository_url=repo.url)
+    from src.integration.batches import BatchStore
+    from src.integration.repair import OrdinaryRepairService
+
+    ordinary = await OrdinaryRepairService(db).input(task.id)
+    if ordinary is not None:
+        batches = BatchStore(db)
+        batch = await batches.get(ordinary["batch_id"])
+        if batch is None or (batch.project_id, batch.repository_id) != (project.id, repo.id):
+            raise ValueError("ordinary repair frozen batch identity changed")
+        missing = [member.task_id for member in await batches.members(batch.id)
+                   if not await store.ancestor(member.source_sha, source)]
+        if missing:
+            raise ValueError(
+                "ordinary repair does not contain every frozen source; still to merge: "
+                + ", ".join(missing)
+            )
     from src.database.tables import projects
     from src.integration.promotion_routing import promotion_origin_target
 

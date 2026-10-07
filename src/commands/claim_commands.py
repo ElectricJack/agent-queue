@@ -1110,6 +1110,12 @@ class ClaimCommandsMixin:
                         ["fetch", "--no-tags", str(origin["stack_store"]), base_branch],
                         cwd=slot.workspace_path,
                     )
+                if hierarchy_enabled and origin.get("stack_repair_inputs"):
+                    inputs = origin["stack_repair_inputs"]
+                    await self.orchestrator.git._arun(
+                        ["fetch", "--no-tags", inputs["store"], *inputs["heads"]],
+                        cwd=slot.workspace_path,
+                    )
                 branch = await self.orchestrator._worktree_slots().reset_slot_for_task(
                     slot, task, **reset_kwargs
                 )
@@ -1138,7 +1144,11 @@ class ClaimCommandsMixin:
                     task.id not in admission.allowed or not await admission.is_fresh(task.id)
                 ):
                     return None
-                return await self.db.activate_claim(
+                if hierarchy_enabled:
+                    from src.integration.stacked_branches import verify_preparation
+
+                    await verify_preparation(origin, conn=conn)
+                activated = await self.db.activate_claim(
                     session.id,
                     task.id,
                     epoch=epoch,
@@ -1153,13 +1163,17 @@ class ClaimCommandsMixin:
                     clear_preparation_metadata=True,
                     admission=admission,
                 )
+                if activated and hierarchy_enabled:
+                    await verify_preparation(origin, conn=conn, finalize=True)
+                return activated
 
             if hierarchy_enabled:
                 from src.integration.ownership import BranchOwnership
                 from src.integration.repair import RepairService
 
                 origin, fence, owner_role = await self.orchestrator._hierarchy_origin_and_fence(
-                    task, project, preparing_session_id=session.id, preparing_workspace_id=slot.id
+                    task, project, preparing_session_id=session.id, preparing_workspace_id=slot.id,
+                    preparation_workspace=slot.workspace_path,
                 )
                 ownership = BranchOwnership(self.db)
                 previous_owner = await ownership.get_owner(fence.target)
@@ -1232,9 +1246,39 @@ class ClaimCommandsMixin:
                 # Retry only after the failed transaction unwinds; never run
                 # permanent failure cleanup for a database conflict.
                 raise
-            from src.integration.stacked_branches import EpicRefreshPending, StackPrerequisitesConflict
+            from src.git.manager import ChildPreparationConflict, GitError
+            from src.integration.stacked_branches import (
+                EpicRefreshPending, StackedBranches, StackPrerequisitesConflict,
+                StackPreparationChanged,
+            )
 
-            if isinstance(exc, StackPrerequisitesConflict):
+            if isinstance(exc, ChildPreparationConflict):
+                try:
+                    await StackedBranches(self.db).reserve_child_conflict(
+                        task.id, exc, slot.workspace_path,
+                    )
+                except StackPrerequisitesConflict as conflict:
+                    exc = conflict
+                except (GitError, StackPreparationChanged) as changed:
+                    exc = changed
+
+            if isinstance(exc, (StackPrerequisitesConflict, StackPreparationChanged)):
+                if hierarchy_attached and not await (
+                    self.orchestrator.arelease_integration_writer_for_retry(
+                        task, reason=exc.code, pool=True,
+                        retained_preparation=(
+                            {"head": exc.detail["child_head"], "store": exc.detail["stack_store"]}
+                            if isinstance(exc, StackPrerequisitesConflict)
+                            and exc.detail.get("stack_store") else
+                            {"head": origin["base_sha"], "store": str(origin["stack_store"])}
+                            if isinstance(exc, StackPreparationChanged) and origin.get("stack_store")
+                            else None
+                        ),
+                    )
+                ):
+                    await self.db.set_task_meta(task.id, "needs_attention", exc.code)
+                    self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+                    return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
                 remove_claim_file_if_matches(row.work_dir, task.id, epoch)
                 await self.db.release_claim(
                     session.id, task_status=TaskStatus.READY, context=exc.code,

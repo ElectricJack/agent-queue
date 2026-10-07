@@ -8,10 +8,9 @@ checks of the exact candidate commit and the batch's durable intent, so a
 restart or a missed notification is repaired by the next visit. There is no
 journal, generation or receipt to replay.
 
-Each target (project, repository, target ref) is visited by its own task. A
-tick starts a visit for every target whose previous visit has finished and
-never awaits another target, so a slow check, fetch or merge on one target
-cannot stall the others. Checks are requested and refreshed outside every
+Each admitted target (project, repository, target ref) has its own task. A
+tick bounds repository concurrency and admits the least recently started idle
+targets without awaiting running visits. Checks are refreshed outside every
 lock; the batch gate reads only the cached verdict.
 
 A red candidate is refreshed before a repair is allocated: a green observation
@@ -56,6 +55,7 @@ from src.integration.candidate_baseline import (
 from src.integration.checks import ChecksResult, ChecksState, ExactChecks, HybridChecks
 from src.integration.git_truth import GitTruthSnapshot
 from src.integration.models import RepairPolicy
+from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
 from src.integration.subjects import HeadIdentity
 from src.logging_config import log_handled
 
@@ -70,6 +70,9 @@ RATE_LIMIT_MAX_BACKOFF_SECONDS = 900.0
 #: A promote command wakes the target at once.
 PROMOTION_WAIT_SECONDS = 30.0
 PROMOTION_MAX_WAIT_SECONDS = 300.0
+REPOSITORY_CONCURRENCY = 4
+BLOCKED_WAIT_SECONDS = 10.0
+BLOCKED_MAX_WAIT_SECONDS = 60.0
 
 TRAIN_KINDS = ("root", "epic", "development", "promotion")
 _PROGRESS: ContextVar[dict | None] = ContextVar("train_visit_progress", default=None)
@@ -84,6 +87,7 @@ class _VisitTiming:
         self.finished: float | None = None
         self.stage = "lane_setup"
         self.stages: dict[str, float] = {}
+        self.selection = SelectionMetrics()
 
     def advance(self, stage: str) -> None:
         now = time.monotonic()
@@ -94,7 +98,8 @@ class _VisitTiming:
         now = self.finished if self.finished is not None else time.monotonic()
         stages = dict(self.stages)
         stages[self.stage] = stages.get(self.stage, 0.0) + now - self.since
-        return {"elapsed_seconds": now - self.started, "stages_seconds": stages}
+        return {"elapsed_seconds": now - self.started, "stages_seconds": stages,
+                "selection": self.selection.as_dict()}
 
 
 def _previous_state(last: TrainVisit | None) -> dict[str, str]:
@@ -243,9 +248,8 @@ def conflict_brief(
     is still owed to the target.
 
     The repair exists to land every remaining member, not to make the starting
-    head green: a repaired head published without them lets the train
-    fast-forward the target, and those members conflict again in the next
-    batch. A raw detail dict is never an instruction, so nothing else reaches
+    head green: a repaired head without them cannot close successfully or
+    advance the target. A raw detail dict is never an instruction, so nothing else reaches
     the worker's description.
     """
     detail = dict(detail or {})
@@ -284,13 +288,17 @@ def conflict_brief(
         (f"Resolve the conflict, then merge every member listed above onto the "
          f"starting head {starting_sha} in that order. Do not stop once the "
          "conflict is resolved, or once the checks on the starting head are "
-         "green: a repaired head published without every remaining member lets "
-         "the train fast-forward the target without them, and they conflict "
-         "again in the next batch."),
+         "green: a repaired head without every remaining member cannot close "
+         "successfully or advance the target."),
         (f"Generated files are regenerated, never hand-merged: resolve a conflict "
          f"in a path carrying the merge=aq-generated attribute in .gitattributes by "
-         f"running the repository's regeneration command ({REGENERATION_COMMAND} by "
-         f"default), never by resolving its conflict markers by hand."),
+         "taking either side while merging the sources, then running the repository's "
+         f"regeneration command ({REGENERATION_COMMAND} by default) once after every "
+         "remaining member is merged. Never resolve generated conflict markers by hand."),
+        "Before publishing, verify that every frozen source listed above is an ancestor "
+        "of HEAD. Keep all merge parents; do not squash, rebase or cherry-pick the inputs. "
+        "Run the required checks on the complete repaired candidate. The train still "
+        "requires its exact candidate checks and publication gates before advancing the target.",
     ]
     return "\n".join(line for line in lines if line)
 
@@ -442,8 +450,8 @@ class _Lane:
     errors: int = 0
     #: No visit starts before this time; :meth:`IntegrationTrain.wake` clears it.
     not_before: float = 0.0
-    #: The (batch, reason) a promotion is waiting on, and how many visits in a row.
-    wait: tuple[str | None, str] | None = None
+    #: The unchanged refusal identity, and how many visits in a row.
+    wait: tuple | None = None
     waits: int = 0
     #: The in-flight visit's progress facts (stage, batch); shown before its first result.
     progress: dict | None = None
@@ -479,16 +487,20 @@ class IntegrationTrain:
         repair: RepairAllocator,
         baseline: CandidateBaselineService | None = None,
         visit_timeout_seconds: float = 900.0,
+        repository_concurrency: int = REPOSITORY_CONCURRENCY,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if visit_timeout_seconds <= 0:
             raise ValueError("visit timeout must be positive")
+        if repository_concurrency < 1:
+            raise ValueError("repository concurrency must be positive")
         self.targets, self.batches, self.lane_for = targets, batches, lane_for
         self.repair, self.clock = repair, clock
         # Without a baseline service the train cannot compare the target, so it
         # claims nothing and repairs a red candidate exactly as before.
         self.baseline = baseline or UnrecordedBaseline()
         self.visit_timeout_seconds = visit_timeout_seconds
+        self.repository_concurrency = repository_concurrency
         self._lanes: dict[tuple[str, str, str], _Lane] = {}
         self._pauses: dict[tuple[str, str], _RateLimitPause] = {}
         self._starts = 0
@@ -497,7 +509,7 @@ class IntegrationTrain:
     async def tick(
         self, now: float | None = None, *, target: TrainTarget | None = None,
     ) -> dict[str, list[str]]:
-        """Start one visit per idle target; never wait on a running one."""
+        """Bound each repository's visits; give new and longest-waiting targets a turn."""
         now = self.clock() if now is None else now
         if self._tick_lock.locked():
             return {"started": [], "running": [], "skipped": ["tick_in_progress"],
@@ -505,15 +517,24 @@ class IntegrationTrain:
         async with self._tick_lock:
             started, running, deferred = [], [], []
             targets = [target] if target is not None else await self.targets.targets(now)
+            occupied: dict[str, int] = {}
+            for key, lane in self._lanes.items():
+                if lane.task is not None and not lane.task.done():
+                    occupied[key[1]] = occupied.get(key[1], 0) + 1
+            # Unvisited targets have start=0. Stable ties retain discovery order.
+            targets = sorted(targets, key=lambda t: self._lanes.get(t.key, _Lane()).start)
             for target in targets:
                 lane = self._lanes.setdefault(target.key, _Lane())
                 label = "/".join(target.key)
                 if lane.task is not None and not lane.task.done():
                     running.append(label)
                     continue
-                if lane.not_before > now or not self._admit(target.key, now):
+                if (lane.not_before > now
+                        or occupied.get(target.repository_id, 0) >= self.repository_concurrency
+                        or not self._admit(target.key, now)):
                     deferred.append(label)
                     continue
+                occupied[target.repository_id] = occupied.get(target.repository_id, 0) + 1
                 self._starts += 1
                 lane.started_at, lane.start = now, self._starts
                 lane.task = asyncio.create_task(
@@ -589,18 +610,24 @@ class IntegrationTrain:
             if (key[0] == project_id and repository_id in (None, key[1])
                     and target_ref in (None, key[2]) and lane.not_before):
                 lane.not_before, woken = 0.0, woken + 1
+                lane.wait, lane.waits = None, 0
         return woken
 
     def _wait(self, target: TrainTarget, lane: _Lane, visit: TrainVisit) -> TrainVisit:
-        """Back off a promotion whose visit named what it is waiting for."""
+        """Delay repeated refusals, without using the result as evidence on retry."""
         reason = (visit.detail or {}).get("reason")
-        if target.kind != "promotion" or visit.state != "held" or not isinstance(reason, str):
+        if target.kind == "promotion" and visit.state == "held" and isinstance(reason, str):
+            wait = (visit.batch_id, reason)
+            initial, maximum = PROMOTION_WAIT_SECONDS, PROMOTION_MAX_WAIT_SECONDS
+        elif visit.state == "blocked":
+            wait = (visit.batch_id, visit.target_sha, repr(visit.detail))
+            initial, maximum = BLOCKED_WAIT_SECONDS, BLOCKED_MAX_WAIT_SECONDS
+        else:
             lane.not_before, lane.wait, lane.waits = 0.0, None, 0
             return visit
-        wait = (visit.batch_id, reason)
         lane.waits = lane.waits + 1 if lane.wait == wait else 1
         lane.wait = wait
-        delay = min(PROMOTION_WAIT_SECONDS * 2 ** (lane.waits - 1), PROMOTION_MAX_WAIT_SECONDS)
+        delay = min(initial * 2 ** min(lane.waits - 1, 10), maximum)
         lane.not_before = self.clock() + delay
         return replace(visit, detail={**(visit.detail or {}), "retry_at": lane.not_before})
 
@@ -611,7 +638,8 @@ class IntegrationTrain:
         timing = lane.timing = _VisitTiming()
         timing_token = _TIMING.set(timing)
         try:
-            visit = await asyncio.wait_for(self.visit(target), self.visit_timeout_seconds)
+            with selection_metrics_scope(timing.selection):
+                visit = await asyncio.wait_for(self.visit(target), self.visit_timeout_seconds)
         except asyncio.CancelledError:
             raise
         except TimeoutError:

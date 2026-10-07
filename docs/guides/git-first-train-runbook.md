@@ -101,6 +101,37 @@ and [releases](releases.md); their pending sections describe work awaiting deliv
   them onto the target with the shared generated-file merge, push the candidate to
   `refs/heads/aq/batches/<sha256>`, require the exact candidate's checks, and
   fast-forward the target with an expected-old push under the target's branch lease.
+- **Stacked sources.** Before freezing, compare each source base with the fetched
+  target and other live task branches. A base containing another task's unpublished
+  work requires a declared `blocks` prerequisite. Otherwise `undeclared_stack_base`
+  withholds that source and its dependents while independent members proceed.
+  A declared prerequisite lands first in the same batch or must already be delivered;
+  `stack_prerequisite_pending` withholds stacks whose prerequisite is still unfinished.
+  This prevents a delta-only merge from importing an intermediate commit's ancestry
+  without its content, which would make a later target sync delete that content from
+  the original branch. Bases already in the target remain usable. Existing frozen
+  batches are rechecked too; abort an unsafe batch to refreeze with its prerequisite.
+  The scan asks Git once per off-target base (`for-each-ref --contains`) rather than
+  once per live origin, and its answer is reused while the refs, target and live
+  origins stand, so a repository with hundreds of archived-but-unretired branches
+  costs a visit the same single query. A daemon-written source-CI repair binding
+  (`integration_source_ci`) counts as a declared prerequisite: the repair's recorded
+  base is the exact source head it must merge, so the pair delivers in one batch,
+  source first. A red source enters only alongside that independently admitted
+  repair and retains its review authorization; the combined candidate must pass. A source or repair already delivered to a target takes no part, and
+  the prerequisite named is the one that publishes the base, never a sibling that
+  merely merged its branch.
+- **Conflicting source PRs.** An exact open, same-repository, non-draft PR with
+  the configured review authorization can enter the shared batch when GitHub
+  reports it dirty and an authenticated check observation proves that its PR
+  workflow never ran. Its missing PR checks are not passes; integration validity
+  comes from the final combined candidate's own required checks. Genuine red
+  source checks without an exact admitted source CI repair, an executing workflow,
+  an unavailable observation, unknown
+  mergeability, explicit holds and withheld inputs still block admission. A
+  conflicting epic joins the root candidate without an automatic per-epic
+  refresh or another round of author checks. See the
+  [source admission and batch repair contract](../specs/design/conflicting-source-batches.md).
 - **Checks.** A development project's default branch runs its pinned development
   policy's validation commands as integration jobs on a retained snapshot of the exact
   candidate (`validation: none` publishes without jobs; `advisory` publishes on red).
@@ -192,10 +223,18 @@ and [releases](releases.md); their pending sections describe work awaiting deliv
   creating a repair or consuming an attempt.
   A merge conflict files its repair with a plain-English brief naming the
   conflicting member, its source OID, the conflicting files, the members already
-  merged into the starting head and the members still to merge in order; generated
-  files are regenerated, never hand-merged. A repaired head is published to the target
-  only once it proves every frozen member's source, so a member is never dropped by a
-  partial repair.
+  merged into the starting head and the members still to merge in order. That
+  one repair owns every remaining member and must preserve all exact sources as
+  ancestors. During merges, take either side of a generated conflict and run
+  regeneration once after all sources are combined; generated files are never
+  hand-merged. Automatic generated-only construction uses the same final sweep.
+  A repaired head is published to the target only once every frozen source is
+  an ancestor and its own exact required checks pass. Source trailers and green
+  checks on a partial repair cannot authorize publication.
+  A passing repair close also requires every frozen source as an ancestor;
+  missing sources return to the same worker without releasing its claim.
+  Frozen source commits are inherited history for the publishing identity
+  check, while new repair commits still require the worker's allowed identity.
   A candidate with no authenticated push workflow run on its exact SHA gets
   five minutes from the first missing-run observation. The deadline survives
   daemon restarts. After that, `ci_not_triggered` names its workflow filters
@@ -363,6 +402,9 @@ target.
 | `no_regenerator` | The repository configures no regenerate command, so a generated artifact both members changed cannot be rebuilt | Configure the project's regenerate command (default `scripts/regenerate-generated.sh`); the same batch then rebuilds. No member is parked |
 | `target_moved` | The target moved | None; the next visit rebuilds |
 | `source_moved` | A member's source moved after freezing | None; the next visit refreezes |
+| `undeclared_stack_base` | A source base includes another task's unpublished work without a `blocks` edge or a source-CI repair binding | Declare the prerequisite, or reopen and rebuild the source from its delivery target; evidence names the publishing task (`prerequisite_task_id`, and every candidate in `prerequisite_task_ids`) and exact OIDs |
+| `stack_prerequisite_pending` | A declared stack prerequisite is neither delivered nor available in this batch | Finish or deliver the prerequisite before its dependent |
+| `stack_ancestry_unknown` | Git could not inspect this member's source base, or the branches that could publish it | Restore readable Git objects; a later visit rechecks the same sources. Only members sharing that source base are withheld |
 | `held` | Explicit hold or required review missing | Release the hold or review |
 | `unobserved` | Git or checks could not be read | Fix the fetch or producer; evidence names the cause |
 | `batch_paused` / `batch_aborted` | Operator intent | See below |
