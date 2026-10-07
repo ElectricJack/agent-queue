@@ -151,6 +151,11 @@ class TrainControls:
         if not is_valid_git_oid(source) or expected_head_sha and source != expected_head_sha:
             raise ValueError("published root head is missing or changed from preview")
         base = origin["base_sha"]
+        if source != base:
+            raise ValueError(
+                "root source contains changes in its commit history: published head differs "
+                "from its recorded origin base; use the normal task close path"
+            )
         observed = snapshot.observation
         provenance = GitProvenance(observed.git, observed.store, repository_url=observed.repository_url)
         await provenance.exact(source)
@@ -202,7 +207,7 @@ class TrainControls:
             if not reuse:
                 await conn.execute(insert(task_completion_records).values(
                     id=generation, task_id=task_id, outcome="pass", work_outcome="no-op",
-                    branch=task["branch_name"], commits=json.dumps([source]), summary=reason.strip(),
+                    branch=task["branch_name"], commits=json.dumps([]), summary=reason.strip(),
                     verification=f"Published source {source} has origin {base} and tree {tree}.",
                     notes=json.dumps({"authority": operator_id, "reason": reason.strip(),
                                       "origin_id": origin["id"]}),

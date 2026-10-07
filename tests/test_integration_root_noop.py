@@ -63,7 +63,7 @@ async def test_root_noop_preview_apply_retains_exact_evidence_and_is_idempotent(
     completions = await world.db.get_task_completions("noop")
     assert len(completions) == 1
     assert completions[0].outcome == "pass" and completions[0].work_outcome == "no-op"
-    assert completions[0].commits == [base]
+    assert completions[0].commits == []
     await proof.git.afetch_origin(
         str(world.origin.clone), repository_url=world.origin.url, all_heads=True
     )
@@ -72,7 +72,7 @@ async def test_root_noop_preview_apply_retains_exact_evidence_and_is_idempotent(
     async with world.db._engine.connect() as conn:
         assert (await conn.scalar(select(task_branch_origins.c.branch_name))) == "aq/noop"
     evidence = (await world.db._delivery_observer.observe(["noop"])).get("noop")
-    assert evidence.state is DeliveryState.NO_ARTIFACT
+    assert evidence.state is DeliveryState.NO_CHANGE
     requests = await load_delivery_requests(
         world.db, ["noop"], repository_id="r", target_ref=MAIN.target_ref
     )
@@ -115,7 +115,7 @@ async def test_root_noop_reopened_root_gets_a_new_generation(world):
     assert len(await world.db.get_task_completions("noop")) == 2
     assert (await world.db._delivery_observer.observe(["noop"])).get(
         "noop"
-    ).state is DeliveryState.NO_ARTIFACT
+    ).state is DeliveryState.NO_CHANGE
 
 
 @pytest.mark.parametrize(
@@ -382,14 +382,54 @@ async def test_root_noop_handler_refuses_ambiguous_branch_ownership(world, monke
     assert await world.db.get_task_completion("noop") is None
 
 
-async def test_admin_completed_status_requires_root_completion_provenance(world):
-    await empty_root(world)
+@pytest.mark.parametrize("status", [TaskStatus.READY, TaskStatus.COMPLETED])
+async def test_admin_completed_status_requires_root_completion_provenance(world, status):
+    await empty_root(world, status=status)
     handler = TaskCommandsMixin()
     handler.db = world.db
     result = await handler._cmd_set_task_status({"task_id": "noop", "status": "COMPLETED"})
     assert result["code"] == "integration.completion_provenance_required"
     assert "record-root-noop" in result["error"]
-    assert (await world.db.get_task("noop")).status is TaskStatus.READY
+    assert (await world.db.get_task("noop")).status is status
     await world.db.update_task("noop", branch_name=None)
     result = await handler._cmd_set_task_status({"task_id": "noop", "status": "COMPLETED"})
+    assert result["code"] == "integration.completion_provenance_required"
+    async with world.db._engine.begin() as conn:
+        await conn.execute(update(task_branch_origins).values(retired_at=1))
+    result = await handler._cmd_set_task_status({"task_id": "noop", "status": "COMPLETED"})
     assert result["new_status"] == "COMPLETED"
+
+
+@pytest.mark.parametrize("changed", [False, True])
+async def test_admin_nochange_releases_dependent_only_at_exact_origin_base(world, changed):
+    base = await empty_root(world)
+    await completed(world, "epic", done=False)
+    await completed(world, "dependent", parent="epic", done=False, needs=("noop",))
+    await world.db.transition_task("dependent", TaskStatus.READY)
+    assert (await world.db.get_task("dependent")).is_blocked
+    if changed:
+        # Even an empty commit must use the ordinary completion path.
+        git(world.origin.clone, "checkout", "-B", "aq/noop", base)
+        git(world.origin.clone, "commit", "--allow-empty", "-m", "empty authored commit")
+        head = git(world.origin.clone, "rev-parse", "HEAD")
+        git(world.origin.clone, "push", "origin", "aq/noop")
+        with pytest.raises(ValueError, match="differs from its recorded origin base"):
+            await record(world, dry_run=False, head=head)
+        assert await world.db.get_task_completion("noop") is None
+        assert (await world.db.get_task("dependent")).is_blocked
+    else:
+        await record(world, dry_run=False, head=base)
+        view = await world.db._delivery_observer.prerequisite_view("p", task_id="dependent")
+        assert view.default.get("noop").satisfied, view.default.get("noop")
+        assert await world.db.is_hierarchy_task_runnable("dependent"), await world.db.claim_frontier_exclusions("dependent")
+
+
+async def test_admin_completed_status_also_refuses_branched_children_and_legacy_modes(world):
+    await empty_root(world)
+    await completed(world, "child", parent="noop", done=False)
+    await world.db.update_project("p", hierarchical_integration_mode="disabled")
+    handler = TaskCommandsMixin()
+    handler.db = world.db
+    result = await handler._cmd_set_task_status({"task_id": "child", "status": "COMPLETED"})
+    assert result["code"] == "integration.completion_provenance_required"
+    assert (await world.db.get_task("child")).status is TaskStatus.IN_PROGRESS

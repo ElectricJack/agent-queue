@@ -81,16 +81,19 @@ Branchless and non-Git outcomes keep their existing completion behavior.
 For an unheld Git root, `aq integration record-root-noop TASK_ID` previews an
 explicit no-artifact completion. A local operator or a live named supervisor of
 the owning project can apply it with the exact previewed `--head` and a nonblank
-`--reason`. The published source must descend from its recorded, materialized
-branch origin and have that origin's exact tree. No live writer, claimed
+`--reason`. The published source must equal its recorded, materialized branch origin base.
+An empty commit or a reverted change with the same tree still differs from
+that base and requires the normal completion path. No live writer, claimed
 workspace, branch owner, child, required deliverable or open batch may be bypassed.
 Apply retains an immutable `artifact:false` Git completion and records a passing
 `no-op` completion atomically with COMPLETED status, preserving the branch/origin.
 It also repairs a COMPLETED root with no completion record, or retains an existing
 passing no-op generation; it never replaces an artifact completion. Repeating
 apply is idempotent. Unknown or changed evidence refuses without terminal writes.
-Administrative `set-status COMPLETED` refuses a new completion of a branched Git
-root in a train mode and names normal close or this explicit no-op control.
+Administrative `set-status COMPLETED` refuses a new completion of every task
+with a branch or an active recorded origin, including children and projects
+outside train modes, and names normal close or this explicit no-op control.
+Clearing a branch name does not remove its origin or supply completion evidence.
 
 Unknown delivery evidence withholds that source and work depending on it. Its
 task-scoped blocker remains visible while unrelated eligible sources can seal,
