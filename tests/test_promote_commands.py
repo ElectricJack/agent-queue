@@ -144,6 +144,7 @@ async def promote_env(promotion):
         ),
         github_client_factory=lambda _: e.github,
         promotion_user_client_factory=lambda _: e.human,
+        development_integration=SimpleNamespace(_store_path=lambda _: e.repo.store, git=e.ops.git),
     )
     handler._promotion_manifest = AsyncMock(
         return_value=e.trust.model_dump(mode="json", by_alias=True)

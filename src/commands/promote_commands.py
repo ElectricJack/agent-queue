@@ -9,6 +9,7 @@ import logging
 import re
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sqlalchemy import func, insert, select, update
 
@@ -1294,18 +1295,27 @@ class PromoteCommandsMixin:
             backmerges = []
             if debts:
                 try:
-                    _lane, ops, repo, _client = await self._promotion_runtime(project, repository, flow[0])
+                    primitives = getattr(self.orchestrator, "development_integration", None)
+                    store_path = getattr(primitives, "_store_path", None)
+                    git = getattr(primitives, "git", None)
+                    store = Path(store_path(repository)) if callable(store_path) else None
+                    if store is None or not (store / ".git").exists() or git is None:
+                        raise ValueError("retained repository cache is unavailable")
                     for debt in debts:
-                        cached = await ops.git.arun_git_result(
-                            ["rev-parse", "--verify", "refs/remotes/origin/" + debt["target_ref"].removeprefix("refs/heads/")],
-                            cwd=str(repo.store),
+                        cached = await git.arun_git_result(
+                            ["--no-replace-objects", "rev-parse", "--verify", "refs/remotes/origin/" + debt["target_ref"].removeprefix("refs/heads/")],
+                            cwd=str(store),
                         )
                         tip = cached.stdout.strip() if not cached.returncode else None
                         state = "unknown"
                         if tip:
-                            state = "contained" if await ops.is_ancestor(repo, debt["source_sha"], tip) else "pending"
+                            ancestry = await git.arun_git_result(
+                                ["--no-replace-objects", "merge-base", "--is-ancestor", debt["source_sha"], tip],
+                                cwd=str(store),
+                            )
+                            state = {0: "contained", 1: "pending"}.get(ancestry.returncode, "unknown")
                         backmerges.append({**debt, "state": state, "evidence_source": "cache"})
-                except (PromotionRefusal, GitError, GitHubAccessError, OSError, ValueError):
+                except (PromotionRefusal, GitError, GitHubAccessError, OSError, ValueError, TypeError):
                     backmerges = [{**debt, "state": "unknown"} for debt in debts]
             return {
                 "success": True,
