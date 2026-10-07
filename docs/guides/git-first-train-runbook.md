@@ -220,6 +220,8 @@ consume slot-reset retries or create the ref from the worker slot.
 
 ## Controls
 
+For concise command syntax, see the [Controls quick reference](hierarchical-integration-trains.md#controls-quick-reference).
+
 Batch intent (`open`, `paused`, `aborted`) is the only control the train reads. An
 aborted batch is never rebuilt, and its exact (task, source) inputs are withheld
 from that target until the task's source changes. A local operator or live named
