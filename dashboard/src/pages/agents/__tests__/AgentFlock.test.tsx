@@ -275,7 +275,7 @@ describe("Agent flock sidebar", () => {
 
 
   it.each([
-    ["/tasks/task-1", "/projects/first/tasks?q=worktree&completed=1", "/projects/second/tasks?q=worktree&completed=1"],
+    ["/tasks/task-1", "/projects/first/tasks-knowledge?q=worktree&completed=1", "/projects/second/tasks-knowledge?q=worktree&completed=1"],
     ["/tasks/task-1/files", "/projects/first/graph?status=READY", "/projects/second/graph?status=READY"],
     ["/sessions/session-1", "/projects/first/sessions?q=triage", "/projects/second/sessions?q=triage"],
     ["/playbooks/audit", "/projects/first/playbooks?completed=1", "/projects/second/playbooks?completed=1"],
