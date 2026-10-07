@@ -63,7 +63,7 @@ from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Wo
 from src.test_selection import catalogue as Catalogue
 from tests.db_fixtures import lease_dsn
 from tests.test_delivery_consumers import Origin, close, git
-from tests.test_integration_gitops import LocalGit, commit
+from tests.test_integration_gitops import LocalGit, commit, inherited_source
 from tests.test_jobs import finish, job_rows, jobs_handler, pin_development
 
 MAIN = TrainTarget("p", "r", "refs/heads/main", "root")
@@ -147,7 +147,7 @@ async def world(tmp_path):
 
 
 async def completed(world, tid, *, parent=None, needs=(), land=False, done=True,
-                    head=None) -> str:
+                    head=None, source_base=None) -> str:
     """A task with a branch origin and, when *done*, a retained completion."""
     db, origin = world.db, world.origin
     await db.create_task(Task(
@@ -163,7 +163,7 @@ async def completed(world, tid, *, parent=None, needs=(), land=False, done=True,
             id=f"{tid}-origin", task_id=tid, repository_id="r", branch_name=f"aq/{tid}",
             parent_task_id=parent, parent_repository_id="r" if parent else None,
             parent_ref=f"aq/{parent}" if parent else None,
-            base_sha=git(origin.clone, "rev-parse", f"{head}^"),
+            base_sha=source_base or git(origin.clone, "rev-parse", f"{head}^"),
             creation_generation=0, reserved=True, materialized=True, created_at=time.time(),
         ))
     if done:
@@ -843,6 +843,36 @@ async def test_visit_freezes_gates_and_fast_forwards_through_the_lease(world):
     lease = await BranchLock(db).get(BranchKey(repository_id="r", branch="refs/heads/main"))
     assert lease is None or lease.holder is None
     assert (await train.visit(MAIN)).state == "idle"
+
+
+@pytest.mark.parametrize("scenario", ("clean", "revert"))
+async def test_train_member_with_stale_origin_and_inherited_target_needs_no_repair(world, scenario):
+    db, origin = world.db, world.origin
+    base = git(origin.clone, "rev-parse", "main")
+    recorded, inherited, current, head = inherited_source(origin.clone, base, scenario)
+    git(origin.clone, "push", "origin", f"{current}:refs/heads/main",
+        f"{head}:refs/heads/aq/inherited")
+    await completed(world, "inherited", head=head, source_base=recorded)
+    train, checks, _ = lane(world, LocalGit(Path(origin.url)))
+
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing", testing
+    assert testing.repair is None
+    candidate = testing.candidate_sha
+    expected = "base" if scenario == "revert" else "target moved on"
+    assert git(origin.url, "show", f"{candidate}:base.txt") == expected
+    assert git(origin.url, "show", f"{candidate}:own.txt") == "own change"
+    message = git(origin.url, "show", "-s", "--format=%B", candidate)
+    assert f"Source-base: {recorded}" in message
+    assert f"Effective-merge-base: {inherited}" in message
+    frozen = await BatchStore(db).members(testing.batch_id)
+    assert [(member.source_sha, member.source_base_sha) for member in frozen] == [(head, recorded)]
+    checks.green.add(candidate)
+    delivered = await train.visit(MAIN)
+    assert delivered.state == "delivered", delivered
+    assert git(origin.url, "rev-parse", "main") == candidate
+    batch = await BatchStore(db).get(testing.batch_id)
+    assert batch.repair_attempt_count == 0
 
 
 async def test_two_generated_catalogue_members_merge_by_regeneration(world):
