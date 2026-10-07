@@ -29,6 +29,16 @@ recorded stall's Git, check, tree-review and task-transition evidence.
   them onto the target with the shared generated-file merge, push the candidate to
   `refs/heads/aq/batches/<sha256>`, require the exact candidate's checks, and
   fast-forward the target with an expected-old push under the target's branch lease.
+- **Stacked sources.** Before freezing, compare each source base with the fetched
+  target and other live task branches. A base containing another task's unpublished
+  work requires a declared `blocks` prerequisite. Otherwise `undeclared_stack_base`
+  withholds that source and its dependents while independent members proceed.
+  A declared prerequisite lands first in the same batch or must already be delivered;
+  `stack_prerequisite_pending` withholds stacks whose prerequisite is still unfinished.
+  This prevents a delta-only merge from importing an intermediate commit's ancestry
+  without its content, which would make a later target sync delete that content from
+  the original branch. Bases already in the target remain usable. Existing frozen
+  batches are rechecked too; abort an unsafe batch to refreeze with its prerequisite.
 - **Checks.** A development project's default branch runs its pinned development
   policy's validation commands as integration jobs on a retained snapshot of the exact
   candidate (`validation: none` publishes without jobs; `advisory` publishes on red).
@@ -170,6 +180,9 @@ recorded stall's Git, check, tree-review and task-transition evidence.
 | `no_regenerator` | The repository configures no regenerate command, so a generated artifact both members changed cannot be rebuilt | Configure the project's regenerate command (default `scripts/regenerate-generated.sh`); the same batch then rebuilds. No member is parked |
 | `target_moved` | The target moved | None; the next visit rebuilds |
 | `source_moved` | A member's source moved after freezing | None; the next visit refreezes |
+| `undeclared_stack_base` | A source base includes another task's unpublished work without a `blocks` edge | Declare the prerequisite, or reopen and rebuild the source from its delivery target; evidence names both tasks and exact OIDs |
+| `stack_prerequisite_pending` | A declared stack prerequisite is neither delivered nor available in this batch | Finish or deliver the prerequisite before its dependent |
+| `stack_ancestry_unknown` | Git could not inspect the source base or foreign task history | Restore readable Git objects; a later visit rechecks the same sources |
 | `held` | Explicit hold or required review missing | Release the hold or review |
 | `unobserved` | Git or checks could not be read | Fix the fetch or producer; evidence names the cause |
 | `batch_paused` / `batch_aborted` | Operator intent | See below |
