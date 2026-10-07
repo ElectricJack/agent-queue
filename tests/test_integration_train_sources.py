@@ -180,6 +180,201 @@ async def snapshot(world, target=MAIN):
     )
 
 
+async def source_ci_binding(world, source_id, repair_id, head, *, history=()):
+    from src.database.tables import integration_source_ci
+
+    async with world.db.immediate() as conn:
+        await conn.execute(insert(integration_source_ci).values(
+            task_id=source_id, repository_id="r",
+            source_base=git(world.origin.clone, "rev-parse", f"{head}^"), source_head=head,
+            generation=0, policy_generation=0, state="red", evidence={},
+            repair_task_id=repair_id, repair_attempt=1,
+            repair_history=[{"task_id": tid, "attempt": i} for i, tid in enumerate(history)],
+            observed_at=time.time(),
+        ))
+
+
+async def completed_source_ci_repair(world, source, tid="repair"):
+    clone = world.origin.clone
+    git(clone, "checkout", "-q", "-B", f"aq/{tid}", source)
+    (clone / f"{tid}.txt").write_text("CI fixed\n")
+    git(clone, "add", ".")
+    git(clone, "commit", "-qm", "repair source CI")
+    git(clone, "push", "-q", "origin", f"aq/{tid}")
+    return await completed(world, tid, head=git(clone, "rev-parse", "HEAD"))
+
+
+@pytest.mark.parametrize("status", ["READY", "IN_PROGRESS", "PAUSED", "COMPLETED"])
+@pytest.mark.parametrize("reopen", ["feedback", "restart", "update"])
+async def test_reopen_retires_source_ci_repairs_atomically(world, status, reopen):
+    from src.commands.task_commands import TaskCommandsMixin
+    from src.database.tables import integration_source_ci
+    from src.integration.source_delivery import RETIREMENT_KEY
+
+    db = world.db
+    source = await completed(world, "source")
+    if status == "COMPLETED":
+        await completed_source_ci_repair(world, source)
+    else:
+        await completed(world, "repair", done=False)
+        await db.transition_task("repair", TaskStatus[status], force=True)
+    if status == "IN_PROGRESS":
+        from src.models import Agent
+
+        await db.create_agent(Agent(id="repair-worker", name="Repair", profile_id="worker"))
+        await db.update_task("repair", assigned_agent_id="repair-worker", claim_epoch=1)
+    await source_ci_binding(world, "source", "repair", source)
+    before = git(world.origin.url, "rev-parse", "main")
+    if reopen == "feedback":
+        handler = TaskCommandsMixin()
+        handler.db, handler._current_scope = db, {}
+        assert (await handler._cmd_reopen_with_feedback({
+            "task_id": "source", "feedback": "reject this head",
+        }))["status"] == "READY"
+    elif reopen == "restart":
+        await db.transition_task("source", TaskStatus.READY, context="restart_task", force=True)
+    else:
+        await db.update_task("source", status=TaskStatus.READY)
+    repair = await db.get_task("repair")
+    assert repair.status is TaskStatus.FAILED
+    assert repair.retry_count == repair.max_retries
+    assert repair.assigned_agent_id is None
+    if status == "IN_PROGRESS":
+        from src.database.queries.task_queries import StaleClaim
+
+        with pytest.raises(StaleClaim):
+            await db.transition_task("repair", TaskStatus.COMPLETED, expect_claim_epoch=1)
+    retirement = await db.get_task_meta("repair", RETIREMENT_KEY)
+    assert retirement["disposition"] == "superseded_by_reopen"
+    assert retirement["source_head"] == source
+    comments = await db.list_task_comments("repair", project_id="p")
+    assert any("reopen of source" in comment["body"] for comment in comments["comments"])
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(task_branch_origins.c.retired_at).where(
+            task_branch_origins.c.task_id == "repair")) is not None
+        assert await conn.scalar(select(integration_source_ci.c.repair_task_id)) == "repair"
+    assert await DatabaseBatches(db).pending(MAIN, await snapshot(world)) is None
+    assert git(world.origin.url, "rev-parse", "main") == before
+
+
+async def test_source_ci_retirement_rolls_back_with_reopen(world, monkeypatch):
+    source = await completed(world, "source")
+    await completed_source_ci_repair(world, source)
+    await source_ci_binding(world, "source", "repair", source)
+    monkeypatch.setattr(world.db, "add_task_comment", AsyncMock(side_effect=ValueError("audit failed")))
+    with pytest.raises(ValueError, match="audit failed"):
+        await world.db.transition_task("source", TaskStatus.READY, context="reopen_with_feedback")
+    assert (await world.db.get_task("source")).status is TaskStatus.COMPLETED
+    assert (await world.db.get_task("repair")).status is TaskStatus.COMPLETED
+    assert await world.db.get_task_meta("repair", "source_ci_retirement") is None
+    async with world.db._engine.connect() as conn:
+        assert await conn.scalar(select(task_branch_origins.c.retired_at).where(
+            task_branch_origins.c.task_id == "repair")) is None
+
+
+async def test_reopen_retires_historical_and_transitive_source_ci_repairs(world):
+    db = world.db
+    source = await completed(world, "source")
+    first = await completed(world, "first")
+    await completed(world, "repair", done=False)
+    await completed(world, "descendant", done=False)
+    await source_ci_binding(world, "source", "repair", source, history=("first",))
+    await source_ci_binding(world, "first", "descendant", first)
+    await db.transition_task("source", TaskStatus.READY, context="reopen_with_feedback")
+    for tid in ("first", "repair", "descendant"):
+        assert (await db.get_task(tid)).status is TaskStatus.FAILED
+        assert (await db.get_task_meta(tid, "source_ci_retirement"))["reopened_task_id"] == "source"
+
+
+@pytest.mark.parametrize("stale", ["binding", "checkpoint"])
+async def test_stale_source_ci_repair_completion_is_blocked_at_admission_and_publication(world, stale):
+    from src.database.tables import integration_source_ci, task_integration_checkpoints
+
+    source = await completed(world, "source")
+    repair = await completed_source_ci_repair(world, source)
+    await source_ci_binding(world, "source", "repair", source)
+    batches = DatabaseBatches(world.db)
+    members, _, _ = await batches.pending(MAIN, await snapshot(world))
+    batch = Batch("repair-batch", "p", "r", MAIN.target_ref)
+    assert await batches.eligible(batch, members)
+    # Simulate stale lineage left by an older daemon, without relying on the
+    # new retirement hook. The bound head no longer names this completion.
+    async with world.db.immediate() as conn:
+        changed = git(world.origin.clone, "rev-parse", f"{source}^")
+        if stale == "binding":
+            await conn.execute(update(integration_source_ci).values(source_head=changed))
+        else:
+            await conn.execute(insert(task_integration_checkpoints).values(
+                task_id="source", repository_id="r", branch="aq/source", checkpoint_sha=changed,
+                updated_at=time.time(),
+            ))
+    blockers = []
+    pending, _, _ = await batches.pending(MAIN, await snapshot(world), blockers=blockers)
+    assert {member.task_id for member in pending} == {"source"}
+    assert any(blocker["code"] == "source_ci_repair_superseded" and
+               blocker["task_id"] == "repair" for blocker in blockers)
+    assert not await batches.eligible(batch, (BatchMember("repair", repair, source),))
+
+
+async def test_current_legacy_leaf_source_ci_repair_remains_eligible(world):
+    from src.database.tables import task_integration_checkpoints
+
+    source = await completed(world, "source", done=False)
+    await world.db.transition_task("source", TaskStatus.COMPLETED)
+    async with world.db.immediate() as conn:
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id="source", repository_id="r", branch="aq/source", checkpoint_sha=source,
+            updated_at=time.time(),
+        ))
+    repair = await completed_source_ci_repair(world, source)
+    await source_ci_binding(world, "source", "repair", source)
+    assert await DatabaseBatches(world.db).eligible(
+        Batch("legacy-repair", "p", "r", MAIN.target_ref),
+        (BatchMember("repair", repair, source),),
+    )
+
+
+@pytest.mark.parametrize("source_delivered", [False, True])
+async def test_current_source_ci_repair_still_delivers(world, source_delivered):
+    source = await completed(world, "source")
+    repair = await completed_source_ci_repair(world, source)
+    await source_ci_binding(world, "source", "repair", source)
+    if source_delivered:
+        world.origin.land("source")
+    transport = LocalGit(Path(world.origin.url))
+    train, checks, _ = lane(world, transport)
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing", testing
+    checks.green.add(testing.candidate_sha)
+    assert (await train.visit(MAIN)).state == "delivered"
+    tip = git(world.origin.url, "rev-parse", "main")
+    git(world.origin.url, "merge-base", "--is-ancestor", repair, tip)
+
+
+async def test_reopen_refuses_frozen_source_ci_repair_publication_with_named_blocker(world):
+    source = await completed(world, "source")
+    repair = await completed_source_ci_repair(world, source)
+    await source_ci_binding(world, "source", "repair", source)
+    # Match an independently batched repair: sealing the source itself would
+    # already forbid its reopen through the existing subtree mutation guard.
+    await BatchStore(world.db).freeze(
+        Batch("repair-only", "p", "r", MAIN.target_ref),
+        (BatchMember("repair", repair, source),), trees={"repair": tree(world, repair)},
+    )
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)))
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing", testing
+    checks.green.add(testing.candidate_sha)
+    before = git(world.origin.url, "rev-parse", "main")
+
+    await world.db.transition_task("source", TaskStatus.READY, context="reopen_with_feedback")
+    refused = await train.visit(MAIN)
+    assert refused.state == "held", refused
+    assert any(blocker["code"] == "source_ci_repair_superseded" and
+               blocker["task_id"] == "repair" for blocker in refused.detail["blockers"])
+    assert git(world.origin.url, "rev-parse", "main") == before
+
+
 def tree(world, sha):
     return git(world.origin.clone, "rev-parse", f"{sha}^{{tree}}")
 

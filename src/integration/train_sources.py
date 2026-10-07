@@ -322,6 +322,18 @@ class DatabaseBatches:
             pending = await self.pending(target, snapshot, blockers=blockers)
         if current is not None:
             members = await service.store.members(current.id)
+            # Retired members disappear from the pending frontier but remain
+            # in a frozen batch. Explain why its publication is now refused.
+            async with self.db._engine.connect() as conn:
+                from src.integration.source_delivery import superseded_source_repairs_on
+
+                superseded = await superseded_source_repairs_on(
+                    self.db, conn, [member.task_id for member in members],
+                    repository_id=target.repository_id,
+                )
+            reported = {(blocker["code"], blocker.get("task_id")) for blocker in blockers}
+            blockers.extend(blocker for task_id, blocker in sorted(superseded.items())
+                            if (blocker["code"], task_id) not in reported)
             # Old frozen inputs also stay out of duplicate epic publication.
             if target.kind == "epic" and not current.epic_sync:
                 delivered = await self.delivered(target, snapshot, [m.task_id for m in members])
@@ -361,6 +373,14 @@ class DatabaseBatches:
         """Exact pending inputs; report unknown delivery that prevents batching."""
         async with self.db._engine.connect() as conn:
             ids = await _pending_tasks(conn, target.project_id, target.repository_id, limit=None)
+            from src.integration.source_delivery import superseded_source_repairs_on
+
+            superseded = await superseded_source_repairs_on(
+                self.db, conn, ids, repository_id=target.repository_id,
+            )
+        if blockers is not None:
+            blockers.extend(superseded.values())
+        ids = [task_id for task_id in ids if task_id not in superseded]
         delivered_to_project = await self.delivered(target, snapshot, ids)
         ids = [task_id for task_id in ids if task_id not in delivered_to_project]
         async with self.db._engine.connect() as conn:
@@ -477,6 +497,12 @@ class DatabaseBatches:
         """Ordinary identity is still current: completed, routed to this target."""
         ids = [member.task_id for member in members]
         async with self.db._engine.connect() as conn:
+            from src.integration.source_delivery import superseded_source_repairs_on
+
+            if await superseded_source_repairs_on(
+                self.db, conn, ids, repository_id=batch.repository_id,
+            ):
+                return False
             mode = (await conn.execute(
                 select(projects.c.hierarchical_integration_mode, projects.c.status)
                 .where(projects.c.id == batch.project_id)
