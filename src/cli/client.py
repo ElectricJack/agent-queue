@@ -101,6 +101,11 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     # Binding, token mint, and a bounded set of reads (variables, workflow files).
     "integration_app_verify": 180.0,
     # A page stops starting Git batches after 45s (provenance_migration).
+    # Doctor runs every check concurrently, each under its own timeout (the
+    # longest, git.stale_branches and integration.legacy_deliveries, allow 300s);
+    # the read timeout must outlast them or a
+    # full `aq doctor` reports "no complete response" while checks still run.
+    "doctor": 330.0,
 }
 
 

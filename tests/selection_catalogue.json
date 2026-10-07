@@ -290,6 +290,7 @@
       "description": "aq doctor: the check registry and runner, exit codes, built-in checks, platform health diagnostics, the operator stall sweep, sustained event-loop lag reports and installed-skill drift.",
       "modules": [
         "tests/test_doctor.py",
+        "tests/test_doctor_cli_timeout.py",
         "tests/test_doctor_discord_config.py",
         "tests/test_doctor_perf_checks.py",
         "tests/test_doctor_skill_checks.py",
@@ -1430,7 +1431,7 @@
       ]
     }
   },
-  "digest": "sha256:841482ef665a06ce8138860acb8a0d01f5136e6f82e4da2e3ecb29687a59dc4c",
+  "digest": "sha256:e6e9ea24c63ff9b69804f872bb9cf07e990e5a2b3eede6be6f8ff5ee601c22a6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5385,6 +5386,19 @@
         "parametrize"
       ],
       "summary": "Tests for ``aq doctor`` — registry, runner, exit codes, built-in checks."
+    },
+    "tests/test_doctor_cli_timeout.py": {
+      "areas": [
+        "doctor"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.client",
+        "src.doctor",
+        "src.doctor.db_checks"
+      ],
+      "markers": [],
+      "summary": "A full `aq doctor` must not hit the CLI read timeout before its checks do."
     },
     "tests/test_doctor_dashboard_server.py": {
       "areas": [
