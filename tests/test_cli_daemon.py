@@ -1003,144 +1003,90 @@ def test_start_backs_up_only_when_db_is_behind_code(
     assert backup_calls == expected, f"expected {expected!r}, got {backup_calls!r}"
 
 
-def test_backup_database_dumps_and_passes_integrity(tmp_path, monkeypatch):
-    """A pg_dump that lands on disk with the marker survives the integrity check.
-
-    The docker steps are stubbed by writing the dump file ourselves where
-    ``docker cp`` would have placed it.
-    """
-    monkeypatch.setattr(daemon_mod, "BACKUPS_DIR", str(tmp_path))
-    monkeypatch.setattr("src.install.update.find_pg_dump", lambda: None)
-
-    docker_calls: list[list[str]] = []
-
-    # Simulate `docker cp` by writing the fake dump to the destination path.
-    def stub_run(cmd, **kw):
-        docker_calls.append(list(cmd))
-        args = list(cmd)
-        # "docker cp aq-postgres:/tmp/pre-deploy-<ts>.sql <out>" — copy step
-        if "cp" in args:
-            with open(args[-1], "w") as f:
-                f.write("-- pg_dump tail\nunrestrict;\n")
-        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
-
-    monkeypatch.setattr(daemon_mod.subprocess, "run", stub_run)
-
-    daemon_mod._backup_database()
-
-    # The docker steps ran in order: pg_dump, cp, rm.
-    kinds = [c[1] for c in docker_calls]
-    assert kinds == ["exec", "cp", "exec"], f"wrong docker step order: {kinds}"
-
-    # The dump file landed on disk and carries the marker.
-    dumps = list(tmp_path.glob("pre-deploy-*.sql"))
-    assert dumps, "no dump file was written"
-    assert "unrestrict" in dumps[0].read_text().lower()
-
-
-def test_backup_database_raises_on_missing_integrity_marker(tmp_path, monkeypatch):
-    """A dump without the marker comment must abort with SystemExit(15)."""
-    monkeypatch.setattr(daemon_mod, "BACKUPS_DIR", str(tmp_path))
-    monkeypatch.setattr("src.install.update.find_pg_dump", lambda: None)
-
-    def stub_run(cmd, **kw):
-        args = list(cmd)
-        if "cp" in args:
-            with open(args[-1], "w") as f:
-                f.write("-- incomplete pg_dump, no marker\n")
-        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
-
-    monkeypatch.setattr(daemon_mod.subprocess, "run", stub_run)
-
-    with pytest.raises(SystemExit, match="15"):
-        daemon_mod._backup_database()
-
-
-def test_backup_database_raises_on_docker_failure(tmp_path, monkeypatch):
-    """A failed docker step must abort with SystemExit(13)."""
-    monkeypatch.setattr(daemon_mod, "BACKUPS_DIR", str(tmp_path))
-    monkeypatch.setattr("src.install.update.find_pg_dump", lambda: None)
-
-    import subprocess as _sp
-    def failing_run(cmd, **kw):
-        raise _sp.CalledProcessError(1, list(cmd))
-
-    monkeypatch.setattr(daemon_mod.subprocess, "run", failing_run)
-
-    with pytest.raises(SystemExit, match="13"):
-        daemon_mod._backup_database()
-
-
-@pytest.mark.parametrize("archive", [b"PGDMP\x01mock archive", b"", b"incomplete dump"])
-def test_backup_database_uses_configured_postgres_without_docker(tmp_path, monkeypatch, archive):
-    """Local clients back up the configured server, including PostgreSQL 16."""
-    from src.install.command import CommandOutput
+@pytest.fixture
+def predeploy_backup(tmp_path, monkeypatch):
+    """Real archive orchestration, with only the client process boundary stubbed."""
+    import src.database.backup as backups
 
     monkeypatch.setattr(daemon_mod, "BACKUPS_DIR", str(tmp_path))
     monkeypatch.setattr(daemon_mod, "CONFIG_PATH", str(tmp_path / "config.yaml"))
-    monkeypatch.setattr("src.install.update.find_pg_dump", lambda: "/homebrew/bin/pg_dump")
     monkeypatch.setattr(
         "src.config.load_config",
-        lambda path: SimpleNamespace(
-            database=SimpleNamespace(url="postgresql://custom:secret@db.example:6543/custom_db")
+        lambda _: SimpleNamespace(
+            database=SimpleNamespace(url="postgresql://custom:secret@localhost:6543/custom_db")
         ),
     )
-    calls = []
-
-    def execute(argv, **kwargs):
-        calls.append((argv, kwargs))
-        Path(argv[argv.index("--file") + 1]).write_bytes(archive)
-        return CommandOutput(argv=tuple(argv), returncode=0)
-
-    monkeypatch.setattr("src.install.command.run_command", execute)
+    restore = tmp_path / "pg_restore"
+    restore.touch()
+    (tmp_path / "psql").touch()
+    state = SimpleNamespace(archive=b"PGDMPmock archive", error=None, calls=[], docker=False)
     monkeypatch.setattr(
-        daemon_mod.subprocess, "run", lambda *a, **kw: pytest.fail("Docker must not be invoked")
+        "src.install.update.find_pg_dump",
+        lambda: None if state.docker else str(tmp_path / "pg_dump"),
     )
+    monkeypatch.setattr(backups.shutil, "which", lambda _: "/usr/bin/docker")
 
-    if archive.startswith(b"PGDMP"):
-        daemon_mod._backup_database()
-        dump, = tmp_path.glob("pre-deploy-*.dump")
-        assert dump.read_bytes() == archive
-        assert dump.stat().st_mode & 0o777 == 0o600
-    else:
-        with pytest.raises(SystemExit, match="15"):
-            daemon_mod._backup_database()
-        assert not list(tmp_path.glob("pre-deploy-*.dump"))
+    async def execute(argv, **kwargs):
+        state.calls.append((argv, kwargs))
+        if argv[:2] == ["docker", "ps"]:
+            return b"serving-container\n"
+        if argv[:2] == ["docker", "inspect"]:
+            return b'{"5432/tcp":[{"HostPort":"6543"}]}'
+        if "--version" in argv:
+            return b"pg_dump (PostgreSQL) 18.0\n"
+        if any(Path(arg).name == "pg_dump" for arg in argv):
+            kwargs["destination"].write_bytes(state.archive)
+            if state.error:
+                raise backups.BackupError(state.error)
+        if "--list" in argv:
+            return b"; Archive created at 2026-10-06 00:00:00 UTC\n"
+        return b""
 
-    argv, kwargs = calls[0]
-    assert len(calls) == 1
-    assert argv[0] == "/homebrew/bin/pg_dump"
-    assert argv[argv.index("--host") + 1] == "db.example"
-    assert argv[argv.index("--port") + 1] == "6543"
-    assert argv[argv.index("--username") + 1] == "custom"
-    assert argv[argv.index("--dbname") + 1] == "custom_db"
+    monkeypatch.setattr(backups, "_run", execute)
+    return state
+
+
+@pytest.mark.parametrize("docker", [False, True])
+def test_backup_database_dumps_and_passes_integrity(tmp_path, predeploy_backup, docker):
+    """Local and Docker clients both produce private, inspected custom archives."""
+    predeploy_backup.docker = docker
+    daemon_mod._backup_database()
+    dump, = tmp_path.glob("pre-deploy-*.dump")
+    assert dump.read_bytes() == b"PGDMPmock archive"
+    assert dump.stat().st_mode & 0o777 == 0o600
+    assert not list(tmp_path.glob("*.sql"))
+    argv, kwargs = next(
+        (argv, kwargs) for argv, kwargs in predeploy_backup.calls
+        if any(Path(arg).name == "pg_dump" for arg in argv) and "--version" not in argv
+    )
+    assert "--format=custom" in argv
     assert "secret" not in " ".join(argv)
     assert kwargs["env"]["PGPASSWORD"] == "secret"
+    if docker:
+        assert "serving-container" in argv and "custom_db" in argv
+    else:
+        assert "postgresql://custom@localhost:6543/custom_db" in argv
+    assert any("--list" in argv for argv, _ in predeploy_backup.calls)
 
 
-def test_local_backup_failure_reports_reason_and_removes_partial_dump(tmp_path, monkeypatch):
-    from src.install.command import CommandOutput
+@pytest.mark.parametrize("docker", [False, True])
+@pytest.mark.parametrize("archive", [b"", b"incomplete dump"])
+def test_backup_database_raises_on_missing_integrity_marker(tmp_path, predeploy_backup, docker, archive):
+    predeploy_backup.docker = docker
+    predeploy_backup.archive = archive
+    with pytest.raises(SystemExit, match="15"):
+        daemon_mod._backup_database()
+    assert not list(tmp_path.glob("pre-deploy-*.dump"))
 
-    monkeypatch.setattr(daemon_mod, "BACKUPS_DIR", str(tmp_path))
-    monkeypatch.setattr("src.install.update.find_pg_dump", lambda: "/homebrew/bin/pg_dump")
-    monkeypatch.setattr(
-        "src.config.load_config",
-        lambda path: SimpleNamespace(database=SimpleNamespace(url="postgresql://aq@localhost/aq")),
-    )
 
-    def execute(argv, **kwargs):
-        Path(argv[argv.index("--file") + 1]).write_bytes(b"partial")
-        return CommandOutput(argv=tuple(argv), returncode=1, stderr="connection refused")
-
-    monkeypatch.setattr("src.install.command.run_command", execute)
-    messages = []
-    monkeypatch.setattr(daemon_mod.console, "print", lambda message, **kw: messages.append(message))
-
+@pytest.mark.parametrize("docker", [False, True])
+def test_backup_database_raises_on_client_failure(tmp_path, predeploy_backup, docker, capsys):
+    predeploy_backup.docker = docker
+    predeploy_backup.error = "connection refused"
     with pytest.raises(SystemExit, match="13"):
         daemon_mod._backup_database()
-
+    assert "connection refused" in capsys.readouterr().out
     assert not list(tmp_path.glob("pre-deploy-*.dump"))
-    assert any("connection refused" in message for message in messages)
 
 
 def test_start_holds_its_lock_while_it_waits_for_the_database(tmp_path, monkeypatch, no_popen):
@@ -1338,3 +1284,19 @@ def test_a_lock_is_only_released_by_the_owner_that_was_seen(tmp_path):
     assert (tmp_path / "daemon.lock").is_dir()
     assert release_start_lock(lock, owner=__import__("os").getpid()) is True
     assert not (tmp_path / "daemon.lock").exists()
+
+
+def test_stop_agent_sessions_kills_pool_task_and_named_sessions_only(monkeypatch):
+    from types import SimpleNamespace
+
+    commands = []
+    monkeypatch.setattr(daemon_mod, "_tmux_socket", lambda: "fixture-socket")
+
+    def run(argv, **kwargs):
+        commands.append(argv)
+        return SimpleNamespace(returncode=0, stdout="p-worker--fixture\ns-task\nn-supervisor\npersonal\n")
+
+    monkeypatch.setattr(daemon_mod.subprocess, "run", run)
+    assert daemon_mod.stop_agent_sessions(quiet=True) == 3
+    assert [argv[-1] for argv in commands[1:]] == ["p-worker--fixture", "s-task", "n-supervisor"]
+    assert all(argv[2] == "fixture-socket" for argv in commands)

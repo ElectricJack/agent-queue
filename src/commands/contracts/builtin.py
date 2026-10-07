@@ -1979,6 +1979,9 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
     from src.commands.contracts.supervisor_inbox import register_supervisor_inbox_contracts
 
     register_integration_contracts(registry)
+    from src.commands.contracts.promote import register_promote_contracts
+
+    register_promote_contracts(registry)
     from src.commands.contracts.test_selection import register_test_selection_contracts
 
     register_test_selection_contracts(registry)

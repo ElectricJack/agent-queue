@@ -34,6 +34,7 @@ from src.database.queries.hierarchy_queries import (
     HIERARCHY_MODES,
     ProjectIntegrationMode,
     container_flag_exists,
+    cross_parent_prerequisites_on_default,
     delivered_prerequisites_for_projects,
     delivered_same_parent_prerequisites_when_hierarchical,
     materialized_origin_when_hierarchical,
@@ -91,6 +92,7 @@ def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
         "sibling_prerequisite_not_delivered": (
             delivered_same_parent_prerequisites_when_hierarchical(hierarchy_mode)
         ),
+        "prerequisite_not_on_default_branch": cross_parent_prerequisites_on_default(hierarchy_mode),
         # Containers settle when their children finish. A worker holding one
         # could never close it and would block the settlement it waits for.
         "container_settles_without_worker": ~container_flag_exists(),
@@ -434,12 +436,20 @@ def claim_frontier_predicates(hierarchy_modes=None):
         "hold_label": apply_label_filters(select(tasks.c.id), exclude_hold=True).whereclause,
     }
     predicates["sibling_prerequisite_not_delivered"] = delivered_prerequisites_for_projects(
-        hierarchy_modes
+        hierarchy_modes, cross_parent=False
     )
+    predicates["prerequisite_not_on_default_branch"] = case(
+        {pid: cross_parent_prerequisites_on_default(mode) for pid, mode in (hierarchy_modes or {}).items()},
+        value=tasks.c.project_id, else_=cross_parent_prerequisites_on_default(),
+    ) if hierarchy_modes else cross_parent_prerequisites_on_default()
     return predicates
 
 
 FRONTIER_PREDICATE_DETAILS = {
+    "prerequisite_not_on_default_branch": (
+        "a cross-epic prerequisite needs exact source containment on the default branch, "
+        "and an epic refresh must finish before its children start"
+    ),
     "supervisor_profile": "profile_id must not be supervisor",
     "dependency_blocked": "is_blocked must be false",
     "already_assigned": "assigned_agent_id must be empty",
@@ -450,7 +460,8 @@ FRONTIER_PREDICATE_DETAILS = {
     ),
     "sibling_prerequisite_not_delivered": (
         "delivered_same_parent_prerequisites_when_hierarchical(): requires the preserved "
-        "parent origin and delivery of each completed blocks sibling to the shared parent; "
+        "parent origin and each completed blocks sibling delivered to the shared parent or "
+        "proven on its own task branch under the project stacked policy; "
         "Git-first uses current Git proof, shadow uses matching code receipts after rework"
     ),
     "container_settles_without_worker": "container_flag_exists() must be false",
@@ -484,9 +495,8 @@ class ClaimQueryMixin:
         """
         from src.integration.delivery_observer import hierarchy_frontier_modes
 
-        predicates = claim_frontier_predicates(
-            await hierarchy_frontier_modes(self, task_id=task_id)
-        )
+        modes = await hierarchy_frontier_modes(self, task_id=task_id)
+        predicates = claim_frontier_predicates(modes)
         if router_ready is not None:
             predicates["route_not_claimable"] = route_claimable(router_ready)
         async with self._engine.connect() as conn:
@@ -496,7 +506,7 @@ class ClaimQueryMixin:
             )).mappings().one_or_none()
         if row is None:
             return []
-        return [
+        exclusions = [
             {
                 "code": f"frontier_{name}",
                 "detail": (
@@ -507,6 +517,26 @@ class ClaimQueryMixin:
             }
             for name in predicates if not row[name]
         ]
+        if not row["prerequisite_not_on_default_branch"]:
+            from src.database.tables import task_dependencies
+
+            source = tasks.alias("explain_cross_source")
+            dependent = tasks.alias("explain_cross_dependent")
+            mode = next(iter(modes.values()), None)
+            async with self._engine.connect() as conn:
+                sources = (await conn.execute(select(source.c.id, source.c.parent_task_id)
+                    .select_from(task_dependencies.join(source,
+                        source.c.id == task_dependencies.c.depends_on_task_id)
+                        .join(dependent, dependent.c.id == task_dependencies.c.task_id))
+                    .where(dependent.c.id == task_id, task_dependencies.c.dep_type == "blocks",
+                           source.c.status == "COMPLETED",
+                           source.c.parent_task_id.is_distinct_from(dependent.c.parent_task_id)
+                           | source.c.parent_task_id.is_(None)))).all()
+            exclusions.extend({"code": "prerequisite_not_on_default_branch", "ref": tid,
+                "epic_id": parent, "detail": f"Prerequisite {tid} (epic {parent or tid}) "
+                "is not proven on the default branch"}
+                for tid, parent in sources if mode is None or tid not in mode.default_prerequisite_ids)
+        return exclusions
 
     async def take_claim_slot(self, conn, session_id: str, *, now: float, cap: int | None):
         """CAS the session into ``claiming``; ``(kind, session_or_None)``.

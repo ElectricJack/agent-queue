@@ -287,6 +287,27 @@ def _marker(pr_number: int, head_sha: str) -> str:
     return f"<!-- aq-delivered-pr:{pr_number}:{head_sha} -->"
 
 
+def train_delivery_comment(
+    batch_id: str, source_sha: str, promoted_sha: str, target_ref: str,
+    repair_commits: list[str],
+) -> tuple[str, str]:
+    """One replayable promotion comment, including fixes beyond the PR head.
+
+    Cleanup posts this even if GitHub already marked the PR merged. GitHub
+    owns that state; posting the audit comment never closes or merges a PR.
+    """
+    marker = f"<!-- aq-promoted-batch:{batch_id}:{source_sha}:{promoted_sha} -->"
+    body = (
+        f"{marker}\nDelivered by integration batch `{batch_id}`: source `{source_sha}` "
+        f"promoted at `{promoted_sha}` to `{target_ref}`."
+    )
+    body += "\n\nIntegration repair commits included in the promoted batch:\n" + (
+        "\n".join(f"- `{sha}`" for sha in repair_commits)
+        if repair_commits else "No integration repair commits."
+    )
+    return marker, body
+
+
 def _comment(marker: str, observed: dict[str, Any]) -> str:
     """The public proof; the operator's audit reason stays in the event."""
     proof = observed["proof"]

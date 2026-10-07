@@ -1409,3 +1409,19 @@ async def test_rate_limited_cli_failure_logs_scrubbed_stderr(tmp_path, caplog):
     assert "gh rate_limited; repository=acme/widgets" in caplog.text
     assert "secondary rate limit" in caplog.text
     assert "opaque-secret" not in caplog.text
+
+
+async def test_authenticated_user_requires_human_credentials_and_fixed_endpoint():
+    runner = FakeRunner(GitHubCredentialIdentity.existing_login(), [
+        _response(200, {"login": "operator", "type": "User"}),
+    ])
+    client = GitHubClient(REPOSITORY, runner=runner)
+    assert (await client.authenticated_user())["login"] == "operator"
+    assert runner.calls[0]["args"][-1] == "user"
+    assert runner.calls[0]["repository"] == REPOSITORY
+    with pytest.raises(ValueError, match="repository-bound"):
+        await client.request_json("GET", "/user")
+    app_runner = FakeRunner(GitHubCredentialIdentity.app(101, 202), [])
+    with pytest.raises(ValueError, match="existing-login"):
+        await GitHubClient(REPOSITORY, runner=app_runner).authenticated_user()
+    assert not app_runner.calls

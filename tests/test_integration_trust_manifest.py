@@ -31,6 +31,7 @@ POLICY_PATH = REPO / "docs/config/agent-queue-train-policy.json"
 EXAMPLE_PATH = REPO / ".github/agent-queue-integration.example.json"
 MANIFEST_PATH = REPO / trust_manifest.TRUST_MANIFEST_PATH
 SHA = "a" * 40
+FLOW = [{"gate": {"attestation": "Agent Queue Promotion Attestation (release)"}}]
 
 #: Spec §9.2 step 3: agent-queue's committed manifest, the text
 #: ``aq integration trust-manifest agent-queue --policy
@@ -77,10 +78,28 @@ def test_the_committed_manifest_is_the_builder_output_for_the_reviewed_policy():
         "docs/config/agent-queue-train-policy.json --repository-id agent-queue2 "
         "--write .github/agent-queue-integration.json"
     )
-    assert committed.model_dump(mode="json", by_alias=True) == manifest
+    assert committed.model_dump(mode="json", by_alias=True, exclude_unset=True) == manifest
     assert trust_manifest.compare(manifest, AGENT_QUEUE_MANIFEST).status == "ok"
     # Policy order, not sorted order: the check-name comparison is ordered.
     assert manifest["required_checks"]["names"] == _policy()["root"]["required_checks"]["names"]
+
+
+def test_promotion_trust_is_explicit_without_changing_existing_manifests():
+    original = _agent_queue_manifest()
+    assert "promotion_attestation_names" not in original
+    assert "check_sets" not in original
+    assert trust_manifest.compare(original, AGENT_QUEUE_MANIFEST).status == "ok"
+    extended = trust_manifest.manifest_for_policy(
+        _policy(), canonical_repository_id="agent-queue2", repository_id=1160639300,
+        full_name="ElectricJack/agent-queue", attestation_app_id=5075923,
+        promotion_flow=FLOW, check_sets={"release": ["release-unit"]},
+    )
+    assert extended["promotion_attestation_names"] == [FLOW[0]["gate"]["attestation"]]
+    assert extended["check_sets"] == {"release": ["release-unit"]}
+    result = trust_manifest.compare(extended, AGENT_QUEUE_MANIFEST)
+    assert result.status == "fail"
+    assert {diff.field for diff in result.diff} == {"promotion_attestation_names", "check_sets"}
+    assert all(not diff.committed_present for diff in result.diff)
 
 
 def test_canonical_text_sorts_keys_like_the_example_and_keeps_list_order():

@@ -11,7 +11,12 @@ import pytest
 from sqlalchemy import insert, update
 
 from src.database import Database
-from src.database.tables import integration_branch_owners, integration_subjects, playbook_artifacts
+from src.database.tables import (
+    integration_branch_owners,
+    integration_subjects,
+    playbook_artifacts,
+    projects,
+)
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitError, GitManager, is_valid_git_oid
 from src.integration.cleanup import SubjectCleanup, SubjectCleanupItem
@@ -44,6 +49,7 @@ from src.integration.subjects import (
     WriterLease,
     WriterStatus,
 )
+from src.models import Project, RepoConfig, RepoSourceType
 from tests.db_fixtures import lease_dsn
 
 ARTIFACT = "sha256:" + "1" * 64
@@ -853,6 +859,40 @@ async def test_cleanup_retention_expected_old_ambiguous_delete_and_replay(setup)
     result = await cleanup(s, CleanupArgs(max_tries=1))
     assert result.detail["pending"][0]["reason"] == "cleanup ref moved"
     assert ops.git.deletes == 1
+
+
+async def test_subject_cleanup_keeps_default_and_every_flow_target(setup):
+    db, ops, s, _, repo, _, head, _ = setup
+    await db.create_project(Project(id="p", name="Promotion cleanup"))
+    await db.create_repo(RepoConfig(
+        id="r", project_id="p", source_type=RepoSourceType.CLONE,
+        url=str(ops.git.remote_path), default_branch="dev",
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            promotion_flow=[{"target": "staging"}, {"target": "aq/release"}],
+        ))
+    protected = ("dev", "staging", "aq/release", "gh-pages")
+    items = []
+    for branch in (*protected, "aq/ordinary"):
+        ref = f"refs/heads/{branch}"
+        git(repo.store, "push", "origin", f"{head}:{ref}")
+        items.append(SubjectCleanupItem("remote_ref", ref, head, successful_source=True))
+    s = await cleanup_subject(db, s)
+
+    async def inventory(subject):
+        return items
+
+    async def held(subject, item):
+        return False
+
+    result = await SubjectCleanup(ops, inventory=inventory, held=held)(s, CleanupArgs())
+    assert result.outcome == "clean", result
+    assert result.detail["retained"] == [f"refs/heads/{branch}" for branch in protected]
+    assert result.detail["deleted"] == ["refs/heads/aq/ordinary"]
+    assert ops.git.deletes == 1
+    for branch in protected:
+        assert await ops.git.aremote_branch_head(repository=repo.binding, branch=branch) == head
 
 
 async def test_ports_register_only_owned_mechanisms(setup):

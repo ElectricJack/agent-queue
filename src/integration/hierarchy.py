@@ -1373,8 +1373,10 @@ class HierarchyIntegration:
             raise HierarchyError("invalid", "branch origin base is not an exact Git OID")
         task = await self._task_row(conn, task_id)
         branch = task["branch_name"]
-        if parent_task_id is not None and parent_ref == "main":
-            raise HierarchyError("invalid", "child delivery cannot target the default branch")
+        if parent_task_id is not None:
+            repo = await self._repo_on(conn, repository_id)
+            if repo is None or parent_ref.removeprefix("refs/heads/") == repo.default_branch:
+                raise HierarchyError("invalid", "child delivery cannot target the default branch")
         origin_id = str(uuid.uuid4())
         now = self.clock()
         values = {

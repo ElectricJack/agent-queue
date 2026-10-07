@@ -26,6 +26,7 @@ from sqlalchemy import (
     func,
     insert,
     literal,
+    literal_column,
     or_,
     select,
     true,
@@ -251,6 +252,21 @@ def _settlement_clauses() -> list:
                 select(literal(1)).where(
                     task_integration_checkpoints.c.task_id == tasks.c.id,
                     task_integration_checkpoints.c.episode_id.is_not(None),
+                    # In a train project the git-first train never runs the
+                    # legacy collector, and orphan settlement cancels its
+                    # operation; a cancelled episode owns nothing, so the
+                    # container settles here (grand-lantern-78, 2026-10-07).
+                    or_(
+                        projects.c.hierarchical_integration_mode != "train",
+                        exists(
+                            select(literal(1)).where(
+                                integration_repair_operations.c.parent_task_id == tasks.c.id,
+                                integration_repair_operations.c.episode_id
+                                == task_integration_checkpoints.c.episode_id,
+                                integration_repair_operations.c.state != "cancelled",
+                            )
+                        ),
+                    ),
                 )
             ),
         ),
@@ -342,6 +358,10 @@ class ProjectIntegrationMode:
     integration_repository_id: str | None
     # None preserves legacy admission; a supplied set is one revalidated Git view.
     delivered_prerequisite_ids: frozenset[str] | None = None
+    cross_epic_prerequisites: str = "default_branch"
+    default_prerequisite_ids: frozenset[str] = frozenset()
+    stacked: bool = False
+    stackable_prerequisite_ids: frozenset[str] = frozenset()
 
     @classmethod
     def of(cls, project) -> ProjectIntegrationMode | None:
@@ -352,10 +372,16 @@ class ProjectIntegrationMode:
         """
         if project is None:
             return None
+        from src.integration.stacked_branches import stacked_policy
+
         return cls(
+            stacked=stacked_policy(project),
             hierarchical=getattr(project, "hierarchical_integration_mode", None)
             in HIERARCHY_MODES,
             integration_repository_id=getattr(project, "integration_repository_id", None),
+            cross_epic_prerequisites=(
+                getattr(project, "hierarchical_integration_policy", None) or {}
+            ).get("cross_epic_prerequisites", "default_branch"),
         )
 
 
@@ -587,6 +613,8 @@ def delivered_same_parent_prerequisites_when_hierarchical(
     )
     if mode is not None and mode.delivered_prerequisite_ids is not None:
         delivered = prerequisite.c.id.in_(mode.delivered_prerequisite_ids)
+    if mode is not None and mode.stacked:
+        delivered = or_(delivered, prerequisite.c.id.in_(mode.stackable_prerequisite_ids))
     prerequisite_is_undelivered = exists(
         select(literal(1))
         .select_from(
@@ -646,17 +674,67 @@ def delivered_same_parent_prerequisites_when_hierarchical(
 LIVE_SESSION_STATES = ("starting", "running", "draining")
 
 
-def delivered_prerequisites_for_projects(modes=None):
+def delivered_prerequisites_for_projects(modes=None, *, cross_parent=True):
     """Use each project's Git view, retaining legacy admission for other projects."""
-    legacy = delivered_same_parent_prerequisites_when_hierarchical()
+    def predicate(mode=None):
+        siblings = delivered_same_parent_prerequisites_when_hierarchical(mode)
+        return siblings & cross_parent_prerequisites_on_default(mode) if cross_parent else siblings
+
+    legacy = predicate()
     if not modes:
         return legacy
     return case(
-        {pid: delivered_same_parent_prerequisites_when_hierarchical(mode)
-         for pid, mode in modes.items()},
+        {pid: predicate(mode) for pid, mode in modes.items()},
         value=tasks.c.project_id,
         else_=legacy,
     )
+
+
+def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = None):
+    """Cross-parent blocks edges require exact Git delivery, never a receipt.
+
+    With no observation, a completed cross-parent source is withheld. The
+    explicit ``completed`` policy retains the legacy graph-only admission.
+    """
+    if mode is not None and (not mode.hierarchical
+                             or mode.cross_epic_prerequisites == "completed"):
+        return true()
+    edge = task_dependencies.alias("cross_prerequisite_edge")
+    source = tasks.alias("cross_prerequisite_source")
+    # Fixed SQL constants do not consume the frontier's parameter budget.
+    # The observed source ids use one array bind, however large the frontier.
+    ids = mode.default_prerequisite_ids if mode else ()
+    unproven = ~(source.c.id == any_(literal(list(ids), type_=ARRAY(Text)))) if ids else true()
+    cross_edge = select(literal_column("1")).select_from(
+        edge.join(source, source.c.id == edge.c.depends_on_task_id),
+    ).correlate(tasks).where(
+        edge.c.task_id == tasks.c.id, edge.c.dep_type == literal_column("'blocks'"),
+        source.c.parent_task_id.is_distinct_from(tasks.c.parent_task_id)
+        | source.c.parent_task_id.is_(None),
+        source.c.status == literal_column("'COMPLETED'"),
+    )
+    missing = exists(cross_edge.where(unproven))
+    if mode is None:
+        enabled = exists(select(literal_column("1")).where(
+            projects.c.id == tasks.c.project_id,
+            projects.c.hierarchical_integration_mode.in_(HIERARCHY_MODES),
+            func.coalesce(projects.c.hierarchical_integration_policy[
+                "cross_epic_prerequisites"].as_string(), "default_branch") != "completed",
+        ))
+    parent = tasks.alias("refresh_pending_parent")
+    pending = exists(cross_edge) & exists(select(literal_column("1")).select_from(
+        integration_batches.join(parent, parent.c.id == tasks.c.parent_task_id),
+    ).correlate(tasks).where(
+        integration_batches.c.project_id == tasks.c.project_id,
+        integration_batches.c.repository_id == parent.c.repo_id,
+        integration_batches.c.intent != literal_column("'aborted'"),
+        integration_batches.c.lifecycle != literal_column("'promoted'"),
+        integration_batches.c.target_ref == (literal_column("'refs/heads/'", type_=Text) + func.replace(
+            parent.c.branch_name, literal_column("'refs/heads/'"), literal_column("''"))),
+    ))
+    if mode is None:
+        return ~(enabled & (missing | pending))
+    return ~missing & ~pending
 
 
 class HierarchyError(Exception):

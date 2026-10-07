@@ -363,6 +363,10 @@ async def test_epic_pr_approval_red_ci_repair_exact_promotion_and_cleanup(tmp_pa
             )
 
         pr_git = AsyncMock()
+        pr_git.bind_github_repository.return_value = GitHubRepositoryBinding(123, "example/repo")
+        pr_client = AsyncMock()
+        pr_client.pull_request.return_value = {"state": "open"}
+        pr_git._github_client = lambda binding: pr_client
         pr_git.acreate_pr.return_value = "https://github.com/example/repo/pull/1"
         opened = await EpicPullRequestService(db, git_manager=pr_git).open_for_epic("epic")
         assert opened["outcome"] == "opened"

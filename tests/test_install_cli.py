@@ -21,6 +21,187 @@ ROOT = Path(__file__).resolve().parent.parent
 DOC = ROOT / "docs" / "reference" / "cli" / "install.md"
 
 
+def _bootstrap_checkout(tmp_path, repo, *, aq_on_path=False, **selectors):
+    """Execute the bootstrap's Git boundary, without installing machine prerequisites."""
+    import os
+    import shlex
+    import subprocess
+    import sys
+
+    script = (ROOT / "scripts" / "install.sh").read_text()
+    start = script.index('if [[ -e "$checkout_dir" && ! -d "$checkout_dir/.git" ]]')
+    end = script.index('    if [[ ! -x "$checkout_dir/.venv/bin/python" ]]', start)
+    checkout = tmp_path / "bootstrap"
+    state_dir = tmp_path / "state"
+    prelude = (
+        "set -euo pipefail\n"
+        + "\n".join(
+            f"{name}={shlex.quote(str(value))}"
+            for name, value in {
+                "checkout_dir": checkout,
+                "repository": f"file://{repo.origin}",
+                "python_bin": sys.executable,
+            }.items()
+        )
+        + (
+            '\ncommand() { if [[ "$*" == "-v aq" ]]; then echo /existing/aq; return 0; fi; '
+            'builtin command "$@"; }\n'
+            if aq_on_path
+            else '\ncommand() { if [[ "$*" == "-v aq" ]]; then return 1; fi; builtin command "$@"; }\n'
+        )
+    )
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"AQ_REF", "AQ_TAG_GLOB", "AQ_PROMOTION_TARGET"}
+    }
+    env.update(AQ_INSTALL_STATE_DIR=str(state_dir), **selectors)
+    result = subprocess.run(
+        ["bash"],
+        input=prelude + script[start:end] + "fi\n",
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return result, checkout, state_dir
+
+
+def test_bootstrap_pins_an_explicit_annotated_release_and_records_its_sha(tmp_path):
+    from tests.test_update import Repo, _git, _release
+
+    repo = Repo(tmp_path)
+    expected = repo.push("README.md", "release\n")
+    _release(repo, "v0.2.0")
+    repo.push("README.md", "unreleased main\n")
+    result, checkout, state_dir = _bootstrap_checkout(tmp_path, repo, AQ_REF="v0.2.0")
+    assert result.returncode == 0, result.stderr
+    assert _git(checkout, "rev-parse", "HEAD") == expected
+    assert _git(checkout, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+    record = json.loads((state_dir / "deploy.json").read_text())
+    assert record["tag"] == "v0.2.0" and record["commit"] == expected
+
+
+def test_bootstrap_without_a_selector_keeps_main_head(tmp_path):
+    from tests.test_update import Repo, _git, _release
+
+    repo = Repo(tmp_path)
+    _release(repo, "v0.2.0")
+    expected = repo.push("README.md", "main ahead\n")
+    result, checkout, state_dir = _bootstrap_checkout(tmp_path, repo)
+    assert result.returncode == 0, result.stderr
+    assert _git(checkout, "rev-parse", "HEAD") == expected
+    assert _git(checkout, "branch", "--show-current") == "main"
+    assert not (state_dir / "deploy.json").exists()
+
+
+def test_bootstrap_honors_tag_selection_when_aq_is_already_on_path(tmp_path):
+    from tests.test_update import Repo, _git, _release
+
+    repo = Repo(tmp_path)
+    expected = repo.head()
+    _release(repo, "v0.2.0")
+    repo.push("README.md", "unreleased main\n")
+    result, checkout, state_dir = _bootstrap_checkout(
+        tmp_path, repo, aq_on_path=True, AQ_REF="v0.2.0"
+    )
+    assert result.returncode == 0, result.stderr
+    assert _git(checkout, "rev-parse", "HEAD") == expected
+    assert json.loads((state_dir / "deploy.json").read_text())["tag"] == "v0.2.0"
+
+
+def test_bootstrap_without_selection_preserves_an_existing_aq_on_path(tmp_path):
+    from tests.test_update import Repo
+
+    repo = Repo(tmp_path)
+    result, checkout, state_dir = _bootstrap_checkout(tmp_path, repo, aq_on_path=True)
+    assert result.returncode == 0, result.stderr
+    assert "Using the aq already on PATH" in result.stdout
+    assert not checkout.exists() and not (state_dir / "deploy.json").exists()
+
+
+def test_bootstrap_resolves_newest_semver_and_falls_back_before_first_release(tmp_path):
+    from tests.test_update import Repo, _git, _release
+
+    repo = Repo(tmp_path)
+    _release(repo, "v0.9.0")
+    expected = repo.push("README.md", "release\n")
+    _release(repo, "v0.10.0")
+    result, checkout, _ = _bootstrap_checkout(tmp_path, repo, AQ_TAG_GLOB="v*")
+    assert result.returncode == 0, result.stderr
+    assert _git(checkout, "rev-parse", "HEAD") == expected
+
+    fallback = tmp_path / "fallback"
+    fallback.mkdir()
+    result, checkout, state_dir = _bootstrap_checkout(fallback, repo, AQ_TAG_GLOB="future-v*")
+    assert result.returncode == 0, result.stderr
+    assert "unreleased install" in result.stderr
+    assert _git(checkout, "branch", "--show-current") == "main"
+    assert not (state_dir / "deploy.json").exists()
+
+
+@pytest.mark.parametrize("ref,lightweight", [("v9.9.9", False), ("v0.2.0", True)])
+def test_bootstrap_refuses_missing_or_lightweight_tags(tmp_path, ref, lightweight):
+    from tests.test_update import Repo, _release
+
+    repo = Repo(tmp_path)
+    if lightweight:
+        _release(repo, ref, annotated=False)
+    result, checkout, _ = _bootstrap_checkout(tmp_path, repo, AQ_REF=ref)
+    assert result.returncode == 20
+    assert not checkout.exists()
+
+
+@pytest.mark.parametrize("matching", [False, True])
+def test_bootstrap_reinstall_reconciles_deploy_record(tmp_path, matching):
+    from tests.test_update import Repo, _release
+
+    repo = Repo(tmp_path)
+    _release(repo, "v0.1.0")
+    result, _, state_dir = _bootstrap_checkout(tmp_path, repo, AQ_REF="v0.1.0")
+    assert result.returncode == 0, result.stderr
+    path = state_dir / "deploy.json"
+    previous = json.loads(path.read_text())
+    previous["previous_commit"] = "retained-rollback-commit"
+    path.write_text(json.dumps(previous))
+    before = path.read_bytes()
+    updater = tmp_path / "bootstrap" / ".venv" / "bin" / "aq"
+    updater.parent.mkdir(parents=True)
+    # The Git-boundary fixture omits installer setup and the updater. Model its
+    # successful preflight; the bootstrap still resolves and pins the real tag.
+    updater.write_text("#!/bin/sh\nexit 0\n")
+    updater.chmod(0o755)
+    if not matching:
+        next_commit = repo.push("README.md", "new release\n")
+        _release(repo, "v0.2.0")
+    result, _, _ = _bootstrap_checkout(tmp_path, repo, AQ_REF="v0.1.0" if matching else "v0.2.0")
+    assert result.returncode == 0, result.stderr
+    record = json.loads(path.read_text())
+    if matching:
+        assert path.read_bytes() == before
+    else:
+        assert record["commit"] == next_commit and record["selector"] == "v0.2.0"
+        assert record["previous_commit"] == previous["commit"]
+
+
+def test_bootstrap_branch_reinstall_reconciles_stale_release_receipt(tmp_path):
+    from tests.test_update import Repo
+
+    repo = Repo(tmp_path)
+    result, _, state_dir = _bootstrap_checkout(tmp_path, repo)
+    assert result.returncode == 0, result.stderr
+    previous = repo.head()
+    path = state_dir / "deploy.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(dict(commit=previous, selector="v0.1.0", kind="release")))
+    expected = repo.push("README.md", "branch reinstall\n")
+    result, _, _ = _bootstrap_checkout(tmp_path, repo)
+    assert result.returncode == 0, result.stderr
+    record = json.loads(path.read_text())
+    assert record["commit"] == expected and record["selector"] == "main"
+    assert record["kind"] == "unreleased" and record["tag"] is None
+    assert record["previous_commit"] == previous
+
+
 @pytest.fixture(autouse=True)
 def _pg_backend():
     """The installer CLI runs before a database exists."""

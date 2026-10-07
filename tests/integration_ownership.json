@@ -2066,16 +2066,16 @@
       ]
     },
     "src/commands/task_changes.py::apply": {
-      "reason": "Applies reviewed task graph changes through hierarchical integration filing and guarded hierarchy/lifecycle writers in the proposal transaction; performs no Git publication."
+      "reason": "Atomic task change-set application delegates hierarchical filing, reparenting, archive guards and container settlement to their existing integration-aware writers on the proposal connection."
     },
     "src/commands/task_changes.py::boundary": {
-      "reason": "Serializes proposal writes with routing and hierarchy writers and locks integration checkpoints to fence concurrent integration state changes."
+      "reason": "Proposal transaction locks integration checkpoints together with task, dependency and gate state so concurrent integration changes cannot straddle validation and commit."
     },
     "src/commands/task_changes.py::import from src.database.tables import gates, projects, sessions, task_dependencies, task_gates, task_integration_checkpoints, task_metadata, tasks": {
-      "reason": "Imports integration checkpoints for proposal version checks and transaction fencing alongside ordinary task graph tables."
+      "reason": "Imports integration checkpoints for the proposal transaction lock and reviewed read set; the generic task, dependency, gate and metadata tables retain their own storage ownership."
     },
     "src/commands/task_changes.py::snapshot": {
-      "reason": "Reads integration checkpoints and project integration mode into the reviewed proposal read set so concurrent integration changes invalidate approval."
+      "reason": "Includes integration checkpoints, hierarchy scope, gates and integration mode in the reviewed proposal read set to refuse commits after concurrent integration or task-graph changes."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_create_task_graph": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -8167,17 +8167,86 @@
     "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_task_on": {
       "reason": "Transaction-local subtree archive enforces integration ownership and delivery guards, retires branch origins and preserves audit identity before deleting active rows."
     },
-    "src/commands/task_changes.py::apply": {
-      "reason": "Atomic task change-set application delegates hierarchical filing, reparenting, archive guards and container settlement to their existing integration-aware writers on the proposal connection."
+    "src/database/queries/claim_queries.py::import from src.database.queries.hierarchy_queries import HIERARCHY_MODES, ProjectIntegrationMode, container_flag_exists, cross_parent_prerequisites_on_default, delivered_prerequisites_for_projects, delivered_same_parent_prerequisites_when_hierarchical, materialized_origin_when_hierarchical, never_leaseable_container": {
+      "reason": "Imports cross-parent default-branch delivery admission alongside sibling-stack and container frontier predicates."
     },
-    "src/commands/task_changes.py::boundary": {
-      "reason": "Proposal transaction locks integration checkpoints together with task, dependency and gate state so concurrent integration changes cannot straddle validation and commit."
+    "src/database/queries/hierarchy_queries.py::cross_parent_prerequisites_on_default": {
+      "reason": "Requires exact default-branch delivery for cross-parent blocks prerequisites and withholds children while their epic has an open integration batch."
     },
-    "src/commands/task_changes.py::import from src.database.tables import gates, projects, sessions, task_dependencies, task_gates, task_integration_checkpoints, task_metadata, tasks": {
-      "reason": "Imports integration checkpoints for the proposal transaction lock and reviewed read set; the generic task, dependency, gate and metadata tables retain their own storage ownership."
+    "src/commands/project_commands.py::ProjectCommandsMixin._configure_promotion_flow": {
+      "reason": "Promotion-flow activation: validates layers 1-3, dry-runs the integration policy fence, creates missing targets outside it and writes behind the same generation."
     },
-    "src/commands/task_changes.py::snapshot": {
-      "reason": "Includes integration checkpoints, hierarchy scope, gates and integration mode in the reviewed proposal read set to refuse commits after concurrent integration or task-graph changes."
+    "src/commands/project_commands.py::ProjectCommandsMixin._create_flow_targets": {
+      "reason": "Promotion-flow activation layer 4: create-only pushes of missing chain targets from the project workspace."
+    },
+    "src/orchestrator/core.py::Orchestrator._recheck_promotion_flows": {
+      "reason": "Daemon-start re-validation of stored promotion flows (layers 1-3); records problems for status, writes nothing."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_schema": {
+      "reason": "Read-only promotion-flow schema command; owns the integration configuration contract."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_validate": {
+      "reason": "Read-only layered promotion-flow validation against designated-repository trust."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_manifest": {
+      "reason": "Reads committed integration trust for promotion-flow validation."
+    },
+    "src/commands/promote_commands.py::import from src.commands.supervisor_authority import integration_operator": {
+      "reason": "Promotion validation uses project-scoped integration operator authority."
+    },
+    "src/commands/contracts/promote.py::register_promote_contracts": {
+      "reason": "Registers the promotion intent request, approval, cancellation and cached-read contracts through the integration operational contract adapter."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_approve": {
+      "reason": "Posts a pinned human GitHub approval for an open promotion intent and caches its review evidence for the integration step gate."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_cancel": {
+      "reason": "Closes an unpublished promotion PR and aborts its intent under the integration branch lock; never touches the target or tag."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_request": {
+      "reason": "Admits an idempotent promotion intent: retains the exact source, pushes the private request head, opens the pinned PR and freezes the promotion batch."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_cached": {
+      "reason": "Reads promotion intents with cached check and PR review evidence from integration batch storage."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_inputs": {
+      "reason": "Authorizes the caller and resolves the project's validated promotion flow and bound integration repository."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_intent": {
+      "reason": "Loads a promotion batch and its immutable request identity from the integration policy snapshot."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_runtime": {
+      "reason": "Resolves the integration train lane, Git operations and GitHub client for a promotion step target."
+    },
+    "src/commands/promote_commands.py::_check_pull": {
+      "reason": "Verifies the GitHub PR still matches the pinned promotion source, private head, target and repository identity."
+    },
+    "src/commands/promote_commands.py::_intent_response": {
+      "reason": "Projects a promotion batch row and its request identity into the command response."
+    },
+    "src/commands/promote_commands.py::import from src.integration.batches import Batch, BatchMember, BatchStore": {
+      "reason": "Promotion requests freeze an integration batch for the step's exact source."
+    },
+    "src/commands/promote_commands.py::import from src.database.tables import integration_batch_members, integration_batches, integration_check_evidence, integration_review_evidence, projects, task_context, task_metadata, tasks": {
+      "reason": "Promotion intent commands read and write integration batch, member and evidence storage alongside the daemon-authored task."
+    },
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, promotion_ref": {
+      "reason": "Promotion intents use the integration-owned step identity, result and private request ref."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._woken": {
+      "reason": "Wakes the integration train target when a promotion request, approval or cancellation changes its admission inputs."
+    },
+    "src/commands/promote_commands.py::_check_flow": {
+      "reason": "Rechecks the bound integration repository and promotion policy; holds a shared project-row lock only during intent writes to prevent a concurrent policy edit."
+    },
+    "src/git/github_contracts.py::rate_limit_cause": {
+      "reason": "Preserves GitHub rate-limit identity and retry timing across wrapped failures in promotion admission and train observation."
+    },
+    "src/commands/promote_commands.py::_unavailable": {
+      "reason": "Converts promotion GitHub failures into unavailable or rate-limited command outcomes while preserving provider retry timing."
+    },
+    "src/commands/promote_commands.py::import from src.git.github_contracts import GitHubAccessError, rate_limit_cause": {
+      "reason": "Promotion commands preserve integration GitHub error categories and rate-limit retry timing across wrapped failures."
     }
   },
   "exclusions": {
@@ -12138,7 +12207,9 @@
     "1dbd1dc2e1c65b0f88735e32298e7c0f635409e30b7dcdc798b0cb77119d5a98",
     "2390e3c6e9f20e2c63615dd8429e6148c0451a6e2f06388d9fabc263b91a524c",
     "5c38788248a432e1f59e1cac3b2f4611f202c9dce5c9cda3fe7627dc9595aad9",
-    "6dc53e72699f31ce9c89c26eb979120a8729c29f5bbffaa2564b2727e3337b27"
+    "6dc53e72699f31ce9c89c26eb979120a8729c29f5bbffaa2564b2727e3337b27",
+    "a978ebd22389e6928ea8b90a3a7df9f839306a69413dccde69c13ea1aafa1020",
+    "a9a2995cc9355388cd8a85285754257f7aac11c559938c9ca4a5d25fbb12cf5d"
   ],
   "owned_file_fingerprints": [
     "020e0abc4dae8c8c3a3671fab609db3a5b1308dba6bd380a94fccfb591c63c4d",
@@ -12346,34 +12417,34 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: REPAIR_RECORD_META"
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::2142606549fbb7fc55f12062ec13ac7e0c300036166e68b70a945ed44a752050": {
-      "line": 1295,
+      "line": 1323,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "326a9833d4d625b883f7efb54518377ce1bb16aaaede2cb49d30396e15d38571",
+      "owner_fingerprint": "b4f28ff2142f568498ea0ebdd53af8dfd6ec62e98a4aa35b725c53a36b7c84c8",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary slot-reset failure diagnostics after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: 'slot_reset_failure'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
-      "line": 1281,
+      "line": 1309,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "326a9833d4d625b883f7efb54518377ce1bb16aaaede2cb49d30396e15d38571",
+      "owner_fingerprint": "b4f28ff2142f568498ea0ebdd53af8dfd6ec62e98a4aa35b725c53a36b7c84c8",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary attention marker when permanent preparation failure cannot safely detach an attached writer; PostgreSQL contention bypasses this write. Metadata key: 'needs_attention'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
-      "line": 1234,
+      "line": 1262,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "326a9833d4d625b883f7efb54518377ce1bb16aaaede2cb49d30396e15d38571",
+      "owner_fingerprint": "b4f28ff2142f568498ea0ebdd53af8dfd6ec62e98a4aa35b725c53a36b7c84c8",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary claim-preparation attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: 'needs_attention'; records repair_target_unpublished without remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._recover_stale_binding::4da77d287ab4d26107e389b895bb84e501975a032a135aa4074cb2a9dd28a70c": {
-      "line": 859,
+      "line": 924,
       "owner": "ClaimCommandsMixin._recover_stale_binding",
       "call": "set_task_meta",
       "owner_fingerprint": "99a5abfe960334f70d651bb2d30fb440da856cb1c7bfc6ab0431150d36bead9d",
@@ -12382,7 +12453,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::064f8fcc1a52d145e4f7ee9a86a696a94b43a48b4533d10ca7ad822f1aac750d": {
-      "line": 1017,
+      "line": 1036,
       "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
       "call": "set_task_meta",
       "owner_fingerprint": "6dc53e72699f31ce9c89c26eb979120a8729c29f5bbffaa2564b2727e3337b27",
@@ -12598,37 +12669,37 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit_auto'"
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::6081f9d27dc57e18ce5f31c465cfb8159e76c4d4c1a37d2b8b8d0c741d9fbeca": {
-      "line": 288,
+      "line": 295,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "log_event",
-      "owner_fingerprint": "cad58f2fcacbb9c7782f4c4e371ffaf5856f3a3358f35db1c420af5483092f05",
+      "owner_fingerprint": "b0a6110b153fe2803e1eea4c5e2f6dea26ece7b537cf571e7e7a83d65186f384",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::8513b8ad44440cd5bfaed1abc65ab824b7856f8b84f009f84e3bd7f9a0f86647": {
-      "line": 295,
+      "line": 302,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "set_task_meta",
-      "owner_fingerprint": "cad58f2fcacbb9c7782f4c4e371ffaf5856f3a3358f35db1c420af5483092f05",
+      "owner_fingerprint": "b0a6110b153fe2803e1eea4c5e2f6dea26ece7b537cf571e7e7a83d65186f384",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_dir'"
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::cc1e1a1a54bb465b81b098e4b9a03d3717342bf5a286fd44dbf8b548c7a49003": {
-      "line": 300,
+      "line": 307,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "set_task_meta",
-      "owner_fingerprint": "cad58f2fcacbb9c7782f4c4e371ffaf5856f3a3358f35db1c420af5483092f05",
+      "owner_fingerprint": "b0a6110b153fe2803e1eea4c5e2f6dea26ece7b537cf571e7e7a83d65186f384",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: key"
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::efc628222166414397713182d90d1198aedc0c7804e05b3ccfd55c64a58c99f5": {
-      "line": 281,
+      "line": 288,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "log_event",
-      "owner_fingerprint": "cad58f2fcacbb9c7782f4c4e371ffaf5856f3a3358f35db1c420af5483092f05",
+      "owner_fingerprint": "b0a6110b153fe2803e1eea4c5e2f6dea26ece7b537cf571e7e7a83d65186f384",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
@@ -13255,10 +13326,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/integration/development.py::DevelopmentPrimitives.stale_branches::1a8916f711dc47c080cb0bac5599a46fa61aee803ddea03d9439036c30b321e9": {
-      "line": 1016,
+      "line": 1028,
       "owner": "DevelopmentPrimitives.stale_branches",
       "call": "log_event",
-      "owner_fingerprint": "024a084b28c16536d892ea4caac836da19d3189890ab0593316a54fee7180a21",
+      "owner_fingerprint": "65b3e8213e67f1399deb2e887c6cb924ace5ef5946609c43fb962f2923121eb8",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
@@ -13696,10 +13767,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/integration/train_sources.py::EpicCompletions.settle::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
-      "line": 642,
+      "line": 783,
       "owner": "EpicCompletions.settle",
       "call": "insert",
-      "owner_fingerprint": "99ae5203a04a7d863811f94036b07788dcb3930ef94859fe7839eef4e1762fb8",
+      "owner_fingerprint": "e95f2fc38689b91fcb8035f14f30f211b103c931a1119da2d8c7e53cb7463a43",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Current-generation pointer written under the project hierarchy lock in the same transaction as the immutable collected-epic completion record it names, after readiness is re-verified under that lock. Metadata key: DEVELOPMENT_COMPLETION_ID_KEY; a completion identity only, with no ref, PR or publication intent."
@@ -14002,7 +14073,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: CHECKPOINT_META"
     },
     "src/orchestrator/workspace.py::WorkspaceMixin.arecover_completed_integration_pool_claim::1320846324f64b9a88c33a5a658ca64eaa3257d89135ad3028fb672a9cc9a076": {
-      "line": 1878,
+      "line": 2031,
       "owner": "WorkspaceMixin.arecover_completed_integration_pool_claim",
       "call": "log_event",
       "owner_fingerprint": "1987d63ba311f2a811d1759438b010cf17ace1cdbf223a58f42d1524c19b71f8",
@@ -14245,13 +14316,13 @@
       "reason": "Clearing the exact holder from the task's own claimed_by_session record when the release takes that claim back; the claim itself, not a hold, ref replay or a duplicate lifecycle write."
     },
     "src/integration/batches.py::BatchStore.set_intent::6d729f7a8f24a4746d37ecea7871dfd209ea8cce995ce7499c8290475b86f660": {
-      "line": 226,
+      "line": 430,
       "owner": "BatchStore.set_intent",
       "call": "log_event",
-      "owner_fingerprint": "19001f37899a71985161848da0bcf4af2e8f152e77ace4a4b80f82d9d456f21d",
+      "owner_fingerprint": "8b5bef73d474523b3d932137a051929dd0533a05af059f6aa74118ed76c1a41d",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Operator audit of batch intent with principal and reason; abort now projects terminal lifecycle and queues cleanup atomically. The audit payload and call are unchanged, never replayed and carry no ref-update lifecycle."
+      "reason": "Operator audit of batch intent with principal and reason. Intent and terminal abort projection remain on the batch row; this event is never replayed and carries no ref-update lifecycle."
     },
     "src/integration/train_controls.py::TrainControls.retire_origin::0b56c6446d96c90b01889f9a0444c2e70ac5351db133ff1989c85a029ccd494a": {
       "line": 226,
@@ -14288,6 +14359,105 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Immutable task change-set audit containing actor, source, reviewed diff and receipt in the proposal transaction; no ref replay or authoritative delivery lifecycle state."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._admission_times::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 406,
+      "owner": "DatabaseBatches._admission_times",
+      "call": "delete",
+      "owner_fingerprint": "8ddac67e598852d5a29c9f7f1b50fd720127f9e8c76bd3c54f2036e8c52d5374",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Root settling timestamps for currently PR-admitted exact completions. Eligibility is recomputed from Git and PR proof on every visit; these hints preserve the bounded cadence across restarts and never authorize membership, replay a ref or prove delivery. Stale hints and frozen-batch hints are deleted."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._clear_admissions::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 437,
+      "owner": "DatabaseBatches._clear_admissions",
+      "call": "delete",
+      "owner_fingerprint": "f83d1b3aaae28d2e05ae26221544738c1a6363446fd9ce7594924e462f73b6c4",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Root settling timestamps for currently PR-admitted exact completions. Eligibility is recomputed from Git and PR proof on every visit; these hints preserve the bounded cadence across restarts and never authorize membership, replay a ref or prove delivery. Stale hints and frozen-batch hints are deleted."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._admission_times::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "line": 415,
+      "owner": "DatabaseBatches._admission_times",
+      "call": "insert",
+      "owner_fingerprint": "8ddac67e598852d5a29c9f7f1b50fd720127f9e8c76bd3c54f2036e8c52d5374",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Root settling timestamps for currently PR-admitted exact completions. Eligibility is recomputed from Git and PR proof on every visit; these hints preserve the bounded cadence across restarts and never authorize membership, replay a ref or prove delivery. Stale hints and frozen-batch hints are deleted."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._admission_times::51be9b5b9698cee60f963e966b52a7527686e8e5a5f266c953c9f4919f14106d": {
+      "line": 429,
+      "owner": "DatabaseBatches._admission_times",
+      "call": "update",
+      "owner_fingerprint": "8ddac67e598852d5a29c9f7f1b50fd720127f9e8c76bd3c54f2036e8c52d5374",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Root settling timestamps for currently PR-admitted exact completions. Eligibility is recomputed from Git and PR proof on every visit; these hints preserve the bounded cadence across restarts and never authorize membership, replay a ref or prove delivery. Stale hints and frozen-batch hints are deleted."
+    },
+    "src/integration/stacked_branches.py::StackedBranches.refresh::be3be394bad4eaa21aa8a28db135b02557490ddb64be7fdc9e1c1efef1d879ec": {
+      "line": 772,
+      "owner": "StackedBranches.refresh",
+      "call": "pg_insert",
+      "owner_fingerprint": "7a1bc3f333a758f54cc05eb78b7d12bff7e19157bae45de6e1daa3ec7687905b",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Current immutable completion locator after a fenced source merge; ordinary completion state, never delivery or ref replay authority."
+    },
+    "src/integration/stacked_branches.py::StackedBranches._file_repair::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "line": 886,
+      "owner": "StackedBranches._file_repair",
+      "call": "insert",
+      "owner_fingerprint": "d98102eb3cec04f30ace549c0b5abe35e08f547d3246a79a9fe0267274af67c8",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Associates an isolated conflict repair with its preserved dependent for adoption; Git ancestry and current branch fences remain authoritative."
+    },
+    "src/integration/batches.py::BatchStore.eject::02dbb6e454b19e80a1f07be2b10de35299d826ab592437d231735f74ef0f522a": {
+      "line": 341,
+      "owner": "BatchStore.eject",
+      "call": "log_event",
+      "owner_fingerprint": "c04a34ac34307bacf3d91e8d28b5009b7ddc7f78f22ab583939c619271347b25",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Audit of an explicit batch ejection with principal and reason. Admission reads the separate release instruction, not this event; no ref replay or duplicated delivery lifecycle."
+    },
+    "src/integration/batches.py::BatchStore.supersede::71ad4246d258b2576f1bae229c1e92b1ae60dbae8a616cd7a77cd72c8e6b53f0": {
+      "line": 403,
+      "owner": "BatchStore.supersede",
+      "call": "log_event",
+      "owner_fingerprint": "168f97beaf0573ede334f27b30c2bf1350b76fddb7d20f8f975ea40639d814bc",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Audit of an obsolete batch superseded after prerequisite refresh. The batch-owned ejection record authorizes input release; this event never replays refs or asserts delivery."
+    },
+    "src/integration/stacked_branches.py::EpicRefresh.refresh::85c997f17278e49c5a7a51cb1d2aaa7efb3367004ec68ae50f173b3772c77128": {
+      "line": 1015,
+      "owner": "EpicRefresh.refresh",
+      "call": "log_event",
+      "owner_fingerprint": "ad434e515d6ed61722f7ea7edbbdafb8b87b0b7e0fcf383e1e1c6afcd2c35a76",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Audit of a requested epic refresh with principal and observed train state. Frozen batch inputs and exact Git/check proofs remain authoritative; this event cannot replay refs or authorize delivery."
+    },
+    "src/integration/promotion_steps.py::settle_promotion::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "line": 1286,
+      "owner": "settle_promotion",
+      "call": "insert",
+      "owner_fingerprint": "eb88834bdab7f4de65363755e369e43d19143010ddb220eda5001d9c0f3d4b7c",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Write-once result of a promotion task (source SHA, tag OID and batch id), separate from the immutable request intent. Git ancestry and annotated-tag read-back are always reobserved; this result never authorizes ref replay or substitutes for delivery truth."
+    },
+    "src/integration/promotion_steps.py::PromotionVisit._record_publish::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "line": 1269,
+      "owner": "PromotionVisit._record_publish",
+      "call": "insert",
+      "owner_fingerprint": "17c963313bfdd150113a34f976ea675e741aa0c2f6b3db5a473b519c0e879107",
+      "integration_signal": false,
+      "disposition": "intent",
+      "reason": "Write-once authorization for this exact promotion request, source and target after its live PR gate and attestation pass. Permits missing-tag recovery only after Git independently proves target containment; the record does not assert publication, delivery or successful ref mutation."
     }
   },
   "generic_dependencies": {
@@ -14512,9 +14682,14 @@
     "src/database.py::Database": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database.py::create_database": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database.py::tables": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/backup.py::backup_database": "Generic whole-database custom archive creation shared by aq db backup and updater/daemon backups; no integration state, ref journal or delivery authority. Existing updater/daemon wrappers remain charged.",
+    "src/database/backup.py::postgres_clients": "Generic PostgreSQL client discovery and production worker refusal shared by database backup/restore callers; no integration lifecycle or Git authority.",
     "src/database/base.py::DatabaseBackend": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/integrity.py::integrity_violation": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/migration_guard.py::DAEMON": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/migration_guard.py::WORKER": "Generic database administration scope identifier; no integration state, delivery decision or Git authority.",
+    "src/database/migration_guard.py::current_scope": "Generic database administration scope resolution shared by migrations and backups; no integration lifecycle.",
+    "src/database/migration_guard.py::is_production_database": "Generic production database identity check protecting all migration and backup callers; no integration storage or delivery authority.",
     "src/database/migration_guard.py::same_database": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/migration_guard.py::set_process_scope": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries.py::proposal_queries": "Generic dependency; integration-specific definitions in this file are charged independently.",
@@ -14544,6 +14719,7 @@
     "src/database/queries/digest_queries.py::DigestQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/digest_queries.py::DigestSupervisorQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/escalation_queries.py::EscalationQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/escalation_queries.py::OPEN_ESCALATION_STATES": "Shared escalation state vocabulary used by ordinary repair green settlement; owns no integration mechanism, ref replay, or lifecycle journal.",
     "src/database/queries/event_queries.py::EventQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/gate_queries.py::GateQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/hierarchy_queries.py::HIERARCHY_MODES": "Generic dependency; integration-specific definitions in this file are charged independently.",
