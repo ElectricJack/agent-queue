@@ -8249,7 +8249,10 @@
       "reason": "Promotion commands preserve integration GitHub error categories and rate-limit retry timing across wrapped failures."
     },
     "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._settle_stale_container": {
-      "reason": "Stale container settlement completes a train container whose legacy collection episode was cancelled through the integration completion guard, re-checked under the row lock; it never completes a live episode's parent."
+      "reason": "Stale container settlement applies the guarded episode completion check before completing a train container whose legacy collection episode was cancelled."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._episode_completion_token": {
+      "reason": "Reads a container's collection episode checkpoint and repair operation under the caller's lock to admit only a cancelled train episode to guarded completion; refuses a live episode."
     }
   },
   "exclusions": {
@@ -12906,22 +12909,22 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._settle_stale_container::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 2124,
+      "line": 2145,
       "owner": "HierarchyQueryMixin._settle_stale_container",
       "call": "delete",
-      "owner_fingerprint": "091f22bcd37fd255a2a400fa536a7f6e665efcb6a88dade3487805a47fbf0791",
-      "integration_signal": true,
+      "owner_fingerprint": "08f7ea62fcc46e26da435ebe169ac0aace377d15c48097619f1e9f6be2ef88d8",
+      "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Integration signal: reads the cancelled-episode checkpoint and repair operation only to authorize the guarded completion."
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._settle_stale_container::ecd3dcb6d1ce14a3120ede8797e5b9039667a2dee3c39944d4ba97fbf1427000": {
-      "line": 2144,
+      "line": 2165,
       "owner": "HierarchyQueryMixin._settle_stale_container",
       "call": "log_event",
-      "owner_fingerprint": "091f22bcd37fd255a2a400fa536a7f6e665efcb6a88dade3487805a47fbf0791",
-      "integration_signal": true,
+      "owner_fingerprint": "08f7ea62fcc46e26da435ebe169ac0aace377d15c48097619f1e9f6be2ef88d8",
+      "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Integration signal: reads the cancelled-episode checkpoint and repair operation only to authorize the guarded completion."
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/integration_subject_queries.py::IntegrationSubjectQueriesMixin.append_integration_subject_journal::4a70cdc4f2029c032de3a9af830f5cec3a047e7456248c8b461d161f222350ce": {
       "line": 348,

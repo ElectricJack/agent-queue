@@ -325,6 +325,36 @@ async def test_materialization_failures_do_not_starve_later_claimable_work(db, h
     assert third  # Wrap around and retry the earlier failures.
 
 
+async def test_container_collection_is_skipped_without_the_legacy_engine(db, hierarchy):
+    """``git_first: active``: the train collects containers, so reserve no episode.
+
+    The bootstrap is the parent runtime's own entry point.  Under
+    ``git_first: active`` that runtime is never built, so the episode it
+    reserves is cancelled by orphan reconciliation and the container it pauses
+    is stranded behind an episode nothing can advance
+    (grand-lantern-78, quick-current-13, 2026-10-07).  Branch materialization
+    itself is unaffected.
+    """
+    from src.integration.branch_materialization import BranchMaterializationService
+
+    await _create(db, "epic")
+    await hierarchy.file_children("epic", [{"title": "child"}], 0)
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).values(
+            materialized=True, materialized_at=2.0))
+
+    off = BranchMaterializationService(
+        db, hierarchy_service_factory=lambda: hierarchy, legacy_container_collection=False)
+    assert await off.drain_due(limit=10) == []
+    assert (await db.get_integration_checkpoint("epic"))["episode_id"] is None
+    assert (await db.get_task("epic")).status == TaskStatus.IN_PROGRESS
+
+    on = BranchMaterializationService(db, hierarchy_service_factory=lambda: hierarchy)
+    await on.drain_due(limit=10)
+    assert (await db.get_integration_checkpoint("epic"))["episode_id"]
+    assert (await db.get_task("epic")).status == TaskStatus.PAUSED
+
+
 async def test_checkpoint_rejects_stale_generation(db, hierarchy):
     await _create(db, "parent")
     await hierarchy.file_children("parent", [{"title": "child"}], 0)

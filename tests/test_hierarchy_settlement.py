@@ -113,8 +113,9 @@ class TestSettlement:
         assert (await db.get_task("p")).status == TaskStatus.COMPLETED
 
     @pytest.mark.parametrize("state, settles", [("cancelled", True), ("active", False)])
+    @pytest.mark.parametrize("held", [TaskStatus.PAUSED, TaskStatus.IN_PROGRESS])
     async def test_train_episode_owns_completion_only_while_its_operation_lives(
-        self, db, state, settles
+        self, db, state, settles, held
     ):
         from src.database.tables import (
             integration_parent_episodes,
@@ -145,17 +146,19 @@ class TestSettlement:
                 state=state, policy_snapshot=_minimal_policy_values(), artifact_snapshot={},
                 required_check_version="v", created_at=1.0, updated_at=1.0))
             await conn.execute(update(tasks).where(tasks.c.id == "p").values(
-                status=TaskStatus.PAUSED.value))
+                status=held.value))
             await conn.execute(update(tasks).where(tasks.c.id == kids[0]).values(
                 status=TaskStatus.COMPLETED.value))
 
-        assert ("p" in await db.stale_container_candidates()) is settles
-        # The sweep completes the candidate through the integration guard and
-        # leaves a live episode's parent alone, without raising (2026-10-07).
+        if held == TaskStatus.PAUSED:
+            assert ("p" in await db.stale_container_candidates()) is settles
+        # Both settlement legs complete the container through the integration
+        # guard and leave a live episode's parent alone, without raising
+        # (calm-quest-88 and the epic containers, 2026-10-07).
         async with db._engine.begin() as conn:
             result = await db.settle_containers({"p"}, conn=conn)
         assert ("p" in result.settled) is settles
-        expected = TaskStatus.COMPLETED if settles else TaskStatus.PAUSED
+        expected = TaskStatus.COMPLETED if settles else held
         assert (await db.get_task("p")).status == expected
 
     async def test_settles_up_to_three_levels(self, db):
