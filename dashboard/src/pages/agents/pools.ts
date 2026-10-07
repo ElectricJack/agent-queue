@@ -35,6 +35,15 @@ export function poolAddress(profileId: string) {
   return POOL_PREFIX + profileId;
 }
 
+export function poolDisplayName(pool: PoolStatusRow) {
+  return pool.name || pool.profile_id;
+}
+
+export function poolSettingsHref(profileId: string) {
+  const params = new URLSearchParams({ agent: poolAddress(profileId), "pool-view": "settings" });
+  return "/agents?" + params.toString();
+}
+
 /**
  * Join ``pool_status`` rows to their live sessions.
  *

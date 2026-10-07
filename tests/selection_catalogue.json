@@ -1431,7 +1431,7 @@
       ]
     }
   },
-  "digest": "sha256:1322594d602a06cf02adf070307262f94d295e18831c8e8ed2c07c155b8f1878",
+  "digest": "sha256:24e7a052a6a5db7505431e98046e0a9889d1eb75d6b22b14723c21f750871f3a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -11949,6 +11949,8 @@
         "src.event_schemas",
         "src.models",
         "src.orchestrator",
+        "src.profiles",
+        "src.profiles.drift",
         "src.profiles.parser",
         "src.profiles.sync"
       ],
