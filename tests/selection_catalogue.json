@@ -595,6 +595,7 @@
         "tests/test_integration_parent_reconciler.py",
         "tests/test_integration_parent_subjects.py",
         "tests/test_integration_reconciler.py",
+        "tests/test_integration_record_delivered.py",
         "tests/test_integration_records_and_gates.py",
         "tests/test_integration_replay.py",
         "tests/test_integration_root_adapters.py",
@@ -8694,6 +8695,30 @@
         "parametrize"
       ],
       "summary": "Fake-clock visits against PostgreSQL: lost events, replay, fencing and shadow."
+    },
+    "tests/test_integration_record_delivered.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:b82ee85439fb1a35d20487b8ae7d1d301a4061c23ad96f57e7901dc6af629ad0",
+      "imports": [
+        "src.commands.contracts.integration",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivered_close",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.provenance",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Exact externally delivered completion without a daemon scheduler."
     },
     "tests/test_integration_records_and_gates.py": {
       "areas": [

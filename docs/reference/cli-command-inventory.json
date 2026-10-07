@@ -14431,6 +14431,50 @@
       }
     },
     {
+      "path": "aq system integration-record-delivered",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_record_delivered",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--task-id",
+          "--project-id",
+          "--source-sha",
+          "--base-sha",
+          "--reason"
+        ],
+        "optional": [
+          "--tests",
+          "--commands",
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--tests",
+          "--commands"
+        ],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq system integration-record-noop",
       "registration": "generated",
       "owner_kind": "core",
