@@ -636,7 +636,7 @@ def test_no_runtime_module_reads_or_writes_a_delivery_record():
 
 
 async def test_registered_prerequisite_observer_releases_pool_demand_without_receipts(
-    world, tmp_path,
+    world, tmp_path, monkeypatch,
 ):
     """The daemon's delivery observer has no GitTruth; git-first registers one for prerequisites."""
     from src.database.tables import task_branch_origins
@@ -683,6 +683,14 @@ async def test_registered_prerequisite_observer_releases_pool_demand_without_rec
     assert await db.hierarchy_prerequisite_delivery_head("dependent") == git(
         origin.clone, "rev-parse", "main",
     )
+    with monkeypatch.context() as display:
+        run = AsyncMock(side_effect=AssertionError("frontier diagnostic launched Git"))
+        display.setattr(transport, "arun_git_result", run)
+        cached = await hierarchy_frontier_modes(db, project_ids={"p"}, cached_only=True)
+        assert cached["p"].delivered_prerequisite_ids == frozenset({"done"})
+        assert not any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
+                       for r in await db.claim_frontier_exclusions("dependent", cached_only=True))
+        run.assert_not_awaited()
     # Reopening after observation must not return a former parent head.
     await db.transition_task("done", TaskStatus.IN_PROGRESS, force=True)
     with pytest.raises(ValueError, match="delivery is not current"):
@@ -711,6 +719,8 @@ async def test_cached_graph_observation_never_fetches_and_rechecks_identity(worl
     observer._store = original_store
     await observer.observe(["done"])
     observer._store = AsyncMock(side_effect=AssertionError("graph attempted network Git"))
+    if reduced:
+        transport.arun_git_result = AsyncMock(side_effect=AssertionError("display launched Git"))
     warm = await observer.observe(["done"], max_age=30, cached_only=True)
     assert warm.satisfied("done")
     async with db._engine.connect() as conn:
@@ -728,3 +738,38 @@ async def test_cached_graph_observation_never_fetches_and_rechecks_identity(worl
     assert expired.get("done").reason == "snapshot_unavailable"
     assert not expired.satisfied("done")
     observer._store.assert_not_awaited()
+
+
+async def test_delivery_freshness_batches_all_targets_and_marks_moved_refs(world, tmp_path):
+    from dataclasses import replace
+
+    from src.integration.delivery_observer import DeliveryTarget, DeliveryView, PrerequisiteView
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, _service = world
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "batched-freshness",
+                                truth=GitTruth(transport))
+    for branch in ("first", "second"):
+        git(origin.clone, "push", "origin", f"main:aq/{branch}")
+    root = DeliveryTarget("p", "r", origin.url, "refs/heads/main")
+    original = await observer.snapshot(root)
+    second = replace(root, target_ref="refs/heads/aq/second")
+    other = await observer.snapshot(second)
+    snapshots = tuple(original.for_target(ref).observation for ref in (
+        "refs/heads/main", "refs/heads/aq/first",
+    )) + (other.observation,)
+    refs = AsyncMock(wraps=transport.als_remote_refs)
+    transport.als_remote_refs = refs
+    transport.als_remote_ref = AsyncMock(side_effect=AssertionError("per-target freshness"))
+    view = PrerequisiteView(DeliveryView(snapshots=snapshots),
+                            DeliveryView(snapshots=snapshots), {})
+    assert await view.fresh()
+    assert refs.await_count == 1
+    assert set(refs.call_args.args[1]) == {"main", "aq/first", "aq/second"}
+    git(origin.clone, "push", "origin", ":refs/heads/aq/second")
+    assert not await view.fresh()
+    assert refs.await_count == 2
+    assert snapshots[2]._freshness["refs/heads/aq/second"] is False
+    unavailable = await observer.snapshot(second, max_age=30, cached_only=True)
+    assert unavailable.error == "snapshot_unavailable"

@@ -610,6 +610,80 @@ async def test_cached_facts_skip_repeat_ancestry_and_cache_is_bounded(repository
     assert list(truth._cache) == [("r", str(repo.remote), head, repo.base)]
 
 
+async def test_warm_completion_proofs_do_not_launch_git_processes(repository, monkeypatch):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    assert (await snapshot.is_delivered(request)).satisfied
+    run = AsyncMock(side_effect=AssertionError("warm proof launched Git"))
+    monkeypatch.setattr(repo.git, "arun_git_result", run)
+    # A new request/cycle still uses immutable Git facts; ordinary metadata
+    # edits must recheck the completion binding without repeating validation.
+    for index in range(137):
+        current = replace(request, task_version=index, branch_name=f"renamed-{index}")
+        assert (await snapshot.is_delivered(current)).satisfied
+    run.assert_not_awaited()
+
+
+async def test_cached_only_proofs_withhold_cold_changed_and_evicted_inputs(repository, monkeypatch):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.publish()
+    truth = GitTruth(repo.git, cache_limit=1)
+    snapshot = await repo.snapshot(truth=truth)
+    display = replace(snapshot, cached_only=True)
+    run = AsyncMock(wraps=repo.git.arun_git_result)
+    monkeypatch.setattr(repo.git, "arun_git_result", run)
+    assert (await display.is_delivered(request)).reason == "proof_unavailable"
+    run.assert_not_awaited()
+    proof = await snapshot.is_delivered(request)
+    run.reset_mock()
+    assert await display.is_delivered(request) == proof
+    for changed in (replace(request, completion_id="close-2"),
+                    replace(request, task_version=2), replace(request, task_status="READY")):
+        assert not (await display.is_delivered(changed)).satisfied
+    assert not (await display.is_delivered(request, source_base=repo.base)).satisfied
+    moved_target = replace(display, observation=replace(display.observation, target_oid=repo.base))
+    assert not (await moved_target.is_delivered(request)).satisfied
+    # Ref retargeting invalidates the proof even when task, source and target
+    # are unchanged. Only the newly pinned marker may bind this generation.
+    refs = dict(display.observation.source_heads)
+    identity = CompletionIdentity("p", "r", "task", "close-1")
+    refs["refs/remotes/origin/" + identity.branch] = repo.base
+    moved_marker = replace(display, observation=replace(display.observation, source_heads=refs))
+    assert not (await moved_marker.is_delivered(request)).satisfied
+    other_store = replace(display, observation=replace(display.observation,
+                                                       store=str(repo.path / "missing")))
+    assert not (await other_store.is_delivered(request)).satisfied
+    other_url = replace(display, observation=replace(display.observation, repository_url="other"))
+    assert not (await other_url.is_delivered(request)).satisfied
+    run.assert_not_awaited()
+    # Eviction is a miss, never a request to revalidate in an interactive read.
+    assert (await snapshot.is_delivered(replace(request, task_version=2))).satisfied
+    assert (await display.is_delivered(request)).reason == "proof_unavailable"
+    assert all(len(cache) <= 1 for cache in (truth._proofs, truth._completions, truth._objects))
+
+
+async def test_cached_completion_records_cannot_be_mutated_by_consumers(repository, monkeypatch):
+    repo = repository
+    head = await repo.commit("one")
+    await repo.retain(head)
+    snapshot = await repo.snapshot()
+    identity = CompletionIdentity("p", "r", "task", "close-1")
+    record = await snapshot.read_completion(identity)
+    record["source_oid"] = repo.base
+    record["identity"]["generation"] = "other"
+    run = AsyncMock(side_effect=AssertionError("cached record launched Git"))
+    monkeypatch.setattr(repo.git, "arun_git_result", run)
+    cached = await snapshot.read_completion(identity)
+    assert cached["source_oid"] == head
+    assert cached["identity"]["generation"] == "close-1"
+    run.assert_not_awaited()
+
+
 async def test_pinned_completion_ref_and_two_targets_share_one_fetch(repository, monkeypatch):
     repo = repository
     head = await repo.commit("one")
