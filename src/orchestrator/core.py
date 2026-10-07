@@ -1847,16 +1847,13 @@ class Orchestrator(
         from src.integration.branch_discard import BranchDiscardService
         from src.integration.branch_materialization import BranchMaterializationService
         from src.integration.cleanup import IntegrationCleanupService
-        from src.integration.main_promotion import RootPromotionService
         from src.integration.models import integration_max_wait_seconds
         from src.integration.outbox import IntegrationOutbox
-        from src.integration.promotion import PromotionService
         from src.integration.protection import (
             enablement_reader as protection_enablement_reader,
         )
         from src.integration.release import IntegrationReleaseService
         from src.integration.repair import RepairService
-        from src.integration.scheduler import IntegrationScheduler
         from src.integration.service import IntegrationService
 
         async def accept_integration_event(
@@ -1878,10 +1875,15 @@ class Orchestrator(
                 None if project is None else project.hierarchical_integration_policy
             )
 
-        self.integration_scheduler = IntegrationScheduler(self.db)
+        train_enabled = self.config.integration.git_first == "active"
+        self.integration_scheduler = None
+        if not train_enabled:
+            from src.integration.scheduler import IntegrationScheduler
+            self.integration_scheduler = IntegrationScheduler(self.db)
         self.integration_outbox = IntegrationOutbox(
             self.db, accept_integration_event,
-            before_dispatch=self.integration_scheduler.maintain_lease,
+            before_dispatch=(self.integration_scheduler.maintain_lease
+                             if self.integration_scheduler is not None else None),
             project_max_wait=project_max_wait,
         )
         github_clients = {}
@@ -1944,18 +1946,29 @@ class Orchestrator(
             binding_resolver=self.github_repository_binding_resolver,
             candidate_store=lambda repo: self.development_integration.store(repo, fetch=False),
         )
-        self.root_promotion_service = RootPromotionService(
-            self.db,
-            data_dir=self.config.data_dir,
-            git_manager=self.git,
-            github_client_factory=self.github_client_factory,
-            attestation_resolver=self.integration_attestation_resolver,
+        from src.integration.repository_git import RepositoryGit
+
+        self.repository_git = RepositoryGit(
+            self.db, data_dir=self.config.data_dir, git_manager=self.git,
         )
-        self.promotion_service = PromotionService(
-            self.db,
-            data_dir=self.config.data_dir,
-            git_manager=self.git,
-        )
+        self.root_promotion_service = None
+        self.promotion_service = None
+        if not train_enabled:
+            from src.integration.main_promotion import RootPromotionService
+            from src.integration.promotion import PromotionService
+
+            self.root_promotion_service = RootPromotionService(
+                self.db,
+                data_dir=self.config.data_dir,
+                git_manager=self.git,
+                github_client_factory=self.github_client_factory,
+                attestation_resolver=self.integration_attestation_resolver,
+            )
+            self.promotion_service = PromotionService(
+                self.db,
+                data_dir=self.config.data_dir,
+                git_manager=self.git,
+            )
         # Removes the branches an operator explicitly asked to discard when
         # deleting a task.  Its work is recorded on the retired origin row, so
         # it survives a restart and needs no other authority.
@@ -2000,9 +2013,10 @@ class Orchestrator(
         )
         owner_recovery = owner_recovery_for(self)
         self.development_integration.owner_recovery = owner_recovery
-        from src.integration.root_runtime import root_runtime_for
-        from src.integration.parent_runtime import parent_runtime_for
-        from src.integration.development_runtime import development_runtime_for
+        if not train_enabled:
+            from src.integration.root_runtime import root_runtime_for
+            from src.integration.parent_runtime import parent_runtime_for
+            from src.integration.development_runtime import development_runtime_for
         from src.integration.train_sources import TrainCommandDriver, train_for
 
         self.parent_owner_recovery = owner_recovery
@@ -2039,7 +2053,7 @@ class Orchestrator(
                 "owner recovery": self._sweep_stranded_owners,
                 "delegate cleanup": RepairService(self.db).retire_terminal_delegates,
                 "GitHub PR reviews": GitHubReviewPoller(
-                    self.db, ReviewEvidenceProducer(self.db, self.promotion_service), self.git,
+                    self.db, ReviewEvidenceProducer(self.db, self.repository_git if train_active else self.promotion_service), self.git,
                     source_ci_handler=self._observe_integration_source_ci,
                     ancestry_handler=self._repair_integration_source_ancestry,
                     parent_head_handler=self._reverify_integration_parent_source,

@@ -331,7 +331,7 @@ class IntegrationCommandsMixin:
             return _failure("unauthorized", "parent head must be server-observed")
         try:
             result = await ParentSourceReverification(
-                self.db, self._integration_promotion_service(),
+                self.db, self._integration_repository_git(),
             ).run(observation.task_id, observation)
         except (HierarchyError, _ProofFailed, BranchBusy, StaleFence) as exc:
             return _failure("blocked", str(exc))
@@ -1069,6 +1069,17 @@ class IntegrationCommandsMixin:
                 and principal.policy.allows("aq_commands", capability)
             )
         return principal.kind in {PrincipalKind.LOCAL, PrincipalKind.SERVICE}
+
+    def _integration_repository_git(self):
+        """Read-only canonical Git port; no legacy publisher is constructed."""
+        service = getattr(self.orchestrator, "repository_git", None)
+        if service is not None:
+            return service
+        from src.integration.repository_git import RepositoryGit
+
+        return RepositoryGit(
+            self.db, data_dir=self.config.data_dir, git_manager=self.orchestrator.git,
+        )
 
     def _integration_promotion_service(self):
         service = getattr(self.orchestrator, "promotion_service", None)
@@ -1970,7 +1981,7 @@ class IntegrationCommandsMixin:
         if refusal is not None:
             return _failure("unauthorized", refusal)
         result = await DeliveredPullRequestClosure(
-            self.db, self._integration_promotion_service()
+            self.db, self._integration_repository_git()
         ).run(
             request.project_id,
             request.pr_number,

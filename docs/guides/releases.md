@@ -93,11 +93,10 @@ moving a conflicting immutable tag. Source:
 [src/integration/promotion_steps.py](../../src/integration/promotion_steps.py)
 (`PromotionPublisher`).
 
-**pending vivid-stone-39.4:** reviewed playbooks drive optional GitHub Release,
-deploy-hook and post-publication actions. **pending vivid-stone-39.3:** hotfixes
-use the same tag gate and send the published commit down the chain through
-back-merge work. Neither a declared `after` field nor a prepared notes file
-proves these actions ran.
+Reviewed promotion policies drive publication and post-publication backmerge.
+Hotfixes use the same tag gate and send the published commit down the chain through
+new backmerge work. Automatic GitHub Release creation and deploy-hook dispatch
+are not performed by these bundles; keep those optional settings disabled.
 
 ### Select and deploy a release
 

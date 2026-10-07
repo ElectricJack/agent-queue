@@ -1297,7 +1297,7 @@ class SessionCommandsMixin:
 
             try:
                 review_evidence_snapshot = await ReviewEvidenceProducer(
-                    self.db, self._integration_promotion_service()
+                    self.db, self._integration_repository_git()
                 ).snapshot(
                     task,
                     session,

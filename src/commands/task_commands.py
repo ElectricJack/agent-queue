@@ -4559,7 +4559,7 @@ class TaskCommandsMixin:
 
                 try:
                     review_evidence_snapshot = await ReviewEvidenceProducer(
-                        self.db, self._integration_promotion_service()
+                        self.db, self._integration_repository_git()
                     ).snapshot(
                         review_task,
                         session,

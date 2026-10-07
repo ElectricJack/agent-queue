@@ -171,11 +171,11 @@ fast-forward intents on intermediate targets. Existing frozen membership stays
 unchanged; divergence holds as `backmerge_not_fast_forward`, and a request
 missing a required hotfix OID is refused as `backmerge_pending`.
 
-**pending vivid-stone-39.4:** reviewed `promotion-request` and
-`promotion-continuous` bundles bind by step type and decide when to request,
-replace stale requests, perform post-publication actions and escalate holds.
-The existing lane and PR gate remain the mechanism they drive. These are the
-fidelity spec's B10 and B12 promises, not installed bundle claims.
+Reviewed `promotion-request` and `promotion-continuous` bundles resolve from the
+stored step type. Project activations take precedence over system activations.
+They request or replace intents, wait and notify on holds, drive the existing PR
+gate, and trigger backmerge after delivery. Both ship inactive; activate the
+reviewed artifact hash for the intended project before starting delivery.
 
 ## Inputs and outputs
 

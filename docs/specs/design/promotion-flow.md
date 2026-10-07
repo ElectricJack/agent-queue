@@ -1,12 +1,8 @@
 # Train and promotion policy entry
 
-This entry maps the approved Git-first train fidelity design to its operational
-documentation and records the unfinished release-policy work.
-
-**Status: documentation draft**, owned by `vivid-stone-39.6`; finalization is
-**pending vivid-stone-39.5**. The normative authority remains
-[software-factory policy](../../concepts/factory-policy.md). This entry does not
-introduce another publisher or an approval surface.
+This entry maps the approved Git-first train design to its implementation and
+operational documentation. The normative authority remains
+[software-factory policy](../../concepts/factory-policy.md).
 
 ## Design authority and baseline
 
@@ -19,9 +15,9 @@ defines the branch-chain schema, notes and deploy behavior. Where the older
 spec describes `approve` as a local intent mutation, fidelity replaces that
 with a GitHub review on the pinned PR.
 
-The draft describes captured `origin/main` at `ce7aca55f` (2026-10-07), with
-explicit pending markers for mechanisms absent there. The working epic base
-`ea23e82b3` additionally carries E1, which is not yet claimed as shipped main.
+The October 7 operator takeover combines the release mechanisms, reviewed
+policies and cutover tooling. Live activation is scoped to agent-queue; rollout
+to other projects and legacy retirement remain separate work.
 
 ## Fidelity crosswalk
 
@@ -34,11 +30,11 @@ explicit pending markers for mechanisms absent there. The working epic base
 | §2.2 cleanup and controls | Git-proved delivery triggers separate cleanup. Pause/resume, eject and seal-now use preview/apply commands; see the [supervisor runbook](../../guides/git-first-train-runbook.md#supervisor-controls). |
 | B1–B5 (D1–D3) | Flow schema, activation, promotion targets and pinned-PR intents are shipped. See [promotion flows](../../guides/promotion-flow.md). |
 | B6–B8 | Annotated-tag selection, deployment records, additive-migration tooling and custom-archive restore are shipped. See [releases](../../guides/releases.md). |
-| B9 | **pending vivid-stone-39.2:** prepare tasks, daemon notes inputs, digest/version/additive-migration request checks. |
-| B10 | **pending vivid-stone-39.3:** hotfix filing, default-branch back-merge sources, intermediate fast-forward intents and the per-target ledger guard. |
-| B11 | **pending vivid-stone-39.1:** chain/tag ruleset output, remote warnings and workflow triggers; implemented on this epic's base, awaiting main delivery. |
-| B12 | **pending vivid-stone-39.4:** reviewed request/continuous policy bundles and post-publication actions. |
-| B13 | This first draft lives in final locations. **pending vivid-stone-39.5:** finalize in place after E2–E4. |
+| B9 | Prepare tasks, daemon notes inputs, digest/version/additive-migration request checks. |
+| B10 | Hotfix filing, default-branch backmerge sources, intermediate fast-forward intents and per-target ledger guards. |
+| B11 | Chain/tag rulesets, remote protection diagnostics and workflow triggers. |
+| B12 | Reviewed request/continuous policy bundles, resolved by stored step type; inactive until project activation. |
+| B13 | Maintained promotion-flow and release guides, factory policy and repository map. |
 
 Sources for shipped train behavior:
 [src/integration/train_sources.py](../../../src/integration/train_sources.py),
@@ -48,24 +44,20 @@ Sources for shipped train behavior:
 The [repository map](../../contributing/repo-map.md#train-fidelity-and-release-modules)
 locates the added modules and marks later deletion as planned.
 
-## Finalization checklist
+## Implementation boundaries
 
-**pending vivid-stone-39.5:** resolve each task marker against delivery on main,
-not task completion alone. Keep these pages as their single sources of truth:
+The new train and release flow use retained Git readers, ownership guards and
+shared contracts. Legacy publishers and subject runtimes remain available only
+for legacy operation and recovery; active train startup does not construct them.
+Shared definitions have one retained owner, with compatibility imports for old
+callers until retirement.
 
-1. Reconcile E1 command help, rule classifications and warning-only remote
-   diagnostics after its delivery; remove its pending markers together.
-2. Verify E2's final prepare syntax and both notes formats, full-history input,
-   digest stability and actual request-time version/migration checks.
-3. Verify E3 routing and every lower branch's back-merge evidence without
-   changing frozen batch membership.
-4. Verify E4 bundle names, reviewed digests, step-type binding and actual
-   GitHub Release/deploy-hook behavior before documenting them as available.
-5. Replace the draft baseline with the delivered revision; update the
-   [guides](../../guides/promotion-flow.md),
-   [release procedure](../../guides/releases.md) and repository map in place.
-   Repeat link/anchor checks and documentation coverage checks.
+The reviewed policies request, gate, publish and backmerge through commands.
+They do not publish GitHub Releases or dispatch deploy hooks. Keep those optional
+`after` settings disabled for this rollout. Release tags and operator deployment
+selection are described in the [release guide](../../guides/releases.md).
 
-This draft leaves the live default-branch switch and first-release approval to
-the explicitly human-gated rollout in fidelity §5. It does not delete legacy
-modules, migrate the operator database or alter a live project's policy.
+Live activation configures the default branch and reviewed project policies;
+release requests still require their configured exact-head approval. The first
+live release and cross-project rollout are tracked separately. Legacy retirement
+remains pending operator testing and the observation gate.

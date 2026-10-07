@@ -26,7 +26,6 @@ from src.database.tables import (
 )
 from src.git.manager import RemoteRefState
 from src.task_graph.integration_dependencies import dependents_of
-from src.integration.settling import note_approval
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.root_authorization import POLICY_KINDS, exact_root_authorization_on
 from src.integration.source_ancestry import (
@@ -53,6 +52,7 @@ class ReviewEvidenceProducer:
     def __init__(self, db, promotion_service, *, clock=time.time) -> None:
         self.db = db
         self.promotion = promotion_service
+        self.approval_observer = getattr(promotion_service, "note_approval", None)
         self.clock = clock
 
     async def snapshot_from_pull_request(
@@ -260,9 +260,9 @@ class ReviewEvidenceProducer:
                 "created_at": created_at,
             }
             await self._append_on(conn, evidence)
-            if verdict == "approved":
-                await note_approval(conn, project_id=source["project_id"], now=created_at)
-            else:
+            if verdict == "approved" and self.approval_observer is not None:
+                await self.approval_observer(conn, project_id=source["project_id"], now=created_at)
+            elif verdict != "approved":
                 for dependent_id in sorted(await dependents_of(conn, epic_task_id)):
                     await self.db.add_task_label(dependent_id, "needs-rebase", conn=conn)
             return evidence
