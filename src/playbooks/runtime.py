@@ -27,6 +27,7 @@ from src.playbooks.run_state import ArtifactVerificationFailed
 from src.playbooks.recovery import RestartReconciler
 from src.playbooks.services import (
     INTEGRATION_LIFECYCLE_PLAYBOOK_IDS,
+    PROMOTION_POLICY_EVENTS,
     IntegrationRouteTarget,
     build_v2_engine,
     is_integration_route_event,
@@ -400,15 +401,16 @@ class V2PlaybookRuntime:
 
         Called only after an empty selection with no frozen manifest, so no
         fanout was captured.  The proof also needs a loaded catalog that is
-        not shutting down, an event without a frozen operation route, and
-        every enabled activation in the event's scope, reread from the
+        not shutting down, and every enabled activation in the event's scope, reread from the
         database, ready and loaded at that artifact with no rule selecting the
         event.  A selecting rule that the lifecycle fence or merge-sweep
-        suppression filtered out is still a subscription.
+        suppression filtered out is still a subscription. Ordinary operation
+        events without their frozen route cannot prove an unsubscribe;
+        promotion notifications can prove none through the activation checks.
         """
         if not self._integration_catalog_loaded or self._integration_shutting_down:
             return None
-        if is_integration_route_event(event_type):
+        if is_integration_route_event(event_type) and event_type not in PROMOTION_POLICY_EVENTS:
             # An empty selection here means the frozen route is unavailable.
             return None
         project_id = hydrated.get("project_id")

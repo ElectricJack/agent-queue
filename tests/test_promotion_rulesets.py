@@ -238,7 +238,9 @@ def test_custom_tag_glob_and_every_chain_target_are_derived_from_flow():
 def test_shipped_ci_keeps_main_pr_and_batch_ci_and_adds_promotion_pushes():
     document = yaml.safe_load((ROOT / ".github/workflows/tests.yml").read_text())
     events = document[True]  # YAML 1.1's spelling of the unquoted Actions 'on'.
-    expected = promotion_workflow_triggers(None, default_branch="main")
+    # This repository opted into dev → staging → main; the copyable generic
+    # single-branch configuration remains covered by the fixture tests above.
+    expected = promotion_workflow_triggers(flow(two=True), default_branch="dev")
     assert events["pull_request"] == expected[".github/workflows/tests.yml"]["pull_request"]
     assert events["push"] == expected[".github/workflows/tests.yml"]["push"]
 

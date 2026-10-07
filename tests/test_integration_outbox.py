@@ -827,6 +827,15 @@ async def _integration_route_event(db, compiled):
     return runtime, "integration.sealed"
 
 
+async def _promotion_route_event(db, compiled):
+    # A real promotion subscriber fenced by an unavailable route must retry.
+    # Only proof of no matching subscription can sink an inactive notification.
+    await _activate(db, compiled, "promotion-request", "promotion.request_due")
+    runtime = _runtime(db, compiled)
+    await runtime.refresh()
+    return runtime, "promotion.request_due"
+
+
 @pytest.mark.parametrize(
     "scenario",
     [
@@ -836,6 +845,7 @@ async def _integration_route_event(db, compiled):
         _unloadable_artifact,
         _fenced_lifecycle_subscriber,
         _integration_route_event,
+        _promotion_route_event,
     ],
     ids=lambda scenario: scenario.__name__.strip("_"),
 )
