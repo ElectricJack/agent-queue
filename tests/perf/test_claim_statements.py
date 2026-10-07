@@ -436,6 +436,11 @@ class TestClaimStatementBudgets:
         budget by moving work into a sub-plan is still caught.
         """
         await _seed_worker_scale(any_db)
+        # Measure the seeded queue, independently of when autovacuum runs or
+        # which earlier fixture occupied this leased database. Statistics
+        # collection is fixture setup, outside the explained claim queries.
+        async with any_db._engine.begin() as conn:
+            await conn.execute(text("ANALYZE tasks, task_dependencies"))
         # The route filter differs with the project's router readiness
         # (mandatory routing §9.1): ``route_source IN (router, override,
         # role)``, widened by ``legacy`` while the router is not ready.

@@ -1,6 +1,6 @@
 ---
 playbook_id: object-loop
-artifact_sha256: sha256:e25557e3652bd21ac8c5e0e0cbefbf44195248fde43ac0ae05f383b82e71a38d
+artifact_sha256: sha256:e1630040e3ffaebb52ba917826bfdf1755e05d20410e2690d5b500bc31fec27a
 source_sha256: sha256:0a1b96a900549bf840821eda167e0228c4c08711a8586261bf9cd015c093aa85
 contract_fingerprint: sha256:af9dc2189778dc24f6c86e8351d7853c1399dc6329421536dacdff4ae253962c
 questions_resolved: 0

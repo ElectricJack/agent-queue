@@ -3133,6 +3133,18 @@
         530
       ]
     },
+    "src/commands/task_changes.py::apply": {
+      "reason": "Applies reviewed task graph changes through hierarchical integration filing and guarded hierarchy/lifecycle writers in the proposal transaction; performs no Git publication."
+    },
+    "src/commands/task_changes.py::boundary": {
+      "reason": "Serializes proposal writes with routing and hierarchy writers and locks integration checkpoints to fence concurrent integration state changes."
+    },
+    "src/commands/task_changes.py::import from src.database.tables import gates, projects, sessions, task_dependencies, task_gates, task_integration_checkpoints, task_metadata, tasks": {
+      "reason": "Imports integration checkpoints for proposal version checks and transaction fencing alongside ordinary task graph tables."
+    },
+    "src/commands/task_changes.py::snapshot": {
+      "reason": "Reads integration checkpoints and project integration mode into the reviewed proposal read set so concurrent integration changes invalidate approval."
+    },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_create_task_graph": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -9216,6 +9228,27 @@
     },
     "src/doctor/task_checks.py::import from src.database.queries.claim_queries import claim_frontier_predicates": {
       "reason": "Imports the integration-owned frontier predicate composer used by doctor to report Git prerequisite delivery exclusions."
+    },
+    "src/git/manager.py::GitManager.aprepare_child_branch": {
+      "reason": "Integration workspace preparation merges a proven parent head under the managed child writer fence; preserves local and published child history."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_remove_task": {
+      "reason": "Confirmed operator removal coordinates subtree holds, session cleanup and integration-locked removal while preserving branches and audit history."
+    },
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_task_on": {
+      "reason": "Transaction-local subtree archive enforces integration ownership and delivery guards, retires branch origins and preserves audit identity before deleting active rows."
+    },
+    "src/commands/task_changes.py::apply": {
+      "reason": "Atomic task change-set application delegates hierarchical filing, reparenting, archive guards and container settlement to their existing integration-aware writers on the proposal connection."
+    },
+    "src/commands/task_changes.py::boundary": {
+      "reason": "Proposal transaction locks integration checkpoints together with task, dependency and gate state so concurrent integration changes cannot straddle validation and commit."
+    },
+    "src/commands/task_changes.py::import from src.database.tables import gates, projects, sessions, task_dependencies, task_gates, task_integration_checkpoints, task_metadata, tasks": {
+      "reason": "Imports integration checkpoints for the proposal transaction lock and reviewed read set; the generic task, dependency, gate and metadata tables retain their own storage ownership."
+    },
+    "src/commands/task_changes.py::snapshot": {
+      "reason": "Includes integration checkpoints, hierarchy scope, gates and integration mode in the reviewed proposal read set to refuse commits after concurrent integration or task-graph changes."
     }
   },
   "shared_state": {

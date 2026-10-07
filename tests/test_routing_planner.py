@@ -8,8 +8,8 @@ touches a database, a clock or a provider.
 
 from __future__ import annotations
 
-import random
 import json
+import random
 from dataclasses import replace
 from pathlib import Path
 
@@ -23,8 +23,8 @@ from src.routing.planner import (
     ProviderFacts,
     Snapshot,
     TaskFacts,
-    plan_route,
     is_candidate,
+    plan_route,
     reselect,
     worker_classes,
 )
@@ -66,18 +66,18 @@ lanes:
     requires: [narrow, test_verified, independent_verifier]
     prefer: true
   narrow-hosted:
-    harnesses: [opencode-zen]
+    harnesses: [opencode-zen, opencode-zen-nemotron, opencode-zen-longcat]
     classes: {standard-high: standard-high}
     requires: [narrow, test_verified]
     prefer: true
 reserved:
   - {class: deep-high, harness: claude, only_lanes: [code-design, design-review]}
 balance:
-  harness_weights: {claude: 1.0, codex: 1.0, opencode: 1.0, opencode-zen: 1.0}
+  harness_weights: {claude: 1.0, codex: 1.0, opencode: 1.0, opencode-zen: 1.0, opencode-zen-nemotron: 1.0, opencode-zen-longcat: 1.0}
   usage_soft_percent: 80
   usage_floor_factor: 0.1
   degraded_factor: 0.5
-  tie_order: [codex, claude, opencode, opencode-zen]
+  tie_order: [codex, claude, opencode, opencode-zen, opencode-zen-nemotron, opencode-zen-longcat]
 """
 
 SHIPPED_POLICY = BALANCED_POLICY.replace(
@@ -120,7 +120,8 @@ def _fleet() -> tuple[ProfileFacts, ...]:
 
 def _snapshot(profiles=None, *, out=(), degraded=(), usage=None, busy=None, backlog=None):
     providers = {}
-    for key in ("claude", "codex", "opencode", "opencode-zen"):
+    for key in ("claude", "codex", "opencode",
+                "opencode-zen", "opencode-zen-nemotron", "opencode-zen-longcat"):
         state = "exhausted" if key in out else "degraded" if key in degraded else "available"
         providers[key] = ProviderFacts(
             state=state, launchable=key not in out, usage_percent=(usage or {}).get(key),
@@ -184,7 +185,9 @@ def test_the_shipped_policy_parses_and_its_digest_is_canonical() -> None:
     assert parse_policy(reflowed)[1] == DIGEST
     changed = BALANCED_POLICY.replace("usage_soft_percent: 80", "usage_soft_percent: 70")
     assert parse_policy(changed)[1] != DIGEST
-    assert POLICY.narrow_harnesses() == {"opencode", "opencode-zen"}
+    assert POLICY.narrow_harnesses() == {
+        "opencode", "opencode-zen", "opencode-zen-nemotron", "opencode-zen-longcat",
+    }
 
 
 @pytest.mark.parametrize(
@@ -516,6 +519,113 @@ def test_local_models_policy_knobs() -> None:
     assert not candidates(replace(task, priority=300)) & local
 
 
+# -- hosted lanes: all three (Space Bunny + Nemotron + LongCat) -------------
+
+
+def _three_hosted_fleet() -> tuple[ProfileFacts, ...]:
+    """The fleet plus all three hosted OpenCode rungs (one slot each)."""
+    return (
+        *_fleet(),
+        _rung("standard-high", "opencode-zen",          slots=1),
+        _rung("standard-high", "opencode-zen-nemotron", slots=1),
+        _rung("standard-high", "opencode-zen-longcat",  slots=1),
+    )
+
+
+def test_three_hosted_lanes_route_in_tie_order_and_independent_disable() -> None:
+    """The local rung wins first; the hosted rungs follow tie_order.
+
+    Each hosted rung is an independent availability row: failing one does
+    not disable the others."""
+    task = _task(task_type="bugfix")
+    fleet = _three_hosted_fleet()
+
+    # All three hosted rungs free: tie_order puts opencode-zen first.
+    # The local opencode rung is also PREFERRED and declared first in the
+    # narrow lane, so it wins overall.
+    plan = _planned(task, _snapshot(fleet), NARROW_YES)
+    assert plan["profile_id"] == "standard-high-opencode"
+
+    # Local full: the three hosted rungs must appear in tie_order order.
+    busy = _snapshot(fleet, busy={"standard-high-opencode": 1})
+    plan = _planned(task, busy, NARROW_YES)
+    hosted_profiles = [
+        c["profile_id"] for c in plan["candidates"] if c["tier"] == PREFERRED
+    ]
+    assert hosted_profiles == [
+        "standard-high-opencode",
+        "standard-high-opencode-zen",
+        "standard-high-opencode-zen-nemotron",
+        "standard-high-opencode-zen-longcat",
+    ], hosted_profiles
+    assert plan["profile_id"] == "standard-high-opencode-zen"
+    assert plan["lane"] == "narrow-hosted"
+
+    # Space Bunny out (availability row opencode-zen): the other two still route.
+    out_z = _snapshot(fleet, busy={"standard-high-opencode": 1},
+                      out={"opencode-zen"})
+    plan = _planned(task, out_z, NARROW_YES)
+    assert plan["profile_id"] == "standard-high-opencode-zen-nemotron"
+
+    # Nemotron and Space Bunny both out: LongCat still routes.
+    out_both = _snapshot(fleet, busy={"standard-high-opencode": 1},
+                         out={"opencode-zen", "opencode-zen-nemotron"})
+    plan = _planned(task, out_both, NARROW_YES)
+    assert plan["profile_id"] == "standard-high-opencode-zen-longcat"
+
+    # All three hosted rungs out: local opencode wins (PREFERRED, declared first).
+    out_all = _snapshot(fleet, out={"opencode-zen", "opencode-zen-nemotron",
+                                    "opencode-zen-longcat"})
+    plan = _planned(task, out_all, NARROW_YES)
+    assert plan["profile_id"] == "standard-high-opencode"
+
+
+def test_three_hosted_lanes_are_each_their_own_availability_row() -> None:
+    """Each hosted rung has a provider row named after its harness id, so
+    failing one does not affect the other two."""
+    task = _task(task_type="bugfix")
+    fleet = _three_hosted_fleet()
+
+    # Each harness id is its own provider key.
+    keys = {p.id for p in fleet if p.harness.startswith("opencode-zen")}
+    assert keys == {
+        "standard-high-opencode-zen",
+        "standard-high-opencode-zen-nemotron",
+        "standard-high-opencode-zen-longcat",
+    }
+
+    # Failing one key leaves the other two launchable.
+    for out_key in ("opencode-zen", "opencode-zen-nemotron", "opencode-zen-longcat"):
+        snapshot = _snapshot(fleet, out={out_key})
+        plan = _planned(task, snapshot, NARROW_YES)
+        by_profile = {c["profile_id"]: c for c in plan["candidates"]}
+        assert by_profile[f"standard-high-{out_key}"]["launchable"] is False
+        other_two = {
+            f"standard-high-{k}" for k in
+            ("opencode-zen", "opencode-zen-nemotron", "opencode-zen-longcat")
+        } - {f"standard-high-{out_key}"}
+        for other in other_two:
+            assert by_profile[other]["launchable"] is True
+
+
+def test_narrow_hosted_policy_includes_all_three_harnesses() -> None:
+    """The narrow-hosted lane names all three harnesses; they are excluded
+    from the general candidate pool."""
+    policy, digest = parse_policy(BALANCED_POLICY)
+    assert "opencode-zen-nemotron" in policy.narrow_harnesses()
+    assert "opencode-zen-longcat" in policy.narrow_harnesses()
+
+    def plan(task, snapshot, classification):
+        return plan_route(task, policy, snapshot, policy_sha256=digest,
+                          classification=classification)
+
+    # A general (non-narrow) task must not see any hosted rung as a candidate.
+    general = plan(_task(task_type="bugfix"), _snapshot(_three_hosted_fleet()), NARROW_NO)
+    assert general.outcome == "planned"
+    assert {c["harness"] for c in general.value["candidates"]} <= {"claude", "codex"}
+
+
+
 def test_a_fleet_of_only_local_models_names_the_gate() -> None:
     policy, digest = parse_policy(
         BALANCED_POLICY + "local_models: {harnesses: [claude, codex]}\n"
@@ -676,7 +786,10 @@ def test_the_plan_names_its_rule_policy_and_balance() -> None:
     plan = _planned(_task(task_type="research"), _snapshot())
     assert plan["rule"] == "kinds.research"
     assert plan["policy_sha256"] == DIGEST
-    assert plan["balance"]["tie_order"] == ["codex", "claude", "opencode", "opencode-zen"]
+    assert plan["balance"]["tie_order"] == [
+        "codex", "claude", "opencode", "opencode-zen",
+        "opencode-zen-nemotron", "opencode-zen-longcat",
+    ]
     assert plan["reason"].startswith("kind research, class standard-high")
     assert {s["profile_id"] for s in plan["scores"]} == {
         "standard-high-codex", "standard-high-claude",
@@ -725,8 +838,13 @@ def test_candidate_eligibility_rejects_changed_provider_or_lifecycle(change):
 
 def test_live_context_is_bounded_and_aggregates_unknown_task_kinds():
     from src.routing.context import (
-        MAX_PROFILES, MAX_PROVIDERS, MAX_QUOTA_WINDOWS, MAX_SUMMARY_CHARS,
-        live_context, quota_observations, summarize_context,
+        MAX_PROFILES,
+        MAX_PROVIDERS,
+        MAX_QUOTA_WINDOWS,
+        MAX_SUMMARY_CHARS,
+        live_context,
+        quota_observations,
+        summarize_context,
     )
 
     rows = [{"window": f"window-{i}", "scope": "all models", "used_percent": i,

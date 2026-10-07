@@ -34,6 +34,12 @@ them. Per-project target scope checks both the task and any supplied origin.
 
 Abort observes the target and candidate, refuses promoted work, and rechecks both
 under the same batch row lock used by publication before setting intent to aborted.
+Promotion is proven by a recorded `promoted` lifecycle or Git truth containing
+every frozen member's whole source in the target. Candidate ancestry alone is
+insufficient: a conflict on the first member publishes the target itself as the
+repair start, and a later conflict can publish only some members. Both batches
+remain abortable while any member is missing. Unavailable member proof refuses
+abort; preview performs the same checks without changing intent or audit history.
 The exact aborted inputs remain withheld from that target.
 
 Retire requires the previewed origin id and delivery proof for the current completed

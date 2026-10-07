@@ -42,6 +42,7 @@ from src.reviews.vault import (
     frontmatter_for,
     render,
     split_frontmatter,
+    spec_kind_from_content,
     write_atomic,
 )
 
@@ -128,6 +129,13 @@ def _body(content: str) -> str:
     return body
 
 
+def _spec_kind(content: str, default: str | None = None) -> str | None:
+    try:
+        return spec_kind_from_content(content, default)
+    except ValueError as exc:
+        raise ReviewError("bad_spec_kind", str(exc)) from None
+
+
 def _title(title: str) -> str:
     cleaned = (title or "").strip()
     if not cleaned:
@@ -199,6 +207,7 @@ class ReviewService:
         if decider not in DOC_REVIEW_DECIDERS:
             raise ValueError(f"unknown decider {decider!r}")
         body = _body(content)
+        spec_kind = _spec_kind(content)
         now = self._clock()
         date = time.strftime("%Y-%m-%d", time.localtime(now))
 
@@ -217,13 +226,15 @@ class ReviewService:
                             doc_reviews.c.author_task_id == author_task_id,
                         ).order_by(doc_reviews.c.created_at).limit(1))).mappings().first()
                         if previous:
-                            digest = (await conn.execute(select(
+                            revision = (await conn.execute(select(
                                 doc_review_revisions.c.content_sha256,
+                                doc_review_revisions.c.spec_kind,
                             ).where(
                                 doc_review_revisions.c.review_id == previous.id,
                                 doc_review_revisions.c.revision == previous.current_revision,
-                            ))).scalar_one()
-                            if (digest != body_sha256(body) or previous.title != title
+                            ))).mappings().one()
+                            if (revision.content_sha256 != body_sha256(body)
+                                    or revision.spec_kind != spec_kind or previous.title != title
                                     or previous.kind != kind):
                                 raise ReviewError(
                                     "result_exists",
@@ -259,7 +270,7 @@ class ReviewService:
                         review=review,
                         revision=self._revision_row(
                             review_id, 1, body, submitted_by, author_task_id, None, now,
-                            playbook,
+                            playbook, spec_kind,
                         ),
                         conn=conn,
                     )
@@ -269,7 +280,7 @@ class ReviewService:
                     raise
                 logger.info("review submit raced another submission; retrying", exc_info=True)
 
-        self._sync_vault(review, body, playbook.meta if playbook else None)
+        self._sync_vault(review, body, playbook.meta if playbook else None, spec_kind)
         await self._emit("review.submitted", {**_base_payload(review), "vault_path": vault_path})
         return {"review_id": review_id, "vault_path": vault_path, "revision": 1, "gate_id": gate_id}
 
@@ -310,6 +321,7 @@ class ReviewService:
         body = _body(content)
         current = review["current_revision"]
         previous = await self._get_revision(review_id, current)
+        spec_kind = _spec_kind(content, previous.get("spec_kind"))
         now = self._clock()
         new_revision = current + 1
 
@@ -332,6 +344,7 @@ class ReviewService:
                         changes_note,
                         now,
                         playbook,
+                        spec_kind,
                     ),
                     conn=conn,
                 )
@@ -348,7 +361,7 @@ class ReviewService:
             backup_path = self._backup(review, now)
             writable = backup_path is not None
         if writable:
-            self._sync_vault(review, body, playbook.meta if playbook else None)
+            self._sync_vault(review, body, playbook.meta if playbook else None, spec_kind)
         else:
             logger.warning(
                 "review %s: vault file %s was edited outside the review and could not be "
@@ -498,6 +511,11 @@ class ReviewService:
                 "unblocked_task_ids": unblocked_ids,
             },
         )
+        if approve and review["kind"] in {"spec", "plan"}:
+            await self._emit(
+                "spec.approved",
+                {"project_id": review["project_id"], "spec_path": str(self._path(review).resolve())},
+            )
         return {"review_id": review_id, "state": state, "unblocked_task_ids": unblocked_ids}
 
     # -- comment -----------------------------------------------------------
@@ -651,6 +669,7 @@ class ReviewService:
                 "not_utf8", f"the vault file {review['vault_path']} is not valid UTF-8"
             ) from None
         body = _body(text)
+        spec_kind = _spec_kind(text, stored.get("spec_kind"))
         # The artifact is compiled from the playbook source, not this prose:
         # an edit to the document keeps the revision's pin.
         playbook = PlaybookPin.from_revision(stored)
@@ -667,7 +686,8 @@ class ReviewService:
             if moved:
                 await self.db.insert_review_revision(
                     revision=self._revision_row(
-                        review_id, new_revision, body, by, None, IMPORT_NOTE, now, playbook
+                        review_id, new_revision, body, by, None, IMPORT_NOTE, now, playbook,
+                        spec_kind,
                     ),
                     conn=conn,
                 )
@@ -675,7 +695,7 @@ class ReviewService:
             raise await self._lost_race(review_id)
 
         review = await self._get(review_id)
-        self._sync_vault(review, body, playbook.meta if playbook else None)
+        self._sync_vault(review, body, playbook.meta if playbook else None, spec_kind)
         await self._emit(
             "review.revised",
             {
@@ -710,7 +730,9 @@ class ReviewService:
 
         state = self.vault_state(review, current["content_sha256"])
         if state == "missing":
-            self._sync_vault(review, current["content"], current.get("playbook"))
+            self._sync_vault(
+                review, current["content"], current.get("playbook"), current.get("spec_kind"),
+            )
 
         out: dict = {
             "review": review,
@@ -772,10 +794,14 @@ class ReviewService:
     def _path(self, review: dict) -> Path:
         return self.vault_root / review["vault_path"]
 
-    def _sync_vault(self, review: dict, body: str, playbook: dict | None = None) -> None:
+    def _sync_vault(
+        self, review: dict, body: str, playbook: dict | None = None, spec_kind: str | None = None,
+    ) -> None:
         """Write the vault copy of *review* at its current revision; never raises."""
         try:
-            write_atomic(self._path(review), render(frontmatter_for(review, playbook), body))
+            write_atomic(
+                self._path(review), render(frontmatter_for(review, playbook, spec_kind), body),
+            )
         except OSError:
             logger.warning(
                 "review %s: writing vault file %s failed; the database copy stands",
@@ -797,7 +823,9 @@ class ReviewService:
                 review["vault_path"],
             )
             return
-        self._sync_vault(review, current["content"], current.get("playbook"))
+        self._sync_vault(
+            review, current["content"], current.get("playbook"), current.get("spec_kind"),
+        )
 
     # -- helpers -------------------------------------------------------------
 
@@ -830,12 +858,14 @@ class ReviewService:
         changes_note: str | None,
         now: float,
         playbook: PlaybookPin | None = None,
+        spec_kind: str | None = None,
     ) -> dict:
         row = {
             "review_id": review_id,
             "revision": revision,
             "content": body,
             "content_sha256": body_sha256(body),
+            "spec_kind": spec_kind,
             "submitted_by": submitted_by,
             "submitted_task_id": submitted_task_id,
             "changes_note": changes_note,

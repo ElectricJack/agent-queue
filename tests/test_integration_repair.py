@@ -8276,15 +8276,13 @@ async def test_ordinary_repair_close_uses_normal_published_completion(
 
 
 async def test_ordinary_repair_worker_git_push_rejects_expired_or_wrong_ref(ordinary_env):
-    import time
-
     from src.git.manager import GitError
     from src.plugins.internal.git import GitPlugin
 
     env = ordinary_env
-    env.now = time.time()
     result = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref, head_sha=STARTING_SHA)
     task_id = result["task_id"]
+    original_lease = await env.locks.get(env.target)
     plugin = GitPlugin.__new__(GitPlugin)
     plugin._db = SimpleNamespace(_db=env.db)
     plugin._git = SimpleNamespace(aref_exists=AsyncMock(return_value=True),
@@ -8295,13 +8293,18 @@ async def test_ordinary_repair_worker_git_push_rejects_expired_or_wrong_ref(ordi
     plugin._worker_publication = AsyncMock(return_value=publication)
     plugin._publish_policy = AsyncMock(return_value=SimpleNamespace(notes=[]))
     plugin._source_ci_inherited_oids = AsyncMock(return_value=[])
-    with patch("src.plugins.internal.git._worker_principal", return_value=object()):
-        async with env.db.immediate() as conn:
-            await conn.execute(update(integration_branch_owners).values(expires_at=time.time() - 1))
+    # Allocation, reacquisition and publication must use the same controlled
+    # clock; runner latency must not decide whether reacquisition sees expiry.
+    with (
+        patch("src.plugins.internal.git._worker_principal", return_value=object()),
+        patch("src.integration.repair.OrdinaryRepairService", return_value=env.service),
+    ):
+        env.now = original_lease.expires_at
         with pytest.raises(GitError, match="expired"):
             await plugin._push("/work", None, {}, None)
         plugin._git.apush_validated_delivery.assert_not_awaited()
         lease = await env.locks.acquire(env.target, task_id)
+        assert lease.token == original_lease.fence + 1
         publication.branch = "aq/other"
         with pytest.raises(GitError, match="allocated ref"):
             await plugin._push("/work", None, {}, None)

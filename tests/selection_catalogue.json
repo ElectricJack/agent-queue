@@ -1149,7 +1149,9 @@
       "description": "Task archiving: moving finished tasks and subtrees to the archive, archive sweeps, reads that span live and archived tasks, and refusals for undelivered work.",
       "modules": [
         "tests/test_archive.py",
-        "tests/test_hierarchy_archive_delete.py"
+        "tests/test_cli_task_remove.py",
+        "tests/test_hierarchy_archive_delete.py",
+        "tests/test_task_removal.py"
       ]
     },
     "task-comments": {
@@ -1163,6 +1165,7 @@
     "task-dependencies": {
       "description": "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection.",
       "modules": [
+        "tests/test_cli_task_change_sets.py",
         "tests/test_dependency_queries.py",
         "tests/test_get_downstream_tasks.py",
         "tests/test_get_stuck_tasks_command.py",
@@ -1417,7 +1420,7 @@
       ]
     }
   },
-  "digest": "sha256:28b140b33fdf697049e96f42c63220b9e0c954ca0615d7d76290a6767bc2408c",
+  "digest": "sha256:54514dfa0e514564df4851c6ce92bf7f1cb37bcc0d36b022482ba47c327c36fb",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3071,6 +3074,7 @@
         "src.git.manager",
         "src.integration.admission",
         "src.integration.batches",
+        "src.integration.delivery_observer",
         "src.integration.development",
         "src.integration.git_truth",
         "src.integration.gitops",
@@ -3087,6 +3091,7 @@
         "src.models",
         "src.orchestrator",
         "src.orchestrator.workspace_claim_recovery",
+        "src.orchestrator.worktree_manager",
         "src.scheduler",
         "src.sessions",
         "src.sessions.reconciler"
@@ -3567,6 +3572,19 @@
       ],
       "summary": "Contract tests for the hand-crafted system-config CLI."
     },
+    "tests/test_cli_task_change_sets.py": {
+      "areas": [
+        "task-dependencies"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.app"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The file CLI preserves the reviewed change set and offers an unsaved preview."
+    },
     "tests/test_cli_task_comments.py": {
       "areas": [
         "task-comments"
@@ -3617,6 +3635,17 @@
         "parametrize"
       ],
       "summary": "``aq task create --requires-kind``: parsing, forwarding, persistence, parity."
+    },
+    "tests/test_cli_task_remove.py": {
+      "areas": [
+        "task-archive"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.app"
+      ],
+      "markers": [],
+      "summary": "The operator removes a subtree with one explicit confirmation."
     },
     "tests/test_cli_task_subtasks.py": {
       "areas": [
@@ -4731,10 +4760,13 @@
         "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.database.queries.proposal_queries",
+        "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
-        "src.playbooks.run_state"
+        "src.playbooks.run_state",
+        "src.reviews.service",
+        "src.vault"
       ],
       "markers": [
         "parametrize"
@@ -12492,7 +12524,6 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.commands.proposal_commands",
         "src.event_schemas"
       ],
       "markers": [],
@@ -14981,12 +15012,14 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.commands",
+        "src.api.auth",
+        "src.api.scope",
         "src.commands.contracts.builtin",
-        "src.commands.proposal_commands",
         "src.database.queries.proposal_queries",
         "src.database.tables",
+        "src.event_schemas",
         "src.models",
+        "src.orchestrator.events",
         "src.vault"
       ],
       "markers": [
@@ -15325,6 +15358,25 @@
       "markers": [],
       "summary": "task.ready — every entry into the frontier is recorded and emitted (spec §9)."
     },
+    "tests/test_task_removal.py": {
+      "areas": [
+        "task-archive"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.database",
+        "src.database.tables",
+        "src.integration.parent_engine",
+        "src.integration.task_removal",
+        "src.models"
+      ],
+      "markers": [
+        "asyncio",
+        "parametrize"
+      ],
+      "summary": "Confirmed operator removal preserves audit, fences writers, and retires orphans."
+    },
     "tests/test_task_requirements_queries.py": {
       "areas": [
         "workspaces"
@@ -15507,7 +15559,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Operator host shells: config gate, operator-only auth, lifecycle, env scrub."
+      "summary": "Operator host shells: config gate, operator and remote-viewer auth, lifecycle, env scrub."
     },
     "tests/test_terminal_input.py": {
       "areas": [
@@ -15566,10 +15618,12 @@
         "src.api",
         "src.api.auth",
         "src.api.terminal_stream",
+        "src.config",
         "src.dashboard_server.app",
         "src.dashboard_server.settings",
         "src.database",
         "src.models",
+        "src.sessions.host_shell",
         "src.sessions.terminal_input",
         "src.sessions.terminal_pty"
       ],

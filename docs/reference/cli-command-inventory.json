@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 507,
+    "leaf_commands": 508,
     "registration": {
-      "generated": 345,
-      "handwritten": 162
+      "generated": 344,
+      "handwritten": 164
     },
     "ownership": {
-      "core": 468,
+      "core": 469,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 506
+      "supported": 507
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 345,
-      "registration": 148
+      "dispatch": 344,
+      "registration": 150
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 447
+      "untested": 448
     }
   },
   "commands": [
@@ -15437,32 +15437,34 @@
     },
     {
       "path": "aq task batch-propose",
-      "registration": "generated",
+      "registration": "handwritten",
       "owner_kind": "core",
       "owner": "agent-queue",
       "backend_command": "task_batch_propose",
-      "callback": "src.cli.auto_commands.callback",
+      "callback": "src.cli.tasks.task_batch_propose",
       "support": "supported",
       "alias_for": null,
       "deprecation": null,
       "unsupported_reason": null,
-      "evidence_level": "dispatch",
+      "evidence_level": "registration",
       "evidence": [
         "click-registration",
-        "json-schema",
-        "mock-dispatch",
         "core-handler"
       ],
       "acceptance_status": "untested",
       "acceptance_evidence": [],
       "parameters": {
-        "required": [
-          "--source",
-          "--tasks"
-        ],
+        "required": [],
         "optional": [
+          "--file",
           "--project-id",
+          "--source",
+          "--dry-run",
+          "--tasks",
           "--edges",
+          "--edits",
+          "--remove-edges",
+          "--comments",
           "--json",
           "--brief",
           "--save-output",
@@ -15470,7 +15472,10 @@
         ],
         "structured": [
           "--tasks",
-          "--edges"
+          "--edges",
+          "--edits",
+          "--remove-edges",
+          "--comments"
         ],
         "nullable": []
       }
@@ -17048,6 +17053,40 @@
         ],
         "optional": [
           "--expected-hold-at",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task remove",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "remove_task",
+      "callback": "src.cli.tasks.remove_task",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "task_id",
+          "--reason"
+        ],
+        "optional": [
+          "--yes",
           "--json",
           "--brief",
           "--save-output",

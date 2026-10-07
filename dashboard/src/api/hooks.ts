@@ -12,6 +12,7 @@ import {
   deleteProfile,
   deleteProject,
   deleteTask,
+  removeTask,
   editMcpServer,
   editIntelligenceClass,
   editProfile,
@@ -846,8 +847,17 @@ export function useDeleteTask() {
 export function useArchiveTask() {
   const cb = useTaskMutationCallbacks();
   return useMutation({
-    mutationFn: async (input: { task_id: string }) =>
+    mutationFn: async (input: { task_id: string; reason?: string; abandon_undelivered?: boolean }) =>
       (await archiveTask({ body: input, throwOnError: true })).data,
+    ...cb,
+  });
+}
+
+export function useRemoveTask() {
+  const cb = useTaskMutationCallbacks();
+  return useMutation({
+    mutationFn: async (input: { task_id: string; confirmed: boolean; reason: string }) =>
+      (await removeTask({ body: input, throwOnError: true })).data,
     ...cb,
   });
 }

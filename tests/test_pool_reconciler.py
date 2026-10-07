@@ -7,15 +7,14 @@ import logging
 import os
 import time
 import uuid
-
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from dataclasses import replace
 from sqlalchemy import insert
 
 from src.commands.claim_commands import CLAIM_FILE, write_claim_file
-from src.config import DatabaseConfig, AppConfig, DiscordConfig
+from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
 from src.database.tables import integration_branch_owners
 from src.intelligence_classes import IntelligenceClass
@@ -30,8 +29,8 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from src.sessions.harness_parser import Harness
-from tests.db_fixtures import lease_dsn
 from tests.assignment_routing_helpers import route_source_for
+from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
 
@@ -108,8 +107,13 @@ async def _deliver_first_by_train(db, env):
     from src.integration.batches import Batch, BatchMember, BatchService, BatchStore
     from src.integration.git_truth import GitTruth
     from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
-    from src.integration.train import BatchSelection, CandidateChecks, IntegrationTrain, TrainLane
-    from src.integration.train import TrainTarget
+    from src.integration.train import (
+        BatchSelection,
+        CandidateChecks,
+        IntegrationTrain,
+        TrainLane,
+        TrainTarget,
+    )
     from src.integration.train_sources import LeasedPublish, _never_trusted
 
     target = TrainTarget(PROJECT_ID, "repo", "refs/heads/aq/epic", kind="epic")
@@ -164,13 +168,14 @@ def frontier_clock(monkeypatch):
 async def test_git_first_delivery_releases_scheduler_pool_and_claim(
     orch, db, git_first_frontier, frontier_clock,
 ):
+    from sqlalchemy import select
+
     from src.commands.handler import CommandHandler
     from src.database.tables import task_delivery_receipts
     from src.doctor.models import DoctorContext
     from src.doctor.task_checks import _check_ready_frontier_exclusions
     from src.integration.delivery_observer import hierarchy_frontier_modes
     from src.scheduler import PoolKey
-    from sqlalchemy import select
 
     env = git_first_frontier
     handler = CommandHandler(orch, orch.config)
@@ -315,12 +320,26 @@ async def test_git_first_claim_refetches_after_cached_advisory_target_rewinds(
         assert result["result"] == "no_ready_work", result
         assert fetch.await_count == expected_fetches
         assert (await db.get_task("second")).status is TaskStatus.READY
+    prepare = orch._worktree_slots().reset_slot_for_task
+    prepare.assert_not_awaited()
     # Even the immediately preceding failed claim's observation is not reused.
     env.git(env.origin.clone, "push", "origin", f"{env.source}:aq/epic")
+    delivery_head = AsyncMock(wraps=db.hierarchy_prerequisite_delivery_head)
+    monkeypatch.setattr(db, "hierarchy_prerequisite_delivery_head", delivery_head)
     result = await handler._cmd_task_claim({"next": True})
     assert result["result"] == "claimed", result
     assert result["task"]["id"] == "second"
-    assert fetch.await_count == 4
+    # Admission refetches once, then workspace preparation independently proves
+    # the current parent tip before preserving the child's existing branch.
+    assert fetch.await_count == 5
+    delivery_head.assert_awaited_once_with("second")
+    prepare.assert_awaited_once()
+    assert prepare.await_args.args[1].id == "second"
+    assert prepare.await_args.kwargs == {
+        "base_branch": env.source,
+        "target_branch": "aq/second",
+        "preserve_branch": True,
+    }
 
 
 @pytest.mark.parametrize("movement", ["rewind", "retarget", "generation", "unstable", "shadow"])
@@ -1302,6 +1321,7 @@ async def test_reconcile_relocates_idle_capacity_without_raising_global_cap(orch
 
 async def test_slow_launch_does_not_block_other_project_or_oversubscribe(orch, db, tmp_path, monkeypatch):
     import asyncio
+
     from src.scheduler import PoolKey
 
     await ready(db, "slow-task")
@@ -1375,6 +1395,7 @@ async def test_cancelled_background_start_stops_process_and_releases_resources(o
 
 async def test_cancelled_reservation_waits_for_commit_before_releasing(orch, db, monkeypatch):
     import asyncio
+
     from src.models import Agent
 
     await db.create_agent(Agent(id="existing", name="Existing", profile_id="worker"))
@@ -1553,8 +1574,8 @@ async def test_timeout_pool_cleanup_respects_wait_but_operator_stop_wins(orch, d
     await db.update_session(sid, task_id="waiting", claim_phase="active", last_claim_epoch=task.claim_epoch)
     now = time.time()
     wait = await db.register_agent_wait(
-        identity=dict(session_id=sid, instance_token=row.instance_token, project_id=PROJECT_ID,
-                      claim_epoch=task.claim_epoch, elevated=False),
+        identity={"session_id": sid, "instance_token": row.instance_token,
+                  "project_id": PROJECT_ID, "claim_epoch": task.claim_epoch, "elevated": False},
         kind="timer", match={"due_at": now + 1000}, deadline_at=now + 2000,
         idempotency_key="pool-cleanup", now=now,
     )

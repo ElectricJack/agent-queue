@@ -179,6 +179,14 @@ statements production builds rather than a reconstruction — and asserts:
 It is plan-shape rather than wall-clock, so it takes the `perf` marker but not
 `perf_strict`.
 
+The bulk seed is followed by `ANALYZE tasks, task_dependencies` before taking
+plans. The measurement uses statistics for its own queue, independently of
+autovacuum timing. Leased test databases clear both relation and column
+statistics between fixtures, including column distributions left by an earlier
+`ANALYZE`; clearing relation statistics alone does not isolate query plans.
+Statistics setup remains outside the explained statements, and neither the
+sort prohibition nor the 64-buffer budget is relaxed.
+
 ## 6. Follow-ups this leaves open
 
 * The two `task_metadata` sub-plans in the frontier predicate (container flag,

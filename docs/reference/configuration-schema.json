@@ -698,10 +698,15 @@
     "host_shell": {
       "additionalProperties": false,
       "default": {
+        "allow_remote": false,
         "enabled": false,
         "max_shells": 4
       },
       "properties": {
+        "allow_remote": {
+          "default": false,
+          "type": "boolean"
+        },
         "enabled": {
           "default": false,
           "type": "boolean"

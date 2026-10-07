@@ -11,6 +11,23 @@ Native equivalents include task_show, task_set, task_comment, task_comments, tas
 task_heartbeat, task_claim, task_handoff, message_send, message_inbox, memory_save,
 memory_search. Use the convenient surface; both dispatch through CommandHandler.
 
+Commit with plain `git` in your own worktree. `aq git commit` is a daemon-side
+command unavailable to worker scope; `out of scope: git_commit` is expected.
+A local `git commit` is authorized and is not a bypass. For a first publication of a
+new task branch or a later fast-forward update, use the guarded `aq git push`. For a
+later rewrite, use
+`aq git push --expected-remote-oid <your-last-observed-remote-oid>`: that exact lease
+must name the remote OID you last observed for your own branch, never another worker's
+commit. If the remote moves, escalate; never guess a lease or use plain `git push`.
+Never bypass any other AQ rejection.
+
+The daemon injects `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`
+and `GIT_COMMITTER_EMAIL` into task and pool worker sessions. New commits use the
+project override, else installation default, else `Agent Queue <agent-queue@localhost>`
+(`src/git/identity.py`). Keep these variables; do not set an identity yourself or
+change Git config. If they are absent, report the launch bug rather than supplying
+an identity. Never pass `--no-verify` or amend a pushed commit.
+
 Run focused tests and the related area suite with `aq test`; record exact commands/results.
 Keep its worker cap and marker defaults; never raise `-n`. Slot timeout 75 is retryable.
 Full-suite runs belong to CI and tasks about the suite. Use the recorded known-failing

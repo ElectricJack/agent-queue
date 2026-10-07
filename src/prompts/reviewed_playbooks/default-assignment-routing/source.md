@@ -98,18 +98,23 @@ harness, never by rung id. Key by key:
 - `lanes`: `code-design` tries Claude first and falls back to Codex only when
   Claude cannot take the task. `art-design` holds for Codex: `hold: true`
   writes the provider intent `pinned`, so art design waits for its provider
-  rather than going elsewhere. `narrow` sends narrow, test-verified work to
+  rather than going elsewhere.   `narrow` sends narrow, test-verified work to
   OpenCode while it has a free slot; `narrow-unverified-model` does the same
   only when an independent verifier checks the result. `narrow-hosted` sends
-  narrow, test-verified standard-high work to OpenCode on a hosted gateway, the
-  `opencode-zen` harness: a harness of its own so that its availability is not
-  local OpenCode's, and a lane of its own so that it can be tightened alone.
+  narrow, test-verified standard-high work to OpenCode on a hosted gateway:
+  the `opencode-zen` harness (Space Bunny Free), `opencode-zen-nemotron`
+  (Nemotron 3 Ultra free) and `opencode-zen-longcat` (LongCat 2.5 Preview
+  free). Each hosted model is its own harness, so each has an independent
+  availability row (free-tier exhaustion is separate from local OpenCode's and
+  from the other hosted models), and they share one lane so the lane can be
+  tightened as a unit.
 - `reserved`: keeps deep-high Claude for code design and design review, so a
   hard bug fix hinted deep-high lands on deep-high Codex.
 - `balance`: the load score. A candidate's pressure is its live load plus one,
   over its slots times its harness weight, its provider's usage factor and its
   availability factor. The least-pressed candidate wins, and `tie_order`
-  breaks a tie, Codex first and hosted OpenCode last. `prefer_harnesses` on ordinary implementation
+  breaks a tie, Codex first and local OpenCode before each hosted OpenCode
+  lane, Space Bunny first. `prefer_harnesses` on ordinary implementation
   kinds favors compatible Codex while available, within its own usage soft
   limit and with positive effective headroom. Eligible OpenCode lanes are
   considered first. Saturated, unavailable, degraded or quota-pressured Codex
@@ -152,18 +157,18 @@ lanes:
     requires: [narrow, test_verified, independent_verifier]
     prefer: true
   narrow-hosted:
-    harnesses: [opencode-zen]
+    harnesses: [opencode-zen, opencode-zen-nemotron, opencode-zen-longcat]
     classes: {standard-high: standard-high}
     requires: [narrow, test_verified]
     prefer: true
 reserved:
   - {class: deep-high, harness: claude, only_lanes: [code-design, design-review]}
 balance:
-  harness_weights: {claude: 1.0, codex: 1.0, opencode: 1.0, opencode-zen: 1.0}
+  harness_weights: {claude: 1.0, codex: 1.0, opencode: 1.0, opencode-zen: 1.0, opencode-zen-nemotron: 1.0, opencode-zen-longcat: 1.0}
   usage_soft_percent: 80
   usage_floor_factor: 0.1
   degraded_factor: 0.5
-  tie_order: [codex, claude, opencode, opencode-zen]
+  tie_order: [codex, claude, opencode, opencode-zen, opencode-zen-nemotron, opencode-zen-longcat]
 ```
 
 ## Classifying a task

@@ -1,14 +1,15 @@
-"""Operator host shells: config gate, operator-only auth, lifecycle, env scrub."""
+"""Operator host shells: config gate, operator and remote-viewer auth, lifecycle, env scrub."""
 import shlex
 from types import SimpleNamespace
 
 import pytest
+import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.api.auth import RequestScope
 from src.api.terminal_stream import TerminalStreamError, build_terminal_router
-from src.config import HostShellConfig
+from src.config import HostShellConfig, load_config
 from src.sessions import host_shell as hs
 from src.sessions.provider import SessionError
 
@@ -105,7 +106,7 @@ async def test_shell_environment_scrubs_aq_tokens(tmux, monkeypatch):
     assert {"AQ_SESSION_TOKEN", "AGENT_QUEUE_DB"} <= removed and "HOME" not in removed
 
 
-def _app(tmux, *, enabled=True, store=None):
+def _app(tmux, *, enabled=True, store=None, allow_remote=False):
     events = []
 
     async def log_event(event_type, **kwargs):
@@ -113,7 +114,7 @@ def _app(tmux, *, enabled=True, store=None):
 
     config = SimpleNamespace(
         api_auth=SimpleNamespace(require_session_token=False, trusted_dashboard_origins=[]),
-        host_shell=HostShellConfig(enabled=enabled, max_shells=2),
+        host_shell=HostShellConfig(enabled=enabled, max_shells=2, allow_remote=allow_remote),
     )
     orch = SimpleNamespace(db=SimpleNamespace(log_event=log_event),
                            session_providers=SimpleNamespace(create=lambda name: tmux))
@@ -161,6 +162,53 @@ def test_api_refuses_remote_peer(tmux):
     assert remote.post("/api/host-shell").status_code == 403
 
 
+# What the dashboard edge stamps on a browser it proxied from another machine.
+REMOTE_VIEWER = {"x-aq-dashboard-viewer": "other", "x-aq-dashboard-peer": "192.168.1.9"}
+
+
+def test_api_remote_dashboard_viewer_needs_allow_remote(tmux):
+    client, events = _app(tmux, allow_remote=False)
+    assert client.get("/api/host-shell", headers=REMOTE_VIEWER).status_code == 403
+    refused = client.post("/api/host-shell", headers=REMOTE_VIEWER)
+    assert refused.status_code == 403 and "allow_remote" in refused.json()["detail"]
+    assert "local operator or an allowed remote dashboard viewer" in refused.json()["detail"]
+    assert tmux.sessions == {} and events == []
+
+    client, events = _app(tmux, allow_remote=True)
+    opened = client.post("/api/host-shell", headers=REMOTE_VIEWER)
+    assert opened.status_code == 200, opened.text
+    name = opened.json()["shell"]["name"]
+    listed = client.get("/api/host-shell", headers=REMOTE_VIEWER).json()
+    assert [s["name"] for s in listed["shells"]] == [name]
+    assert client.post(f"/api/host-shell/{name}/close", headers=REMOTE_VIEWER).status_code == 200
+    assert [e for e, _ in events] == ["host_shell.opened", "host_shell.closed"]
+    assert all("remote-dashboard-viewer (peer 192.168.1.9)" in kw["payload"] for _, kw in events)
+
+
+@pytest.mark.parametrize("allow_remote", [False, True])
+@pytest.mark.parametrize("viewer", [None, "operator", "other"])
+def test_api_always_refuses_bearer_tokens(tmux, allow_remote, viewer):
+    client, events = _app(tmux, allow_remote=allow_remote)
+    headers = {"Authorization": "Bearer aqs_supervisor"}
+    if viewer:
+        headers["x-aq-dashboard-viewer"] = viewer
+    for method, path in [("get", "/api/host-shell"), ("post", "/api/host-shell")]:
+        refused = getattr(client, method)(path, headers=headers)
+        assert refused.status_code == 403
+        assert refused.json()["detail"] == "Host shells do not accept bearer tokens"
+    assert tmux.sessions == {} and events == []
+
+
+def test_allow_remote_admits_only_the_edges_verdict(tmux):
+    """A peer reaching the daemon directly is no dashboard viewer, whatever it claims."""
+    client, _ = _app(tmux, allow_remote=True)
+    direct = TestClient(client.app, base_url="http://localhost", client=("10.0.0.5", 5000))
+    assert direct.post("/api/host-shell", headers=REMOTE_VIEWER).status_code == 403
+    rebound = client.post("/api/host-shell", headers={"host": "evil.example"})
+    assert rebound.status_code == 403
+    assert tmux.sessions == {}
+
+
 @pytest.mark.parametrize("token", ["aqs_supervisor", None])
 async def test_terminal_attach_refuses_tokens_and_disabled(tmux, token):
     from src.api.terminal_stream import TerminalStreamService
@@ -179,3 +227,65 @@ async def test_terminal_attach_refuses_tokens_and_disabled(tmux, token):
     with pytest.raises(TerminalStreamError) as err:
         await service._authorize(ws, token, host_shell=True)
     assert err.value.code == 4403
+
+
+def _attach_service(*, allow_remote, enabled=True):
+    from src.api.terminal_stream import TerminalStreamService
+
+    async def validate(value, **kwargs):
+        return RequestScope(kind="session", session_id="sup", elevated=True)
+
+    config = SimpleNamespace(
+        api_auth=SimpleNamespace(require_session_token=False),
+        host_shell=HostShellConfig(enabled=enabled, allow_remote=allow_remote),
+    )
+    return TerminalStreamService(SimpleNamespace(), config,
+                                 token_store=SimpleNamespace(validate=validate))
+
+
+def _edge_ws(viewer):
+    """A WebSocket the dashboard edge relayed: loopback peer, the edge's verdict."""
+    return SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"),
+                           headers={"host": "192.168.1.69:5173", "x-aq-dashboard-viewer": viewer,
+                                    "x-aq-dashboard-peer": "192.168.1.9"},
+                           url=SimpleNamespace(hostname="192.168.1.69"))
+
+
+async def test_terminal_attach_admits_remote_viewer_only_with_allow_remote():
+    with pytest.raises(TerminalStreamError) as err:
+        await _attach_service(allow_remote=False)._authorize(
+            _edge_ws("other"), None, host_shell=True)
+    assert err.value.code == 4403
+    assert "local operator or an allowed remote dashboard viewer" in str(err.value)
+    await _attach_service(allow_remote=True)._authorize(_edge_ws("other"), None, host_shell=True)
+    await _attach_service(allow_remote=False)._authorize(
+        _edge_ws("operator"), None, host_shell=True)
+
+
+@pytest.mark.parametrize("viewer", ["operator", "other"])
+async def test_terminal_attach_refuses_tokens_even_with_allow_remote(viewer):
+    with pytest.raises(TerminalStreamError) as err:
+        await _attach_service(allow_remote=True)._authorize(
+            _edge_ws(viewer), "aqs_supervisor", host_shell=True)
+    assert err.value.code == 4403
+    assert str(err.value) == "Host shells do not accept bearer tokens"
+
+
+async def test_allow_remote_does_not_open_disabled_host_shells():
+    with pytest.raises(TerminalStreamError) as err:
+        await _attach_service(allow_remote=True, enabled=False)._authorize(
+            _edge_ws("other"), None, host_shell=True)
+    assert err.value.code == 4403
+
+
+def test_allow_remote_loads_from_yaml_and_must_be_a_bool(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.dump({
+        "database": {"url": "postgresql+asyncpg://test:test@localhost/test"},
+        "discord": {"bot_token": "t", "guild_id": "1"},
+        "dashboard": {"host_shell": {"enabled": True, "allow_remote": True}},
+    }))
+    assert load_config(str(path)).host_shell.allow_remote is True
+    assert HostShellConfig().allow_remote is False
+    errors = HostShellConfig(allow_remote="yes").validate()
+    assert [(e.section, e.field) for e in errors] == [("dashboard.host_shell", "allow_remote")]

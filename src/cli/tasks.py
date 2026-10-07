@@ -1,8 +1,8 @@
-"""Hand-crafted task CLI commands that require interactive features.
+"""Hand-crafted task CLI commands with interactive features or file input.
 
 Simple list/detail commands are auto-generated with Rich formatters via
 the formatter registry.  This file only contains commands that need
-interactive prompts (wizard, confirmation dialogs, fuzzy search).
+interactive prompts (wizard, confirmation dialogs, fuzzy search) or graph files.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from src.routing.planner import PREFER_MODES
 
 from .app import cli, console, _run, _get_client, _handle_errors
 from .claim_epoch import claim_epoch_option, resolve_claim_epoch
+from .auto_commands import StructuredParam
 from .envelope import emit
 from .styles import TASK_TYPES
 
@@ -80,6 +81,44 @@ def _parse_requires_kinds(values: tuple[str, ...]) -> list[Any]:
 def task() -> None:
     """Task management commands."""
     pass
+
+
+@task.command("batch-propose")
+@click.option("--file", "change_file", default=None, help="YAML/JSON change set; '-' reads stdin.")
+@click.option("--project", "--project-id", "project_id", default=None)
+@click.option("--source", default=None, help="Provenance (defaults to the file path).")
+@click.option("--dry-run", is_flag=True, help="Validate and show the diff without saving a proposal.")
+@click.option("--tasks", type=StructuredParam("array"), default=None)
+@click.option("--edges", type=StructuredParam("array"), default=None)
+@click.option("--edits", type=StructuredParam("array"), default=None)
+@click.option("--remove-edges", type=StructuredParam("array"), default=None)
+@click.option("--comments", type=StructuredParam("array"), default=None)
+@click.pass_context
+def task_batch_propose(ctx, change_file, project_id, source, dry_run, **operations):
+    """Stage creates, edits, edge additions/removals and comments for atomic approval."""
+    inline = {key: value for key, value in operations.items() if value is not None}
+    if change_file and inline:
+        raise click.UsageError("use either --file or inline operation options")
+    if not change_file and not inline:
+        raise click.UsageError("supply --file or inline change set operations")
+    document = _load_graph_document(change_file) if change_file else inline
+    allowed = {"project_id", "source", "tasks", "edits", "edges", "remove_edges", "comments"}
+    if unknown := set(document) - allowed:
+        raise click.UsageError(f"unknown change set fields: {sorted(unknown)}")
+    provenance = source or document.get("source") or change_file
+    if not provenance:
+        raise click.UsageError("--source is required for inline operations")
+    args = dict(document, source=provenance, dry_run=dry_run)
+    if project_id:
+        args["project_id"] = project_id
+
+    async def run():
+        async with _get_client(ctx) as client:
+            return await client.execute("task_batch_propose", args)
+
+    result = _run(run())
+    _handle_errors(result)
+    emit(ctx, result)
 
 
 def _load_graph_document(graph_file: str) -> dict:
@@ -1173,3 +1212,30 @@ def _subtask_update_command(name: str, status: str | None, *, note_required: boo
 task_subtask_done = _subtask_update_command("subtask-done", "done")
 task_subtask_start = _subtask_update_command("subtask-start", "in_progress")
 task_subtask_skip = _subtask_update_command("subtask-skip", "skipped", note_required=True)
+
+
+@task.command("remove")
+@click.argument("task_id")
+@click.option("--reason", required=True, help="Why this task or epic is being removed.")
+@click.option("--yes", "confirmed", is_flag=True, help="Confirm removal without an interactive prompt.")
+@click.pass_context
+@_handle_errors
+def remove_task(ctx, task_id, reason, confirmed):
+    """Remove a task and its descendants, preserving branches and audit history."""
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+    if not reason.strip():
+        raise click.UsageError("--reason must not be blank")
+    if not confirmed:
+        click.confirm(
+            f"Remove {task_id} and all descendants? Sessions will stop, open batches will abort, "
+            "and audit history and branches will be kept",
+            abort=True,
+        )
+
+    async def _inner():
+        async with _get_client(api_url) as client:
+            result = await client.execute("remove_task", {
+                "task_id": task_id, "reason": reason, "confirmed": True,
+            })
+            emit(ctx, result)
+    _run(_inner())

@@ -11,6 +11,7 @@ exactly one; and a refused command ends its run ``failed``, never
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -18,10 +19,12 @@ from src.commands.contracts import CONTRACTS
 from src.commands.contracts.builtin import set_handler_provider
 from src.commands.principal import ExecutionPrincipal
 from src.database.queries.proposal_queries import get_proposal
+from src.models import AgentProfile
 from src.playbooks.definition import load_definition_json
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
 from src.playbooks.run_state import RunLifecycle
+from src.reviews.service import ReviewHooks, ReviewService
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
     RecordingRunRepository,
@@ -216,6 +219,56 @@ async def test_a_refused_ensure_task_ends_the_spec_ingest_run_failed(handler, pi
 
     assert result.rules_selected == ("spec-ingest-on-approve",)
     assert _lifecycles(runs, result) == [RunLifecycle.FAILED]
+
+
+@pytest.mark.parametrize("kind", ["spec", "plan"])
+async def test_review_approval_ingests_once_at_deep_high(handler, pipeline, kind):
+    from src.vault import ensure_default_intelligence_classes
+
+    ensure_default_intelligence_classes(handler.config.data_dir)
+    handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
+    engine, runs, principal = pipeline
+    await handler.execute("create_project", {"id": PROJECT, "name": PROJECT})
+    await handler.db.create_profile(AgentProfile(
+        id="spec-ingest", name="Spec Ingest", harness="codex", default_class="deep-high",
+        needs_workspace=False,
+    ))
+
+    async def resolve_gate(gate_id, resolved_by, resolution):
+        return await handler.db.resolve_gate(
+            gate_id, resolved_by=resolved_by, resolution=resolution,
+        )
+
+    svc = ReviewService(handler.db, handler.config.vault_root, ReviewHooks(
+        emit=handler.orchestrator.bus.emit,
+        resolve_gate=resolve_gate,
+        changes_requested=AsyncMock(),
+    ))
+    submitted = await svc.submit(
+        project_id=PROJECT, author_task_id=None, kind=kind, title="Approved specification",
+        content="---\nspec_kind: implementation\n---\n# Specification\n",
+        submitted_by="human:local-operator",
+    )
+    await svc.decide(
+        review_id=submitted["review_id"], revision=1, decision="approve",
+        note="Approved", decided_by="human:local-operator",
+    )
+    payload = next(call.args[1] for call in handler.orchestrator.bus.emit.call_args_list
+                   if call.args[0] == "spec.approved")
+    path = Path(payload["spec_path"])
+    assert path.is_absolute()
+    assert "status: approved" in path.read_text()
+    for event_id in ("review-approval-1", "review-approval-replay"):
+        result = await engine.dispatch_event(
+            {"event_type": "spec.approved", "event_id": event_id, **payload}, principal,
+        )
+        assert _lifecycles(runs, result) == [RunLifecycle.COMPLETED]
+    [task] = await handler.db.list_tasks(project_id=PROJECT)
+    assert task.profile_id == "spec-ingest"
+    assert task.intelligence_class == "deep-high"
+    assert task.dedup_key == f"spec-ingest:{path}"
+    assert f"spec_path: {path}" in task.description
+    assert "spec_kind" in task.description
 
 
 async def test_a_refused_gate_create_ends_the_proposal_run_failed(handler, pipeline):

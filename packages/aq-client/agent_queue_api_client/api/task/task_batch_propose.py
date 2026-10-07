@@ -65,17 +65,21 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: TaskBatchProposeRequest,
 ) -> Response[TaskBatchProposeResponse | TaskBatchProposeResponse422]:
-    """Propose a batch of tasks and their dependency edges as one reviewable graph, without creating
-    anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may
-    also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it
-    references tasks that do not exist, or if it would introduce a dependency cycle against the
-    project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard.
+    """Propose a transactional change set of creates, edits, edge changes and comments as one reviewable
+    graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges
+    reference; edges may also point at existing task ids. The proposal is rejected up front if the shape
+    is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle
+    against the project's current graph. Returns a proposal_id for task_batch_update / _commit /
+    _discard. A live spec-ingest role holding the matching approved vault path may commit immediately;
+    those batches require epics with children and leaf dependency edges.
 
-     Propose a batch of tasks and their dependency edges as one reviewable graph, without creating
-    anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may
-    also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it
-    references tasks that do not exist, or if it would introduce a dependency cycle against the
-    project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard.
+     Propose a transactional change set of creates, edits, edge changes and comments as one reviewable
+    graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges
+    reference; edges may also point at existing task ids. The proposal is rejected up front if the shape
+    is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle
+    against the project's current graph. Returns a proposal_id for task_batch_update / _commit /
+    _discard. A live spec-ingest role holding the matching approved vault path may commit immediately;
+    those batches require epics with children and leaf dependency edges.
 
     Args:
         body (TaskBatchProposeRequest):
@@ -104,17 +108,21 @@ def sync(
     client: AuthenticatedClient | Client,
     body: TaskBatchProposeRequest,
 ) -> TaskBatchProposeResponse | TaskBatchProposeResponse422 | None:
-    """Propose a batch of tasks and their dependency edges as one reviewable graph, without creating
-    anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may
-    also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it
-    references tasks that do not exist, or if it would introduce a dependency cycle against the
-    project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard.
+    """Propose a transactional change set of creates, edits, edge changes and comments as one reviewable
+    graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges
+    reference; edges may also point at existing task ids. The proposal is rejected up front if the shape
+    is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle
+    against the project's current graph. Returns a proposal_id for task_batch_update / _commit /
+    _discard. A live spec-ingest role holding the matching approved vault path may commit immediately;
+    those batches require epics with children and leaf dependency edges.
 
-     Propose a batch of tasks and their dependency edges as one reviewable graph, without creating
-    anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may
-    also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it
-    references tasks that do not exist, or if it would introduce a dependency cycle against the
-    project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard.
+     Propose a transactional change set of creates, edits, edge changes and comments as one reviewable
+    graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges
+    reference; edges may also point at existing task ids. The proposal is rejected up front if the shape
+    is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle
+    against the project's current graph. Returns a proposal_id for task_batch_update / _commit /
+    _discard. A live spec-ingest role holding the matching approved vault path may commit immediately;
+    those batches require epics with children and leaf dependency edges.
 
     Args:
         body (TaskBatchProposeRequest):
@@ -138,17 +146,21 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: TaskBatchProposeRequest,
 ) -> Response[TaskBatchProposeResponse | TaskBatchProposeResponse422]:
-    """Propose a batch of tasks and their dependency edges as one reviewable graph, without creating
-    anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may
-    also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it
-    references tasks that do not exist, or if it would introduce a dependency cycle against the
-    project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard.
+    """Propose a transactional change set of creates, edits, edge changes and comments as one reviewable
+    graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges
+    reference; edges may also point at existing task ids. The proposal is rejected up front if the shape
+    is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle
+    against the project's current graph. Returns a proposal_id for task_batch_update / _commit /
+    _discard. A live spec-ingest role holding the matching approved vault path may commit immediately;
+    those batches require epics with children and leaf dependency edges.
 
-     Propose a batch of tasks and their dependency edges as one reviewable graph, without creating
-    anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may
-    also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it
-    references tasks that do not exist, or if it would introduce a dependency cycle against the
-    project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard.
+     Propose a transactional change set of creates, edits, edge changes and comments as one reviewable
+    graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges
+    reference; edges may also point at existing task ids. The proposal is rejected up front if the shape
+    is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle
+    against the project's current graph. Returns a proposal_id for task_batch_update / _commit /
+    _discard. A live spec-ingest role holding the matching approved vault path may commit immediately;
+    those batches require epics with children and leaf dependency edges.
 
     Args:
         body (TaskBatchProposeRequest):
@@ -175,17 +187,21 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: TaskBatchProposeRequest,
 ) -> TaskBatchProposeResponse | TaskBatchProposeResponse422 | None:
-    """Propose a batch of tasks and their dependency edges as one reviewable graph, without creating
-    anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may
-    also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it
-    references tasks that do not exist, or if it would introduce a dependency cycle against the
-    project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard.
+    """Propose a transactional change set of creates, edits, edge changes and comments as one reviewable
+    graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges
+    reference; edges may also point at existing task ids. The proposal is rejected up front if the shape
+    is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle
+    against the project's current graph. Returns a proposal_id for task_batch_update / _commit /
+    _discard. A live spec-ingest role holding the matching approved vault path may commit immediately;
+    those batches require epics with children and leaf dependency edges.
 
-     Propose a batch of tasks and their dependency edges as one reviewable graph, without creating
-    anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may
-    also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it
-    references tasks that do not exist, or if it would introduce a dependency cycle against the
-    project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard.
+     Propose a transactional change set of creates, edits, edge changes and comments as one reviewable
+    graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges
+    reference; edges may also point at existing task ids. The proposal is rejected up front if the shape
+    is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle
+    against the project's current graph. Returns a proposal_id for task_batch_update / _commit /
+    _discard. A live spec-ingest role holding the matching approved vault path may commit immediately;
+    those batches require epics with children and leaf dependency edges.
 
     Args:
         body (TaskBatchProposeRequest):

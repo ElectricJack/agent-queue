@@ -43,17 +43,18 @@ class TrainControls:
         candidate = snapshot.observation.source_heads.get(
             "refs/remotes/origin/" + ref.removeprefix("refs/heads/")
         )
-        if candidate:
-            contained = await snapshot.observation.git.ais_ancestor(
-                snapshot.observation.store,
-                candidate,
-                snapshot.target_oid,
-                strict=True,
-            )
-            if contained is None:
-                raise ValueError("candidate promotion cannot be observed")
-            if contained:
-                raise ValueError("promoted candidate cannot be aborted")
+        # A failed first merge publishes the target as its repair start; a
+        # later conflict can publish only some members. Candidate ancestry
+        # cannot prove that the batch's complete frozen inputs were promoted.
+        members = await store.members(batch_id)
+        proofs = [
+            await snapshot.contains_source(member.task_id, member.source_sha, member.base_sha)
+            for member in members
+        ]
+        if any(proof is None for proof in proofs):
+            raise ValueError("batch promotion cannot be observed")
+        if members and all(proof is True for proof in proofs):
+            raise ValueError("promoted batch cannot be aborted")
 
         async def unchanged():
             if not await snapshot.is_fresh():

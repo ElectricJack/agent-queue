@@ -653,12 +653,10 @@ class WorkspaceMixin:
         canonical_base_sha = origin["base_sha"]
         prerequisite_head = await self.db.hierarchy_prerequisite_delivery_head(task.id)
         if prerequisite_head is not None:
-            # This does not mutate the reserved origin.  A delivery receipt is
-            # the parent collector's proof that this descendant head contains
-            # the reviewed prerequisite; preparing from it makes the child's
-            # first push a fast-forward from its immutable origin rather than
-            # a copied sibling tree or an arbitrary local merge.
-            origin = dict(origin) | {"base_sha": prerequisite_head}
+            # Overlay the proven parent tip without changing the filing origin.
+            # Existing child commits must survive this update, including retries.
+            origin = dict(origin) | {"base_sha": prerequisite_head,
+                                     "prerequisite_head": prerequisite_head}
         branch = subject.branch_name or ""
         checkpoint = await self.db.get_integration_checkpoint(subject_id)
         if (
@@ -874,6 +872,9 @@ class WorkspaceMixin:
                     base_sha = await self._hierarchy_repair_start(
                         workspace, origin, fence, repository_url=project.repo_url or ""
                     )
+                preserve = {"preserve_branch": True} if (
+                    role == "worker" and origin.get("prerequisite_head")
+                ) else {}
                 await self._worktree_slots().reset_slot_for_task(
                     ws,
                     task,
@@ -882,6 +883,7 @@ class WorkspaceMixin:
                     target_branch=branch,
                     kind=attachment.kind,
                     operator_handoff=bool(origin.get("operator_handoff")),
+                    **preserve,
                 )
                 return fence.target.branch
 
@@ -913,6 +915,9 @@ class WorkspaceMixin:
                 base_sha = await self._hierarchy_repair_start(
                     workspace, origin, fence, repository_url=project.repo_url or ""
                 )
+            if role == "worker" and origin.get("prerequisite_head"):
+                await self.git.aprepare_child_branch(workspace, branch, base_sha)
+                return fence.target.branch
             await self.git._arun(["checkout", "-B", branch, base_sha], cwd=workspace)
             actual_head = await self.git._arun(["rev-parse", "HEAD"], cwd=workspace)
             if actual_head != base_sha:

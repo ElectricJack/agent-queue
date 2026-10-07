@@ -854,12 +854,17 @@ async def test_new_root_bootstraps_default_branch_before_its_branch_exists(
             "tasks": [{"tempId": "root", "title": "New root", "description": "No branch"}],
             "edges": [],
         })
+        assert proposal["success"], proposal
+        # Propose exercises the integration guards but rolls back filing.
+        assert requested == [(await db.get_repo("repo")).default_branch]
+        assert await _origins(db) == []
         await _approve_proposal(handler, db, proposal["proposal_id"])
         result = await handler.execute(operation, {"proposal_id": proposal["proposal_id"]})
         assert result["success"], result
         task_id = result["task_ids"][0]
     repo = await db.get_repo("repo")
-    assert requested == [repo.default_branch]
+    validations = 2 if operation == "task_batch_commit" else 1
+    assert requested == [repo.default_branch] * validations
     task = await db.get_task(task_id)
     assert task.branch_name == "aq/epic/new-root"
     checkpoint = await db.get_integration_checkpoint(task_id)
