@@ -1,15 +1,15 @@
 """Add session-owned recurring prompts.
 
-Revision ID: a00000000086
-Revises: a00000000085
+Revision ID: a00000000087
+Revises: a00000000086
 """
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision = "a00000000086"
-down_revision = "a00000000085"
+revision = "a00000000087"
+down_revision = "a00000000086"
 branch_labels = None
 depends_on = None
 
