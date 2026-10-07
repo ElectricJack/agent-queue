@@ -11346,6 +11346,47 @@
         "type": "object"
       }
     },
+    "integration_record_root_noop": {
+      "name": "integration_record_root_noop",
+      "description": "Preview or complete an unheld root with exact no-artifact Git provenance.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Head Sha"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "IntegrationRecordRootNoopArgs",
+        "type": "object"
+      }
+    },
     "integration_recover_candidate_member": {
       "name": "integration_recover_candidate_member",
       "description": "Accept one valid frozen repair or retain its failed invariant for a fresh recovery.",
