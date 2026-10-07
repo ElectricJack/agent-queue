@@ -211,13 +211,28 @@ class BranchLock:
             )
         return Fence(target=target, owner_id=holder, token=token)
 
-    async def renew(self, fence: Fence, *, ttl_seconds=DEFAULT_TTL_SECONDS, conn=None) -> float:
+    async def renew(
+        self,
+        fence: Fence,
+        *,
+        ttl_seconds=DEFAULT_TTL_SECONDS,
+        conn=None,
+        session_id: str | None = None,
+        allow_expired: bool = False,
+    ) -> float:
         self._ttl(ttl_seconds)
 
         async def renew_on(owned):
             row = await self.lock_on(owned, fence.target)
-            self.require_current(row, fence)
-            expiry = max(row["expires_at"], self.clock() + ttl_seconds)
+            if not managed(row) or row["holder"] != fence.owner_id or row["fence"] != fence.token:
+                raise StaleFence("ref lease holder or fence is stale")
+            if (
+                row["expires_at"] is not None
+                and row["expires_at"] <= self.clock()
+                and (not allow_expired or session_id is None or row.get("session_id") != session_id)
+            ):
+                raise StaleFence("ref lease expired")
+            expiry = max(row["expires_at"] or self.clock(), self.clock() + ttl_seconds)
             await owned.execute(
                 update(owners)
                 .where(owners.c.id == row["id"])
@@ -358,6 +373,51 @@ async def renew_session_leases_on(db, conn, session_id: str, observed_at: float)
             ttl = observed_at + DEFAULT_TTL_SECONDS - lock.clock()
             if ttl > 0:
                 await lock.renew(fence, ttl_seconds=ttl, conn=conn)
+        except StaleFence:
+            pass
+
+
+async def renew_session_leases_on_liveness(db, conn, session_id: str, observed_at: float) -> None:
+    """Renew leases for a live session based on process liveness, without updating last_activity.
+
+    This is called when the reconciler observes the process is alive but there
+    has been no transcript/pane activity. It uses the current time as the
+    observed_at timestamp to grant a full TTL from now.
+    """
+    session = (
+        (await conn.execute(select(sessions).where(sessions.c.id == session_id).with_for_update()))
+        .mappings()
+        .one_or_none()
+    )
+    if (
+        session is None
+        or not session["task_id"]
+        or session["state"] not in {"starting", "running", "draining"}
+    ):
+        return
+    task = (
+        (await conn.execute(select(tasks).where(tasks.c.id == session["task_id"])))
+        .mappings()
+        .one_or_none()
+    )
+    if (
+        task is None
+        or task["assigned_agent_id"] != session["agent_id"]
+        or (session["lifecycle"] == "pool" and session["last_claim_epoch"] != task["claim_epoch"])
+        or task["status"] not in {"ASSIGNED", "IN_PROGRESS"}
+    ):
+        return
+    lock = BranchLock(db)
+    for row in await session_leases_on(conn, session_id, task_id=task["id"]):
+        fence = Fence(
+            target=BranchKey(repository_id=row["repository_id"], branch=row["ref"]),
+            owner_id=row["holder"],
+            token=row["fence"],
+        )
+        try:
+            ttl = observed_at + DEFAULT_TTL_SECONDS - lock.clock()
+            if ttl > 0:
+                await lock.renew(fence, ttl_seconds=ttl, conn=conn, session_id=session_id, allow_expired=True)
         except StaleFence:
             pass
 

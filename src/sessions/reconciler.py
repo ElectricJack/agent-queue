@@ -1020,6 +1020,14 @@ class SessionReconciler:
                 logger.debug("process_alive probe failed for %s", row.id, exc_info=True)
                 continue
             if alive:
+                if row.task_id:
+                    try:
+                        async with self.db.immediate() as conn:
+                            from src.integration.lock import renew_session_leases_on_liveness
+
+                            await renew_session_leases_on_liveness(self.db, conn, row.id, now)
+                    except Exception:
+                        logger.debug("liveness lease renewal failed for %s", row.id, exc_info=True)
                 continue
 
             if row.state == "starting" and not await self._claim_starting_reconciliation(
@@ -2034,11 +2042,14 @@ class SessionReconciler:
                         and fresh.claim_phase == row.claim_phase
                     ):
                         task = await self.db.get_task(row.task_id)
-                        if task is not None and task.status is TaskStatus.IN_PROGRESS:
-                            if await self._exit_usage_limit_screen(
+                        if (
+                            task is not None
+                            and task.status is TaskStatus.IN_PROGRESS
+                            and await self._exit_usage_limit_screen(
                                 provider, row, task, now, screen=screen
-                            ):
-                                continue
+                            )
+                        ):
+                            continue
             last = max(row.last_activity or row.started_at or 0.0, resumed)
             wedged: OpenCodeActivity | None = None
             if now - last <= ttl:

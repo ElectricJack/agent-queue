@@ -19,6 +19,7 @@ import pytest
 from src.config import AppConfig, DatabaseConfig
 from src.database import Database
 from src.database.tables import task_branch_origins
+from src.integration.lock import BranchLock
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership
 from src.models import (
@@ -1727,6 +1728,45 @@ class TestStallLadder:
         await reconciler.tick(now=NOW)
         assert provider.sent_nudges == []
 
+    async def test_expired_lease_renewed_on_process_liveness(self, db, provider, reconciler, config):
+        """A lease expired due to silent long tool call is renewed when process is alive.
+
+        Simulates a worker running pytest --splits 8 --group 6 | tail -100 for
+        >8 minutes with no output. The lease expires (DEFAULT_TTL_SECONDS=480),
+        but the process is still alive. The reconciler's _step_exits should
+        renew the lease based on process liveness.
+        """
+        # Use a short TTL for the test
+        config.sessions.lease_ttl_seconds = 10
+        await _task(db)
+        row = await _session(
+            db, provider, started_at=NOW - 5000, last_activity=NOW - 20
+        )
+        # Create a ref lease for the session/task
+        target = BranchKey(repository_id="repo", branch="aq/test")
+        lock = BranchLock(db)
+        fence = await lock.acquire(target, "t1", ttl_seconds=config.sessions.lease_ttl_seconds)
+        ownership = BranchOwnership(db)
+        await ownership.attach(fence, row.id, "ws1")
+
+        # Advance time past the lease TTL (lease expired)
+        expired_at = NOW + config.sessions.lease_ttl_seconds + 1
+        # Keep process alive (don't call script_death)
+        provider.script_ready(row.name)
+
+        # Run reconciler tick at expired_at - this calls _step_exits which
+        # should renew the lease based on process liveness
+        await reconciler.tick(now=expired_at)
+
+        # Verify the lease was renewed (expires_at should be in the future)
+        renewed = await lock.get(target)
+        assert renewed is not None
+        assert renewed.holder == "t1"
+        assert renewed.fence == fence.token
+        assert renewed.expires_at > expired_at
+
+        # Verify the lease can still be used (not stale)
+        await lock.renew(fence, session_id=row.id, allow_expired=True)
 
 # ---------------------------------------------------------------------------
 # Stall ladder: an unreadable composer is not a human
