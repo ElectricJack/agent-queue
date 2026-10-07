@@ -172,7 +172,8 @@ unchanged; divergence holds as `backmerge_not_fast_forward`, and a request
 missing a required hotfix OID is refused as `backmerge_pending`.
 
 Reviewed `promotion-request` and `promotion-continuous` bundles resolve from the
-stored step type. Project activations take precedence over system activations.
+stored step type and require an activation scoped to that project; system
+activations do not enable promotion policy for other projects.
 They request or replace intents, wait and notify on holds, drive the existing PR
 gate, and trigger backmerge after delivery. Both ship inactive; activate the
 reviewed artifact hash for the intended project before starting delivery.
