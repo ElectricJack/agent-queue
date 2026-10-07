@@ -227,3 +227,231 @@ branch and contained in its epic. Missing epic containment withholds the child e
 when no batch is open. Scheduler, pool demand, explain and claim share these rules.
 Explain reports `frontier_epic_refresh_pending` for the epic gate and names any
 blocking refresh batch id; default-branch proof retains its separate exclusion.
+Repairs for failed or missing CI start from the tested refresh candidate; conflict
+repairs start from the partial candidate containing the successful merges.
+
+GitHub runs no `pull_request` workflows for a PR that conflicts with its base, so
+a conflicting root PR would wait for checks forever. When the PR read reports it
+conflicting, the root's blocker is `pr_conflicting`, with the PR URL and the
+default-branch SHA; a still-computing mergeability is a short `awaiting_pr_checks`
+retry. For an epic root the train's next visit starts the same attested refresh as
+`refresh-epic --apply`, once per (epic head, default head) pair, and the blocker's
+`refresh` names its batch. The refreshed head is held for its own review and its
+own exact-head PR checks. For a leaf root nothing is started: merge the default
+branch into the task branch, push it and close the task again. Push-event runs
+never count as PR checks.
+
+For an existing historical subject, `engine-transfer` and
+`development-engine-transfer` offer a forward-only audited transfer to
+`reconciler`. Preview first, then supply every exact subject version, the reason
+and reviewed cutover evidence. There is no transfer back to the retired engine.
+
+GitHub App readiness remains available through `aq integration app-verify PROJECT_ID`. See [App-mode setup](../config/app-mode-train.md) for
+credentials and repository protection. Applying project policy does not change
+GitHub configuration. Root admission and publication are train decisions;
+supervisor controls adjust intent and membership without bypassing admission
+or publication gates.
+
+When GitHub rate-limits a visit, the train pauses every target of that
+repository instead of failing each one on every tick. The pause lasts 60 s and
+doubles with each consecutive limit up to 15 minutes, or runs until GitHub's
+own retry time when that is later. In `aq integration status`, the paused
+targets show `detail.reason: rate_limited` and `detail.retry_at`. When the pause
+ends, a single target probes GitHub first and the rest resume once it gets
+through. The daemon log carries one warning per pause; the traceback appears
+only at DEBUG.
+
+## Controls quick reference
+
+- `aq integration seal-now --project PROJECT_ID --apply` freezes eligible root inputs immediately, bypassing cadence once.
+- `aq integration pause-batch BATCH_ID --apply` pauses publication for an unpromoted Git-first batch.
+- `aq integration resume-batch BATCH_ID --apply` resumes a paused Git-first batch.
+- `aq integration abort-batch BATCH_ID --apply --reason REASON` aborts an unpromoted Git-first batch.
+- `aq integration refresh-epic --task EPIC_ID --apply` starts or advances the attested refresh; pending checks or repairs continue through the train.
+
+The controls keyed by a task, operation, batch or reservation — `redrive-root`,
+`redrive-child`, `reopen-collection`, `reserve-owner`, `release-owner` — take no `project_id`,
+so authorization resolves their target project server-side. `record-noop` is an
+exception: a local operator records no-code receipts (or an authorized playbook),
+and *every* session is refused it, including the project's supervisor. See
+[the command scope model](../specs/design/aq-surface.md#73-elevated-scopes-and-the-commands-that-carry-no-project_id).
+
+Current recoveries reuse the existing episode, fence, receipts and stage budget.
+Always preview, resolve the reported blocker, and apply the exact reviewed head
+and other fences. Never edit integration tables to bypass a gate or CI proof.
+
+```text
+aq integration redrive-root TASK_ID
+aq integration redrive-child CHILD_TASK_ID
+aq integration reopen-collection PARENT_TASK_ID
+aq integration rebind-repair --task-id REPAIR_TASK --dry-run
+aq integration rebind-detached-repair OPERATION_ID
+aq integration recover-preserved-repair OPERATION_ID --intent INTENT_ID --candidate SHA
+aq integration resolve-candidate-member --help
+aq integration recover-candidate-member RESERVATION_ID
+aq integration close-delivered-pr PROJECT_ID PR_NUMBER
+```
+
+## Repair and collection recovery
+
+A parent conflict successor retains the current intent as its trigger and
+publishes with its own fence. If an older attachment names a displaced intent,
+preview `rebind-repair` with the repair task id before applying its current head.
+
+Use the full `head_sha` reported by the dry run. The command refuses a stopped
+writer, expired authority, changed candidate or moved remote target. Applying
+records the reservation under the current intent; the attached repair session
+then pushes with its current fence and closes. If the writer has stopped,
+recover its attachment through the existing repair lifecycle first.
+
+When a parent repair stage exhausts at the open conflict's old tip, its debug
+successor keeps that conflict intent as its trigger. Its writer resolves and
+publishes through `integration-resolve-conflict` and `push-conflict-resolution`
+under its own fence, with no rebind. Any other debug stage carries the trigger
+`stage-exhausted:<operation>:<ordinal>`.
+
+A parent debug stage can be frozen on a commit the parent branch never
+received: its retained handoff bound a stopped writer's local head, so every
+delegate fails admission with `slot_reset_failed` ("repair branch no longer
+descends from its frozen starting commit") and its `stage-exhausted` trigger
+cannot resolve the open conflict. The same operators can rebind that detached
+stage to the conflict at the published head:
+
+```bash
+aq integration rebind-detached-repair OPERATION_ID
+aq integration rebind-detached-repair OPERATION_ID --apply \
+    --stage STAGE --remote-head PUBLISHED_SHA --reason "..."
+```
+
+Pass the `stage` and `remote_head_sha` the dry run reported. The command
+refuses unless the writer is detached and unclaimed, the stage is within its
+unchanged deadline and attempts, the published head is the conflict's
+expected target, and the frozen head is an unpublished descendant of it. Every
+receipt must also sit in the published history. Apply changes only the stage's
+starting commit, trigger and subject, and records the previous values in the
+dossier's `detached_rebinds`. The branch, fence, budget, intent and gates are
+left as they were. The same delegate is then readied, and it resolves the
+conflict through the normal fenced publication path. Design:
+[detached repair rebind](../superpowers/specs/2026-10-01-detached-repair-rebind-design.md).
+
+If a debug stage has already expired without progress, but its stopped writer
+completed a resolution that `release-owner` preserved, preview that exact commit:
+
+```bash
+aq integration recover-preserved-repair OPERATION_ID --intent INTENT_ID --candidate SHA
+```
+
+Run the returned `apply_command` after inspecting its source, target, parents,
+tree, released fence and remaining attempts. Apply requires `--stage`,
+`--released-fence` and `--reason`; it repeats every proof and publishes with an
+expected-old compare-and-swap under a fresh collector fence. It consumes only
+the audited two-parent merge. The expired deadline and consumed attempts remain
+unchanged, the former delegate stays blocked, and normal parent verification is
+still required. An exhausted attempt budget or human gate returns a specific
+blocker. An interrupted push with an unchanged target is ambiguous and is never
+blindly retried. See [preserved repair recovery](../superpowers/specs/2026-10-01-preserved-repair-recovery-design.md).
+
+### No-code child receipts
+
+A reviewer filed under an active parent is itself a child in the collection
+episode. Its `pass --work-outcome no-op` close records the review verdict, but
+the parent still needs a disposition receipt for the reviewer's own branch.
+When parent readiness reports `receipt_missing` for that child, a local
+operator records the exact no-code disposition:
+
+```bash
+aq --json task show CHILD_TASK_ID | jq -r '.data.integration_delivery.checkpoint_sha'
+aq integration record-noop CHILD_TASK_ID --expected-head-sha CHECKPOINT_SHA
+```
+
+The command requires the current passing `no-op` completion, and for a reviewer
+it requires an approved review evidence row. It checks that the child head is
+still its reserved base, resolves that commit's tree from Git, and writes a
+receipt for the current parent episode. Repeating the command returns the same
+receipt; a new no-op completion gets a new receipt revision. A playbook may
+invoke the contracted `integration_record_noop` command when its policy grants
+that exact capability. No session can invoke it: worker and supervisor
+principals are both refused, so a no-code child always needs a local operator
+(and a supervisor asked to record one reports the child id and its checkpoint
+head instead).
+
+### A parent whose last child was deleted
+
+Nothing to run: the delete and the parent runtime finish it. Deleting a
+container's last child takes back the parent's claim if a stopped worker still
+held one, and leaves the parent PAUSED with no agent and its collection episode
+intact. The parent runtime then projects readiness on the aggregate that is
+actually left — with no child receipt there is nothing collected on top of it,
+so the head to verify is the parent's own pre-collection commit, published on an
+`aq/parent` ref — files its writer, and completes the parent on trusted green CI
+([work-graph §13a](../specs/design/work-graph.md)). A parent already in that
+shape when the fix deploys is repaired by the container sweep on the next tick
+or on daemon start; `reopen-collection` and `recover-parent-head` are no longer
+needed and both refuse an IN_PROGRESS parent anyway.
+
+### Stopped pool-writer handoff recovery
+
+Preview `aq integration release-owner --task-id TASK_ID --dry-run`. The existing
+owner recovery probes the provider, verifies the current fence, preserves
+unpublished work and releases only a proved stopped attachment. It refuses a
+live writer, reused checkout or changed fence. Repair handoff and retry remain
+Subject decisions under the frozen policy and unchanged stage budget.
+
+`aq task restart TASK_ID` is the supported restart for a stopped repair
+delegate: it redispatches the delegate's current stage through the same fenced
+handoff, so the delegate returns to the pool claim frontier holding its exact
+reserved repair fence and resumes from any preserved repair commits. It is
+refused — the task left exactly as it was — while the branch fence is still
+held by the stopped writer; free that with `release-owner` first.
+
+To disable future admission, use the project configuration CAS:
+
+```bash
+aq project set PROJECT_ID integration-mode disabled --expected-integration-generation GENERATION --reason REASON
+```
+
+Existing Subjects retain their identity, pins and scheduling. Pausing all visits
+uses `integration.reconciler_active: false`; re-enabling resumes those same
+Subjects. There is no engine rollback or automatic drain that restores old policy.
+
+## Source CI: red versus infrastructure
+
+Source CI observation of a train root's exact PR head files a repair only when
+at least one required check genuinely failed (`failure`, `timed_out`,
+`action_required`). A run whose non-success required checks are *all* cancelled
+is infrastructure — typically a GitHub Actions outage, annotated "The job was
+not acquired by Runner of type" — and it is never handed to an agent: the only
+code action available would be merging the same head again and hitting the same
+outage, which is how a single outage becomes a chain of repairs of repairs.
+
+Such an observation waits, and asks GitHub to re-run the checks for that exact
+head: one re-request per cancelled check suite id GitHub reported for it
+(`POST /repos/{owner}/{repo}/check-suites/{check_suite_id}/rerequest`,
+[bounded](https://docs.github.com/en/rest/checks/suites#rerequest-a-check-suite)
+by `root.repair.source_ci_infra_backoff_seconds` to
+`..._backoff_max_seconds`). GitHub documents writes to checks as GitHub-App-only,
+so an existing-login credential issues no request at all and the observation only
+waits; widening a credential is a human decision, and a human can also re-run the
+workflow by hand. After `root.repair.source_ci_infra_attempts` consecutive
+infrastructure-only observations it stops asking and names
+`source_ci_infrastructure` on the source-CI row instead of looping. Any
+observation that is not infrastructure-only resets the counter, so a head that
+recovers costs nothing later. A cancelled check is never counted as success, and
+a red run stays red however many of its other checks were cancelled.
+
+The root-batch path already treated cancellation-only as infrastructure and
+waited (`observe-ci` outcome `infra`); this is the same rule applied to the
+source-CI observation path so the two agree.
+
+## Delivery evidence
+
+`task show` and the dashboard report delivery from receipts and observed Git
+history. A worker close, queued request or historical journal entry alone does
+not prove that the task's exact revision reached the default branch. Pending
+root requests are revisited from durable state after restart; event delivery is
+a wake-up hint, not the authority to seal or publish.
+
+Parent readiness still requires the existing child dispositions and trusted
+verification receipts. Reconciler decisions use those facts through the shared
+ports. Historical development operation rows remain audit and recovery inputs;
+they do not restart an autonomous publisher.

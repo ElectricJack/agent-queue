@@ -102,6 +102,14 @@ merge. [`tests/selection_areas.yaml`](../../tests/selection_areas.yaml) is
 hand-written, but branches almost only append to it, so it is `merge=union`:
 both sides' lines are kept.
 
+GitHub does not use custom merge drivers. Generated files therefore omit
+changing aggregate metadata: the selection catalogue stores integrity hashes
+on individual module records and computes its overall digest when loaded;
+the CLI inventory computes totals with `src.cli.inventory.inventory_counts`;
+the playbook-command index stores command rows without a global count.
+Unrelated edits in separate text positions can merge normally. Regeneration
+and every drift guard still apply, including after a clean text merge.
+
 ## The API surface
 
 ```mermaid

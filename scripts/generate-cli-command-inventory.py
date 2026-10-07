@@ -34,13 +34,13 @@ def main() -> int:
             print(f"CLI inventory is stale: run {Path(__file__).name}")
             return 1
         inventory = json.loads(rendered)
-        print(f"CLI inventory current: {inventory['counts']['leaf_commands']} leaf commands")
+        print(f"CLI inventory current: {len(inventory['commands'])} leaf commands")
         return 0
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(rendered, encoding="utf-8")
     inventory = json.loads(rendered)
-    print(f"Wrote {output}: {inventory['counts']['leaf_commands']} leaf commands")
+    print(f"Wrote {output}: {len(inventory['commands'])} leaf commands")
     return 0
 
 
