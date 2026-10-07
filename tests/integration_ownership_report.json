@@ -9945,7 +9945,7 @@
     "task_metadata": "Generic key/value mechanism remains task-owned. Every direct SQL/metadata API writer has an audited call and enclosing-code identity; duplicate delivery/repair state is marked retire."
   },
   "takeover_review": {
-    "reviewed_revision": "93b99f9071cb7343f9c6aeb67d42b4461b88c2ae",
+    "reviewed_revision": "9bbfdce876ce251fe534a63d604bd05197625fca",
     "owned_definition_additions": 25,
     "refreshed_owner_fingerprints": 33,
     "new_storage_sites": {
@@ -9959,18 +9959,19 @@
       "src/integration/mutation_recovery.py::ExpiredMutationRecovery.run::176aea4d5c84eb7ac1cf9fb5ee9b601fc81bea4aeb469555480653be0ecefd83": "ordinary"
     },
     "current_owned_groups": {
-      "shared": 47570,
-      "companions": 12502,
-      "engine": 87187,
+      "shared": 47575,
+      "companions": 12508,
+      "engine": 87254,
       "policy_sources": 1999,
       "policy": 480,
       "ui": 333,
       "guards": 639
     },
-    "current_owned_total": 150710,
+    "current_owned_total": 150788,
     "current_table_count": 45,
     "unknown_definitions": [],
     "unknown_storage_sites": [],
-    "fixed_baseline_and_caps_unchanged": true
+    "fixed_baseline_and_caps_unchanged": true,
+    "ruleset_reader_review": "Explicit LOCAL verification may supplement hidden bypass actors using the existing operator login only for the exact repository and ruleset id, after App and operator policy documents agree. App bypass observations remain App-owned; no writer, replay journal, duplicate lifecycle state, storage classification or baseline/cap changed."
   }
 }
