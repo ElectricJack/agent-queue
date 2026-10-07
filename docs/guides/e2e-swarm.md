@@ -75,10 +75,12 @@ Every CLI subprocess is
 forced back to this disposable data directory and database even when the
 caller is a worker carrying production-refusal sentinels.
 
-S5, S18 and both S19 fixture claims retry `no_ready_work` within the convergence
+S2, S3, S5, S18, S20 and both S19 fixture claims retry `no_ready_work` within the convergence
 deadline: PostgreSQL `SKIP LOCKED` can skip a READY fixture while another
 transaction holds its row. Other claim outcomes and claims of an unexpected
-task fail immediately. A timeout reports the last claim and the fixture state.
+task fail immediately. S2 and S3 accept only the remaining S1 fixtures, including
+when separate pytest items run them in different subprocesses. A timeout reports
+the last claim and the fixture state.
 
 CI covers all 20 scenarios as **21 individually reported pytest items** in four
 parallel `e2e-cli` shards: `claims` (S1–S3, S7, S19), `cli` (S5, S8–S9, S12,

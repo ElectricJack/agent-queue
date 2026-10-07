@@ -29,6 +29,25 @@ recorded stall's Git, check, tree-review and task-transition evidence.
   them onto the target with the shared generated-file merge, push the candidate to
   `refs/heads/aq/batches/<sha256>`, require the exact candidate's checks, and
   fast-forward the target with an expected-old push under the target's branch lease.
+- **Stacked sources.** Before freezing, compare each source base with the fetched
+  target and other live task branches. A base containing another task's unpublished
+  work requires a declared `blocks` prerequisite. Otherwise `undeclared_stack_base`
+  withholds that source and its dependents while independent members proceed.
+  A declared prerequisite lands first in the same batch or must already be delivered;
+  `stack_prerequisite_pending` withholds stacks whose prerequisite is still unfinished.
+  This prevents a delta-only merge from importing an intermediate commit's ancestry
+  without its content, which would make a later target sync delete that content from
+  the original branch. Bases already in the target remain usable. Existing frozen
+  batches are rechecked too; abort an unsafe batch to refreeze with its prerequisite.
+  The scan asks Git once per off-target base (`for-each-ref --contains`) rather than
+  once per live origin, and its answer is reused while the refs, target and live
+  origins stand, so a repository with hundreds of archived-but-unretired branches
+  costs a visit the same single query. A daemon-written source-CI repair binding
+  (`integration_source_ci`) counts as a declared prerequisite: the repair's recorded
+  base is the exact source head it must merge, so the pair delivers in one batch,
+  source first. A source or repair already delivered to a target takes no part, and
+  the prerequisite named is the one that publishes the base, never a sibling that
+  merely merged its branch.
 - **Checks.** A development project's default branch runs its pinned development
   policy's validation commands as integration jobs on a retained snapshot of the exact
   candidate (`validation: none` publishes without jobs; `advisory` publishes on red).
@@ -252,6 +271,9 @@ target.
 | `no_regenerator` | The repository configures no regenerate command, so a generated artifact both members changed cannot be rebuilt | Configure the project's regenerate command (default `scripts/regenerate-generated.sh`); the same batch then rebuilds. No member is parked |
 | `target_moved` | The target moved | None; the next visit rebuilds |
 | `source_moved` | A member's source moved after freezing | None; the next visit refreezes |
+| `undeclared_stack_base` | A source base includes another task's unpublished work without a `blocks` edge or a source-CI repair binding | Declare the prerequisite, or reopen and rebuild the source from its delivery target; evidence names the publishing task (`prerequisite_task_id`, and every candidate in `prerequisite_task_ids`) and exact OIDs |
+| `stack_prerequisite_pending` | A declared stack prerequisite is neither delivered nor available in this batch | Finish or deliver the prerequisite before its dependent |
+| `stack_ancestry_unknown` | Git could not inspect this member's source base, or the branches that could publish it | Restore readable Git objects; a later visit rechecks the same sources. Only members sharing that source base are withheld |
 | `held` | Explicit hold or required review missing | Release the hold or review |
 | `unobserved` | Git or checks could not be read | Fix the fetch or producer; evidence names the cause |
 | `batch_paused` / `batch_aborted` | Operator intent | See below |
