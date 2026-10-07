@@ -429,3 +429,27 @@ async def test_hotfix_notification_survives_task_completed_subscriber_failure(pr
             integration_outbox.c.event_type == 'promotion.hotfix_completed'))).mappings().all()
     assert len(rows) == 1
     assert rows[0]['payload']['from_task'] == 'hotfix'
+
+
+async def test_valid_debt_status_never_resolves_a_lane_or_initializes_a_store(promote_env):
+    from sqlalchemy import insert
+
+    from src.database.tables import task_metadata, tasks
+
+    e = promote_env
+    async with e.db.immediate() as conn:
+        await conn.execute(insert(tasks).values(id='debt', project_id='p', repo_id='r',
+            title='Debt', description='', task_type='backmerge', created_at=1000, updated_at=1000))
+        await conn.execute(insert(task_metadata).values(task_id='debt', key='backmerge',
+            value=json.dumps({'source_sha': e.source, 'target_ref': 'refs/heads/dev',
+                              'origin_ref': 'refs/heads/main'})))
+    git(e.repo.store, 'fetch', 'origin', 'dev')
+    e.handler._promotion_runtime = AsyncMock(side_effect=AssertionError('network lane resolved'))
+    e.handler.orchestrator.development_integration.store = AsyncMock(side_effect=AssertionError('store initialized'))
+    result = await e.handler._cmd_promote_status({'project_id': 'p'})
+    assert result['success'] and result['backmerges'][0]['state'] == 'contained'
+    e.handler._promotion_runtime.assert_not_awaited()
+    e.handler.orchestrator.development_integration.store.assert_not_awaited()
+    e.handler.orchestrator.development_integration._store_path = lambda _: e.repo.store / 'absent'
+    result = await e.handler._cmd_promote_status({'project_id': 'p'})
+    assert result['success'] and result['backmerges'][0]['state'] == 'unknown'
