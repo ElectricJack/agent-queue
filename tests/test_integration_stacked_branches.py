@@ -203,6 +203,11 @@ async def test_prepare_regenerates_two_real_prerequisite_catalogues(
     catalogue = json.loads(git(store, "show", f"{head}:tests/selection_catalogue.json"))
     assert set(catalogue["modules"]) == {"tests/test_a.py", "tests/test_b.py", "tests/test_c.py"}
     assert "regeneration: rebuilt" in caplog.text
+    recorded = (await db.get_task_branch_origin_for_promotion("child", "r"))["stack_snapshot"]
+    assert set(recorded["prerequisites"]) == {"first", "second"}
+    assert recorded["regenerations"][0]["files"] == ["tests/selection_catalogue.json"]
+    assert recorded["regenerations"][0]["commit"] == head
+    assert recorded["regenerations"][0]["prerequisites"] == recorded["prerequisites"]
     assert await service.prepare("child") == overlay
     assert await db.get_task_meta("child", StackPrerequisitesConflict.code) is None
     assert git(origin.url, "rev-parse", "aq/child") == base
@@ -291,6 +296,11 @@ async def test_prepare_conflict_files_once_and_requires_published_resolution(sta
     if repair_result != "pass":
         with pytest.raises(StackPrerequisitesConflict):
             await stack.service.prepare("child")
+        updated = await db.get_task_meta("child", StackPrerequisitesConflict.code)
+        if repair_result != "failed":
+            assert updated["repair_task_id"] != repair.id
+            assert updated["superseded_repair_task_id"] == repair.id
+            assert not await admission_open()
         return
     overlay = await stack.service.prepare("child")
     for head in (stack.child, stack.first, second, resolved):

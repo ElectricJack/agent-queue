@@ -1239,6 +1239,7 @@ class ClaimCommandsMixin:
                 await self.db.release_claim(
                     session.id, task_status=TaskStatus.READY, context=exc.code,
                     now=time.time(), result="no_ready_work", needs_attention=exc.code,
+                    prepare_backoff=True,
                 )
                 self._resolve_claim_waiters(session.id, epoch, "no_ready_work")
                 return self._simple(ClaimResult.NO_READY_WORK, str(exc), row, cap)

@@ -1431,7 +1431,7 @@
       ]
     }
   },
-  "digest": "sha256:cc74441c11f259d0d2e0a243ec3b7e405aedec3b2523dc962741f673d1f31fa8",
+  "digest": "sha256:573b1000a735a640e810bab8750833c0a1e85ee196915a764cccb112d951174b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3101,6 +3101,7 @@
         "src.event_bus",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
         "src.integration.admission",
         "src.integration.batches",
         "src.integration.delivery_observer",
@@ -3112,6 +3113,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.provenance",
+        "src.integration.regeneration",
         "src.integration.repair",
         "src.integration.stacked_branches",
         "src.integration.status",
@@ -4902,10 +4904,13 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.handler",
+        "src.config",
         "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.admission",
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.development",
@@ -4914,7 +4919,8 @@
         "src.integration.publishable_artifact",
         "src.integration.source_trailer",
         "src.integration.status",
-        "src.models"
+        "src.models",
+        "src.orchestrator"
       ],
       "markers": [
         "parametrize"
@@ -7756,6 +7762,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
         "src.integration.delivery_truth",
@@ -11947,6 +11954,8 @@
         "src.event_schemas",
         "src.models",
         "src.orchestrator",
+        "src.profiles",
+        "src.profiles.drift",
         "src.profiles.parser",
         "src.profiles.sync"
       ],
@@ -12074,6 +12083,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.provenance",
+        "src.integration.stacked_branches",
         "src.integration.train",
         "src.integration.train_sources",
         "src.intelligence_classes",
@@ -16806,6 +16816,7 @@
         "src.git.manager",
         "src.integration.models",
         "src.integration.ownership",
+        "src.integration.stacked_branches",
         "src.models",
         "src.orchestrator"
       ],
