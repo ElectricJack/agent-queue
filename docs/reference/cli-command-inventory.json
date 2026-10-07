@@ -1,34 +1,6 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "generated_by": "scripts/generate-cli-command-inventory.py",
-  "counts": {
-    "leaf_commands": 527,
-    "registration": {
-      "generated": 349,
-      "handwritten": 178
-    },
-    "ownership": {
-      "core": 488,
-      "external-plugin": 2,
-      "internal-plugin": 37
-    },
-    "support": {
-      "deprecated": 1,
-      "supported": 526
-    },
-    "evidence_level": {
-      "behavioral": 14,
-      "dispatch": 349,
-      "registration": 164
-    },
-    "acceptance_status": {
-      "working": 59,
-      "broken": 0,
-      "obsolete": 1,
-      "unsupported": 0,
-      "untested": 467
-    }
-  },
   "commands": [
     {
       "path": "aq agent check-profile",
@@ -8681,6 +8653,41 @@
         "optional": [
           "--project-id",
           "--provider",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq pool rename",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "pool_rename",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--profile-id",
+          "--name"
+        ],
+        "optional": [
           "--json",
           "--brief",
           "--save-output",

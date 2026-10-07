@@ -8251,7 +8251,7 @@
       "reason": "Imports cross-parent default-branch delivery admission alongside sibling-stack and container frontier predicates."
     },
     "src/database/queries/hierarchy_queries.py::cross_parent_prerequisites_on_default": {
-      "reason": "Requires exact default-branch delivery for cross-parent blocks prerequisites and withholds children while their epic has an open integration batch."
+      "reason": "Requires exact default-branch delivery for completed cross-parent blocks prerequisites; epic containment and refresh admission have separate predicates."
     },
     "src/commands/project_commands.py::ProjectCommandsMixin._configure_promotion_flow": {
       "reason": "Promotion-flow activation: validates layers 1-3, dry-runs the integration policy fence, creates missing targets outside it and writes behind the same generation."
@@ -8333,6 +8333,36 @@
     },
     "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._episode_completion_token": {
       "reason": "Reads a container's collection episode checkpoint and repair operation under the caller's lock to admit only a cancelled train episode to guarded completion; refuses a live episode."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_branch_owners, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Claim and integration schema imports, including the active stack origin used to hold unresolved prerequisite repairs."
+    },
+    "src/database/queries/claim_queries.py::_claim_preparation_predicates": {
+      "reason": "Shared claim/frontier admission fences, including the active origin prerequisite-conflict snapshot and latest passing repair completion. Git proof is still required during preparation."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._renew_live_session_leases": {
+      "reason": "Reconciler adapter for bounded process-liveness renewal of existing ref leases; no new storage or replay authority."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.queries.hierarchy_queries import HIERARCHY_MODES, ProjectIntegrationMode, container_flag_exists, cross_parent_prerequisites_on_default, delivered_prerequisites_for_projects, delivered_same_parent_prerequisites_when_hierarchical, epic_refresh_ready, materialized_origin_when_hierarchical, never_leaseable_container, open_epic_refresh_batches": {
+      "reason": "Imports separate default-branch prerequisite proof and epic containment/refresh admission predicates, plus open refresh batch diagnostics."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Shared claim and integration schema imports, including open epic-refresh batches named by frontier exclusions."
+    },
+    "src/database/queries/hierarchy_queries.py::_cross_parent_prerequisites": {
+      "reason": "Builds the correlated completed cross-parent blocks query shared by default-branch delivery proof and epic refresh admission."
+    },
+    "src/database/queries/hierarchy_queries.py::_cross_parent_delivery_enabled": {
+      "reason": "Selects hierarchical default-branch delivery admission from the explicit project policy or its persisted configuration."
+    },
+    "src/database/queries/hierarchy_queries.py::open_epic_refresh_batches": {
+      "reason": "Reads unresolved epic-refresh batches on the dependent parent branch, excluding ordinary sibling collections from the refresh fence."
+    },
+    "src/database/queries/hierarchy_queries.py::epic_refresh_ready": {
+      "reason": "Requires proven cross-epic sources to be contained in the dependent epic and blocks admission while an epic-refresh batch remains open."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Combined claim and integration schema imports for open epic-refresh batches and active stack origins; preserves the separately reviewed frontier and prerequisite-repair admission surfaces."
     }
   },
   "exclusions": {
@@ -12503,28 +12533,28 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: REPAIR_RECORD_META"
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::2142606549fbb7fc55f12062ec13ac7e0c300036166e68b70a945ed44a752050": {
-      "line": 1323,
+      "line": 1332,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b4f28ff2142f568498ea0ebdd53af8dfd6ec62e98a4aa35b725c53a36b7c84c8",
+      "owner_fingerprint": "927d23981e6dcf4c91365107a715c9a1fd509cb7935d9e30c6db8d615715af5b",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary slot-reset failure diagnostics after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: 'slot_reset_failure'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
-      "line": 1309,
+      "line": 1318,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b4f28ff2142f568498ea0ebdd53af8dfd6ec62e98a4aa35b725c53a36b7c84c8",
+      "owner_fingerprint": "927d23981e6dcf4c91365107a715c9a1fd509cb7935d9e30c6db8d615715af5b",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary attention marker when permanent preparation failure cannot safely detach an attached writer; PostgreSQL contention bypasses this write. Metadata key: 'needs_attention'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
-      "line": 1262,
+      "line": 1271,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b4f28ff2142f568498ea0ebdd53af8dfd6ec62e98a4aa35b725c53a36b7c84c8",
+      "owner_fingerprint": "927d23981e6dcf4c91365107a715c9a1fd509cb7935d9e30c6db8d615715af5b",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary claim-preparation attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: 'needs_attention'; records repair_target_unpublished without remote OIDs, publication intent or ref replay authority."
@@ -12619,6 +12649,15 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
+    "src/commands/pool_admin.py::rename_pool::86546be0a111fd801cb74165b8a70f19a9daab1dfeee5d339799e5985c673cca": {
+      "line": 227,
+      "owner": "rename_pool",
+      "call": "log_event",
+      "owner_fingerprint": "220b25eeb1a8021d0c0db02d654b198cd516b31f82add3ebd6b3da5d68d31b40",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Pool display-name audit records the stable profile ID, old and new names, and backup path; no integration lifecycle state or ref replay authority."
+    },
     "src/commands/proposal_commands.py::TaskProposalCommandsMixin._cmd_task_batch_commit::16fbcb5f600718c2c0564535d1ed4e1a82537afa8ac1a07311dd43bc5b9c93f4": {
       "line": 431,
       "owner": "TaskProposalCommandsMixin._cmd_task_batch_commit",
@@ -12650,7 +12689,7 @@
       "line": 1263,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'failure_class'"
@@ -12659,7 +12698,7 @@
       "line": 1273,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_notes'"
@@ -12668,7 +12707,7 @@
       "line": 1277,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_session_id'"
@@ -12677,7 +12716,7 @@
       "line": 1659,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
@@ -12686,7 +12725,7 @@
       "line": 1265,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_outcome'"
@@ -12695,7 +12734,7 @@
       "line": 1267,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit'"
@@ -12704,7 +12743,7 @@
       "line": 1533,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'summary'"
@@ -12713,7 +12752,7 @@
       "line": 1261,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'outcome'"
@@ -12722,7 +12761,7 @@
       "line": 1275,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'verification'"
@@ -12731,7 +12770,7 @@
       "line": 1333,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: PENDING_COMPLETION_KEY"
@@ -12740,7 +12779,7 @@
       "line": 1271,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_branch'"
@@ -12749,7 +12788,7 @@
       "line": 1515,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit_auto'"
@@ -13934,10 +13973,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::cfcd13e9187c1de3a01142301b8203fae1e11a8a3a4ce9bf92d2a08ca1895e28": {
-      "line": 2279,
+      "line": 2287,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "4ea8ae45b7b3e24dd84602f69d012f7bc9a6a8973ed1ffd1ce2cd99629a34ecf",
+      "owner_fingerprint": "705e97be44eb8b44562030ef1df945251baa0742f7cd80b14883a3c1bb3fa234",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
@@ -14492,13 +14531,13 @@
       "reason": "Current immutable completion locator after a fenced source merge; ordinary completion state, never delivery or ref replay authority."
     },
     "src/integration/stacked_branches.py::StackedBranches._file_repair::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
-      "line": 886,
+      "line": 1021,
       "owner": "StackedBranches._file_repair",
       "call": "insert",
-      "owner_fingerprint": "d98102eb3cec04f30ace549c0b5abe35e08f547d3246a79a9fe0267274af67c8",
+      "owner_fingerprint": "f7bf78616b636d6f450b07e8c072b9dbe791c5f780b3e4d5fdbabb2f37e3b760",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Associates an isolated conflict repair with its preserved dependent for adoption; Git ancestry and current branch fences remain authoritative."
+      "reason": "Associates an isolated conflict repair with its preserved dependent for adoption. Claim-time diagnostic metadata mirrors the origin preparation hold and names exact inputs and paths; it cannot authorize publication or replay refs. Git ancestry, completion identity and current branch fences remain authoritative."
     },
     "src/integration/batches.py::BatchStore.eject::02dbb6e454b19e80a1f07be2b10de35299d826ab592437d231735f74ef0f522a": {
       "line": 341,
@@ -14546,10 +14585,10 @@
       "reason": "Write-once authorization for this exact promotion request, source and target after its live PR gate and attestation pass. Permits missing-tag recovery only after Git independently proves target containment; the record does not assert publication, delivery or successful ref mutation."
     },
     "src/integration/train_sources.py::DatabaseBatches._refresh_conflicting_epics::23794b0f2bbfe8599ed5c73366232ec30ac62261b170aa38dfd61beb1d944bf4": {
-      "line": 399,
+      "line": 428,
       "owner": "DatabaseBatches._refresh_conflicting_epics",
       "call": "log_event",
-      "owner_fingerprint": "9c8d0b47a2e4a3fc5313c07904f802b48b6c74e777bde18872e3aeb36a76f3ec",
+      "owner_fingerprint": "9d82976066ead4b65a54f90f9d0cc1c69bbe45b3dc8b63c1255f42a48d8512ec",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Audit of an epic refresh the train started because the epic's root PR conflicts with the default branch, with the PR URL and the (epic head, default head) pair. The deterministic frozen refresh batch is the once-per-pair record; this event cannot replay refs or authorize delivery."

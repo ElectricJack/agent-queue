@@ -1094,6 +1094,9 @@ from .pool_instance_status import PoolInstanceStatus
 from .pool_project_cap import PoolProjectCap
 from .pool_project_status import PoolProjectStatus
 from .pool_provider_unavailable import PoolProviderUnavailable
+from .pool_rename_request import PoolRenameRequest
+from .pool_rename_response import PoolRenameResponse
+from .pool_rename_response_422 import PoolRenameResponse422
 from .pool_scale_request import PoolScaleRequest
 from .pool_scale_response import PoolScaleResponse
 from .pool_scale_response_422 import PoolScaleResponse422
@@ -2880,6 +2883,9 @@ __all__ = (
     "PoolProjectCap",
     "PoolProjectStatus",
     "PoolProviderUnavailable",
+    "PoolRenameRequest",
+    "PoolRenameResponse",
+    "PoolRenameResponse422",
     "PoolScaleRequest",
     "PoolScaleResponse",
     "PoolScaleResponse422",

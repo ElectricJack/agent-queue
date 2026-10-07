@@ -9245,7 +9245,7 @@
       "reason": "Imports cross-parent default-branch delivery admission alongside sibling-stack and container frontier predicates."
     },
     "src/database/queries/hierarchy_queries.py::cross_parent_prerequisites_on_default": {
-      "reason": "Requires exact default-branch delivery for cross-parent blocks prerequisites and withholds children while their epic has an open integration batch."
+      "reason": "Requires exact default-branch delivery for completed cross-parent blocks prerequisites; epic containment and refresh admission have separate predicates."
     },
     "src/commands/project_commands.py::ProjectCommandsMixin._configure_promotion_flow": {
       "reason": "Promotion-flow activation: validates layers 1-3, dry-runs the integration policy fence, creates missing targets outside it and writes behind the same generation."
@@ -9404,6 +9404,36 @@
         109,
         114
       ]
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_branch_owners, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Claim and integration schema imports, including the active stack origin used to hold unresolved prerequisite repairs."
+    },
+    "src/database/queries/claim_queries.py::_claim_preparation_predicates": {
+      "reason": "Shared claim/frontier admission fences, including the active origin prerequisite-conflict snapshot and latest passing repair completion. Git proof is still required during preparation."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._renew_live_session_leases": {
+      "reason": "Reconciler adapter for bounded process-liveness renewal of existing ref leases; no new storage or replay authority."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.queries.hierarchy_queries import HIERARCHY_MODES, ProjectIntegrationMode, container_flag_exists, cross_parent_prerequisites_on_default, delivered_prerequisites_for_projects, delivered_same_parent_prerequisites_when_hierarchical, epic_refresh_ready, materialized_origin_when_hierarchical, never_leaseable_container, open_epic_refresh_batches": {
+      "reason": "Imports separate default-branch prerequisite proof and epic containment/refresh admission predicates, plus open refresh batch diagnostics."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Shared claim and integration schema imports, including open epic-refresh batches named by frontier exclusions."
+    },
+    "src/database/queries/hierarchy_queries.py::_cross_parent_prerequisites": {
+      "reason": "Builds the correlated completed cross-parent blocks query shared by default-branch delivery proof and epic refresh admission."
+    },
+    "src/database/queries/hierarchy_queries.py::_cross_parent_delivery_enabled": {
+      "reason": "Selects hierarchical default-branch delivery admission from the explicit project policy or its persisted configuration."
+    },
+    "src/database/queries/hierarchy_queries.py::open_epic_refresh_batches": {
+      "reason": "Reads unresolved epic-refresh batches on the dependent parent branch, excluding ordinary sibling collections from the refresh fence."
+    },
+    "src/database/queries/hierarchy_queries.py::epic_refresh_ready": {
+      "reason": "Requires proven cross-epic sources to be contained in the dependent epic and blocks admission while an epic-refresh batch remains open."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Combined claim and integration schema imports for open epic-refresh batches and active stack origins; preserves the separately reviewed frontier and prerequisite-repair admission surfaces."
     }
   },
   "shared_state": {

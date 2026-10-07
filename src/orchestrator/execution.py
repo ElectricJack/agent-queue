@@ -1743,6 +1743,7 @@ class ExecutionMixin:
                  or ordinary_repair is not None)
         )
         completion_source = None
+        completion_commits = None
         if git_completion and commit and (not workspace_path or not task.branch_name):
             feedback = "A completion with a recorded code artifact requires its exact published task branch."
             return {
@@ -1751,8 +1752,7 @@ class ExecutionMixin:
             }
         if git_completion and workspace_path and task.branch_name:
             try:
-                if (ordinary_repair is not None
-                    or not await self._vault_only_delivery(ctx) and await self._task_uses_git(ctx)):
+                if ordinary_repair is not None or await self._task_uses_git(ctx):
                     from src.integration.provenance import record_worker_completion
 
                     completion_id = completion_id or str(uuid.uuid4())
@@ -1760,6 +1760,14 @@ class ExecutionMixin:
                         self.db, self.git, task, project, workspace_path,
                         completion_id, commit=commit,
                         no_code_intent=await self._task_produces_no_code(ctx),
+                        allow_unpublished_no_change=await self._vault_only_delivery(ctx),
+                    )
+                    origin = await self.db.get_task_branch_origin_for_promotion(
+                        task.id, task.repo_id or project.integration_repository_id,
+                    )
+                    completion_commits = (
+                        [] if origin and origin["base_sha"] == completion_source
+                        else [completion_source]
                     )
             except Exception as exc:
                 # Publication failures leave the same claim/worktree live.
@@ -2303,6 +2311,8 @@ class ExecutionMixin:
             response["completion_source"] = repair_writer_head
         elif git_completion:
             response["completion_source"] = completion_source
+            if completion_commits is not None:
+                response["completion_commits"] = completion_commits
         if handoff_unproven:
             # ``_cmd_task_close`` reads this to skip the pool teardown
             # (``restore_slot_after_task`` / ``release_claim`` / claim file).

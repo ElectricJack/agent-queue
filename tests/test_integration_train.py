@@ -232,6 +232,74 @@ async def test_contained_candidate_settles_without_checks_or_repair():
     assert checks.requests == [] and repair.calls == []
 
 
+async def test_post_delivery_epic_snapshot_does_not_reuse_an_older_sibling_fetch(setup, tmp_path):
+    from src.integration.git_truth import GitTruth
+
+    _db, ops, _subject, _fence, repo, base, head, _green = setup
+    epic = TrainTarget("p", "r", "refs/heads/epic", kind="epic")
+    await ops.push(repo, epic.target_ref, base, "")
+    writer = tmp_path / "writer.git"
+    await ops.git._arun(["clone", "--bare", str(repo.store), str(writer)], cwd=str(tmp_path))
+    truth = GitTruth(ops.git, share_fetches=True)
+    fetch = ops.git.afetch_origin
+    entered, release, resnapshot = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def blocked_sibling_fetch(*args, **kwargs):
+        await fetch(*args, **kwargs)
+        if ops.git.afetch_origin.await_count == 2:
+            entered.set()
+            await release.wait()
+
+    ops.git.afetch_origin = AsyncMock(side_effect=blocked_sibling_fetch)
+
+    async def snapshot_for(target):
+        return await truth.snapshot(
+            str(repo.store), project_id="p", repository_id="r",
+            repository_url=str(ops.git.remote_path), target_ref=target.target_ref,
+        )
+
+    epic_reads = 0
+
+    async def epic_snapshot():
+        nonlocal epic_reads
+        epic_reads += 1
+        if epic_reads == 2:
+            resnapshot.set()
+        return await snapshot_for(epic)
+
+    siblings = []
+
+    async def deliver(batch, members, snapshot):
+        assert snapshot.target_oid == base
+        siblings.append(asyncio.create_task(snapshot_for(ROOT)))
+        await entered.wait()
+        await ops.push(replace(repo, store=writer), epic.target_ref, head, base)
+        return BatchObservation("delivered", head, head)
+
+    completion_heads = []
+
+    async def complete_epic(snapshot):
+        completion_heads.append(snapshot.target_oid)
+        assert await snapshot.is_fresh()
+        return ({"blocking": False, "outcome": "completed", "head": snapshot.target_oid},)
+
+    batches = Batches({epic.key: (batch(ref=epic.target_ref), MEMBERS)})
+    t = train(Targets(epic), batches, {epic.key: TrainLane(
+        snapshot=epic_snapshot, service=SimpleNamespace(visit=deliver),
+        checks=CandidateChecks.fixed(Checks()), complete_epic=complete_epic,
+    )})
+    visit_task = asyncio.create_task(t.visit(epic))
+    await resnapshot.wait()
+    release.set()
+    visit = await visit_task
+    [sibling] = await asyncio.gather(*siblings)
+    assert (visit.state, completion_heads) == ("delivered", [head])
+    assert visit.detail["epic_completions"][0]["head"] == head
+    assert sibling.for_target(epic.target_ref).target_oid == base
+    assert ops.git.afetch_origin.await_count == 3
+    assert not truth._fetches
+
+
 async def test_green_exact_candidate_publishes_within_the_visit():
     service, checks = Service("testing", "delivered"), Checks(ChecksState.GREEN)
     batches = Batches({ROOT.key: (batch(), MEMBERS)})
@@ -1250,6 +1318,86 @@ async def test_visit_timeout_frees_the_target_for_the_next_tick():
     }
     assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
     await t.stop()
+
+
+@pytest.mark.parametrize("bounded_leader", [True, False])
+async def test_cancelled_shared_fetch_records_waiter_failure_and_retries(setup, bounded_leader):
+    from src.integration.git_truth import GitTruth
+
+    _db, ops, _subject, _fence, repo, base, head, _green = setup
+    waiters = [TrainTarget("p", "r", f"refs/heads/waiter-{i}") for i in range(3)]
+    for target in waiters:
+        await ops.push(repo, target.target_ref, base, "")
+    truth = GitTruth(ops.git, share_fetches=True)
+    fetch = ops.git.afetch_origin
+    entered, release = asyncio.Event(), asyncio.Event()
+    arrivals = {target.key: asyncio.Event() for target in waiters}
+
+    async def blocked_fetch(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await fetch(*args, **kwargs)
+
+    ops.git.afetch_origin = AsyncMock(side_effect=blocked_fetch)
+
+    async def lane_for(target):
+        async def snapshot_for():
+            if target.key in arrivals:
+                arrivals[target.key].set()
+            return await truth.snapshot(
+                str(repo.store), project_id="p", repository_id="r",
+                repository_url=str(ops.git.remote_path), target_ref=target.target_ref,
+            )
+
+        return TrainLane(snapshot=snapshot_for, service=Service(),
+                         checks=CandidateChecks.fixed(Checks()))
+
+    t = IntegrationTrain(targets=Targets(*waiters), batches=Batches(), lane_for=lane_for,
+                         repair=Repair(), clock=lambda: 100.0)
+    if bounded_leader:
+        await t.tick(target=ROOT)
+        leader = t._lanes[ROOT.key].task
+    else:
+        leader = asyncio.create_task(t.visit(ROOT, seal_now=True))
+    requests = []
+    try:
+        await entered.wait()
+        requests = [asyncio.create_task(t.request_visit(target)) for target in waiters]
+        await asyncio.gather(*(arrival.wait() for arrival in arrivals.values()))
+        leader.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await leader
+
+        visits = await asyncio.gather(*requests)
+        assert ops.git.afetch_origin.await_count == 1
+        assert not truth._fetches
+        for target, visit in zip(waiters, visits, strict=True):
+            assert visit.state == "unknown"
+            assert visit.detail["reason"] == "SharedFetchCancelled"
+            lane_state = t._lanes[target.key]
+            assert lane_state.last is visit
+            assert (lane_state.visits, lane_state.errors) == (1, 1)
+            assert not lane_state.task.cancelled()
+
+        # A later visit must fetch the current remote rather than reuse the
+        # failed observation or a tracking ref from before the cancellation.
+        for target in waiters:
+            await ops.push(repo, target.target_ref, head, base)
+        release.set()
+        assert len((await t.tick())["started"]) == len(waiters)
+        await t.drain()
+        assert ops.git.afetch_origin.await_count == 3
+        assert not truth._fetches
+        for target in waiters:
+            lane_state = t._lanes[target.key]
+            assert (lane_state.last.state, lane_state.last.target_sha) == ("idle", head)
+            assert (lane_state.visits, lane_state.errors) == (2, 1)
+    finally:
+        leader.cancel()
+        for request in requests:
+            request.cancel()
+        await t.stop()
+        await asyncio.gather(leader, *requests, return_exceptions=True)
 
 
 async def test_visit_timeout_status_keeps_the_last_known_state():

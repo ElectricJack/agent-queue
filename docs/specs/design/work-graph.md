@@ -104,7 +104,7 @@ In hierarchy/train mode with Git-first active, a completed `blocks` sibling
 must be proven on the shared parent's current branch before its dependent can
 run. One request-scoped, identity-revalidated Git prerequisite view per project
 is shared by scheduler/reconciler supply and pool demand within a tick, outside
-database locks. These advisory reads, including direct readiness, explain and
+database locks. Advisory scheduling reads, including direct readiness and
 frontier diagnostics, may reuse a successful snapshot of the same target for
 up to `DeliveryObserver.READ_MAX_AGE` (30 seconds). Each request still evaluates
 current identities and checks remote target freshness. Beyond the bound the
@@ -115,6 +115,25 @@ retains its own uncached observation (`max_age=0`) and revalidation under task
 locks, even when a tick's advisory view still makes a task look runnable. Shadow
 mode keeps the existing receipt fence, and non-hierarchy projects keep their
 existing admission policy.
+
+A cross-epic dependent whose epic already contains every prerequisite's exact
+default-branch source needs no new refresh. Ordinary sibling collection does
+not withhold that child. An existing open epic refresh still withholds it until
+checks and attestation finish, including when a conflict repair publishes a
+merge containing every prerequisite. If the repair only resolves content and
+leaves a prerequisite outside the epic, containment also remains unproven until
+the checked refresh publishes it.
+
+Interactive `task explain` and `pool status` only read snapshots inside that
+age bound. They do not clone, fetch, wait for a fetch lock, or check remote refs.
+Missing or expired evidence is unknown and conservatively withholds demand;
+current database identities are still revalidated against the pinned observation.
+If a background freshness check has already rejected that exact snapshot,
+diagnostics withhold its proof until a new observation or successful check.
+Stacked prerequisites additionally require the existing, unexpired remote-ref
+cache. An explanation shares one request-scoped pool measurement between the
+pool wait reason and capacity spill planning. Actual scheduling, routing and
+claim admission retain their existing fresh observations and guards.
 
 For a development worker close, the completion generation id becomes visible in
 the same database transaction as the `COMPLETED` transition. Git provenance is
@@ -300,6 +319,18 @@ row. These predicates are shared with claiming and `tasks.ready_frontier_exclusi
 they do not infer eligibility from a cached scheduler snapshot. Receipt freshness
 in shadow mode is scoped to the prerequisite's own `integration_rework_at`, never
 another task's marker or ordinary `updated_at` bookkeeping.
+
+Cross-epic prerequisites in hierarchy/train mode require two independent proofs.
+Their exact completed sources must be on the default branch
+(`frontier_prerequisite_not_on_default_branch` when unproven). A dependent with an
+epic branch also requires those sources to be contained in that branch and any
+open `train-epic-refresh-*` batch targeting it to finish
+(`frontier_epic_refresh_pending`, with blocking batch ids in the detail).
+Ordinary sibling collection batches never withhold an already-contained dependent,
+including when failed or human-blocked. Missing epic containment withholds even
+without an open batch. Scheduler, pool demand, explain and claim share these
+predicates; claim retains fresh Git and identity revalidation. The explicit
+`cross_epic_prerequisites: completed` policy keeps legacy graph-only admission.
 
 ### 9.2 Ready frontier
 

@@ -363,6 +363,8 @@ class ProjectIntegrationMode:
     delivered_prerequisite_ids: frozenset[str] | None = None
     cross_epic_prerequisites: str = "default_branch"
     default_prerequisite_ids: frozenset[str] = frozenset()
+    #: Dependents whose epic branch already contains every cross-epic source.
+    parent_contained_task_ids: frozenset[str] = frozenset()
     stacked: bool = False
     stackable_prerequisite_ids: frozenset[str] = frozenset()
 
@@ -681,7 +683,9 @@ def delivered_prerequisites_for_projects(modes=None, *, cross_parent=True):
     """Use each project's Git view, retaining legacy admission for other projects."""
     def predicate(mode=None):
         siblings = delivered_same_parent_prerequisites_when_hierarchical(mode)
-        return siblings & cross_parent_prerequisites_on_default(mode) if cross_parent else siblings
+        if not cross_parent:
+            return siblings
+        return siblings & cross_parent_prerequisites_on_default(mode) & epic_refresh_ready(mode)
 
     legacy = predicate()
     if not modes:
@@ -693,22 +697,11 @@ def delivered_prerequisites_for_projects(modes=None, *, cross_parent=True):
     )
 
 
-def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = None):
-    """Cross-parent blocks edges require exact Git delivery, never a receipt.
-
-    With no observation, a completed cross-parent source is withheld. The
-    explicit ``completed`` policy retains the legacy graph-only admission.
-    """
-    if mode is not None and (not mode.hierarchical
-                             or mode.cross_epic_prerequisites == "completed"):
-        return true()
+def _cross_parent_prerequisites():
+    """Completed cross-parent blocks edges, correlated to the dependent task."""
     edge = task_dependencies.alias("cross_prerequisite_edge")
     source = tasks.alias("cross_prerequisite_source")
-    # Fixed SQL constants do not consume the frontier's parameter budget.
-    # The observed source ids use one array bind, however large the frontier.
-    ids = mode.default_prerequisite_ids if mode else ()
-    unproven = ~(source.c.id == any_(literal(list(ids), type_=ARRAY(Text)))) if ids else true()
-    cross_edge = select(literal_column("1")).select_from(
+    return source, select(literal_column("1")).select_from(
         edge.join(source, source.c.id == edge.c.depends_on_task_id),
     ).correlate(tasks).where(
         edge.c.task_id == tasks.c.id, edge.c.dep_type == literal_column("'blocks'"),
@@ -716,28 +709,63 @@ def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = 
         | source.c.parent_task_id.is_(None),
         source.c.status == literal_column("'COMPLETED'"),
     )
-    missing = exists(cross_edge.where(unproven))
+
+
+def _cross_parent_delivery_enabled(mode):
     if mode is None:
-        enabled = exists(select(literal_column("1")).where(
+        return exists(select(literal_column("1")).where(
             projects.c.id == tasks.c.project_id,
             projects.c.hierarchical_integration_mode.in_(HIERARCHY_MODES),
             func.coalesce(projects.c.hierarchical_integration_policy[
-                "cross_epic_prerequisites"].as_string(), "default_branch") != "completed",
+                "cross_epic_prerequisites"].as_string(), literal_column("'default_branch'"))
+            != literal_column("'completed'"),
         ))
+    return true() if mode.hierarchical and mode.cross_epic_prerequisites != "completed" else false()
+
+
+def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = None):
+    """Require exact Git delivery of cross-parent sources on the default branch.
+
+    Epic containment and refresh batches have their own frontier predicate.
+    With no observation, a completed cross-parent source remains unproven.
+    """
+    source, cross_edge = _cross_parent_prerequisites()
+    ids = mode.default_prerequisite_ids if mode else ()
+    unproven = ~(source.c.id == any_(literal(list(ids), type_=ARRAY(Text)))) if ids else true()
+    return ~(_cross_parent_delivery_enabled(mode) & exists(cross_edge.where(unproven)))
+
+
+def open_epic_refresh_batches():
+    """Open refresh batch ids for this task's epic; ordinary collections are unrelated."""
     parent = tasks.alias("refresh_pending_parent")
-    pending = exists(cross_edge) & exists(select(literal_column("1")).select_from(
-        integration_batches.join(parent, parent.c.id == tasks.c.parent_task_id),
+    return select(integration_batches.c.id).select_from(
+        integration_batches.join(parent, parent.c.repo_id == integration_batches.c.repository_id),
     ).correlate(tasks).where(
+        parent.c.id == tasks.c.parent_task_id,
         integration_batches.c.project_id == tasks.c.project_id,
-        integration_batches.c.repository_id == parent.c.repo_id,
         integration_batches.c.intent != literal_column("'aborted'"),
         integration_batches.c.lifecycle != literal_column("'promoted'"),
+        integration_batches.c.id.like("train-epic-refresh-%"),
         integration_batches.c.target_ref == (literal_column("'refs/heads/'", type_=Text) + func.replace(
             parent.c.branch_name, literal_column("'refs/heads/'"), literal_column("''"))),
+    )
+
+
+def epic_refresh_ready(mode: ProjectIntegrationMode | None = None):
+    """A cross-epic child needs contained sources and no open epic refresh.
+
+    An ordinary sibling collection, including a failed or held one, cannot
+    withhold a child whose epic already contains every proven source.
+    """
+    _, cross_edge = _cross_parent_prerequisites()
+    parent = tasks.alias("containment_parent")
+    has_epic = exists(select(literal_column("1")).where(
+        parent.c.id == tasks.c.parent_task_id, parent.c.branch_name.is_not(None),
     ))
-    if mode is None:
-        return ~(enabled & (missing | pending))
-    return ~missing & ~pending
+    ids = mode.parent_contained_task_ids if mode else ()
+    contained = tasks.c.id == any_(literal(sorted(ids), type_=ARRAY(Text))) if ids else false()
+    pending = exists(open_epic_refresh_batches()) | (has_epic & ~contained)
+    return ~(_cross_parent_delivery_enabled(mode) & exists(cross_edge) & pending)
 
 
 class HierarchyError(Exception):
