@@ -55,6 +55,9 @@ logger = logging.getLogger(__name__)
 # route is generated, and in ``/api/execute`` (``src/api/execute.py``), which
 # would otherwise reach the same commands through the back door.
 API_EXCLUDED = {
+    "reconcile_agent_cron",
+    "cron_delivery_begin",
+    "cron_delivery_finish",
     "reconcile_agent_waits",  # internal scan; never callable over HTTP
     "reconcile_collaborations",  # daemon-only expiry and retention
     "integration_train_tick",  # daemon-only git-first train dispatch

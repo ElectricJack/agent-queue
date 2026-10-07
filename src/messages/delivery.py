@@ -72,11 +72,13 @@ class MessageDeliveryEngine:
         sessions: SessionManagerProto,
         config,
         bus=None,
+        cron_service=None,
     ):
         self._db = db
         self._sessions = sessions
         self._config = _messages_config(config)
         self._bus = bus
+        self.cron_service = cron_service
 
     # -- public --------------------------------------------------------
 
@@ -139,6 +141,9 @@ class MessageDeliveryEngine:
                 continue
 
             if activity == "sleeping":
+                if pending[0].body_kind == "schedule_prompt":
+                    # Session-bound schedules never create a replacement owner.
+                    continue
                 if all(msg.body_kind == "conversation_input" for msg in pending):
                     continue
                 if to_kind == "task" and pending[0].body_kind in _TASK_NOTIFICATION_KINDS:
@@ -151,6 +156,8 @@ class MessageDeliveryEngine:
                 activity = "idle"
 
             if activity == "absent":
+                if pending[0].body_kind == "schedule_prompt":
+                    continue
                 # Task recipients: rides into prime, never parked.
                 # Session recipients: subject to the 24h parking sweep.
                 if to_kind == "session":
@@ -161,11 +168,27 @@ class MessageDeliveryEngine:
             # wraps as separate terminal rows, so even a non-collapsed batch
             # cannot be verified as the exact original composer text.
             pending = pending[:1]
+            scheduled = pending[0].body_kind == "schedule_prompt"
+            if scheduled and (
+                self.cron_service is None
+                or not await self.cron_service.begin_delivery(pending[0].id)
+            ):
+                continue
             text = _render_nudge(pending)
-            ok = await self._sessions.nudge(
-                kind=kind, target_id=target_id, project_id=resolved_project, text=text
-            )
+            try:
+                ok = await self._sessions.nudge(
+                    kind=kind, target_id=target_id, project_id=resolved_project, text=text
+                )
+            except Exception as exc:
+                if not scheduled:
+                    raise
+                await self.cron_service.finish_delivery(
+                    pending[0].id, delivered=False, error=type(exc).__name__,
+                )
+                continue
             if not ok:
+                if scheduled:
+                    await self.cron_service.finish_delivery(pending[0].id, delivered=False)
                 # Leave rows pending; the engine retries next cycle.
                 continue
             for msg in pending:
@@ -179,6 +202,8 @@ class MessageDeliveryEngine:
                             "method": "nudge",
                         },
                     )
+            if scheduled:
+                await self.cron_service.finish_delivery(pending[0].id, delivered=True)
 
         return {
             "success": True,
@@ -459,6 +484,9 @@ def _render_nudge(batch: list[Message]) -> str:
     it shows only its last rows.  Unconfirmable, it sat unsubmitted and every
     later nudge to the worker deferred behind it (2026-10-01).
     """
+    if batch[0].body_kind == "schedule_prompt":
+        schedule_id = batch[0].id.split(":")[1]
+        return f"Handle `aq cron show {shlex.quote(schedule_id)} --consume --json`."
     if batch[0].body_kind == "wait_result":
         # The durable message identity is also the wait pointer. Worker
         # grants include wait_get; no generic message command is needed.

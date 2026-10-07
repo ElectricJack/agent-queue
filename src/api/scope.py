@@ -53,6 +53,10 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "wait_get",
         "wait_list",
         "wait_cancel",
+        "cron_register",
+        "cron_get",
+        "cron_list",
+        "cron_cancel",
         # Collaboration reads and joins derive the held task and fence joins
         # and closes by claim epoch; creation stays operator/supervisor-only.
         "collaboration_accept",

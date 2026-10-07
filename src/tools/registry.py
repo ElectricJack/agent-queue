@@ -77,6 +77,10 @@ class CategoryMeta:
 
 # Category definitions with human-readable descriptions
 CATEGORIES: dict[str, CategoryMeta] = {
+    "cron": CategoryMeta(
+        name="cron",
+        description="Session-owned recurring prompts: register, inspect and cancel wake-ups.",
+    ),
     "git": CategoryMeta(
         name="git",
         description=(

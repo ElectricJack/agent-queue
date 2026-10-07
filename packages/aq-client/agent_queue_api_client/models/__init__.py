@@ -183,6 +183,18 @@ from .create_task_request import CreateTaskRequest
 from .create_task_response import CreateTaskResponse
 from .create_task_response_422 import CreateTaskResponse422
 from .create_task_response_depends_on_item import CreateTaskResponseDependsOnItem
+from .cron_cancel_request import CronCancelRequest
+from .cron_cancel_response_422 import CronCancelResponse422
+from .cron_get_request import CronGetRequest
+from .cron_get_response_422 import CronGetResponse422
+from .cron_list_request import CronListRequest
+from .cron_list_response import CronListResponse
+from .cron_list_response_422 import CronListResponse422
+from .cron_list_response_schedules_item import CronListResponseSchedulesItem
+from .cron_register_request import CronRegisterRequest
+from .cron_register_response_422 import CronRegisterResponse422
+from .cron_response import CronResponse
+from .cron_response_schedule import CronResponseSchedule
 from .daemon_metrics import DaemonMetrics
 from .dashboard_state_conflict_response import DashboardStateConflictResponse
 from .dashboard_state_document_response import DashboardStateDocumentResponse
@@ -1980,6 +1992,18 @@ __all__ = (
     "CreateTaskResponse",
     "CreateTaskResponse422",
     "CreateTaskResponseDependsOnItem",
+    "CronCancelRequest",
+    "CronCancelResponse422",
+    "CronGetRequest",
+    "CronGetResponse422",
+    "CronListRequest",
+    "CronListResponse",
+    "CronListResponse422",
+    "CronListResponseSchedulesItem",
+    "CronRegisterRequest",
+    "CronRegisterResponse422",
+    "CronResponse",
+    "CronResponseSchedule",
     "DaemonMetrics",
     "DashboardStateConflictResponse",
     "DashboardStateDocumentResponse",

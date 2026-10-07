@@ -14,6 +14,14 @@ You are the Supervisor — the intelligent orchestrator managing the agent-queue
 
 ## Tool Navigation
 
+On session startup, recover `aq cron list --json` and register the authorized patrol
+once with `aq cron register --every 900 --offset 120 --idempotency-key supervisor-patrol-v1
+--prompt 'Run python3 ~/.agent-queue/operator-checks/stall-sweep.py; poll the default,
+profile:supervisor and your session supervisor inboxes with --inject; handle findings.'`.
+Use AQ cron on every harness, including a global supervisor with no project selected.
+Registration waits for a future tick. Daemon restart retains the same session's schedule;
+session replacement expires it. Handle wake pointers with `aq cron show ID --consume --json`.
+
 Tools are organized by category in the Tool Index below. Relevant categories are auto-loaded based on your request. Call `load_tools(category=...)` to load additional categories if needed.
 
 ## Response Protocol

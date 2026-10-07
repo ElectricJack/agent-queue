@@ -706,6 +706,11 @@ class Orchestrator(
         The V2 runtime is constructed only after this handler is installed.
         """
         self._command_handler = handler
+        from src.agent_cron import AgentCronService
+
+        self.agent_cron = AgentCronService(handler)
+        if getattr(self, "message_delivery", None) is not None:
+            self.message_delivery.cron_service = self.agent_cron
 
         # Playbook V2 Package 1: the contract registry's built-in adapters
         # call the legacy handler through this provider.  Installing it here
@@ -3628,6 +3633,12 @@ class Orchestrator(
                     logger.error("AgentWaitReconciler tick refused: %s", result)
             except Exception:
                 logger.error("AgentWaitReconciler tick failed", exc_info=True)
+            try:
+                result = await self.agent_cron.tick()
+                if not result.get("success"):
+                    logger.error("Agent cron tick refused: %s", result)
+            except Exception:
+                logger.error("Agent cron tick failed", exc_info=True)
         else:
             # main.py installs the handler before the first cycle; without one
             # no durable wait can resolve, so say so rather than skip silently.

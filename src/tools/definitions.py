@@ -145,6 +145,10 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "wait_get": "wait",
     "wait_list": "wait",
     "wait_cancel": "wait",
+    "cron_register": "cron",
+    "cron_get": "cron",
+    "cron_list": "cron",
+    "cron_cancel": "cron",
     "collaboration_create": "collaboration",
     "collaboration_accept": "collaboration",
     "collaboration_get": "collaboration",
@@ -7976,6 +7980,53 @@ _FALLBACK_INPUT_SCHEMAS["reconcile_agent_waits"] = {
     "type": "object",
     "properties": {"now": {"type": "number"}, "wait_id": {"type": ["string", "null"]}},
     "additionalProperties": False,
+}
+
+_CRON_SCOPE = {
+    "session_id": {"type": "string"}, "project_id": {"type": "string"},
+    "task_id": {"type": "string"}, "claim_epoch": {"type": "integer", "minimum": 0},
+}
+for _name, _description, _properties, _required in (
+    ("cron_register", "Register a session-owned recurring prompt; first fire is strictly future.", {
+        "prompt": {"type": "string", "minLength": 1, "maxLength": 8000},
+        "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 256},
+        "every": {"type": "number", "minimum": 60, "maximum": 604800},
+        "offset": {"type": "number", "minimum": 0, "default": 0},
+        "cron": {"type": "string", "maxLength": 64,
+                 "description": "MINUTE HOUR * * *: minute 0–59, * or */N; hour 0–23 or *."},
+        "timezone": {"type": "string", "default": "UTC", "minLength": 1, "maxLength": 128},
+    }, ["prompt", "idempotency_key"]),
+    ("cron_get", "Read prompt and next-fire/delivery diagnostics; optionally consume its wake.", {
+        "schedule_id": {"type": "string", "minLength": 1, "maxLength": 64},
+        "consume": {"type": "boolean", "default": False},
+    }, ["schedule_id"]),
+    ("cron_list", "List this session instance's recurring prompts, including global scope.", {
+        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100},
+        "offset": {"type": "integer", "minimum": 0, "default": 0},
+    }, []),
+    ("cron_cancel", "Cancel future ticks and pending delivery for this owner instance.", {
+        "schedule_id": {"type": "string", "minLength": 1, "maxLength": 64},
+    }, ["schedule_id"]),
+):
+    _ALL_TOOL_DEFINITIONS.append({
+        "name": _name, "description": _description,
+        "input_schema": {"type": "object", "additionalProperties": False,
+                         "properties": {**_CRON_SCOPE, **_properties}, "required": _required},
+    })
+
+_FALLBACK_INPUT_SCHEMAS["reconcile_agent_cron"] = {
+    "type": "object", "properties": {"now": {"type": ["number", "null"]}},
+    "additionalProperties": False,
+}
+_FALLBACK_INPUT_SCHEMAS["cron_delivery_begin"] = {
+    "type": "object", "properties": {"message_id": {"type": "string"}},
+    "required": ["message_id"], "additionalProperties": False,
+}
+_FALLBACK_INPUT_SCHEMAS["cron_delivery_finish"] = {
+    "type": "object", "properties": {
+        "message_id": {"type": "string"}, "delivered": {"type": "boolean"},
+        "error": {"type": ["string", "null"]},
+    }, "required": ["message_id", "delivered"], "additionalProperties": False,
 }
 
 _FALLBACK_INPUT_SCHEMAS["reconcile_collaborations"] = {

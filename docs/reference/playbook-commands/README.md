@@ -145,6 +145,10 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`collaboration_create`](collaboration_create.md) | Collaboration Create | Create a bounded thread between 2 to 4 tasks and invite each once. |
 | [`collaboration_get`](collaboration_get.md) | Collaboration Get | Read a thread, its members, capacity hold and ordered messages. |
 | [`collaboration_list`](collaboration_list.md) | Collaboration List | List collaboration threads for the held task or a project. |
+| [`cron_cancel`](cron_cancel.md) | Cron Cancel | Cancel this session's recurring prompt and pending delivery. |
+| [`cron_get`](cron_get.md) | Cron Get | Read a schedule and optionally consume its pending prompt. |
+| [`cron_list`](cron_list.md) | Cron List | List this session instance's schedules and next-fire times. |
+| [`cron_register`](cron_register.md) | Cron Register | Register an idempotent recurring prompt for the caller's session. |
 | [`decision_list`](decision_list.md) | Decision List | Record or read durable operator instructions on a task or integration. |
 | [`decision_record`](decision_record.md) | Decision Record | Record or read durable operator instructions on a task or integration. |
 | [`digest_request`](digest_request.md) | Digest Request | Queue one supervisor author turn per reserved digest window, releasing held windows when supervisor authoring is off. |

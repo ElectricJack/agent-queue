@@ -7711,6 +7711,165 @@
       }
     },
     {
+      "name": "cron_register",
+      "description": "Register a session-owned recurring prompt; first fire is strictly future.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "every": {
+            "type": "number",
+            "minimum": 60,
+            "maximum": 604800
+          },
+          "offset": {
+            "type": "number",
+            "minimum": 0,
+            "default": 0
+          },
+          "cron": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "MINUTE HOUR * * *: minute 0\u201359, * or */N; hour 0\u201323 or *."
+          },
+          "timezone": {
+            "type": "string",
+            "default": "UTC",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "prompt",
+          "idempotency_key"
+        ]
+      }
+    },
+    {
+      "name": "cron_get",
+      "description": "Read prompt and next-fire/delivery diagnostics; optionally consume its wake.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "schedule_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "consume": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "schedule_id"
+        ]
+      }
+    },
+    {
+      "name": "cron_list",
+      "description": "List this session instance's recurring prompts, including global scope.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "cron_cancel",
+      "description": "Cancel future ticks and pending delivery for this owner instance.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "schedule_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "schedule_id"
+        ]
+      }
+    },
+    {
       "name": "job_submit",
       "description": "Submit a finite preset, optionally with an atomic durable wait.",
       "input_schema": {
@@ -10032,6 +10191,48 @@
           "playbook_run_id",
           "project_id"
         ]
+      }
+    },
+    "cron_delivery_begin": {
+      "name": "cron_delivery_begin",
+      "description": "Execute the cron_delivery_begin command.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "cron_delivery_finish": {
+      "name": "cron_delivery_finish",
+      "description": "Execute the cron_delivery_finish command.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string"
+          },
+          "delivered": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "message_id",
+          "delivered"
+        ],
+        "additionalProperties": false
       }
     },
     "delivery_promote": {
@@ -14559,6 +14760,22 @@
         "type": "object"
       }
     },
+    "reconcile_agent_cron": {
+      "name": "reconcile_agent_cron",
+      "description": "Execute the reconcile_agent_cron command.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "now": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "reconcile_agent_waits": {
       "name": "reconcile_agent_waits",
       "description": "Execute the reconcile_agent_waits command.",
@@ -15087,6 +15304,7 @@
     }
   },
   "categories": {
+    "cron": "Session-owned recurring prompts: register, inspect and cancel wake-ups.",
     "git": "Branch, commit, push, PR, merge, and remote URL operations for project repositories",
     "project": "Project CRUD, workspace management, project metadata (repo URL, GitHub URL, workspace path)",
     "agent": "Agent management, agent profiles, profile import/export",
@@ -15246,6 +15464,10 @@
     "wait_get": "wait",
     "wait_list": "wait",
     "wait_cancel": "wait",
+    "cron_register": "cron",
+    "cron_get": "cron",
+    "cron_list": "cron",
+    "cron_cancel": "cron",
     "collaboration_create": "collaboration",
     "collaboration_accept": "collaboration",
     "collaboration_get": "collaboration",

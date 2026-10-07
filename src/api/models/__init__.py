@@ -50,6 +50,7 @@ def _category_modules() -> tuple[object, ...]:
     from src.api.models import (
         agent,
         collaboration,
+        cron,
         dashboard,
         decision,
         digest,
@@ -85,6 +86,7 @@ def _category_modules() -> tuple[object, ...]:
     return (
         test_selection,
         task,
+        cron,
         project,
         project_onboarding,
         review,
