@@ -247,6 +247,7 @@ only at DEBUG.
 - `aq integration resume-batch BATCH_ID --apply` resumes a paused Git-first batch.
 - `aq integration abort-batch BATCH_ID --apply --reason REASON` aborts an unpromoted Git-first batch.
 - `aq integration refresh-epic --task EPIC_ID --apply` starts or advances the attested refresh; pending checks or repairs continue through the train.
+- `aq integration record-root-noop ROOT_TASK_ID` previews a no-artifact completion for an unheld no-code root; apply requires `--apply --head HEAD_SHA --reason REASON`.
 
 The controls keyed by a task, operation, batch or reservation — `redrive-root`,
 `redrive-child`, `reopen-collection`, `reserve-owner`, `release-owner` — take no `project_id`,
@@ -392,6 +393,32 @@ aq project set PROJECT_ID integration-mode disabled --expected-integration-gener
 Existing Subjects retain their identity, pins and scheduling. Pausing all visits
 uses `integration.reconciler_active: false`; re-enabling resumes those same
 Subjects. There is no engine rollback or automatic drain that restores old policy.
+
+## No-code root completions
+
+A materialized root branch still needs completion provenance when its work
+produced no code. A local operator or live supervisor of the owning project can
+complete an unheld root, or repair a COMPLETED root whose administrative status
+change omitted its completion record:
+
+```bash
+aq integration record-root-noop ROOT_TASK_ID
+aq integration record-root-noop ROOT_TASK_ID --apply --head PREVIEW_HEAD_SHA --reason "No code produced"
+```
+
+The preview proves that the published head descends from the recorded source
+origin and has the same tree. Apply checks the exact head again, retains an
+immutable `artifact:false` Git completion and records a passing `no-op`
+completion with COMPLETED status. It preserves the branch and origin. Existing
+passing no-op completions retain their generation; repeated apply is idempotent.
+Claims, live writers, branch ownership, containers, required deliverables and
+open batches must be resolved first. Changed or unavailable Git evidence refuses.
+Use normal `task close` for held work; `task set-status ... COMPLETED` refuses a
+new completion of a branched train root.
+
+A source with unknown provenance stays withheld together with its dependent
+work. Its task blocker remains visible while unrelated sources can seal and an
+already sealed healthy batch can pass checks and publish on the same target.
 
 ## Source CI: red versus infrastructure
 

@@ -20,6 +20,37 @@ def _client(result):
     return client
 
 
+def test_root_noop_previews_then_applies_exact_head_with_reason():
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "preview"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "record-root-noop", "root"])
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == ("integration_record_root_noop", {
+        "task_id": "root", "dry_run": True, "reason": "",
+    })
+    client.reset_mock()
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "record-root-noop", "root", "--apply",
+                                        "--head", "a" * 40, "--reason", "no code"])
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args[1] == {
+        "task_id": "root", "dry_run": False, "expected_head_sha": "a" * 40, "reason": "no code",
+    }
+
+
+@pytest.mark.parametrize("extra", [[], ["--head", "a" * 40], ["--reason", "no code"]])
+def test_root_noop_apply_requires_exact_head_and_reason(extra):
+    from src.cli.app import cli
+
+    client = _client({"success": True})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "record-root-noop", "root", "--apply", *extra])
+    assert result.exit_code == 2
+    client.execute.assert_not_called()
+
+
 @pytest.mark.parametrize("leaf,identity,extra,command", [
     ("abort-batch", "batch", [], "integration_abort_batch"),
     ("retire-origin", "task", ["--origin-id", "origin"], "integration_retire_origin"),

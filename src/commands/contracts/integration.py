@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import Field, StrictInt, field_validator, model_validator
 
 from src.commands.contracts.models import (
+    ClausePredicate,
     CommandArgs,
     CommandContract,
     CommandPresentation,
@@ -35,6 +36,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_checkpoint_parent",
         "integration_delivery_readiness",
         "integration_record_noop",
+        "integration_record_root_noop",
         "integration_parent_verify",
         "integration_complete_parent",
         "delivery_promote",
@@ -952,6 +954,31 @@ class IntegrationRecordNoopValue(CommandValue):
     revision: int | None = None
     reviewed_head_sha: str | None = None
     reviewed_tree_sha: str | None = None
+
+
+class IntegrationRecordRootNoopArgs(CommandArgs):
+    task_id: str = Field(min_length=1)
+    dry_run: bool = True
+    expected_head_sha: str | None = None
+    reason: str = ""
+
+    @model_validator(mode="after")
+    def exact_noop(self) -> IntegrationRecordRootNoopArgs:
+        if self.expected_head_sha is not None and not is_valid_git_oid(self.expected_head_sha):
+            raise ValueError("expected_head_sha must be an exact Git OID")
+        if not self.dry_run and (not self.expected_head_sha or not self.reason.strip()):
+            raise ValueError("apply requires the previewed head and a nonblank reason")
+        return self
+
+
+class IntegrationRecordRootNoopValue(CommandValue):
+    task_id: str | None = None
+    project_id: str | None = None
+    head_sha: str | None = None
+    base_sha: str | None = None
+    tree_sha: str | None = None
+    completion_id: str | None = None
+    dry_run: bool = True
 
 
 class IntegrationParentVerifyArgs(CommandArgs):
@@ -2950,6 +2977,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     outside the allowlist.
     """
     for name, args_model, applied, value_model in (
+        ("integration_record_root_noop", IntegrationRecordRootNoopArgs, "recorded",
+         IntegrationRecordRootNoopValue),
         ("integration_abort_batch", IntegrationAbortBatchArgs, "aborted", IntegrationTrainControlValue),
         ("integration_pause_batch", IntegrationAbortBatchArgs, "paused", IntegrationTrainControlValue),
         ("integration_resume_batch", IntegrationAbortBatchArgs, "resumed", IntegrationTrainControlValue),
@@ -2972,6 +3001,21 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             side_effect=SideEffectClass.COMPOSITE, result_model=value_model,
             supports_preview=True,
         )
+        if name == "integration_record_root_noop":
+            applying = ClausePredicate(arg_equals=("dry_run", False))
+            contract = contract.model_copy(update={
+                "execution": contract.execution.model_copy(update={"effects": (
+                    ReadClause(subject=EffectSubject.TASK),
+                    UpdateClause(subject=EffectSubject.TASK, when=applying),
+                    CreateOrReuseClause(subject=EffectSubject.DELIVERY_EVIDENCE,
+                                        key_arg="task_id", when=applying),
+                    UpdateClause(subject=EffectSubject.DOWNSTREAM_TASKS, when=applying),
+                )}),
+                "presentation": CommandPresentation(
+                    title="Record verified no-code root completion",
+                    summary="Preview or complete an unheld root with exact no-artifact Git provenance.",
+                ),
+            })
 
         async def train_control(args, ctx, command=name, outcomes=outcomes, value_model=value_model):
             return await _hierarchy_adapter(

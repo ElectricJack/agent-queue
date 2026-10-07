@@ -74,6 +74,24 @@ history is never amended. Code-free outcomes retain existing validation: a
 proven empty, explicitly code-free Git source has `artifact:false`; branchless,
 non-Git and vault-only outcomes keep their existing completion behavior.
 
+For an unheld Git root, `aq integration record-root-noop TASK_ID` previews an
+explicit no-artifact completion. A local operator or a live named supervisor of
+the owning project can apply it with the exact previewed `--head` and a nonblank
+`--reason`. The published source must descend from its recorded, materialized
+branch origin and have that origin's exact tree. No live writer, claimed
+workspace, branch owner, child, required deliverable or open batch may be bypassed.
+Apply retains an immutable `artifact:false` Git completion and records a passing
+`no-op` completion atomically with COMPLETED status, preserving the branch/origin.
+It also repairs a COMPLETED root with no completion record, or retains an existing
+passing no-op generation; it never replaces an artifact completion. Repeating
+apply is idempotent. Unknown or changed evidence refuses without terminal writes.
+Administrative `set-status COMPLETED` refuses a new completion of a branched Git
+root in a train mode and names normal close or this explicit no-op control.
+
+Unknown delivery evidence withholds that source and work depending on it. Its
+task-scoped blocker remains visible while unrelated eligible sources can seal,
+check and publish, including an already sealed batch on the same root target.
+
 This close contract applies to Git-using passing completions in every train mode:
 `train`, `hierarchy` and `development`. Under `integration.git_first: active`, an
 unretained completion cannot form a batch. A visit with only unknown completions

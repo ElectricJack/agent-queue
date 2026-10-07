@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-180 commands are registered.
+181 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -106,6 +106,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_reconcile_promotion`](integration_reconcile_promotion.md) | Reconcile prepared promotion | Compare a durable prepared intent with the remote and finalize its receipt. |
 | [`integration_record_noop`](integration_record_noop.md) | Record verified no-code child disposition | Bind a child's current no-op completion and exact Git head to its parent receipt. |
 | [`integration_record_repair`](integration_record_repair.md) | Integration Record Repair | Record one exact repair check attempt against the current stage budget. |
+| [`integration_record_root_noop`](integration_record_root_noop.md) | Record verified no-code root completion | Preview or complete an unheld root with exact no-artifact Git provenance. |
 | [`integration_recover_candidate_member`](integration_recover_candidate_member.md) | Resolve pushed candidate member | Accept one valid frozen repair or retain its failed invariant for a fresh recovery. |
 | [`integration_recover_parent_head`](integration_recover_parent_head.md) | Integration Recover Parent Head | Authenticated hierarchical integration operational control. |
 | [`integration_recover_preserved_repair`](integration_recover_preserved_repair.md) | Integration Recover Preserved Repair | Authenticated hierarchical integration operational control. |

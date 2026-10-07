@@ -598,6 +598,7 @@
         "tests/test_integration_records_and_gates.py",
         "tests/test_integration_replay.py",
         "tests/test_integration_root_adapters.py",
+        "tests/test_integration_root_noop.py",
         "tests/test_integration_root_scenarios.py",
         "tests/test_integration_schedule.py",
         "tests/test_integration_sealing.py",
@@ -1431,7 +1432,7 @@
       ]
     }
   },
-  "digest": "sha256:735045fae9b49b5c1561516851ec4bba97465c7bccd8b3a3ac344fb7c32bb5fd",
+  "digest": "sha256:ae6e9144b28c747a53c83c31e8c08f736d605a06ceeed01e5f88b0d0f0da7d4b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8486,6 +8487,33 @@
         "parametrize"
       ],
       "summary": "An operator authorizes one exact train root source while the train runs."
+    },
+    "tests/test_integration_root_noop.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.commands.task_commands",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.delivery_truth",
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.provenance",
+        "src.integration.train_controls",
+        "src.integration.train_sources",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Explicit unheld-root no-op completion over real PostgreSQL and Git."
     },
     "tests/test_integration_root_pull_requests.py": {
       "areas": [
