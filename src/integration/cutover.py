@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import yaml
 from sqlalchemy import and_, case, cast, func, insert, or_, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import DBAPIError
 
 from src.database.tables import (
     archived_tasks, events, integration_batch_members, integration_batches, integration_branch_owners,
@@ -372,6 +373,10 @@ class Cutover:
                 prior = json.loads(payload) if payload else None
                 if not prior or prior["reverse"] or prior["repository_id"] != repository.id:
                     raise ValueError("no unreversed cutover for this repository")
+                if (not isinstance(prior.get("receipt_targets"), dict)
+                        or set(prior["receipt_targets"]) != set(prior["receipt_ids"])):
+                    raise ValueError("cutover_audit_incomplete: exact receipt targets are missing; "
+                                     "inspect the cutover audit before reversing")
                 if (repository.default_branch != prior["new_default"]
                         or project["promotion_flow"] != prior["new_flow"]):
                     raise ValueError("cutover configuration changed; inspect before reversing")
@@ -593,7 +598,12 @@ class _Activation:
     async def write_on(self, conn, project):
         plan, old, new = self.plan, self.plan["old_default"], self.default_branch
         await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
-        await conn.execute(text("LOCK TABLE task_delivery_receipts IN ACCESS EXCLUSIVE MODE"))
+        try:
+            await conn.execute(text("LOCK TABLE task_delivery_receipts IN ACCESS EXCLUSIVE MODE"))
+        except DBAPIError as exc:
+            if getattr(exc.orig, "sqlstate", None) != "55P03":
+                raise
+            raise ValueError("cutover_lock_timeout: receipt table is busy; retry cutover") from exc
         receipts = await receipt_targets_on(conn, plan["repository_id"], old,
             prior=plan["prior"]["receipt_ids"] if plan["reverse"] else None)
         receipt_ids = list(receipts)
@@ -602,8 +612,7 @@ class _Activation:
             prior=plan["prior"]["origin_ids"] if plan["reverse"] else None, lock=True)
         if receipts != plan["receipt_targets"] or origin_ids != plan["origin_ids"]:
             raise ValueError("plan changed; preview again: receipts or root origins")
-        if plan["reverse"] and (set(receipt_ids) != set(plan["prior"]["receipt_ids"])
-                                or set(origin_ids) != set(plan["prior"]["origin_ids"])):
+        if plan["reverse"] and set(receipt_ids) != set(plan["prior"]["receipt_ids"]):
             raise ValueError("cutover_data_changed: inspect audited rows before reversing")
         if receipt_ids:
             # Suspend only the receipt update guard under the table lock.

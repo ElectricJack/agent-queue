@@ -434,6 +434,74 @@ async def test_promotion_cutover_reverse_restores_exact_prior_binding_and_scoped
 
 
 @pytest.mark.parametrize("cutover_world", ["main", "refs/heads/main"], indirect=True)
+@pytest.mark.parametrize("retired_origin", ["done", "epic"])
+async def test_reverse_restores_exact_receipts_and_config_after_origin_retirement(
+    cutover_world, retired_origin,
+):
+    from sqlalchemy import update
+    from src.database.tables import task_branch_origins
+
+    db, service, _port = cutover_world
+    before = await cutover_rows(db)
+    changed = await apply_cutover(service, "p", FLOW, dry_run=False, expected_generation=7,
+                                 operator_id="operator")
+    assert changed["outcome"] == "configured"
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.id == "origin-" + retired_origin).values(retired_at=101))
+    retired_origins = (await cutover_rows(db))["task_branch_origins"]
+
+    reversed_ = await apply_cutover(service, "p", None, reverse=True, dry_run=False,
+                                   expected_generation=8, operator_id="operator")
+    assert reversed_["outcome"] == "configured" and reversed_["generation"] == 9
+    restored = await cutover_rows(db)
+    assert restored["projects"] == [
+        {**before["projects"][0], "hierarchical_integration_generation": 9}]
+    assert restored["repos"] == before["repos"]
+    assert restored["task_delivery_receipts"] == before["task_delivery_receipts"]
+    assert restored["task_branch_origins"] == retired_origins
+
+
+async def test_reverse_refuses_an_audit_without_exact_receipt_targets(cutover_world):
+    import json
+    from src.database.tables import events
+
+    db, service, port = cutover_world
+    await apply_cutover(service, "p", FLOW, dry_run=False, expected_generation=7,
+                        operator_id="operator")
+    async with db._engine.connect() as conn:
+        prior = json.loads(await conn.scalar(select(events.c.payload).where(
+            events.c.event_type == "integration.cutover")))
+    del prior["receipt_targets"]
+    await db.log_event("integration.cutover", project_id="p", payload=json.dumps(prior))
+    before = await cutover_rows(db)
+    port.observe.reset_mock()
+    with pytest.raises(ValueError, match="cutover_audit_incomplete:"):
+        await apply_cutover(service, "p", None, reverse=True, dry_run=False,
+                            expected_generation=8, operator_id="operator")
+    assert await cutover_rows(db) == before
+    port.observe.assert_not_awaited()
+
+
+async def test_cutover_receipt_table_lock_timeout_refuses_and_rolls_back(cutover_world):
+    from sqlalchemy import text
+
+    db, service, _port = cutover_world
+    before = await cutover_rows(db)
+    plan = await service.plan("p", FLOW)
+    async with db._engine.begin() as holder:
+        await holder.execute(text("LOCK TABLE task_delivery_receipts IN ACCESS SHARE MODE"))
+        with pytest.raises(ValueError, match="cutover_lock_timeout:"):
+            await service.run("p", FLOW, dry_run=False, expected_generation=7,
+                              baseline=plan, operator_id="operator")
+    assert await cutover_rows(db) == before
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(text("SELECT tgenabled::text FROM pg_trigger WHERE "
+            "tgrelid = 'task_delivery_receipts'::regclass AND "
+            "tgname = 'trg_task_delivery_receipts_update'")) == "O"
+
+
+@pytest.mark.parametrize("cutover_world", ["main", "refs/heads/main"], indirect=True)
 async def test_cutover_and_reverse_preserve_train_archive_delivery_authorization(cutover_world):
     from src.database.tables import task_delivery_receipts
     from src.integration.removal_guard import (
