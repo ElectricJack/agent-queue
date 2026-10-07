@@ -1368,6 +1368,7 @@ class PolicyActivation:
         operator_id: str,
         promotion_manifest: dict[str, Any] | None = None,
         dry_run: bool = False,
+        cutover=None,
     ) -> dict[str, Any]:
         """Activate repository and policy inputs behind the project generation CAS.
 
@@ -1377,7 +1378,9 @@ class PolicyActivation:
         new target (§3.11). ``dry_run`` runs every refusal check and returns
         ``checked`` without writing, so network work such as creating the flow's
         targets happens outside the fence and the write re-checks behind the
-        same generation.
+        same generation. The private cutover hook instead holds generation and
+        target locks through ref preparation and its atomic binding/data fixes;
+        ordinary callers retain the strict repository barrier.
         """
         allowed = {
             "integration_repository",
@@ -1438,6 +1441,11 @@ class PolicyActivation:
             generation = int(project["hierarchical_integration_generation"])
             if generation != expected_generation:
                 return {"outcome": "stale", "project_id": project_id, "generation": generation}
+            if cutover is not None:
+                refusal = await cutover.check_on(conn, project)
+                if refusal:
+                    return {"project_id": project_id, "generation": generation, **refusal}
+                updates["repo_default_branch"] = cutover.default_branch
             effective_mode = mode or project["hierarchical_integration_mode"]
             if "hierarchical_integration_policy" in updates:
                 raw_policy = updates["hierarchical_integration_policy"]
@@ -1512,7 +1520,8 @@ class PolicyActivation:
                         "generation": generation,
                         "error": "integration repository URL must be canonical GitHub HTTPS",
                     }
-                project_branch = str(project["repo_default_branch"] or "")
+                project_branch = str(updates.get("repo_default_branch",
+                                                project["repo_default_branch"]) or "")
                 if repository_config["default_branch"] != project_branch:
                     return {
                         "outcome": "blocked",
@@ -1550,7 +1559,9 @@ class PolicyActivation:
                     repository_row[field] != repository_config[field]
                     for field in ("url", "default_branch")
                 )
-            if repository_changed and await self._has_active_work_on(conn, project_id):
+            if repository_changed and await self._has_active_work_on(
+                conn, project_id, allow_epics=cutover is not None and cutover.allow_epics,
+            ):
                 return {"outcome": "busy", "project_id": project_id, "generation": generation,
                         "error": "a live subject retains the repository"}
             if "promotion_flow" in updates:
@@ -1569,6 +1580,9 @@ class PolicyActivation:
             if dry_run:
                 return {"outcome": "checked", "project_id": project_id,
                         "generation": generation, "updates": dict(updates)}
+            if cutover is not None:
+                await cutover.prepare()
+                await cutover.write_on(conn, project)
             if has_repository_config:
                 values = {"url": repository_config["url"],
                           "default_branch": repository_config["default_branch"]}
@@ -1589,6 +1603,8 @@ class PolicyActivation:
             ).values(**updates, hierarchical_integration_generation=generation + 1))
             if changed.rowcount != 1:
                 raise RuntimeError("policy activation lost its generation fence")
+            if cutover is not None:
+                await cutover.verify_on(conn, generation + 1)
             effective = mode or project["hierarchical_integration_mode"]
             if effective == "train":
                 await self.db.lock_integration_schedule_on(
@@ -1649,7 +1665,7 @@ class PolicyActivation:
             return await self._has_active_work_on(conn, project_id)
 
     @staticmethod
-    async def _has_active_work_on(conn, project_id, *, branches=None):
+    async def _has_active_work_on(conn, project_id, *, branches=None, allow_epics=False):
         """Whether live work holds the repository or, given ``branches``, any of them.
 
         The strict project-wide path also counts open train batches (F10).
@@ -1676,13 +1692,26 @@ class PolicyActivation:
                 open_batches.where(integration_batches.c.target_ref.in_(refs)),
             )
         else:
+            intents = select(integration_promotion_intents.c.id).where(
+                integration_promotion_intents.c.project_id == project_id,
+                integration_promotion_intents.c.state.not_in(
+                    ("committed", "conflict", "superseded")))
+            if allow_epics:
+                subjects = subjects.where(
+                    or_(integration_subjects.c.target_ref.is_(None),
+                        ~integration_subjects.c.target_ref.startswith("refs/heads/aq/epic/")))
+                owners = owners.where(
+                    ~integration_branch_owners.c.ref.startswith("aq/epic/"),
+                    ~integration_branch_owners.c.ref.startswith("refs/heads/aq/epic/"))
+                open_batches = open_batches.where(
+                    ~integration_batches.c.target_ref.startswith("refs/heads/aq/epic/"))
+                intents = intents.where(
+                    ~integration_promotion_intents.c.target_branch.startswith("aq/epic/"),
+                    ~integration_promotion_intents.c.target_branch.startswith("refs/heads/aq/epic/"))
             statements = (
                 subjects,
                 owners,
-                select(integration_promotion_intents.c.id).where(
-                    integration_promotion_intents.c.project_id == project_id,
-                    integration_promotion_intents.c.state.not_in(
-                        ("committed", "conflict", "superseded"))),
+                intents,
                 open_batches,
             )
         for statement in statements:

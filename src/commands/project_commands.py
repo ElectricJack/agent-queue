@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from src.git.manager import GitError
+from src.git.manager import GitError, RemoteRefState
 from src.models import (
     Project,
     ProjectStatus,
@@ -608,7 +608,8 @@ class ProjectCommandsMixin:
                         # every tracked path for daemon bookkeeping before
                         # pushing the same resolved OID.
                         try:
-                            await git.apush_validated_delivery(ws_path, None, "HEAD", branch)
+                            published_oid = await git.apush_validated_delivery(
+                                ws_path, None, "HEAD", branch)
                         except GitError as exc:
                             if str(exc).startswith("reserved delivery paths:"):
                                 return {
@@ -621,8 +622,11 @@ class ProjectCommandsMixin:
                     else:
                         # The content is already on origin; pushing the
                         # remote-tracking ref's exact OID is the whole delivery.
-                        await git.apush_validated_ref(ws_path, old_remote, branch)
+                        published_oid = await git.apush_validated_ref(ws_path, old_remote, branch)
                     branch_created = True
+                    verified = await git.als_remote_ref(ws_path, branch)
+                    if verified.state is not RemoteRefState.PRESENT or verified.oid != published_oid:
+                        raise GitError("new default branch was not verified on origin")
             except Exception as exc:
                 logger.warning(
                     "Could not verify/create branch %s for project %s: %s",
@@ -630,6 +634,7 @@ class ProjectCommandsMixin:
                     pid,
                     exc,
                 )
+                return {"error": f"could not verify/create default branch {branch}: {exc}"}
 
         await self.db.update_project(pid, repo_default_branch=branch)
 

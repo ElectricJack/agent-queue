@@ -207,6 +207,7 @@ start code work, tests or QA from a digest author turn.
     "integration_release_stale_owners",
     "integration_reevaluate_repair",
     "integration_status",
+    "integration_cutover_plan",
     "integration_transfer_owner",
     "integration_trust_manifest",
     "integration_app_verify",

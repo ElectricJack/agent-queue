@@ -20,6 +20,41 @@ def _client(result):
     return client
 
 
+def test_cutover_transmits_saved_plan_and_defaults_to_preview(tmp_path):
+    from src.cli.app import cli
+
+    flow = tmp_path / "flow.yaml"
+    flow.write_text("promotion_flow: [{id: release, source: dev, target: main}]\n")
+    baseline = {"project_id": "p", "generation": 7, "aborted_members": []}
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({"schema_version": 1, "data": {"plan": baseline}}))
+    client = _client({"success": True, "outcome": "preview"})
+    argv = ["integration", "cutover", "--project", "p", "--flow", str(flow)]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv)
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args[1]["dry_run"] is True
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv + ["--apply", "--expected-generation", "7",
+                                                "--plan", str(plan)])
+    assert result.exit_code == 0, result.output
+    args = client.execute.call_args.args[1]
+    assert args["dry_run"] is False and args["baseline"] == baseline
+
+
+def test_cutover_apply_requires_preview_and_generation_before_transport(tmp_path):
+    from src.cli.app import cli
+
+    flow = tmp_path / "flow.yaml"
+    flow.write_text("[]\n")
+    client = _client({})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "cutover", "--project", "p",
+            "--flow", str(flow), "--apply", "--expected-generation", "7"])
+    assert result.exit_code == 2 and "--plan FILE" in result.output
+    client.execute.assert_not_awaited()
+
+
 @pytest.mark.parametrize("leaf,identity,extra,command", [
     ("abort-batch", "batch", [], "integration_abort_batch"),
     ("retire-origin", "task", ["--origin-id", "origin"], "integration_retire_origin"),
