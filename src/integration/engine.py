@@ -28,7 +28,7 @@ from src.database.tables import (
 )
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     AdmissionPredicate,
     Decision,
     EjectArgs,

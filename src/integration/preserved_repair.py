@@ -25,7 +25,7 @@ from src.database.tables import (
 )
 from src.git.manager import RemoteRefState
 from src.integration.models import BranchKey, RepairPolicy
-from src.integration.promotion import PromotionInvariantError
+from src.integration.promotion_contracts import PromotionInvariantError
 from src.integration.writers import OperationSafety
 from src.integration.repair import _RepairInvariant
 

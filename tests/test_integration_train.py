@@ -1720,6 +1720,9 @@ async def test_driver_skips_until_a_command_handler_is_attached():
 RETIRED_TRUTH = {
     "src.integration.reconciler", "src.integration.root_runtime", "src.integration.parent_runtime",
     "src.integration.source_delivery", "src.integration.settling", "src.integration.records",
+    "src.integration.subjects", "src.integration.parent_engine", "src.integration.main_promotion",
+    "src.integration.promotion", "src.integration.candidates", "src.integration.root_adapters",
+    "src.integration.scheduler", "src.integration.stale_schedule",
 }
 RETIRED_TABLES = {
     "integration_subject_journal", "integration_subjects", "task_delivery_receipts",
@@ -1731,8 +1734,31 @@ SHARED_NAMES = {
     "src.integration.development_runtime": {
         "development_repository", "project_development_pin", "load_pinned_development_policy",
     },
-    "src.integration.subjects": {"Subject", "HeadIdentity"},
 }
+
+
+def test_active_train_and_promotion_modules_import_retained_contracts():
+    """Retirement cannot remove a live train's DTO, error or ownership dependency."""
+    import ast
+    from pathlib import Path
+
+    modules = (
+        "train", "train_sources", "checks", "candidate_baseline", "promotion_steps",
+        "epics", "github_review_poll", "attestation", "ci_producers", "ci_adapters",
+        "runtime_contracts", "promotion_contracts", "owner_guards", "source_repairs",
+    )
+    paths = [Path(f"src/integration/{module}.py") for module in modules]
+    paths.append(Path("src/git/github.py"))
+    for path in paths:
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Import):
+                assert not {alias.name for alias in node.names} & RETIRED_TRUTH, path
+            elif isinstance(node, ast.ImportFrom):
+                assert node.module not in RETIRED_TRUTH, (path, node.module)
+                if node.module == "src.integration":
+                    assert not {"src.integration." + alias.name for alias in node.names} & (
+                        RETIRED_TRUTH
+                    ), path
 
 
 def test_train_reads_no_journal_receipt_or_runtime_truth():

@@ -1735,7 +1735,7 @@ class SubjectCleanup:
         self.clock = clock
 
     def bind(self, ports):
-        from src.integration.subjects import Primitive
+        from src.integration.runtime_contracts import Primitive
 
         ports.bind(Primitive.CLEANUP, self)
 
@@ -1744,7 +1744,7 @@ class SubjectCleanup:
 
         from src.integration.development import DevelopmentBusy
         from src.integration.ownership import BranchOwnershipError
-        from src.integration.subjects import PrimitiveOutcome, SubjectPhase
+        from src.integration.runtime_contracts import PrimitiveOutcome, SubjectPhase
 
         p = args.primitive
         if subject.phase not in {SubjectPhase.PUBLISHED, SubjectPhase.CLEANING}:

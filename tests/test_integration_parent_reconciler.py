@@ -29,7 +29,7 @@ from src.integration.parent_adapters import (
     ParentPrimitiveAdapters,
 )
 from src.integration.parent_ci import ParentCIService
-from src.integration.parent_engine import ParentEngineOwnership
+from src.integration.owner_guards import ParentEngineOwnership
 from src.integration.parent_runtime import (
     ParentSubjectRuntime,
     ParentVisitObserver,
@@ -39,11 +39,7 @@ from src.integration.parent_runtime import (
 from src.integration.parent_subjects import ParentDatabaseObservationReader, ParentSubjectAdapter
 from src.integration.promotion import PromotionService
 from src.integration.repair import RepairService
-from src.integration.subjects import (
-    GateArgs,
-    PolicyArtifactPin,
-    Subject,
-)
+from src.integration.runtime_contracts import GateArgs, PolicyArtifactPin, Subject
 from src.integration.writers import WriterPrimitives
 from src.models import Agent, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator.monitoring import MonitoringMixin

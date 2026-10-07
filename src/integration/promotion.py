@@ -2,6 +2,20 @@
 
 from __future__ import annotations
 
+from src.integration.promotion_contracts import (
+    PromotionError as PromotionError,
+    PromotionConflict as PromotionConflict,
+    PromotionSourceMoved as PromotionSourceMoved,
+    PromotionTargetMoved as PromotionTargetMoved,
+    PromotionNotApplied as PromotionNotApplied,
+    PromotionRecovery as PromotionRecovery,
+    PromotionInvariantError as PromotionInvariantError,
+    PromotionRuntimeError as PromotionRuntimeError,
+    PromotionAuthorizationError as PromotionAuthorizationError,
+    ResolvedRepository as ResolvedRepository,
+    RepositoryResolver as RepositoryResolver,
+)
+
 import hashlib
 import inspect
 import json
@@ -9,7 +23,6 @@ import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +35,7 @@ from src.commands.principal import (
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, GitManager, RemoteRefState
 from src.integration.models import BranchKey, ConflictResolutionInput, Fence, PromotionInput, PromotionValue
-from src.integration.parent_engine import parent_engine_guard
+from src.integration.owner_guards import parent_engine_guard
 from src.integration.ownership import BranchOwnership
 from src.integration.regeneration import GeneratedMergeConflict, merge_generated_tree
 from src.integration.source_trailer import source_identity, with_source_trailers
@@ -39,58 +52,26 @@ _IDENTITY_NAMESPACE = uuid.UUID("44f3c614-4c2c-4a03-a76d-33575d722b8d")
 _MAX_CONFLICT_BYTES = 65536
 
 
-class PromotionError(RuntimeError):
-    """Base failure with a deterministic command outcome."""
 
 
-class PromotionConflict(PromotionError):
-    def __init__(self, value: PromotionValue, diagnostics: dict[str, Any]):
-        super().__init__("reviewed source conflicts with the expected target")
-        self.value = value
-        self.diagnostics = diagnostics
 
 
-class PromotionSourceMoved(PromotionError):
-    pass
 
 
-class PromotionTargetMoved(PromotionError):
-    pass
 
 
-class PromotionNotApplied(PromotionError):
-    pass
 
 
-class PromotionRecovery(PromotionError):
-    """A fenced recovery advanced the intent without delivering a receipt."""
-
-    def __init__(self, outcome: str, value: PromotionValue):
-        super().__init__(outcome)
-        self.outcome = outcome
-        self.value = value
 
 
-class PromotionInvariantError(PromotionError):
-    pass
 
 
-class PromotionRuntimeError(PromotionError):
-    pass
 
 
-class PromotionAuthorizationError(PromotionError):
-    pass
 
 
-@dataclass(frozen=True)
-class ResolvedRepository:
-    repo: RepoConfig
-    origin_url: str
-    retained_git_dir: Path
 
 
-RepositoryResolver = Callable[[str], Awaitable[RepoConfig | None] | RepoConfig | None]
 CrashHook = Callable[[str], Awaitable[None] | None]
 
 

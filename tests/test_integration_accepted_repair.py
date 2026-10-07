@@ -91,7 +91,8 @@ async def configure_ci_and_promotion(repair, now):
         TrustedCIObservation,
         TrustedFixtureObserver,
     )
-    from src.integration.main_promotion import RootAttestationProof, RootPromotionService
+    from src.integration.promotion_contracts import RootAttestationProof
+    from src.integration.main_promotion import RootPromotionService
     from src.models import Task
     from tests.test_epic_train_end_to_end import _green_receipt
 

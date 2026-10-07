@@ -222,7 +222,7 @@ def exact_head_checks(
     names and trust are those the cache holds; a mismatch with the policy is
     reported by the evaluator as ``checks_scope_changed``.
     """
-    from src.integration.subjects import HeadIdentity
+    from src.integration.runtime_contracts import HeadIdentity
 
     async def read(repository_id: str, head_sha: str, policy: EpicPolicy) -> HeadChecks:
         exact = exact_for(repository_id, policy)

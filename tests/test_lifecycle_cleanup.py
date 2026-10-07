@@ -890,7 +890,7 @@ class TestObsoleteClose:
         assert await status(db, "live") == TaskStatus.IN_PROGRESS
 
     async def test_obsolete_close_refuses_work_owned_by_a_current_subject(self, db):
-        from src.integration.subjects import SubjectKind
+        from src.integration.runtime_contracts import SubjectKind
         from src.sessions.obsolete import ObsoleteCloseRefused
         from tests.test_development_subjects import pinned_policy, store_subject, subject
 

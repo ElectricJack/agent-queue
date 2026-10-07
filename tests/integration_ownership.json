@@ -13130,7 +13130,7 @@
       "line": 1705,
       "owner": "TaskQueryMixin._apply_transition",
       "call": "delete",
-      "owner_fingerprint": "e7b40311cf8da3ed0bb3dc32f9d7bd29d839ab244fa4b6fc4b848a1d41162430",
+      "owner_fingerprint": "3019891298b26657452f8707f04e4d1cd42683fe9d811bd0895bee7da158b2ca",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary lifecycle metadata cleanup when task status changes; proposal transactions may defer graph projection, while integration completion and wake guards retain authority. No ref replay state."
@@ -13702,15 +13702,6 @@
       "disposition": "retire",
       "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
     },
-    "src/integration/parent_engine.py::ParentEngineOwnership.transfer::d72aa538030c18092025092baab1417ff0264717afa94e48267098ea29798d41": {
-      "line": 212,
-      "owner": "ParentEngineOwnership.transfer",
-      "call": "append_integration_subject_journal_on",
-      "owner_fingerprint": "b6b3d0dc80940ff4d6fbbb6a9cb1c6bea3df3e863a92b759cb4871b7178d6086",
-      "integration_signal": true,
-      "disposition": "retire",
-      "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
-    },
     "src/integration/parent_source.py::ParentSourceReverification.run::57e4b544bc5e42786ac058198da2d2363fe7a6cf9142fa03ec418ec9656f1247": {
       "line": 279,
       "owner": "ParentSourceReverification.run",
@@ -13854,24 +13845,6 @@
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
-    },
-    "src/integration/source_delivery.py::retire_delivered_queued_repairs::4b7da187805bc601684854d077b088429d2190c9b0f5126419adee2bc186fa6a": {
-      "line": 396,
-      "owner": "retire_delivered_queued_repairs",
-      "call": "log_event",
-      "owner_fingerprint": "d9fe5f397c1b7c3200bad5020f2104a8e866228967d1d9fa7b495292f8dc4cf2",
-      "integration_signal": true,
-      "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
-    },
-    "src/integration/source_delivery.py::retire_reopened_source_repairs_on::7032d70701a482232d21878d7f693cac7a9fb3daaf68364d1511a0604d9c9d91": {
-      "line": 147,
-      "owner": "retire_reopened_source_repairs_on",
-      "call": "log_event",
-      "owner_fingerprint": "95134e1f5d3ff8c5b5c49c02fe14b2c75fc86c0344e2aaebe2cc25a26881d16c",
-      "integration_signal": true,
-      "disposition": "ordinary",
-      "reason": "Audit of one source-CI delegate the reopen fence already made terminal: names the discarded source head and reopen context in the same transaction. No ref replay authority; branch origins retire through the ordinary origin guard."
     },
     "src/integration/stale_owners.py::StaleOwnerRelease._release_stale::442e67b871abb9af88114dc8578e8889b7f2d64853464e2ccd4ec3edd2ee3525": {
       "line": 408,
@@ -14619,6 +14592,33 @@
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Records a named preparation hold when a retained attachment cannot be safely released; ordinary claim diagnostic, never Git publication or ref replay authority."
+    },
+    "src/integration/owner_guards.py::ParentEngineOwnership.transfer::d72aa538030c18092025092baab1417ff0264717afa94e48267098ea29798d41": {
+      "line": 212,
+      "owner": "ParentEngineOwnership.transfer",
+      "call": "append_integration_subject_journal_on",
+      "owner_fingerprint": "b6b3d0dc80940ff4d6fbbb6a9cb1c6bea3df3e863a92b759cb4871b7178d6086",
+      "integration_signal": true,
+      "disposition": "retire",
+      "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
+    },
+    "src/integration/source_repairs.py::retire_delivered_queued_repairs::4b7da187805bc601684854d077b088429d2190c9b0f5126419adee2bc186fa6a": {
+      "line": 396,
+      "owner": "retire_delivered_queued_repairs",
+      "call": "log_event",
+      "owner_fingerprint": "d9fe5f397c1b7c3200bad5020f2104a8e866228967d1d9fa7b495292f8dc4cf2",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/source_repairs.py::retire_reopened_source_repairs_on::7032d70701a482232d21878d7f693cac7a9fb3daaf68364d1511a0604d9c9d91": {
+      "line": 147,
+      "owner": "retire_reopened_source_repairs_on",
+      "call": "log_event",
+      "owner_fingerprint": "95134e1f5d3ff8c5b5c49c02fe14b2c75fc86c0344e2aaebe2cc25a26881d16c",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Audit of one source-CI delegate the reopen fence already made terminal: names the discarded source head and reopen context in the same transaction. No ref replay authority; branch origins retire through the ordinary origin guard."
     }
   },
   "generic_dependencies": {

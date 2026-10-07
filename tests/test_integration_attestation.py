@@ -29,7 +29,7 @@ from src.integration.ci import (
     IntegrationTrustManifest,
     SubjectTrustError,
 )
-from src.integration.main_promotion import RootAttestationSubject
+from src.integration.promotion_contracts import RootAttestationSubject
 from src.integration.ci_producers import HostedCIProducer, LocalCIProducer
 from src.integration.repair import RepairService
 from src.models import Project, RepoConfig, RepoSourceType

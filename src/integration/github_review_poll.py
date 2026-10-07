@@ -91,7 +91,7 @@ class RootPullRequestGate:
             ReviewerPermissionUnavailable,
             observe_pull_request_review_state,
         )
-        from src.integration.subjects import HeadIdentity
+        from src.integration.runtime_contracts import HeadIdentity
 
         async with self.db._engine.connect() as conn:
             row = (await conn.execute(select(

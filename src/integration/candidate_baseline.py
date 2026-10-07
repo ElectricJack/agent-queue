@@ -48,7 +48,7 @@ from sqlalchemy import select, update
 from src.database.tables import integration_batches
 from src.integration.batches import candidate_ref
 from src.integration.checks import ChecksResult, ChecksState, Conclusion, ExactChecks
-from src.integration.subjects import HeadIdentity
+from src.integration.runtime_contracts import HeadIdentity
 
 logger = logging.getLogger(__name__)
 

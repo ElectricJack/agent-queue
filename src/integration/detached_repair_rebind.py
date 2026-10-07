@@ -30,7 +30,7 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
-from src.integration.promotion import PromotionError
+from src.integration.promotion_contracts import PromotionError
 from src.integration.writers import OperationSafety
 from src.integration.repair import RepairService, _RepairInvariant
 from src.models import TaskStatus

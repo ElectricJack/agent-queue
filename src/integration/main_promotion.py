@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from src.integration.promotion_contracts import (
+    RootPromotionResult as RootPromotionResult,
+    RootPromotionInvariantError as RootPromotionInvariantError,
+    RootPromotionConstraintError as RootPromotionConstraintError,
+    RootAttestationSubject as RootAttestationSubject,
+    RootAttestationProof as RootAttestationProof,
+)
+
 import asyncio
 import hashlib
 import inspect
@@ -10,9 +18,9 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
+from pydantic import ValidationError
 from sqlalchemy import insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
@@ -54,75 +62,14 @@ _CLAIM_SECONDS = 135.0
 logger = logging.getLogger(__name__)
 
 
-class RootPromotionResult(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
-
-    outcome: Literal[
-        "prepared",
-        "promoted",
-        "already_promoted",
-        "base_moved",
-        "ci_missing",
-        "non_fast_forward",
-        "wait",
-        "reconciliation_blocked",
-        "stale",
-        "configuration_blocked",
-    ]
-    batch_id: str
-    revision: int
-    intent_id: str | None = None
-    receipt_ids: tuple[str, ...] = ()
-    head_sha: str | None = None
-    #: Safe operator-facing explanation of a refusal; never part of the
-    #: command contract's result fields.
-    reason: str | None = None
 
 
-class RootPromotionInvariantError(RuntimeError):
-    """Durable root promotion state is internally inconsistent."""
 
 
-class RootPromotionConstraintError(RootPromotionInvariantError):
-    """The database refused the root reservation, and no canonical intent explains it.
-
-    Only a ``unique_violation`` answered by a readable canonical intent is a
-    lost race; every other refusal names its SQLSTATE and constraint.
-    """
-
-    def __init__(self, message: str, *, sqlstate: str | None, constraint: str | None):
-        super().__init__(message)
-        self.sqlstate = sqlstate
-        self.constraint = constraint
 
 
-class RootAttestationSubject(BaseModel):
-    """Exact server-derived root candidate identity requiring attestation."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
-
-    repository_numeric_id: StrictInt = Field(gt=0)
-    repository_full_name: str = Field(min_length=1)
-    operation_id: str = Field(min_length=1)
-    batch_id: str = Field(min_length=1)
-    revision: StrictInt = Field(ge=0)
-    candidate_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
-    required_check_version: str = Field(min_length=1)
 
 
-class RootAttestationProof(RootAttestationSubject):
-    """Live CI receipt identity, or legacy App publication proof, supplied by Task10."""
-
-    check_run_id: StrictInt = Field(gt=0)
-    external_id: str = Field(
-        pattern=r"^aq-(?:attestation|ci-receipt)-v1:[0-9a-f]{64}$"
-    )
-
-    def subject(self) -> RootAttestationSubject:
-        fields = RootAttestationSubject.model_fields
-        return RootAttestationSubject.model_validate(
-            {name: getattr(self, name) for name in fields}
-        )
 
 
 RepositoryResolver = Callable[[str], Awaitable[Any] | Any]

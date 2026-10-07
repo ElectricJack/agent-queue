@@ -56,7 +56,7 @@ from src.integration.checks import ChecksResult, ChecksState, ExactChecks, Hybri
 from src.integration.git_truth import GitTruthSnapshot
 from src.integration.models import RepairPolicy
 from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
-from src.integration.subjects import HeadIdentity
+from src.integration.runtime_contracts import HeadIdentity
 from src.logging_config import log_handled
 
 logger = logging.getLogger(__name__)

@@ -32,7 +32,8 @@ from src.database.tables import (
 )
 from src.git.github_app import GitHubRepositoryBinding
 from src.git.manager import GitManager
-from src.integration.candidates import AuditPullRequest, CandidateResolutionInput, CandidateService
+from src.integration.promotion_contracts import AuditPullRequest, CandidateResolutionInput
+from src.integration.candidates import CandidateService
 from src.integration.ci import (
     CIReceiptPayload,
     CIService,
@@ -44,7 +45,8 @@ from src.integration.ci import (
 )
 from src.integration.cleanup import IntegrationCleanupService
 from src.integration.root_pull_requests import EpicPullRequestService
-from src.integration.main_promotion import RootAttestationProof, RootPromotionService
+from src.integration.promotion_contracts import RootAttestationProof
+from src.integration.main_promotion import RootPromotionService
 from src.integration.promotion import PromotionService
 from src.integration.repair import RepairService
 from src.integration.review_evidence import ReviewEvidenceProducer

@@ -242,7 +242,7 @@ async def test_hosted_parent_ci_event_verifies_without_a_live_workspace(command_
 
 def test_parent_exact_green_precedes_legacy_dossier_writer_budget_and_stop_proof():
     from src.integration.parent_adapters import ParentPolicyFacts
-    from src.integration.subjects import Primitive, SubjectKind
+    from src.integration.runtime_contracts import Primitive, SubjectKind
     from tests.test_root_integration_playbook import _green_first_policy_case
 
     decision = _green_first_policy_case(PARENT_FIXTURE, SubjectKind.PARENT_EPISODE,
@@ -252,7 +252,7 @@ def test_parent_exact_green_precedes_legacy_dossier_writer_budget_and_stop_proof
 
 def test_parent_green_still_obeys_holds_rejection_and_competing_lease():
     from src.integration.parent_adapters import ParentPolicyFacts
-    from src.integration.subjects import HoldFacts, SubjectKind
+    from src.integration.runtime_contracts import HoldFacts, SubjectKind
     from tests.test_root_integration_playbook import _green_first_policy_case
 
     for hold in ("operator_hold", "review_rejected"):

@@ -23,7 +23,7 @@ from src.database.tables import (
     playbook_artifacts,
 )
 from src.integration.models import BranchKey, Fence
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     DEFAULT_MAX_WAIT_SECONDS,
     OUTCOME_DETAILS,
     PHASE1_ADAPTED_COMMANDS,

@@ -14,7 +14,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from src.database import tables as t
 from src.integration.engine import RootEngineOwnership
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     PolicyArtifactPin,
     Subject,
     SubjectKind,

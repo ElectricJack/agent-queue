@@ -47,7 +47,7 @@ from src.integration.records import (
     lock_current_on,
 )
 from src.integration.scheduler import TrainService
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     ARTIFACT_PATTERN,
     EjectArgs,
     GateArgs,
@@ -400,7 +400,7 @@ class GatePrimitives:
         This control is deliberately absent from the policy primitive ports.
         """
         from src.integration.engine import EngineRefused
-        from src.integration.parent_engine import parent_lock_key
+        from src.integration.owner_guards import parent_lock_key
 
         if not verified_human or not operator_id.strip():
             raise EngineRefused("verified_human_required")

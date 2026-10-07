@@ -17,7 +17,7 @@ from src.database.queries.integration_state_queries import session_attached_clau
 from src.database.queries.task_references import find_integration_task_references
 from src.integration.delegate_release import LIVE_OPERATION_STATES, _owned_by, release_delegates_on
 from src.integration.engine import lock_key
-from src.integration.parent_engine import parent_lock_key
+from src.integration.owner_guards import parent_lock_key
 
 
 async def _cancel_orphan_on(db, conn, operation, *, now, reason, legacy_engine_gone=False):

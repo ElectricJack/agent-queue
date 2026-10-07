@@ -18,7 +18,7 @@ from src.integration.parent_adapters import (
     ParentPrimitiveAdapters,
     PendingParentPublication,
 )
-from src.integration.parent_engine import active_parent_scope, parent_lock_key
+from src.integration.owner_guards import active_parent_scope, parent_lock_key
 from src.integration.parent_subjects import (
     ParentDatabaseObservationReader,
     ParentIntegrationObserver,
@@ -28,7 +28,7 @@ from src.integration.parent_subjects import (
 from src.integration.reconciler import IntegrationReconciler, VisitTransition
 from src.integration.root_runtime import PinnedRootPolicy
 from src.integration.shadow import diagnostics_for
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     JournalMode,
     MemberRef,
     PolicyArtifactPin,

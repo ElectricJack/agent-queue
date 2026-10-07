@@ -19,7 +19,7 @@ from src.database.tables import (
 )
 from src.integration.gates import EjectionPlan, GatePrimitives
 from src.integration.records import AttemptObservation, DeliveryProof, RecordsPrimitives
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     EjectArgs,
     GateArgs,
     JournalMode,

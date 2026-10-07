@@ -88,9 +88,9 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import RemoteRefState
-from src.integration.parent_engine import parent_engine_guard
+from src.integration.owner_guards import parent_engine_guard
 from src.integration.models import BranchKey, Fence
-from src.integration.promotion import PromotionError
+from src.integration.promotion_contracts import PromotionError
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)

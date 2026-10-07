@@ -344,7 +344,7 @@ async def _observed_proof(case):
 
 async def _withheld(case, tmp_path):
     """The queued source-CI repairs a claim would withhold, proved right now."""
-    from src.integration.source_delivery import delivered_queued_repairs
+    from src.integration.source_repairs import delivered_queued_repairs
 
     return await delivered_queued_repairs(
         case["db"], case["db"]._delivery_observer, project_id="p")
@@ -548,7 +548,7 @@ async def test_claim_retires_a_ready_repair_superseded_by_source_delivery(case, 
     "source", "target", "lineage", "claimed", "completed", "gate", "hold", "owner", "session",
 ])
 async def test_ready_repair_retirement_rechecks_identity_and_preserves_writers(case, tmp_path, change):
-    from src.integration.source_delivery import retire_delivered_queued_repairs
+    from src.integration.source_repairs import retire_delivered_queued_repairs
 
     handler, _filing = await _source_handler(case, tmp_path)
     case["db"].set_delivery_observer(DeliveryObserver(
@@ -833,7 +833,7 @@ async def test_reopen_during_source_ci_repair_filing_retires_the_new_delegate(ca
 
 
 async def test_source_ci_repair_requires_current_verified_parent_completion(case, tmp_path):
-    from src.integration.source_delivery import superseded_source_repairs_on
+    from src.integration.source_repairs import superseded_source_repairs_on
 
     _, observation = await _red_observation(case)
     handler, _ = await _source_ci_handler(case, tmp_path)

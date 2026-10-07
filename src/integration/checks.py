@@ -34,7 +34,7 @@ from src.integration.ci_producers import (
     ProducerRequest,
     digest,
 )
-from src.integration.subjects import CIState, HeadIdentity
+from src.integration.runtime_contracts import CIState, HeadIdentity
 
 logger = logging.getLogger(__name__)
 

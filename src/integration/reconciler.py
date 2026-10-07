@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.event_bus import EventBus
 from src.logging_config import CorrelationContext
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     Decision,
     GateArgs,
     JournalKind,

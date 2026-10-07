@@ -27,7 +27,8 @@ from src.database import Database
 from src.database import tables as t
 from src.git.github_app import GitHubRepositoryBinding
 from src.git.manager import GitManager
-from src.integration.candidates import AuditPullRequest, CandidateService
+from src.integration.promotion_contracts import AuditPullRequest
+from src.integration.candidates import CandidateService
 from src.integration.ci import (
     CandidateCISubject,
     CIReceiptPayload,
@@ -40,7 +41,8 @@ from src.integration.ci import (
 )
 from src.integration.cleanup import IntegrationCleanupService
 from src.integration.engine import root_engine_guard
-from src.integration.main_promotion import RootAttestationProof, RootPromotionService
+from src.integration.promotion_contracts import RootAttestationProof
+from src.integration.main_promotion import RootPromotionService
 from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy
 from src.integration.ownership import BranchOwnership
 from src.integration.promotion import PromotionService
@@ -51,7 +53,13 @@ from src.integration.root_adapters import RootPrimitiveAdapters
 from src.integration.root_runtime import PinnedRootPolicy, RootObserver, RootSubjectRuntime
 from src.integration.scheduler import IntegrationScheduler, TrainService
 from src.integration.service import IntegrationService
-from src.integration.subjects import PrimitivePorts, RemoteHead, Subject, SubjectPhase, WriterStatus
+from src.integration.runtime_contracts import (
+    PrimitivePorts,
+    RemoteHead,
+    Subject,
+    SubjectPhase,
+    WriterStatus,
+)
 from src.models import Project, RepoConfig, RepoSourceType, SessionRecord, TaskCompletion
 from src.orchestrator import Orchestrator
 from src.playbooks.definition import load_definition_json
@@ -98,9 +106,15 @@ async def git_first_case(git_first_repository):  # noqa: F811 - imported pytest 
     from src.integration.parent_adapters import ParentPolicyFacts
     from src.integration.parent_subjects import ParentChildFacts
     from src.integration.shadow import GitFirstDiagnostics
-    from src.integration.subjects import (
-        CIEvidence, CIState, MemberFacts, PolicyArtifactPin, SubjectEngine, SubjectKind,
-        SubjectSchedule, WriterLease,
+    from src.integration.runtime_contracts import (
+        CIEvidence,
+        CIState,
+        MemberFacts,
+        PolicyArtifactPin,
+        SubjectEngine,
+        SubjectKind,
+        SubjectSchedule,
+        WriterLease,
     )
 
     repo = git_first_repository
@@ -800,6 +814,8 @@ class Train:
 
     async def describe(self) -> str:
         lines = []
+        for name, _args, result in self.commands[-4:]:
+            lines.append(f"command {name}: {result}")
         for subject in await self.subjects():
             facts = await self.observer.observe(subject)
             lines.append(
@@ -1325,7 +1341,7 @@ async def test_never_claimed_writer_reaches_main_by_policy_ejection_within_budge
 
 
 async def test_live_green_candidate_promotes_without_prior_ci_evidence_or_operator_action(train):
-    from src.integration.subjects import CIEvidence, CIState
+    from src.integration.runtime_contracts import CIEvidence, CIState
 
     await train.open()
     train.source("alpha", {"alpha.txt": "alpha\n"})
@@ -1364,7 +1380,7 @@ async def test_a_stale_cleanup_count_still_releases_the_lease_and_seals_the_next
     items complete, so the project lease and the sweep request stayed held and
     no later batch could seal.
     """
-    from src.integration.subjects import CIEvidence, CIState
+    from src.integration.runtime_contracts import CIEvidence, CIState
 
     await train.open()
     service = train.handler.orchestrator.integration_cleanup_service
@@ -1549,7 +1565,7 @@ async def test_main_moved_after_build_rebuilds_once_then_red_ci_routes_to_repair
     on the old base, so ``base-moved`` re-fired every visit and red CI was
     never reached.  Now the candidate is rebuilt onto observed main once.
     """
-    from src.integration.subjects import CIEvidence, CIState
+    from src.integration.runtime_contracts import CIEvidence, CIState
 
     await train.open()
     train.source("alpha", {"alpha.txt": "alpha\n"})
@@ -1602,7 +1618,7 @@ async def test_a_runner_outage_retries_while_a_failed_job_still_files_repair(tra
     really failed. The cancellations must neither hide that failure nor, on a
     run with no failure at all, open a repair stage and spend its budget.
     """
-    from src.integration.subjects import CIState
+    from src.integration.runtime_contracts import CIState
 
     async def repair_stages(batch_id):
         async with train.db._engine.connect() as conn:
@@ -1899,7 +1915,7 @@ async def test_accepted_ci_repair_rebuilt_on_moved_main_is_pushed_before_testing
     unpublished_ci_reads = []
 
     async def live_ci(snapshot, head):
-        from src.integration.subjects import CIEvidence, CIState
+        from src.integration.runtime_contracts import CIEvidence, CIState
 
         if train.remote(head.ref) != head.sha:
             unpublished_ci_reads.append(head.sha)

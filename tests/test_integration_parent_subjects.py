@@ -18,7 +18,7 @@ from src.integration.parent_subjects import (
     ParentSubjectFacts,
     parent_subject_from_rows,
 )
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     CIState,
     ObserveSubjectArgs,
     PolicyArtifactPin,
@@ -310,7 +310,7 @@ async def test_failed_verification_recovery_keeps_receipts_and_observes_new_fix(
     assert old.verification.status == "failed" and old.verification.head_sha == red_head
     assert old.writer.task_id == old_verifier
     old_receipts = await _rows(case.db, t.task_delivery_receipts)
-    from src.integration.parent_engine import ParentEngineOwnership
+    from src.integration.owner_guards import ParentEngineOwnership
 
     async with ParentEngineOwnership(case.db).operation("epic", subject=subject):
         applied = await FailedVerificationRecovery(case.db, case.promotion).run(

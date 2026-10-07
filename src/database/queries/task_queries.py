@@ -728,7 +728,7 @@ class TaskQueryMixin:
                 await self._upsert_meta(
                     task_id, INTEGRATION_REWORK_AT_KEY, values["updated_at"], conn=conn
                 )
-                from src.integration.source_delivery import retire_reopened_source_repairs_on
+                from src.integration.source_repairs import retire_reopened_source_repairs_on
 
                 retired = await retire_reopened_source_repairs_on(
                     self, conn, task_id, context="update_task",
@@ -1652,8 +1652,9 @@ class TaskQueryMixin:
                 await self._upsert_meta(
                     task_id, INTEGRATION_REWORK_AT_KEY, values["updated_at"], conn=conn
                 )
-                from src.integration.source_delivery import (
-                    SUPERSEDED, retire_reopened_source_repairs_on,
+                from src.integration.source_repairs import (
+                    SUPERSEDED,
+                    retire_reopened_source_repairs_on,
                 )
 
                 if context != SUPERSEDED:

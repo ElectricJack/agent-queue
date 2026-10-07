@@ -23,7 +23,7 @@ from src.integration.checks import (
     evaluate,
 )
 from src.integration.ci_producers import HostedCIProducer, ProducerRequest
-from src.integration.subjects import HeadIdentity
+from src.integration.runtime_contracts import HeadIdentity
 from tests.test_integration_ci_producers import HEAD, OTHER, JobClient, github, local
 
 REQUIRED = RequiredChecks(version="v1", names=("unit", "lint"), producer_id="15368")
@@ -428,7 +428,7 @@ async def test_unfinished_or_untrusted_refresh_replaces_cached_success(
 async def test_root_reader_refreshes_the_commit_cache_only_when_active(db, monkeypatch, mode):
     from src.git.github_contracts import GitHubRepositoryBinding
     from src.integration.root_runtime import root_candidate_ci_reader
-    from src.integration.subjects import CIState
+    from src.integration.runtime_contracts import CIState
 
     client, trust = github(app=False)
     monkeypatch.setattr("src.integration.observe._required", lambda _snapshot: {})

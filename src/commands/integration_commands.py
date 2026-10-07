@@ -20,7 +20,7 @@ from src.git.manager import RemoteRefState
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
-from src.integration.parent_engine import parent_engine_guard
+from src.integration.owner_guards import parent_engine_guard
 from src.models import TaskStatus
 
 
@@ -210,7 +210,7 @@ class IntegrationCommandsMixin:
         from src.commands.contracts.integration import IntegrationReleaseHeldGateArgs
         from src.integration.engine import EngineRefused
         from src.integration.gates import GatePrimitives
-        from src.integration.subjects import Subject
+        from src.integration.runtime_contracts import Subject
 
         principal = current_principal() or TRUSTED_LOCAL
         if principal.kind is not PrincipalKind.LOCAL:
@@ -256,8 +256,8 @@ class IntegrationCommandsMixin:
 
     async def _cmd_integration_parent_action(self, args: dict) -> dict:
         """Internal visit dispatch: process-bound engine scope is the authority."""
-        from src.integration.parent_engine import active_parent_scope
-        from src.integration.subjects import Subject
+        from src.integration.owner_guards import active_parent_scope
+        from src.integration.runtime_contracts import Subject
 
         row = await self.db.get_integration_subject(args.get("subject_id"))
         if row is None or row["version"] != args.get("expected_version"):
@@ -291,7 +291,7 @@ class IntegrationCommandsMixin:
 
         from src.commands.contracts.integration import IntegrationEngineTransferArgs
         from src.integration.engine import EngineRefused, RootEngineOwnership
-        from src.integration.subjects import SubjectEngine
+        from src.integration.runtime_contracts import SubjectEngine
 
         try:
             request = IntegrationEngineTransferArgs.model_validate(args)
@@ -307,7 +307,7 @@ class IntegrationCommandsMixin:
             and not self.config.integration.reconciler_active):
             return _failure("refused", "enable the active loop before transferring subjects")
         try:
-            from src.integration.parent_engine import ParentEngineOwnership
+            from src.integration.owner_guards import ParentEngineOwnership
             owner = (ParentEngineOwnership(self.db) if request.parent_task_id
                      else RootEngineOwnership(self.db))
             parent_args = {"task_id": request.parent_task_id} if request.parent_task_id else {}
@@ -396,7 +396,7 @@ class IntegrationCommandsMixin:
         from src.integration.models import HierarchicalIntegrationPolicy
         from src.integration.review_evidence import ReviewEvidenceProducer
         from src.integration.source_ci import SourceCIObservation, repair_description
-        from src.integration.source_delivery import RETIREMENT_KEY, prove_source_delivered
+        from src.integration.source_repairs import RETIREMENT_KEY, prove_source_delivered
 
         if not isinstance(observation, SourceCIObservation):
             return _failure("invalid", "source observation must be server-observed")
@@ -536,7 +536,7 @@ class IntegrationCommandsMixin:
             # must also retire the newly linked delegate, never leave an
             # orphan writer able to complete the rejected source.
             if await producer._pull_request_source_on(conn, observation.task_id) != source:
-                from src.integration.source_delivery import retire_reopened_source_repairs_on
+                from src.integration.source_repairs import retire_reopened_source_repairs_on
 
                 retired = await retire_reopened_source_repairs_on(
                     self.db, conn, observation.task_id, context="source_changed_during_repair_filing",
@@ -624,7 +624,7 @@ class IntegrationCommandsMixin:
         from sqlalchemy import select, update
 
         from src.database.tables import integration_source_ci
-        from src.integration.source_delivery import record_delivery_evidence
+        from src.integration.source_repairs import record_delivery_evidence
 
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, source["project_id"])
@@ -1425,7 +1425,7 @@ class IntegrationCommandsMixin:
 
         from src.commands.contracts.integration import IntegrationRecoverCandidateMemberArgs
         from src.database.tables import integration_candidate_resolutions
-        from src.integration.candidates import CandidateAuthorizationError
+        from src.integration.promotion_contracts import CandidateAuthorizationError
 
         try:
             request = IntegrationRecoverCandidateMemberArgs.model_validate(args)
@@ -1685,7 +1685,7 @@ class IntegrationCommandsMixin:
         except ValidationError as exc:
             return _failure("invalid", f"invalid collection reopen request: {exc}")
         task = await self.db.get_task(request.task_id)
-        from src.integration.parent_engine import active_parent_scope
+        from src.integration.owner_guards import active_parent_scope
         if task is not None and active_parent_scope(self.db, task.id):
             principal, refusal = "policy:parent-reconciler", None
         else:
@@ -1749,7 +1749,7 @@ class IntegrationCommandsMixin:
         from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationRebindRepairArgs
-        from src.integration.promotion import PromotionError
+        from src.integration.promotion_contracts import PromotionError
         from src.integration.repair_rebind import RepairRebind
 
         try:
@@ -1779,7 +1779,7 @@ class IntegrationCommandsMixin:
         """Reconcile a completed post-collection repair with its immutable receipts."""
         from src.commands.contracts.integration import IntegrationRecoverParentHeadArgs
         from src.integration.parent_repair_heads import ParentHeadRecovery
-        from src.integration.promotion import PromotionError
+        from src.integration.promotion_contracts import PromotionError
 
         try:
             request = IntegrationRecoverParentHeadArgs.model_validate(args)
@@ -1805,7 +1805,7 @@ class IntegrationCommandsMixin:
 
         from src.commands.contracts.integration import IntegrationRecoverPreservedRepairArgs
         from src.integration.preserved_repair import PreservedRepairRecovery
-        from src.integration.promotion import PromotionError
+        from src.integration.promotion_contracts import PromotionError
 
         try:
             request = IntegrationRecoverPreservedRepairArgs.model_validate(args)
@@ -1831,7 +1831,7 @@ class IntegrationCommandsMixin:
 
         from src.commands.contracts.integration import IntegrationRebindDetachedRepairArgs
         from src.integration.detached_repair_rebind import DetachedRepairRebind
-        from src.integration.promotion import PromotionError
+        from src.integration.promotion_contracts import PromotionError
 
         try:
             request = IntegrationRebindDetachedRepairArgs.model_validate(args)
@@ -2071,7 +2071,7 @@ class IntegrationCommandsMixin:
         from pydantic import ValidationError
 
         from src.commands.contracts.integration import IntegrationPromoteMainArgs
-        from src.integration.main_promotion import RootPromotionInvariantError
+        from src.integration.promotion_contracts import RootPromotionInvariantError
 
         try:
             request = IntegrationPromoteMainArgs.model_validate(args)
@@ -2767,7 +2767,7 @@ class IntegrationCommandsMixin:
 
         from src.commands.contracts.integration import IntegrationRecordNoopArgs
         from src.database.tables import integration_review_evidence
-        from src.integration.promotion import PromotionError, PromotionSourceMoved
+        from src.integration.promotion_contracts import PromotionError, PromotionSourceMoved
 
         try:
             request = IntegrationRecordNoopArgs.model_validate(args)
@@ -2937,7 +2937,7 @@ class IntegrationCommandsMixin:
         from src.commands.contracts.integration import DeliveryPromoteArgs
         from src.integration.models import PromotionInput
         from src.integration.ownership import BranchBusy, StaleFence
-        from src.integration.promotion import (
+        from src.integration.promotion_contracts import (
             PromotionConflict,
             PromotionInvariantError,
             PromotionRuntimeError,
@@ -3001,7 +3001,7 @@ class IntegrationCommandsMixin:
 
         from src.commands.contracts.integration import IntegrationReconcilePromotionArgs
         from src.integration.ownership import BranchBusy, StaleFence
-        from src.integration.promotion import (
+        from src.integration.promotion_contracts import (
             PromotionConflict,
             PromotionInvariantError,
             PromotionNotApplied,
@@ -3047,7 +3047,7 @@ class IntegrationCommandsMixin:
         from src.commands.contracts.integration import IntegrationResolveConflictArgs
         from src.integration.models import ConflictResolutionInput
         from src.integration.ownership import BranchBusy, StaleFence
-        from src.integration.promotion import (
+        from src.integration.promotion_contracts import (
             PromotionAuthorizationError,
             PromotionInvariantError,
             PromotionSourceMoved,
@@ -3078,7 +3078,7 @@ class IntegrationCommandsMixin:
 
         from src.commands.contracts.integration import IntegrationPushConflictResolutionArgs
         from src.integration.ownership import BranchBusy, StaleFence
-        from src.integration.promotion import (
+        from src.integration.promotion_contracts import (
             PromotionAuthorizationError,
             PromotionInvariantError,
             PromotionRuntimeError,
@@ -3125,7 +3125,7 @@ class IntegrationCommandsMixin:
             integration_candidate_resolutions,
             integration_candidate_revisions,
         )
-        from src.integration.candidates import (
+        from src.integration.promotion_contracts import (
             CandidateAuthorizationError,
             CandidateResolutionInput,
             CandidateStaleAuthority,
@@ -3361,7 +3361,7 @@ class IntegrationCommandsMixin:
 
         from src.commands.contracts.integration import IntegrationRecoverUnwrittenResolutionArgs
         from src.integration.ownership import BranchBusy, StaleFence
-        from src.integration.promotion import (
+        from src.integration.promotion_contracts import (
             PromotionAuthorizationError,
             PromotionInvariantError,
             PromotionRuntimeError,

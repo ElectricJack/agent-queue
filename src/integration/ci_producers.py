@@ -33,7 +33,7 @@ from src.integration.ci import (
     failed_run_verdict,
     is_numeric_producer_id,
 )
-from src.integration.subjects import CIEvidence, CIState, HeadIdentity, Subject
+from src.integration.runtime_contracts import CIEvidence, CIState, HeadIdentity, Subject
 from src.jobs.adapters import finite_command
 from src.jobs.policy import JobError, TERMINAL
 

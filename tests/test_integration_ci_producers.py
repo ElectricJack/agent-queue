@@ -21,8 +21,8 @@ from src.integration.ci_producers import (
     ProducerRequest,
     digest,
 )
-from src.integration.main_promotion import RootAttestationProof, RootAttestationSubject
-from src.integration.subjects import (
+from src.integration.promotion_contracts import RootAttestationProof, RootAttestationSubject
+from src.integration.runtime_contracts import (
     CIAttestArgs,
     CIObserveArgs,
     CIRequestArgs,

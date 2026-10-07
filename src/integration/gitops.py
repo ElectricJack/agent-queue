@@ -34,7 +34,7 @@ from src.integration.regeneration import (
 )
 from src.integration.source_trailer import source_identity, with_source_trailers
 from src.integration.source_ancestry import effective_source_base
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     AncestryArgs,
     MaterializeRefArgs,
     MergeMembersArgs,

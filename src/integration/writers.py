@@ -49,7 +49,7 @@ from src.integration.owner_recovery import (
     _Refusal,
 )
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     Primitive,
     PrimitiveOutcome,
     PrimitivePorts,

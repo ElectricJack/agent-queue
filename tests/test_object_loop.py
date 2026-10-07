@@ -23,7 +23,8 @@ from src.commands.contracts.object_loop import ObjectLoopStartArgs, Reservation,
 from src.database.tables import doc_review_revisions, doc_reviews, object_loops, tasks
 from src.integration.development import _publishable_object_task
 from src.integration.child_delivery import _child_refusal
-from src.integration.promotion import PromotionService, PromotionSourceMoved
+from src.integration.promotion import PromotionService
+from src.integration.promotion_contracts import PromotionSourceMoved
 from src.models import Project, Task, TaskCompletion, TaskStatus
 from src.jobs.artifacts import atomic_json
 from src.jobs.matter import candidate_document

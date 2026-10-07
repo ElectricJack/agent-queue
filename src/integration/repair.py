@@ -61,7 +61,7 @@ from src.integration.green_continuation import (
 from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy, RepairPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
-from src.integration.parent_engine import parent_engine_guard, parent_stage_at_entry
+from src.integration.owner_guards import parent_engine_guard, parent_stage_at_entry
 from src.models import Task, TaskStatus, TaskType
 from src.playbooks.artifact_ref import ArtifactRef
 

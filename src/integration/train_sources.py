@@ -79,7 +79,7 @@ from src.integration.provenance import CompletedSource, CompletionIdentity, GitP
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
 from src.integration.selection_metrics import selection_count, selection_stage
-from src.integration.subjects import Subject
+from src.integration.runtime_contracts import Subject
 from src.integration.train import (
     BatchSelection,
     CandidateChecks,
@@ -1783,7 +1783,7 @@ class DaemonLanes:
 
         async def attest(batch: Batch, candidate_sha: str) -> str:
             from src.integration.ci_producers import HostedCIProducer, LocalCIProducer
-            from src.integration.main_promotion import RootAttestationSubject
+            from src.integration.promotion_contracts import RootAttestationSubject
 
             attestation = getattr(self.orchestrator, "integration_attestation_service", None)
             if attestation is None:
@@ -1848,7 +1848,7 @@ class DaemonLanes:
                     if exact is None:
                         return None
                     from src.integration.checks import Conclusion
-                    from src.integration.subjects import HeadIdentity
+                    from src.integration.runtime_contracts import HeadIdentity
 
                     result = await _exact_head_verdict(exact, HeadIdentity(
                         repository_id=target.repository_id, ref=target.target_ref,
@@ -1904,7 +1904,7 @@ class DaemonLanes:
             if exact is None or not set(names) <= set(exact.required.names):
                 return None
             from src.integration.checks import Conclusion
-            from src.integration.subjects import HeadIdentity
+            from src.integration.runtime_contracts import HeadIdentity
 
             result = await _exact_head_verdict(exact, HeadIdentity(
                 repository_id=target.repository_id, ref=default_ref, sha=sha,
@@ -1959,7 +1959,7 @@ class DaemonLanes:
 
     def _epic_completion(self, target, binding, retained):
         from src.integration.checks import HostedChecks, HybridChecks
-        from src.integration.subjects import HeadIdentity
+        from src.integration.runtime_contracts import HeadIdentity
 
         resolved = {}
 

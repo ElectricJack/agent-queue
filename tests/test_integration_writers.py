@@ -21,7 +21,7 @@ from src.git.manager import GitManager
 from src.integration.models import BranchKey, Fence
 from src.integration.owner_recovery import OwnerRecovery
 from src.integration.ownership import BranchOwnership, StaleFence
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     PolicyArtifactPin,
     Primitive,
     PrimitivePorts,
