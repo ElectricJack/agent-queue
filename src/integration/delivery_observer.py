@@ -219,16 +219,18 @@ async def delivery_targets(conn, task_ids: Iterable[str], *, reduced=False) -> d
     origins = (await conn.execute(select(task_branch_origins).where(
         task_branch_origins.c.task_id.in_(ids), task_branch_origins.c.retired_at.is_(None),
     ))).mappings().all()
-    flows = dict((await conn.execute(select(projects.c.id, projects.c.promotion_flow).where(
+    configs = {row.id: row for row in (await conn.execute(select(
+        projects.c.id, projects.c.promotion_flow, projects.c.default_branch_cutover).where(
         projects.c.id.in_({target.project_id for target in found.values()}),
-    ))).all())
+    ))).all()}
     for origin in origins:
         task_id = origin["task_id"]
         target = found.get(task_id)
         if target is None:
             continue
-        branch = promotion_origin_target(target.target_ref, flows.get(target.project_id), origin,
-                                         target.repository_id)
+        config = configs[target.project_id]
+        branch = promotion_origin_target(target.target_ref, config.promotion_flow, origin,
+                                         target.repository_id, config.default_branch_cutover)
         found[task_id] = DeliveryTarget(target.project_id, target.repository_id,
                                         target.repository_url, "refs/heads/" + branch)
     return found

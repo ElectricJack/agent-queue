@@ -167,3 +167,13 @@ async def test_failed_default_publication_never_updates_the_project(handler, db,
     result = await handler.execute("set_default_branch", {"project_id": "p1", "branch": "dev"})
     assert result.get("error")
     assert (await db.get_project("p1")).repo_default_branch == "main"
+
+
+async def test_fetch_failure_keeps_best_effort_default_configuration(handler, db):
+    git = handler.orchestrator.git
+    git._arun = AsyncMock(side_effect=GitError("fetch unavailable"))
+    result = await handler.execute("set_default_branch", {"project_id": "p1", "branch": "dev"})
+    assert result["status"] == "updated"
+    assert (await db.get_project("p1")).repo_default_branch == "dev"
+    git.apush_validated_ref.assert_not_awaited()
+    git.apush_validated_delivery.assert_not_awaited()

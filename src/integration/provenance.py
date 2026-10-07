@@ -386,8 +386,9 @@ async def record_worker_completion(
 
     origin = await db.get_task_branch_origin_for_promotion(task.id, repo.id)
     async with db._engine.connect() as conn:
-        flow = await conn.scalar(select(projects.c.promotion_flow).where(projects.c.id == project.id))
-    target = promotion_origin_target(repo.default_branch, flow, origin, repo.id)
+        flow, cutover = (await conn.execute(select(projects.c.promotion_flow,
+            projects.c.default_branch_cutover).where(projects.c.id == project.id))).one()
+    target = promotion_origin_target(repo.default_branch, flow, origin, repo.id, cutover)
     base = await store.run("rev-parse", "--verify", "refs/remotes/origin/" + target)
     await store.exact(base)
     identity = CompletionIdentity(project.id, repo.id, task.id, generation)
