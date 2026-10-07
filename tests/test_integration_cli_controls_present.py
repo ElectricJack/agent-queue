@@ -12,4 +12,5 @@ def test_integration_group_exposes_train_controls():
         "resume-batch",
         "abort-batch",
         "refresh-epic",
+        "record-root-noop",
     } <= integration.commands.keys()

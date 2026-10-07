@@ -1036,6 +1036,9 @@
         127
       ]
     },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_record_root_noop']": {
+      "reason": "Register the hand-crafted CLI control for retaining an unheld root's exact no-artifact completion provenance."
+    },
     "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_recover_candidate_member']": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -2261,6 +2264,9 @@
     },
     "src/commands/task_commands.py::TaskCommandsMixin._undo_refused_restart": {
       "reason": "Restore the repair delegate's prior task state when its branch reservation refuses restart."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_set_task_status": {
+      "reason": "Refuse administrative completion of a branched Git root in train modes without explicit completion provenance."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_task_recover": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
