@@ -472,7 +472,9 @@ class DeliveryObserver:
             await self.git.acreate_checkout(target.repository_url, str(path), no_checkout=True)
         return path
 
-    async def _snapshot(self, target: DeliveryTarget, max_age: float = 0.0) -> DeliverySnapshot:
+    async def _snapshot(
+        self, target: DeliveryTarget, max_age: float = 0.0, *, cached_only: bool = False,
+    ) -> DeliverySnapshot:
         """A fetched snapshot, or an unknown one: a failure is never an empty answer.
 
         *max_age* lets a read-only caller reuse a successful snapshot of the
@@ -482,6 +484,14 @@ class DeliveryObserver:
         recent = self._recent.get(target)
         if max_age > 0 and recent is not None and time.monotonic() - recent[0] <= max_age:
             return recent[1]
+        if cached_only:
+            # Interactive graph reads must never queue behind a fetch or start
+            # one. Expired evidence is unknown, not evidence of non-delivery.
+            return DeliverySnapshot(
+                self.git, str(path), target.project_id, target.repository_id,
+                target.repository_url, target.target_ref, None, MappingProxyType({}),
+                "snapshot_unavailable",
+            )
         try:
             async with _fetch_lock(path):
                 store = await self._store(target)
@@ -521,9 +531,9 @@ class DeliveryObserver:
         return snapshot
 
     async def _evaluate(self, target: DeliveryTarget, task_ids: set[str], max_age: float = 0.0,
-                        *, snapshot=None):
+                        *, snapshot=None, cached_only: bool = False):
         if snapshot is None:
-            snapshot = await self._snapshot(target, max_age)
+            snapshot = await self._snapshot(target, max_age, cached_only=cached_only)
         snapshot = snapshot.for_request()
         requests = await self.request_loader(
             self.db, task_ids, repository_id=target.repository_id,
@@ -586,14 +596,15 @@ class DeliveryObserver:
         )
 
     async def observe(self, task_ids: Iterable[str], *, max_age: float = 0.0,
-                      target_loader=None) -> DeliveryView:
+                      target_loader=None, cached_only: bool = False) -> DeliveryView:
         """Evaluate each task's current completion against its project's target.
 
         A view is retaken when a target moved during evaluation; if it keeps
         moving the last view is returned and :meth:`DeliveryView.fresh` stays
         false for the caller to fail closed on.  Only a read-only surface
         passes *max_age* (see :data:`READ_MAX_AGE`); every guarded writer
-        fetches.
+        fetches. ``cached_only`` is for interactive graph reads: absent or
+        expired snapshots return unknown without fetching or waiting on Git.
         """
         ids = set(task_ids)
         target_loader = target_loader or self.target_loader
@@ -617,14 +628,18 @@ class DeliveryObserver:
                     key = target.project_id, target.repository_id, target.repository_url
                     if key not in repositories:
                         repositories[key] = GitTruthSnapshot(
-                            self.truth, await self._snapshot(target, max_age),
+                            self.truth, await self._snapshot(
+                                target, max_age, cached_only=cached_only,
+                            ),
                         )
                     shared = repositories[key].for_target(target.target_ref).observation
-                snapshot, found = await self._evaluate(target, group, max_age, snapshot=shared)
+                snapshot, found = await self._evaluate(
+                    target, group, max_age, snapshot=shared, cached_only=cached_only,
+                )
                 snapshots.append(snapshot)
                 evidence.update(found)
             view = DeliveryView(self.db, evidence, targets, tuple(snapshots), self.request_loader,
                                 target_loader)
-            if max_age > 0 or await view.fresh():
+            if cached_only or max_age > 0 or await view.fresh():
                 return view
         return view
