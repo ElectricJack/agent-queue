@@ -14,8 +14,14 @@ It uses the axe-core version bundled with jest-axe in Chrome to measure the
 eleven text pairs in graph redesign spec §4.2, plus the six graphics pairs.
 Token samples exercise the palette independently of card markup.
 
+The `graph-cards` check renders one card per status, a review wait, an epic
+and two boundary stubs, and runs axe over the whole graph region in both
+themes. Text on the running cards' stripes is a gradient to axe, so the check
+measures it itself against the stripe tint. It also proves the stripes and
+the running pulse stop under `prefers-reduced-motion`.
+
 ```bash
-npm -w dashboard run check:layout -- --only graph-theme
+npm -w dashboard run check:layout -- --only graph-theme,graph-cards
 ```
 
 ```bash

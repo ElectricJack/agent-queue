@@ -42,7 +42,7 @@ export default function GraphScopeNotice({
 
   return (
     <>
-      {showBanner && showingFallback && <p role="status" className="shrink-0 border-b border-gray-800 px-4 py-1 text-xs text-gray-400">
+      {showBanner && showingFallback && <p role="status" className="shrink-0 border-b border-g-border px-4 py-1 text-xs text-g-muted">
         No active work here, so completed work is shown inside this container.
       </p>}
       {showEmpty && emptyReason === "all_finished" && !showCompleted && (
@@ -54,7 +54,7 @@ export default function GraphScopeNotice({
             )}
           </p>
           <button type="button" onClick={() => onShowCompleted(true)}
-            className="pointer-events-auto rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800">
+            className="pointer-events-auto rounded-md border border-g-border bg-g-card px-3 py-1.5 text-xs text-g-text hover:bg-g-card-hover">
             Show completed
           </button>
         </div>

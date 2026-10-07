@@ -1,16 +1,26 @@
 import { memo } from "react";
-import { LockClosedIcon, MagnifyingGlassPlusIcon } from "@heroicons/react/24/outline";
+import { ArrowDownRightIcon, ArrowUpIcon, LockClosedIcon } from "@heroicons/react/24/outline";
 import { Handle, Position } from "@xyflow/react";
 import type { ContainerNodeData } from "../types";
 import { ProgressBar } from "../ProgressBar";
-import { EpicDeliveryBadge } from "../../../components/EpicDelivery";
 import { ReviewWaitBadge } from "../ReviewWaitBadge";
+import { StatusPill } from "../StatusPill";
+import { statusPillFor } from "../statusPillModel";
+import { epicCountLine } from "../taskReason";
 import { UNIT_H } from "./units";
 
 export interface ContainerNodeProps { id: string; data: ContainerNodeData; selected?: boolean }
 
+const FOCUS_RING = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-g-accent";
+const HEADER_BUTTON = `nodrag nopan flex h-6 min-w-0 shrink-0 items-center gap-1 rounded-md border border-g-border bg-g-card px-[9px] text-[11px] font-medium text-g-text hover:bg-g-card-hover ${FOCUS_RING}`;
+
+/**
+ * An epic as a quiet frame around its children (§2.4): a panel with one
+ * header line -- kind, title, count line, then the status pill and the way in
+ * (Enter) or, on the entered frame, the way back (Up to the parent).
+ */
 function ContainerNode({ data, selected }: ContainerNodeProps) {
-  const { node, onFocus, onOpenTask } = data;
+  const { node, onFocus, onOpenTask, upTarget, onUp } = data;
   const headerPx = 0.35 * UNIT_H * (data.layoutScale ?? 1);
   const isPhase = node.phase_order != null;
   const phaseText = isPhase
@@ -19,10 +29,24 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
   const phaseHold = node.phase_hold;
   const failedChildren = phaseHold?.failed_children ?? [];
   const failedChildrenTotal = phaseHold?.failed_children_total ?? failedChildren.length;
-  const hasBar = (node.agg_descendants ?? 0) > 0;
-  const delivery = node.delivery ?? null;
+  const firstFailed = failedChildren[0];
+  const reviewWaits = node.review_waits ?? [];
+  // Delivery is not implementation: the pill says where the epic's delivery
+  // stands, the count line only how much of it is built. The stored status
+  // (an integration hold reads PAUSED) stays in the pill's tooltip.
+  const pill = statusPillFor({
+    status: node.status,
+    isBlocked: node.is_blocked,
+    delivery: node.delivery ?? null,
+    reviewBlock: reviewWaits.find((wait) => wait.blocking) ?? null,
+  });
+  const total = node.agg_descendants ?? 0;
+  const count = epicCountLine({
+    done: node.agg_completed ?? 0, total, running: node.agg_running, blocked: node.agg_blocked,
+  });
+  const border = node.depth === 0 ? "border-g-border-strong" : "border-g-border";
   return (
-    <div data-container-id={node.id} className={`h-full w-full rounded-lg border border-white/15 bg-white/[0.03] ${selected ? "outline outline-2 outline-white" : ""} ${node.context_only ? "border-dashed" : ""}`}>
+    <div data-container-id={node.id} className={`h-full w-full rounded-xl border bg-g-panel font-g ${border} ${selected ? "outline-2 outline-offset-2 outline-g-accent" : ""} ${node.context_only ? "border-dashed" : ""}`}>
       <Handle id="in-left" type="target" position={Position.Left} isConnectable={false} />
       <Handle id="in-right" type="target" position={Position.Right} isConnectable={false} />
       <Handle id="in-top" type="target" position={Position.Top} isConnectable={false} />
@@ -33,85 +57,79 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
        * row, so a sibling stacked above/below this div -- a second header
        * line, a banner, a progress bar div -- pushes that reserved space and
        * overlaps the first row of children on the real canvas. The phase
-       * chip is an inline element inside the row; the progress bar is
+       * chip is an inline element inside the row; the progress line is
        * absolutely positioned along the row's own bottom edge so it never
        * adds height.
        */}
-      <div className="relative flex items-center gap-2 px-2 text-[11px] text-gray-200" style={{ height: headerPx }}>
-        {isPhase && (
+      <div className="relative flex items-center gap-2.5 rounded-t-[11px] border-b border-g-border bg-g-panel-head px-3.5 text-g-text" style={{ height: headerPx }}>
+        {isPhase ? (
           <span
             title={phaseText}
-            className="flex shrink-0 items-center gap-0.5 truncate rounded bg-indigo-500/20 px-1 text-[9px] font-semibold text-indigo-200"
-            style={{ maxWidth: "5rem" }}
+            className="flex shrink-0 items-center gap-1 truncate rounded-md bg-g-accent-soft px-1.5 text-[10px] font-semibold leading-5 text-g-accent-ink"
+            style={{ maxWidth: "8rem" }}
           >
-            {node.is_blocked && <LockClosedIcon aria-label="Phase gated" className="h-2.5 w-2.5 shrink-0" />}
+            {node.is_blocked && <LockClosedIcon aria-label="Phase gated" className="h-3 w-3 shrink-0" />}
             <span className="truncate">{phaseText}</span>
           </span>
+        ) : (
+          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-g-muted">Epic</span>
         )}
-        {phaseHold && (
-          <span
-            title={`Waiting for failed work: ${failedChildrenTotal} child${failedChildrenTotal === 1 ? "" : "ren"}; ${phaseHold.descendant_blocker_count} incomplete descendant${phaseHold.descendant_blocker_count === 1 ? "" : "s"}`}
-            className="flex shrink-0 items-center gap-1 overflow-x-auto rounded bg-red-500/15 px-1 text-[9px] font-semibold text-red-200"
-          >
-            <span className="shrink-0">Waiting for failed work</span>
-            {failedChildren.map((child) => (
-              <button
-                key={child.id}
-                type="button"
-                aria-label={`Open failed work ${child.id} (${child.status})`}
-                title={`${child.id} · ${child.status}`}
-                className="nodrag nopan shrink-0 rounded bg-red-500/20 px-1 font-mono hover:bg-red-500/30 hover:underline"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpenTask?.(child.id, { id: child.id });
-                }}
-              >
-                {child.id} · {child.status}
-              </button>
+        <button type="button" aria-label={`Open task ${node.title}`} data-task-id={node.id} title={node.title}
+          className={`nodrag nopan min-w-0 shrink truncate rounded text-left text-[13px] font-semibold hover:underline ${FOCUS_RING}`}
+          onClick={(e) => { e.stopPropagation(); onOpenTask?.(node.id, { id: node.id, playbook_run_id: node.playbook_run_id }); }}>{node.title}</button>
+        {total > 0 && (
+          <span data-count-line title={count.text} className="min-w-0 shrink-[2] truncate whitespace-nowrap text-[12px] tabular-nums text-g-muted">
+            {count.segments.map((segment, index) => (
+              segment.strong ? <b key={index} className="font-semibold text-g-text">{segment.text}</b> : <span key={index}>{segment.text}</span>
             ))}
-            {failedChildrenTotal > failedChildren.length && (
-              <span className="shrink-0">+{failedChildrenTotal - failedChildren.length}</span>
-            )}
           </span>
         )}
-        {/* An epic gated by a review (`--after-review`) says so on its
-          * header even while expanded, as a link to the review. */}
-        <ReviewWaitBadge waits={node.review_waits ?? []} variant="chip" />
-        <button type="button" aria-label={`Open task ${node.title}`} data-task-id={node.id}
-          className="nodrag nopan min-w-0 flex-1 truncate text-left font-medium hover:underline"
-          onClick={(e) => { e.stopPropagation(); onOpenTask?.(node.id, { id: node.id, playbook_run_id: node.playbook_run_id }); }}>{node.title}</button>
-        {/* Delivery is not implementation: the badge says where the epic's
-          * delivery stands, the count only how much of it is built. The
-          * stored status (an integration hold reads PAUSED) stays in the
-          * tooltip and on the task's own controls. */}
-        {delivery ? (
-          <EpicDeliveryBadge
-            delivery={delivery}
-            className="max-w-[16rem] shrink text-[10px]"
-          />
-        ) : (
-          <span className="shrink-0 text-[9px] uppercase tracking-wide opacity-70">{node.status.replace(/_/g, " ")}</span>
-        )}
-        <span className="shrink-0 rounded bg-white/10 px-1" title="Implementation progress">
-          {node.agg_completed}/{node.agg_descendants} {delivery ? "tasks complete" : "done"}
-        </span>
-        {(node.agg_running ?? 0) > 0 && <span className="shrink-0 text-indigo-300">{node.agg_running} running</span>}
-        {(node.agg_blocked ?? 0) > 0 && <span className="shrink-0 text-amber-300">{node.agg_blocked} blocked</span>}
-        {/* Entering is the only way into a container; the container already
-          * entered gets no control of its own (`onFocus` is withheld). */}
-        {onFocus && (
-          <button type="button" aria-label={`Enter ${node.title}`} title={`Enter ${node.title}`}
-            className="nodrag nopan flex shrink-0 items-center gap-1 rounded px-1 py-0.5 font-medium hover:bg-white/10"
-            onClick={(e) => { e.stopPropagation(); onFocus(node.id); }}
-            onKeyDown={(e) => { if (e.key !== "Escape") e.stopPropagation(); }}>
-            <MagnifyingGlassPlusIcon aria-hidden className="h-3.5 w-3.5" />Enter
+        {/* §1.2: a phase held on failed work condenses to "N failed" in the
+          * count line; it opens the first failed child, and the tooltip
+          * names the rest until the frame's hover card carries them. */}
+        {phaseHold && failedChildrenTotal > 0 && (
+          <button
+            type="button"
+            aria-label={`${failedChildrenTotal} failed${firstFailed ? `: open failed work ${firstFailed.id} (${firstFailed.status})` : ""}`}
+            title={`Waiting for failed work: ${failedChildren.map((child) => `${child.id} · ${child.status}`).join(", ")}${failedChildrenTotal > failedChildren.length ? ` and ${failedChildrenTotal - failedChildren.length} more` : ""}; ${phaseHold.descendant_blocker_count} incomplete descendant${phaseHold.descendant_blocker_count === 1 ? "" : "s"}`}
+            disabled={!firstFailed}
+            className={`nodrag nopan shrink-0 rounded text-[12px] font-semibold tabular-nums text-g-failed enabled:hover:underline ${FOCUS_RING}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (firstFailed) onOpenTask?.(firstFailed.id, { id: firstFailed.id });
+            }}
+          >
+            {failedChildrenTotal} failed
           </button>
         )}
-        {hasBar && (
-          <div className="absolute inset-x-2 bottom-0">
+        <span className="min-w-0 flex-1" />
+        {/* An epic gated by a review (`--after-review`) says so on its
+          * header even while expanded, as a link to the review. */}
+        {reviewWaits.length > 0 && <ReviewWaitBadge waits={reviewWaits} variant="pill" />}
+        <StatusPill model={pill} className="max-w-[16rem] shrink" />
+        {/* Entering is the only way into a container; the container already
+          * entered offers the way back instead (`onFocus` is withheld). */}
+        {onFocus ? (
+          <button type="button" aria-label={`Enter ${node.title}`} title={`Enter ${node.title}`} className={HEADER_BUTTON}
+            onClick={(e) => { e.stopPropagation(); onFocus(node.id); }}
+            onKeyDown={(e) => { if (e.key !== "Escape") e.stopPropagation(); }}>
+            Enter
+            <ArrowDownRightIcon aria-hidden className="h-3 w-3" />
+          </button>
+        ) : upTarget && onUp ? (
+          <button type="button" aria-label={`Up to ${upTarget.title}`} title={`Up to ${upTarget.title}`} className={`${HEADER_BUTTON} max-w-[14rem]`}
+            onClick={(e) => { e.stopPropagation(); onUp(upTarget.id); }}
+            onKeyDown={(e) => { if (e.key !== "Escape") e.stopPropagation(); }}>
+            <ArrowUpIcon aria-hidden className="h-3 w-3 shrink-0" />
+            <span className="truncate">Up to {upTarget.title}</span>
+          </button>
+        ) : null}
+        {total > 0 && (
+          <div className="absolute inset-x-3.5 bottom-0">
             <ProgressBar
+              variant="line"
               done={node.agg_completed ?? 0}
-              total={node.agg_descendants ?? 0}
+              total={total}
               running={node.agg_running ?? 0}
               blocked={node.agg_blocked ?? 0}
             />
