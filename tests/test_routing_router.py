@@ -169,6 +169,35 @@ async def test_system_filing_without_ordinary_input_keeps_its_routing_origin(han
     assert facts.created_by_kind == "system"
 
 
+@pytest.mark.parametrize("task_type", [TaskType.TEST, TaskType.BUGFIX])
+async def test_integration_writers_route_like_repairs_off_every_opencode_lane(
+    handler, orch, task_type,
+):
+    from tests.test_routing_planner import NARROW_YES, _rung, _snapshot
+
+    await _create(orch.db, "writer", task_type=task_type,
+                  created_by_kind="integration_writer", created_by_id="subject-1")
+    task = await orch.db.get_task("writer")
+    project = await orch.db.get_project("p")
+    facts = await handler._routing_task_facts(task, project)
+    assert facts.created_by_kind == "integration_repair"
+    fleet = [
+        _rung("standard-high", harness)
+        for harness in ("codex", "claude", "opencode", "opencode-zen",
+                        "opencode-zen-nemotron", "opencode-zen-new-preview")
+    ]
+    observed = await handler._routing_snapshot(task, project, ("standard-high",))
+    snapshot = _snapshot(fleet, busy={
+        "standard-high-codex": 2, "standard-high-claude": 2,
+    })
+    handler._routing_snapshot = AsyncMock(return_value=replace(snapshot, context=observed.context))
+    plan = await _plan(handler, "writer", {**NARROW_YES, "task_type": task_type.value})
+    assert plan["success"] and plan["outcome"] == "planned", plan
+    assert plan["rule"] == f"kinds.{task_type.value}+origins.integration_repair"
+    assert {candidate["harness"] for candidate in plan["candidates"]} == {"codex", "claude"}
+    assert (await orch.db.get_task("writer")).created_by_kind == "integration_writer"
+
+
 @pytest.mark.parametrize("stamped", [True, False], ids=["stamped", "record-only"])
 async def test_a_source_ci_repair_routes_as_an_integration_repair(handler, orch, stamped):
     from sqlalchemy import insert
