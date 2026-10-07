@@ -489,7 +489,7 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         await conn.execute(text("UPDATE alembic_version SET version_num = :rev"), {"rev": older})
         await conn.execute(text("CREATE TABLE integration_batches (id text PRIMARY KEY)"))
         await conn.execute(text("INSERT INTO integration_batches VALUES ('original')"))
-        # The schema the head migration (a00000000085) creates is absent at
+        # The schema the head migration (a00000000086) creates is absent at
         # its down revision; keep this in step when the head moves.
         await conn.execute(text("CREATE TABLE projects (id text PRIMARY KEY)"))
     dump = tmp_path / "older.dump"
@@ -531,7 +531,7 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         )
         assert await conn.scalar(text(
             "SELECT count(*) FROM information_schema.columns "
-            "WHERE table_name='projects' AND column_name='promotion_flow'"
+            "WHERE table_name='projects' AND column_name='default_branch_cutover'"
         )) == 1
         assert await conn.scalar(text("SELECT id FROM tasks")) == "original"
 
