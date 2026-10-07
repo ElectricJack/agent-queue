@@ -8765,7 +8765,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:191ff13386894fea1c722ff5b4965da00ce29aeb7a9cda80ed2043ecb09a3e78",
+      "digest": "sha256:21d268ca79d9c90a92b6bf0274da22389ac9ba767405f45060d6ac21cca6a770",
       "imports": [
         "src.commands.contracts.integration",
         "src.commands.integration_commands",
@@ -8774,12 +8774,15 @@
         "src.database.tables",
         "src.git.manager",
         "src.integration.batches",
+        "src.integration.cutover",
         "src.integration.delivered_close",
+        "src.integration.drain_owners",
         "src.integration.models",
         "src.integration.mutation_recovery",
         "src.integration.ownership",
         "src.integration.provenance",
         "src.integration.quiesce",
+        "src.integration.records",
         "src.integration.subjects",
         "src.models",
         "src.profiles.capabilities"

@@ -1683,7 +1683,7 @@ class PolicyActivation:
             repos, repos.c.id == integration_branch_owners.c.repository_id
         ).where(repos.c.project_id == project_id,
                 integration_branch_owners.c.handoff_state != "released",
-                ~terminal_reservation_clause())
+                ~terminal_reservation_clause(allow_cleanup_history=True))
         if branches is not None:
             refs = [f"refs/heads/{branch}" for branch in branches]
             statements = (
