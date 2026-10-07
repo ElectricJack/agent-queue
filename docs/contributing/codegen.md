@@ -89,6 +89,14 @@ Source conflicts, failed generators and writes outside the marked paths retain
 the existing repair path. The resulting commit still requires the boundary's
 normal publication authority and verification.
 
+Isolated train regeneration uses a fixed tool lookup order: the daemon's
+interpreter directory, the daemon user's `~/.local/bin`, then `/usr/local/bin`,
+`/usr/bin` and `/bin`. A system-Python daemon can therefore find user-installed
+`openapi-python-client` and `ruff`. It does not inherit the daemon's PATH or
+credentials, and retains worker database refusal sentinels. The scripts still
+refuse missing tools and an incorrect generator version; regeneration never
+installs or relocates the toolchain.
+
 To merge the way the development publisher does locally, define the driver
 once per clone:
 

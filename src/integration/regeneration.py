@@ -170,14 +170,21 @@ async def merge_generated_tree(
 def _subprocess_env() -> dict[str, str]:
     """The minimal, worker-scoped environment the regenerator sees.
 
-    Mirrors the worker session isolation: the daemon's interpreter ``bin``
-    first on ``PATH`` (the generators import installed packages), and the
-    database refusal sentinels so no generator can open the operator's
-    database.
+    Resolve installed CLI tools from the daemon's interpreter ``bin``, then
+    the standard user installation directory (also when the daemon uses
+    system Python), then fixed system directories. Never inherit ambient
+    ``PATH`` or credentials. The canonical scripts still enforce generator
+    versions; discovering a tool does not authorize a different version.
+    Database refusal sentinels keep generators off the operator's database.
     """
+    home = Path.home()
+    tool_dirs = dict.fromkeys((
+        str(Path(sys.executable).parent), str(home / ".local" / "bin"),
+        "/usr/local/bin", "/usr/bin", "/bin",
+    ))
     return {
-        "PATH": f"{Path(sys.executable).parent}:/usr/local/bin:/usr/bin:/bin",
-        "HOME": str(Path.home()),
+        "PATH": os.pathsep.join(tool_dirs),
+        "HOME": str(home),
         "LANG": "C.UTF-8",
         "PYTHONDONTWRITEBYTECODE": "1",
         "GIT_TERMINAL_PROMPT": "0",
