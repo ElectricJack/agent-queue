@@ -104,6 +104,14 @@ retain their existing Git behavior and never receive a GitHub App token.
 
 `GH_TOKEN` overriding stored credentials is documented by
 [GitHub CLI](https://cli.github.com/manual/gh_help_environment).
+LOCAL cutover and promotion remote validation explicitly use a separate operator
+login to read repository ruleset detail when GitHub hides `bypass_actors` from the
+App's read permission. This reader issues only repository-bound ruleset GETs.
+It supplements the actor list only when the App and operator observations match
+on ruleset id and every public policy field; the App's own bypass result is kept.
+Hidden or null actor lists cannot prove empty bypass or form a reversible cutover
+baseline. Service and worker reads retain the configured credential authority.
+
 AQ does not run `gh auth login`, `logout`, `setup-git` or `auth token` as part
 of normal operation, and does not persist an App token in `hosts.yml`.
 

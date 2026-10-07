@@ -148,11 +148,16 @@ class PromoteCommandsMixin:
         remote = {}
         if request.remote and result.valid:
             from src.integration.promotion_steps import validate_promotion_remote
+            from src.integration.protection import LocalRulesetReader
 
             try:
                 binding, client, app_id = await self._promotion_client(repository)
+                admin_reader = None
+                if (current_principal() or TRUSTED_LOCAL).kind is PrincipalKind.LOCAL:
+                    admin_reader = LocalRulesetReader(self._promotion_user_client(binding))
                 remote = await validate_promotion_remote(
                     client, binding, result.flow, default_branch=default_branch, app_id=app_id,
+                    ruleset_admin_reader=admin_reader,
                 )
                 warnings.extend(remote.pop("warnings"))
             except Exception as exc:  # noqa: BLE001 - layer four is diagnostic, never a refusal

@@ -8091,7 +8091,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:d4700926406309700a72f52d578349ca907a35e1fdd72c1850811a3d1b7c9863",
+      "digest": "sha256:4b2b8f24683d5348623c866affde192df18386fe9a3cef6dc5fce6938d3c92c0",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -8102,6 +8102,7 @@
         "src.integration.cutover",
         "src.integration.delivery_observer",
         "src.integration.outbox",
+        "src.integration.protection",
         "src.integration.provenance",
         "src.integration.records",
         "src.integration.removal_guard",

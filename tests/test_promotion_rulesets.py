@@ -30,7 +30,7 @@ from src.integration.promotion_steps import (
     read_promotion_protection,
     validate_promotion_remote,
 )
-from src.integration.protection import classify
+from src.integration.protection import LocalRulesetReader, classify, read_ruleset_detail
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = 5075923
@@ -141,6 +141,64 @@ class Remote:
             if raw is not None:
                 return {"encoding": "base64", "content": base64.b64encode(raw).decode()}
         raise GitHubAccessError("not_found_or_hidden", "fixture file absent")
+
+
+async def test_explicit_operator_reader_recovers_hidden_actors_and_keeps_app_bypass():
+    app = Remote()
+    operator = Remote()
+    operator.credential_identity = GitHubCredentialIdentity.existing_login()
+    for row in app.rulesets.values():
+        row.pop("bypass_actors")
+    operator.rulesets[1]["current_user_can_bypass"] = "always"
+    reader = LocalRulesetReader(operator)
+    detail = await read_ruleset_detail(app, BINDING, 1, admin_reader=reader)
+    assert detail["bypass_actors"] == []
+    assert detail["current_user_can_bypass"] == "never"
+    report = await read_promotion_protection(
+        app, BINDING, app.steps, default_branch="dev", app_id=APP, ruleset_admin_reader=reader,
+    )
+    assert report["warnings"] == []
+    assert [row["classification"] for row in report["tags"]] == [
+        "tag_create_app_only", "tag_immutable",
+    ]
+    assert all(method == "GET" and path.startswith("/repositories/123/rulesets/")
+               for method, path in operator.calls)
+
+
+@pytest.mark.parametrize("field", ["id", "name", "target", "enforcement", "conditions", "rules"])
+async def test_operator_detail_policy_movement_is_never_combined(field):
+    app = Remote()
+    operator = Remote()
+    operator.credential_identity = GitHubCredentialIdentity.existing_login()
+    app.rulesets[5].pop("bypass_actors")
+    operator.rulesets[5][field] = 99 if field == "id" else "changed"
+    with pytest.raises(ValueError, match="github_ruleset_unverifiable"):
+        await read_ruleset_detail(app, BINDING, 5, admin_reader=LocalRulesetReader(operator))
+
+
+@pytest.mark.parametrize("actors", [None, "missing", {}])
+async def test_hidden_or_null_operator_actors_remain_unverifiable(actors):
+    app = Remote()
+    operator = Remote()
+    operator.credential_identity = GitHubCredentialIdentity.existing_login()
+    app.rulesets[5].pop("bypass_actors")
+    if actors == "missing":
+        operator.rulesets[5].pop("bypass_actors")
+    else:
+        operator.rulesets[5]["bypass_actors"] = actors
+    with pytest.raises(ValueError, match="github_ruleset_unverifiable"):
+        await read_ruleset_detail(app, BINDING, 5, admin_reader=LocalRulesetReader(operator))
+
+
+async def test_operator_reader_requires_separate_login_and_exact_repository():
+    operator = Remote()
+    with pytest.raises(ValueError, match="existing operator login"):
+        LocalRulesetReader(operator)
+    operator.credential_identity = GitHubCredentialIdentity.existing_login()
+    reader = LocalRulesetReader(operator)
+    with pytest.raises(ValueError, match="does not match"):
+        await reader.detail(GitHubRepositoryBinding(456, "fixture/other"), 5)
+    assert operator.calls == []
 
 
 def test_ruleset_json_is_stable_and_tag_bypass_cannot_modify_tags():
@@ -396,6 +454,37 @@ async def test_command_warnings_do_not_refuse_validation_and_rulesets_make_no_re
     assert result["success"] and result["outcome"] == "rulesets"
     assert remote.calls == []  # Generates config; does not even read remote rulesets.
     assert len(result["rulesets"]) == 5
+
+
+@pytest.mark.parametrize("local", [True, False])
+async def test_remote_validation_admin_reader_is_explicitly_local(local):
+    from unittest.mock import Mock
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import DENY_ALL
+
+    app = Remote()
+    operator = Remote()
+    operator.credential_identity = GitHubCredentialIdentity.existing_login()
+    for row in app.rulesets.values():
+        row.pop("bypass_actors")
+    value = handler(app)
+    factory = Mock(return_value=operator)
+    value.orchestrator.promotion_user_client_factory = factory
+    principal = ExecutionPrincipal(kind=PrincipalKind.LOCAL if local else PrincipalKind.SESSION,
+                                   policy=DENY_ALL, project_id="p")
+    with principal_context(principal):
+        result = await value._cmd_promote_validate({
+            "project_id": "p", "flow": app.steps, "use_stored": False, "remote": True,
+        })
+    assert result["success"]
+    if local:
+        assert result["warnings"] == []
+        factory.assert_called_once_with(BINDING)
+        assert operator.calls
+    else:
+        assert "ruleset_unverifiable" in {warning["code"] for warning in result["warnings"]}
+        factory.assert_not_called()
+        assert operator.calls == []
 
 
 def test_rulesets_cli_and_contract_are_registered_as_reads(tmp_path):

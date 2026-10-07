@@ -766,7 +766,9 @@ async def test_cutover_preserves_receipt_update_guard_and_rolls_back_mid_fix(
                     task_delivery_receipts.c.id == "old").values(target_branch="unauthorized"))
 
 
-@pytest.mark.parametrize("failure", [None, "default", "bypass", "attestation", "tags", "trust"])
+@pytest.mark.parametrize("failure", [
+    None, "default", "bypass", "attestation", "tags", "trust", "hidden_actors", "null_actors",
+])
 async def test_cutover_verifies_operator_branch_and_tag_rulesets(cutover_world, failure):
     from unittest.mock import AsyncMock
     from src.git.github_contracts import (
@@ -796,6 +798,10 @@ async def test_cutover_verifies_operator_branch_and_tag_rulesets(cutover_world, 
         state["default_branch"] = "main"
     if failure == "tags":
         state["rulesets"][1]["bypass_actors"] = [{"actor_id": 22}]
+    if failure == "hidden_actors":
+        state["rulesets"][1].pop("bypass_actors")
+    if failure == "null_actors":
+        state["rulesets"][1]["bypass_actors"] = None
 
     async def effective(path, **_kwargs):
         root = "/dev?" in path
@@ -816,6 +822,58 @@ async def test_cutover_verifies_operator_branch_and_tag_rulesets(cutover_world, 
             await real.verify(plan, policy=None)
     else:
         await real.verify(plan, policy=None)
+
+
+async def test_cutover_remote_snapshot_records_operator_visible_bypass_actors():
+    from unittest.mock import AsyncMock
+    from src.git.github_contracts import (
+        GitHubAccessError, GitHubCredentialIdentity, GitHubRepositoryBinding,
+    )
+    from src.integration.cutover import CutoverGit
+    from src.integration.protection import LocalRulesetReader
+
+    binding = GitHubRepositoryBinding(123, "acme/widgets")
+    hidden = {"id": 3, "name": "tag creation", "target": "tag", "enforcement": "active",
+              "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
+              "rules": [{"type": "creation"}], "current_user_can_bypass": "always"}
+    actors = [{"actor_id": 22, "actor_type": "Integration", "bypass_mode": "always"}]
+
+    async def app_read(method, path):
+        assert method == "GET"
+        if path == "/repositories/123":
+            return {"default_branch": "main"}
+        if path == "/repositories/123/rulesets/3":
+            return hidden
+        raise GitHubAccessError("not_found_or_hidden", "no classic protection")
+
+    app = SimpleNamespace(repository=binding, request_json=AsyncMock(side_effect=app_read),
+                          paged_list=AsyncMock(return_value=[{"id": 3}]))
+    operator = SimpleNamespace(repository=binding,
+        credential_identity=GitHubCredentialIdentity.existing_login(),
+        request_json=AsyncMock(return_value={**hidden, "bypass_actors": actors,
+                                            "current_user_can_bypass": "never"}))
+    port = CutoverGit(None, app, ruleset_admin_reader=LocalRulesetReader(operator))
+    state = await port.remote_state({"main"})
+    assert state["rulesets"][0]["bypass_actors"] == actors
+    assert "current_user_can_bypass" not in state["rulesets"][0]
+    assert state["protection"] == {"main": None}
+    assert "bypass_actors" not in hidden
+    operator.request_json.assert_awaited_once_with("GET", "/repositories/123/rulesets/3")
+    with pytest.raises(ValueError, match="github_ruleset_unverifiable"):
+        await CutoverGit(None, app).remote_state({"main"})
+
+
+@pytest.mark.parametrize("actors", ["missing", None])
+async def test_cutover_refuses_saved_baseline_with_hidden_actors(cutover_world, actors):
+    db, service, port = cutover_world
+    baseline = await service.plan("p", FLOW)
+    row = {"id": 3, "target": "tag"}
+    if actors != "missing":
+        row["bypass_actors"] = actors
+    baseline["remote_state"]["rulesets"] = [row]
+    with pytest.raises(ValueError, match="saved_plan_invalid"):
+        await service.run("p", FLOW, expected_generation=baseline["generation"],
+                          dry_run=False, operator_id="operator", baseline=baseline)
 
 
 @pytest.mark.parametrize("read_only", [False, True])

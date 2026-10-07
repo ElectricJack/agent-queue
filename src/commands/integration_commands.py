@@ -88,6 +88,7 @@ class IntegrationCommandsMixin:
         from src.commands.contracts.integration import IntegrationCutoverArgs
         from src.integration.cutover import Cutover, CutoverGit
         from src.git.github_contracts import GitHubAccessError
+        from src.integration.protection import LocalRulesetReader
 
         request = IntegrationCutoverArgs.model_validate(args)
         if not read_only and (current_principal() or TRUSTED_LOCAL).kind is not PrincipalKind.LOCAL:
@@ -112,7 +113,12 @@ class IntegrationCommandsMixin:
             client = factory(binding)
             if inspect.isawaitable(client):
                 client = await client
-            service = Cutover(self.db, CutoverGit(self.db, client))
+            admin_reader = None
+            if (current_principal() or TRUSTED_LOCAL).kind is PrincipalKind.LOCAL:
+                admin_reader = LocalRulesetReader(self._promotion_user_client(binding))
+            service = Cutover(self.db, CutoverGit(
+                self.db, client, ruleset_admin_reader=admin_reader,
+            ))
             options = {"allow_epics": request.allow_epics, "reverse": request.reverse}
             if read_only:
                 result = {"outcome": "planned", "plan": await service.plan(

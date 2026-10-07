@@ -47,6 +47,7 @@ from src.git.github_contracts import (
     GitHubAccessError,
     GitHubCredentialIdentity,
     GitHubCredentialMode,
+    GitHubRepositoryBinding,
     credential_identity_from_client,
 )
 from src.integration.ci import is_numeric_producer_id
@@ -58,6 +59,61 @@ APP_BYPASS = "app_bypass"
 INCOMPATIBLE = "incompatible"
 ATTESTED_ONLY = "attested_only"
 UNPROTECTED = "unprotected"
+
+
+class LocalRulesetReader:
+    """Explicit operator login, limited to reading one bound ruleset's detail.
+
+    The App's administration:read token hides bypass actors. A LOCAL command
+    may supply this reader to observe those actors with the operator's gh login.
+    The App remains the authority for all writes and its own bypass ability.
+    """
+
+    def __init__(self, client: Any):
+        if credential_identity_from_client(client).mode is not GitHubCredentialMode.EXISTING_LOGIN:
+            raise ValueError("ruleset admin reader requires the existing operator login")
+        if not isinstance(client.repository, GitHubRepositoryBinding):
+            raise ValueError("ruleset admin reader requires a repository binding")
+        self.client = client
+
+    async def detail(self, binding: GitHubRepositoryBinding, ruleset_id: int) -> dict:
+        if binding != self.client.repository or type(ruleset_id) is not int or ruleset_id <= 0:
+            raise ValueError("ruleset admin reader repository or ruleset does not match")
+        document = await self.client.request_json(
+            "GET", f"/repositories/{binding.repository_id}/rulesets/{ruleset_id}",
+        )
+        if (type(document.get("id")) is not int or document["id"] != ruleset_id
+                or not isinstance(document.get("bypass_actors"), list)):
+            raise ValueError("github_ruleset_unverifiable: operator bypass actors are hidden")
+        return document
+
+
+async def read_ruleset_detail(
+    client: Any, binding: GitHubRepositoryBinding, ruleset_id: int, *,
+    admin_reader: LocalRulesetReader | None = None,
+) -> dict:
+    """Supplement hidden actors only after both readers agree on the live policy."""
+    if client.repository != binding or type(ruleset_id) is not int or ruleset_id <= 0:
+        raise ValueError("ruleset reader repository or ruleset does not match")
+    document = await client.request_json(
+        "GET", f"/repositories/{binding.repository_id}/rulesets/{ruleset_id}",
+    )
+    if type(document.get("id")) is not int or document["id"] != ruleset_id:
+        raise ValueError("github_ruleset_unverifiable: ruleset answered another id")
+    if isinstance(document.get("bypass_actors"), list) or admin_reader is None:
+        return document
+    operator_document = await admin_reader.detail(binding, ruleset_id)
+    fields = ("id", "name", "target", "enforcement", "conditions", "rules", *(
+        field for field in ("source", "source_type")
+        if field in document or field in operator_document
+    ))
+    if any(field not in document or field not in operator_document
+           or document[field] != operator_document[field] for field in fields):
+        raise ValueError("github_ruleset_unverifiable: App and operator policy observations differ")
+    # In particular, current_user_can_bypass belongs to the App observation.
+    return {**document, "bypass_actors": operator_document["bypass_actors"]}
+
+
 CLASSIFICATIONS = (UNVERIFIABLE, APP_BYPASS, INCOMPATIBLE, ATTESTED_ONLY, UNPROTECTED)
 
 MISSING_CODE = "main_protection_missing"

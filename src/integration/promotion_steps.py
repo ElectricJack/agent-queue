@@ -624,14 +624,14 @@ def promotion_workflow_triggers(flow: list[dict] | None, *, default_branch: str)
 
 async def read_promotion_protection(
     client: Any, binding: Any, flow: list[dict] | None, *, default_branch: str,
-    app_id: int, policy: Any = None,
+    app_id: int, policy: Any = None, ruleset_admin_reader: Any = None,
 ) -> dict:
     """Read every chain branch and tag pair, never issuing a GitHub write.
 
     A hidden bypass list cannot prove tag immutability or exclusive creation.
     Such a pair is reported as unverifiable, never as an empty actor list.
     """
-    from src.integration.protection import MAX_RULE_PAGES, read_protection
+    from src.integration.protection import MAX_RULE_PAGES, read_protection, read_ruleset_detail
 
     expected = promotion_rulesets(flow, default_branch=default_branch, app_id=app_id)
     branches = []
@@ -659,9 +659,9 @@ async def read_promotion_protection(
         for summary in summaries:
             if not isinstance(summary, dict) or type(summary.get("id")) is not int:
                 raise ValueError("a ruleset summary has no numeric id")
-            document = await client.request_json("GET", f"{root}/rulesets/{summary['id']}")
-            if document.get("id") != summary["id"]:
-                raise ValueError("a ruleset answered another id")
+            document = await read_ruleset_detail(
+                client, binding, summary["id"], admin_reader=ruleset_admin_reader,
+            )
             documents.append(document)
     except Exception as exc:  # noqa: BLE001 - provider boundary; unreadable is not missing
         warn("ruleset_unverifiable", f"Remote rulesets could not be read: {type(exc).__name__}.")
@@ -692,13 +692,13 @@ async def read_promotion_protection(
             mismatch = any(observed.get(key) != item[key]
                            for key in ("target", "enforcement", "conditions"))
             mismatch |= canonical(observed.get("rules")) != canonical(item["rules"])
-            if "bypass_actors" in observed:
+            if isinstance(observed.get("bypass_actors"), list):
                 mismatch |= canonical(observed["bypass_actors"]) != canonical(item["bypass_actors"])
             if mismatch:
                 classification = "mismatched"
                 warn("ruleset_check_mismatch", f"Ruleset {item['name']!r} differs from the flow.",
                      ruleset=item["name"], ruleset_id=observed["id"])
-            elif "bypass_actors" not in observed:
+            elif not isinstance(observed.get("bypass_actors"), list):
                 warn("ruleset_unverifiable", f"Bypass actors of {item['name']!r} are hidden.",
                      ruleset=item["name"], ruleset_id=observed["id"])
             elif item["target"] == "tag":
@@ -750,6 +750,7 @@ def _workflow_accepts(event: Any, branch: str) -> bool:
 
 async def validate_promotion_remote(
     client: Any, binding: Any, flow: list[dict] | None, *, default_branch: str, app_id: int,
+    ruleset_admin_reader: Any = None,
 ) -> dict:
     """Layer-four ruleset and workflow warnings at the default's exact remote SHA."""
     import yaml
@@ -758,6 +759,7 @@ async def validate_promotion_remote(
 
     report = await read_promotion_protection(
         client, binding, flow, default_branch=default_branch, app_id=app_id,
+        ruleset_admin_reader=ruleset_admin_reader,
     )
     expected = promotion_workflow_triggers(flow, default_branch=default_branch)
     warnings = report["warnings"]
