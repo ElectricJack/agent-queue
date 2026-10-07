@@ -26,6 +26,57 @@ Regeneration constructs a tree; it grants no publication authority. Existing
 source review, branch fences, exact remote leases, ancestry, receipts and CI
 checks still apply to the resulting commit. Both merge parents are retained.
 
+Claim-time prerequisite stacks use this same mechanism. Generated-only overlaps
+are rebuilt from all merged sources. The stack snapshot records prerequisite
+proofs and each regeneration's files, input trees and resulting merge commit.
+A source conflict is `stack_prerequisites_conflict`, not a slot-reset failure.
+Reserve one ordinary isolated stack-repair branch from the dependent's published
+tip (or its proven parent base), with exact prerequisite IDs, refs, OIDs and
+conflicting paths in the brief. The branch materialization scanner publishes
+the reservation. A named claim-admission predicate keeps the dependent READY
+but unclaimable until that repair has a passing completion; repeated
+preparation cannot duplicate it. This is preparation state, so it does not
+add a delivery dependency on the isolated repair branch.
+Repairs inherit the dependent's intelligence-class hint and routing preference;
+the ordinary router still assigns them. Generator failures and timeouts, including
+failures after a clean text merge, use the same named blocker and repair route.
+
+After a passing repair completion, observe its exact published head and prove
+that it preserves the repair starting point before using it as the new merge
+base. Merge every freshly proven prerequisite and the current parent onto that
+head, so moved prerequisites cannot be silently omitted. Only a successful
+stack and claim activation clear the conflict diagnostic. Preserve the resolved
+overlay as a merge base for later preparations of the same dependent. These admission waits
+do not consume slot-reset retries or quarantine the pool worker. The existing
+single-prerequisite fast path and immutable filing origin remain unchanged.
+An unusable passing repair (empty/no-new commits, missing or moved published
+ref, or unrelated ancestry) reserves a fresh repair from the dependent's current
+published head. That reservation closes admission again. Every conflict release
+also applies the normal preparation backoff, including races with a new repair
+epoch/completion, so other ready work remains claimable without consuming the
+slot-reset failure budget.
+
+Task `keen-orbit-59` extends preparation to the second boundary: the existing
+child versus its exact parent or prerequisite overlay. Construct the merge in
+the observer store before attaching a worker. Retain clean local child commits
+as well as the published child, and pin every frozen input. Generated-only
+overlaps use the canonical regenerator there; source conflicts reserve one
+ordinary repair with the original child, parent and overlay OIDs and paths.
+The repair checkout fetches those retained objects and starts at its reserved
+origin without automatically merging its conflicting parent. Admission proves
+the repair's exact passing published tip descends from every frozen input,
+then merges any newly proven parent/prerequisite before activating the child.
+
+The lower Git preparation boundary aborts an unsuccessful merge and emits a
+named conflict only after verifying the original HEAD and a clean index. Both
+pool and push preparation route that diagnostic through the same reservation.
+A final proof check prevents activation when the parent, child, prerequisite
+identity or repair ref moved during preparation. An unactivated pool checkout
+may detach with a clean exact HEAD pinned in the retained observer store;
+unsaved work, missing retention, unrelated branches or stale attachment identity
+withhold release. Normal writer handoff still requires published work. These
+waits preserve review feedback, filing origin, fences and recovery budgets.
+
 Verification includes two branches regenerating a real selection catalogue
 from different test modules, canonical combined output, preserved source
 files and merge parents, replay, generated-only main rebuild, source/mixed

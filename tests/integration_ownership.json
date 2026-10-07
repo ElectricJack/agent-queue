@@ -8333,6 +8333,18 @@
     },
     "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._episode_completion_token": {
       "reason": "Reads a container's collection episode checkpoint and repair operation under the caller's lock to admit only a cancelled train episode to guarded completion; refuses a live episode."
+    },
+    "src/database/queries/claim_queries.py::_claim_preparation_predicates": {
+      "reason": "Named preparation admission hold: a pending isolated repair must have a passing completion before a claim is selected. Ordinary task readiness; published exact-head and ancestry checks remain in the shared Git preparation primitive."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_branch_owners, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Imports canonical hierarchy origins and completion records for the named preparation admission predicate."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin._prepare_exact_origin_workspace_locked": {
+      "reason": "Exact managed checkout preparation under the existing branch mutation fence; consumes retained merge inputs without publication or changing the immutable filing origin."
+    },
+    "src/orchestrator/workspace_attachments.py::detach_retained_preparation": {
+      "reason": "Narrow unactivated-preparation handoff: prove exact clean HEAD durably pinned in the observer store before detach. Does not publish, reset, or waive attachment identity guards."
     }
   },
   "exclusions": {
@@ -12503,28 +12515,28 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: REPAIR_RECORD_META"
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::2142606549fbb7fc55f12062ec13ac7e0c300036166e68b70a945ed44a752050": {
-      "line": 1323,
+      "line": 1373,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b4f28ff2142f568498ea0ebdd53af8dfd6ec62e98a4aa35b725c53a36b7c84c8",
+      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary slot-reset failure diagnostics after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: 'slot_reset_failure'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
-      "line": 1309,
+      "line": 1359,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b4f28ff2142f568498ea0ebdd53af8dfd6ec62e98a4aa35b725c53a36b7c84c8",
+      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary attention marker when permanent preparation failure cannot safely detach an attached writer; PostgreSQL contention bypasses this write. Metadata key: 'needs_attention'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
-      "line": 1262,
+      "line": 1312,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b4f28ff2142f568498ea0ebdd53af8dfd6ec62e98a4aa35b725c53a36b7c84c8",
+      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary claim-preparation attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: 'needs_attention'; records repair_target_unpublished without remote OIDs, publication intent or ref replay authority."
@@ -14501,10 +14513,10 @@
       "reason": "Current immutable completion locator after a fenced source merge; ordinary completion state, never delivery or ref replay authority."
     },
     "src/integration/stacked_branches.py::StackedBranches._file_repair::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
-      "line": 886,
+      "line": 1174,
       "owner": "StackedBranches._file_repair",
       "call": "insert",
-      "owner_fingerprint": "d98102eb3cec04f30ace549c0b5abe35e08f547d3246a79a9fe0267274af67c8",
+      "owner_fingerprint": "52e54f49b09d659b699d98648c0fc2bf8c95052560ba4e770900d89e3eee2057",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Associates an isolated conflict repair with its preserved dependent for adoption; Git ancestry and current branch fences remain authoritative."
@@ -14562,6 +14574,15 @@
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Audit of an epic refresh the train started because the epic's root PR conflicts with the default branch, with the PR URL and the (epic head, default head) pair. The deterministic frozen refresh batch is the once-per-pair record; this event cannot replay refs or authorize delivery."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::3d42ccd676d8e3ea97e225f6a3ff602b9f5b68a48a3950e76d6d7fabbd3e03b9": {
+      "line": 1276,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "call": "set_task_meta",
+      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Records a named preparation hold when a retained attachment cannot be safely released; ordinary claim diagnostic, never Git publication or ref replay authority."
     }
   },
   "generic_dependencies": {

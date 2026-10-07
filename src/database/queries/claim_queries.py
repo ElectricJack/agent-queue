@@ -53,6 +53,7 @@ from src.database.tables import (
     integration_repair_stages,
     projects,
     sessions,
+    task_branch_origins,
     task_completion_records,
     task_delivery_receipts,
     task_integration_checkpoints,
@@ -376,6 +377,8 @@ CLAIM_PREPARATION_METADATA_KEYS = (
     # for the wait, so it goes stale at exactly the same boundary as the
     # ladder it throttles.
     "branch_fenced",
+    "stack_prerequisites_conflict",
+    "stack_preparation_changed",
 )
 
 #: Matches exactly what PostgreSQL's ``double precision`` input accepts here:
@@ -415,7 +418,25 @@ def numeric_meta_value(column, *, default: str = "0"):
 
 
 def _claim_preparation_predicates():
+    origin = task_branch_origins.alias("claim_stack_origin")
+    repair = tasks.alias("claim_stack_repair")
+    completion = task_completion_records.alias("claim_stack_completion")
+    latest_outcome = (
+        select(completion.c.outcome).where(completion.c.task_id == repair.c.id)
+        .order_by(completion.c.completed_at.desc()).limit(1).correlate(repair).scalar_subquery()
+    )
+    repair_passed = exists(select(literal(1)).where(
+        repair.c.id == origin.c.stack_snapshot["preparation_conflict"]["repair_task_id"].astext,
+        repair.c.status == TaskStatus.COMPLETED.value,
+        latest_outcome == "pass",
+    ).correlate(origin))
     return {
+        "stack_prerequisites_conflict": ~exists(select(literal(1)).where(
+            origin.c.task_id == tasks.c.id,
+            origin.c.retired_at.is_(None),
+            origin.c.stack_snapshot.op("?")("preparation_conflict"),
+            ~repair_passed,
+        )),
         "workspace_requirement": ~exists(select(literal(1)).where(
             task_workspace_requirements.c.task_id == tasks.c.id,
             task_workspace_requirements.c.kind_id.notin_(("project-repo", "vault")),
@@ -469,6 +490,7 @@ FRONTIER_PREDICATE_DETAILS = {
     "retired_repair_delegate": "repair delegate stage must be active or awaiting_completion",
     "workspace_requirement": "workspace requirements must be project-repo or vault",
     "claim_prepare_backoff": "claim_prepare_backoff_until must not be in the future",
+    "stack_prerequisites_conflict": "the prerequisite stack repair needs a passing completion",
     "hold_label": "no hold:* label may be present",
     "route_not_claimable": (
         "route_source must be router, override or role with a profile (legacy too while "

@@ -9404,6 +9404,18 @@
         109,
         114
       ]
+    },
+    "src/database/queries/claim_queries.py::_claim_preparation_predicates": {
+      "reason": "Named preparation admission hold: a pending isolated repair must have a passing completion before a claim is selected. Ordinary task readiness; published exact-head and ancestry checks remain in the shared Git preparation primitive."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_branch_owners, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Imports canonical hierarchy origins and completion records for the named preparation admission predicate."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin._prepare_exact_origin_workspace_locked": {
+      "reason": "Exact managed checkout preparation under the existing branch mutation fence; consumes retained merge inputs without publication or changing the immutable filing origin."
+    },
+    "src/orchestrator/workspace_attachments.py::detach_retained_preparation": {
+      "reason": "Narrow unactivated-preparation handoff: prove exact clean HEAD durably pinned in the observer store before detach. Does not publish, reset, or waive attachment identity guards."
     }
   },
   "shared_state": {

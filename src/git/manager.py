@@ -135,6 +135,15 @@ class GitError(Exception):
     pass
 
 
+class ChildPreparationConflict(GitError):
+    """A cleanly aborted child merge, with immutable repair inputs."""
+
+    def __init__(self, child_head, parent_head, merge_head, files, reason):
+        self.child_head, self.parent_head, self.merge_head = child_head, parent_head, merge_head
+        self.files = tuple(files)
+        super().__init__(reason)
+
+
 # ---------------------------------------------------------------------------
 # Commit identity (docs/specs/git-identity.md)
 # ---------------------------------------------------------------------------
@@ -2809,13 +2818,25 @@ class GitManager:
             await run(["switch", "-c", branch, remote if remote in refs else parent_sha],
                       cwd=workspace)
         for head in ([remote] if remote in refs else []) + [parent_sha]:
+            child_head = await run(["rev-parse", "HEAD"], cwd=workspace)
+            merge_head = await run(["rev-parse", head], cwd=workspace)
             try:
                 await run(["merge", "--no-edit", "--no-autostash", head], cwd=workspace)
-            except GitError:
+            except GitError as exc:
+                files = (await run(
+                    ["diff", "--name-only", "--diff-filter=U"], cwd=workspace,
+                )).splitlines()
                 try:
                     await run(["merge", "--abort"], cwd=workspace)
                 except GitError:
                     pass  # A precondition failure need not have started a merge.
+                if files:
+                    if (await run(["status", "--porcelain"], cwd=workspace)
+                            or await run(["rev-parse", "HEAD"], cwd=workspace) != child_head):
+                        raise GitError("child conflict abort could not preserve a clean checkout")
+                    raise ChildPreparationConflict(
+                        child_head, parent_sha, merge_head, files, str(exc),
+                    ) from exc
                 raise
         await run(["merge-base", "--is-ancestor", parent_sha, "HEAD"], cwd=workspace)
 

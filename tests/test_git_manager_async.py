@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
-from src.git.manager import GitError, GitManager, RemoteRefState
+from src.git.manager import ChildPreparationConflict, GitError, GitManager, RemoteRefState
 from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 from src.models import PhaseResult
 from src.orchestrator.git_ops import GitOpsMixin
@@ -75,9 +75,12 @@ async def test_child_parent_merge_conflict_preserves_child_tip_and_cleans_index(
     _git(["checkout", "-b", "aq/parent", base], cwd=clone)
     parent = _commit_file(clone, "README.md", "parent\n", "parent delivery")
 
-    with pytest.raises(GitError):
+    with pytest.raises(ChildPreparationConflict) as conflict:
         await mgr.aprepare_child_branch(clone, "aq/child", parent)
 
+    assert conflict.value.child_head == child
+    assert conflict.value.parent_head == parent == conflict.value.merge_head
+    assert conflict.value.files == ("README.md",)
     assert _git(["rev-parse", "HEAD"], cwd=clone) == child
     assert _git(["branch", "--show-current"], cwd=clone) == "aq/child"
     assert _git(["status", "--porcelain"], cwd=clone) == ""
@@ -89,6 +92,39 @@ async def test_child_preparation_with_unavailable_parent_keeps_checkout(mgr, clo
         await mgr.aprepare_child_branch(clone, "aq/child", "f" * 40)
     assert _git(["rev-parse", "HEAD"], cwd=clone) == before
     assert _git(["branch", "--show-current"], cwd=clone) == "main"
+
+
+@pytest.mark.parametrize("state", ["retained", "unpinned", "dirty", "other-branch"])
+async def test_preparation_retry_detaches_only_exact_clean_retained_head(mgr, clone, tmp_path, state):
+    from contextlib import asynccontextmanager
+    from src.orchestrator.workspace_attachments import detach_retained_preparation
+
+    _git(["checkout", "-b", "aq/child"], cwd=clone)
+    child = _commit_file(clone, "README.md", "unpublished child\n", "retained work")
+    store = tmp_path / "retained.git"
+    _git(["clone", "--bare", str(clone), str(store)], cwd=tmp_path)
+    if state != "unpinned":
+        _git(["update-ref", "refs/aq/stacks/" + child, child], cwd=store)
+    if state == "dirty":
+        (pathlib.Path(clone) / "README.md").write_text("unsaved work\n")
+    if state == "other-branch":
+        _git(["checkout", "-b", "aq/other"], cwd=clone)
+
+    @asynccontextmanager
+    async def mutex(path):
+        yield
+
+    before = _git(["status", "--porcelain"], cwd=clone)
+    result = await detach_retained_preparation(
+        mgr, mutex, SimpleNamespace(workspace_path=str(clone)), expected_branch="aq/child",
+        retained={"head": child, "store": str(store)},
+    )
+    assert result is (state == "retained")
+    assert _git(["rev-parse", "HEAD"], cwd=clone) == child
+    assert _git(["status", "--porcelain"], cwd=clone) == before
+    assert _git(["branch", "--show-current"], cwd=clone) == (
+        "" if result else "aq/other" if state == "other-branch" else "aq/child"
+    )
 
 
 # ------------------------------------------------------------------
