@@ -26,16 +26,16 @@ interface StateStyle {
 }
 
 const STATE_STYLE: Record<DeliveryState, StateStyle> = {
-  implementing: { Icon: WrenchScrewdriverIcon, tone: "bg-white/10 text-gray-200", cardStatus: null },
-  queued: { Icon: ClockIcon, tone: "bg-sky-500/15 text-sky-200", cardStatus: "READY" },
-  integrating: { Icon: ArrowPathIcon, tone: "bg-indigo-500/20 text-indigo-200", cardStatus: "IN_PROGRESS" },
-  verifying: { Icon: ShieldCheckIcon, tone: "bg-indigo-500/20 text-indigo-200", cardStatus: "IN_PROGRESS" },
-  blocked: { Icon: ExclamationTriangleIcon, tone: "bg-red-500/15 text-red-200", cardStatus: "BLOCKED" },
-  awaiting_approval: { Icon: HandRaisedIcon, tone: "bg-purple-500/15 text-purple-200", cardStatus: "WAITING_INPUT" },
-  paused: { Icon: PauseCircleIcon, tone: "bg-amber-500/15 text-amber-200", cardStatus: "PAUSED" },
-  delivered: { Icon: CheckBadgeIcon, tone: "bg-emerald-500/15 text-emerald-200", cardStatus: "COMPLETED" },
-  unknown: { Icon: QuestionMarkCircleIcon, tone: "bg-gray-500/15 text-gray-300", cardStatus: "PENDING" },
-  not_tracked: { Icon: MinusCircleIcon, tone: "bg-gray-500/10 text-gray-400", cardStatus: null },
+  implementing: { Icon: WrenchScrewdriverIcon, tone: "bg-g-run-soft text-g-accent-ink", cardStatus: null },
+  queued: { Icon: ClockIcon, tone: "bg-g-ready-soft text-g-ready", cardStatus: "READY" },
+  integrating: { Icon: ArrowPathIcon, tone: "bg-g-run-soft text-g-accent-ink", cardStatus: "IN_PROGRESS" },
+  verifying: { Icon: ShieldCheckIcon, tone: "bg-g-run-soft text-g-accent-ink", cardStatus: "IN_PROGRESS" },
+  blocked: { Icon: ExclamationTriangleIcon, tone: "bg-g-blocked-soft text-g-blocked", cardStatus: "BLOCKED" },
+  awaiting_approval: { Icon: HandRaisedIcon, tone: "bg-g-call-soft text-g-call", cardStatus: "WAITING_INPUT" },
+  paused: { Icon: PauseCircleIcon, tone: "bg-g-paused-soft text-g-paused", cardStatus: "PAUSED" },
+  delivered: { Icon: CheckBadgeIcon, tone: "bg-g-done-soft text-g-done", cardStatus: "COMPLETED" },
+  unknown: { Icon: QuestionMarkCircleIcon, tone: "bg-g-pending-soft text-g-muted", cardStatus: "PENDING" },
+  not_tracked: { Icon: MinusCircleIcon, tone: "bg-g-pending-soft text-g-muted", cardStatus: null },
 };
 
 export const EVIDENCE_TEXT: Record<string, string> = {

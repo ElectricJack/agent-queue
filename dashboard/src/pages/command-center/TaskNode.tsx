@@ -1,36 +1,23 @@
-import { memo } from "react";
-import { ExclamationTriangleIcon, LockClosedIcon, MagnifyingGlassPlusIcon } from "@heroicons/react/24/outline";
+import { memo, type ReactNode } from "react";
+import { ArrowDownRightIcon, LockClosedIcon } from "@heroicons/react/24/outline";
 import { Handle, Position, type NodeProps, type Node } from "@xyflow/react";
 import { CopyTaskIdButton } from "./CopyTaskIdButton";
 import { ProgressBar } from "./ProgressBar";
 import { NODE_HEIGHT, NODE_WIDTH, type TaskNodeData } from "./types";
-import { isTaskBlocked } from "./hierarchy";
-import { EpicDeliveryBadge } from "../../components/EpicDelivery";
-import { deliveryCardStatus } from "../../components/epicDeliveryFormat";
 import { ReviewWaitBadge } from "./ReviewWaitBadge";
-import { reviewStateLabel } from "./reviewWaitFormat";
+import { StatusPill } from "./StatusPill";
+import { pillForCard } from "./statusPillModel";
+import { profileTags } from "./taskCardFormat";
+import { taskReason, type Reason } from "./taskReason";
 
 export type { TaskNodeData } from "./types";
 type TaskNodeType = Node<TaskNodeData, "task">;
 
-const STATUS_TONE: Record<string, string> = {
-  DEFINED: "border-yellow-300 bg-yellow-950 text-yellow-100",
-  PENDING: "border-gray-600 bg-gray-900 text-gray-200",
-  READY: "border-sky-500 bg-sky-950 text-sky-100",
-  ASSIGNED: "border-indigo-500 bg-indigo-950 text-indigo-100",
-  PAUSED: "border-amber-500 bg-amber-950 text-amber-100",
-  IN_PROGRESS: "border-indigo-500 bg-indigo-950 text-indigo-100",
-  COMPLETED: "border-emerald-500 bg-emerald-950 text-emerald-100",
-  FAILED: "border-red-500 bg-red-950 text-red-100",
-  BLOCKED: "border-amber-500 bg-amber-950 text-amber-100",
-  WAITING_INPUT: "border-amber-500 bg-amber-950 text-amber-100",
-  CANCELLED: "border-gray-700 bg-gray-900 text-gray-400",
-  CANCELED: "border-gray-700 bg-gray-900 text-gray-400",
-};
-
-/** A task held by a review wears the review's colour on its border, whatever
- *  its stored status, so a review wait never reads as a generic block. */
-const REVIEW_WAIT_BORDER = "border-violet-400";
+/** The raised card a status without its own fill gets (§3.1). */
+const RAISED_FILL = "bg-g-card shadow-[0_1px_2px_rgba(0,0,0,.12)]";
+const FOCUS_RING = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-g-accent";
+/** Meta-row tags: a quiet chip whose text stays at body contrast (never `--g-pending`). */
+const TAG = "inline-block h-4 min-w-0 max-w-[110px] shrink truncate rounded px-[5px] text-[10px] leading-4";
 
 interface CardProps {
   data: TaskNodeData;
@@ -39,144 +26,171 @@ interface CardProps {
   layoutScale?: number;
 }
 
-/** The task action and the enter action are sibling elements at the card
- *  level. The card's open action is a `role="button"` div (not a `<button>`)
- *  so the copy-id button in its header can nest inside it validly. */
+/**
+ * One task as the §3.1 card: title, one status row, an optional progress bar,
+ * one reason sentence and a meta row. The open action is a `role="button"`
+ * layer under the content; the copy, review and enter controls are siblings
+ * painted above it, so no control nests inside another (§4.2).
+ */
 export function TaskCard({ data, selected = false, fluid = false, layoutScale = 1 }: CardProps) {
-  const { task, gates, hierarchy, onOpenTask, onFocus, subtasks, phase } = data;
+  const { task, gates, hierarchy, onOpenTask, onFocus, subtasks, phase, relations, stub } = data;
   const reviewWaits = data.reviewWaits ?? [];
   const reviewBlock = reviewWaits.find((wait) => wait.blocking) ?? null;
-  // An epic's delivery projection, when the daemon sent one: its status word
-  // and tone replace the stored lifecycle (an integration hold is PAUSED in
-  // storage but is not a pause anyone chose).
   const delivery = data.delivery ?? null;
-  const blocked = isTaskBlocked(task);
-  const statusTone = STATUS_TONE[deliveryCardStatus(delivery, task.status)] ?? STATUS_TONE.DEFINED ?? "";
-  const tone = reviewBlock ? statusTone.replace(/\bborder-\S+/, REVIEW_WAIT_BORDER) : statusTone;
-  const statusWord = delivery ? delivery.display_status : task.status.replace(/_/g, " ");
-  const working = delivery ? delivery.state === "integrating" || delivery.state === "verifying" : task.status === "IN_PROGRESS";
-  const statusTitle = delivery
-    ? `${delivery.display_status} · task status ${task.status}${delivery.hold === "integration" ? " (held by integration, not paused by anyone)" : ""}`
-    : reviewBlock ? `${task.status} · waiting on review ${reviewBlock.review_id} (${reviewStateLabel(reviewBlock.review_state)})`
-    : blocked ? `${task.status} · blocked by dependencies or gates` : task.status;
-  const priority = task.priority ?? 100;
-  const urgent = priority <= 20 ? "ring-2 ring-red-400" : priority <= 50 ? "ring-1 ring-amber-400" : "";
+  const pill = pillForCard(data);
+  const { cardStatus, treatment } = pill;
+  const epic = hierarchy.childCount > 0;
   const openGates = gates.filter((gate) => gate.status.toLowerCase() === "open");
 
+  const reason = stub ? null : taskReason({
+    status: cardStatus,
+    isBlocked: Boolean(task.is_blocked),
+    ...relations,
+    profileId: task.profile_id,
+    subtasks: subtasks ?? null,
+    childCount: hierarchy.childCount,
+    descDone: hierarchy.completedCount,
+    descTotal: hierarchy.descendantCount,
+    descRunning: hierarchy.runningCount,
+    descBlocked: hierarchy.blockedCount,
+    reviewWait: reviewBlock,
+    openGateTypes: openGates.map((gate) => gate.gate_type),
+    prUrl: task.pr_url,
+    delivery,
+  });
+
+  const kind = phase ? `Phase ${phase.order}${phase.label ? ` · ${phase.label}` : ""}` : epic ? "Epic" : null;
+  const border = treatment.borderClass ?? (epic ? "border-g-border-strong" : "border-g-border");
+  // A 4px left bar takes 3px of the 12px left padding, so the content keeps its column.
+  const padLeft = treatment.cardClass.includes("border-l-4") ? "pl-[9px]" : "pl-3";
+
   return (
-    <div
-      data-task-card
-      data-review-blocked={reviewBlock ? "" : undefined}
-      className={`relative flex flex-col rounded-md border text-xs shadow ${tone} ${urgent} ${hierarchy.contextOnly ? "border-dashed" : ""} ${selected ? "outline outline-2 outline-white" : ""}`}
-      style={{ width: fluid ? "100%" : NODE_WIDTH * layoutScale, height: NODE_HEIGHT * layoutScale }}
-    >
-      {phase && (
-        <div className="flex items-center gap-1 border-b border-white/10 px-2 py-0.5 text-[10px] font-semibold text-indigo-200">
-          {task.is_blocked && <LockClosedIcon aria-label="Phase gated" className="h-3 w-3 shrink-0" />}
-          <span className="truncate">
-            {`Phase ${phase.order}`}{phase.label ? ` · ${phase.label}` : ""}
-          </span>
-        </div>
+    <div className="relative" style={{ width: fluid ? "100%" : NODE_WIDTH * layoutScale, height: NODE_HEIGHT * layoutScale }}>
+      {epic && (
+        // §2.5: a collapsed epic is a stack of sheets, its second outline 4px behind.
+        <div aria-hidden className="absolute inset-0 translate-x-1 translate-y-1 rounded-[10px] border border-g-border-strong bg-g-panel" />
       )}
       <div
-        role="button"
-        tabIndex={0}
-        aria-label={`Open task ${task.title}`}
-        aria-pressed={selected}
-        data-task-id={task.id}
-        className="nopan flex min-h-0 flex-1 cursor-grab flex-col overflow-hidden rounded-md p-2 text-left active:cursor-grabbing focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-300"
-        onClick={(event) => {
-          if (onOpenTask) {
-            event.stopPropagation();
-            onOpenTask(task.id, task);
-          }
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            event.stopPropagation();
-            onOpenTask?.(task.id, task);
-          }
-        }}
+        data-task-card
+        data-status={cardStatus}
+        data-review-blocked={reviewBlock ? "" : undefined}
+        className={`relative flex h-full flex-col rounded-[10px] border pt-[11px] pr-3 pb-[9px] ${padLeft} font-g text-g-text ${border} ${treatment.fillClass ?? RAISED_FILL} ${treatment.cardClass} ${treatment.stripe ? "aq-stripe" : ""} ${hierarchy.contextOnly ? "border-dashed" : ""} ${selected ? "outline outline-2 outline-offset-2 outline-g-accent" : ""}`}
       >
-        <span className="flex w-full items-center justify-between gap-1">
-          <span className="flex min-w-0 items-center gap-0.5">
-            <span className="truncate font-mono text-[10px] opacity-70" title={task.id}>{task.id.slice(0, 8)}</span>
-            <CopyTaskIdButton taskId={task.id} className="nodrag nopan opacity-70 hover:bg-white/10 hover:text-inherit hover:opacity-100" />
-          </span>
-          <span className="flex shrink-0 items-center gap-1 text-[9px] tracking-wide" title={statusTitle}>
-            {working && <span aria-hidden className="h-2 w-2 animate-pulse rounded-full bg-indigo-300 motion-reduce:animate-none" />}
-            {statusWord}
-            {blocked && task.status !== "BLOCKED" && <ExclamationTriangleIcon aria-label="Blocked by dependencies or gates" className="h-3 w-3 text-amber-300" />}
-          </span>
-        </span>
-        {hierarchy.parentTitle && (
-          <span className="mt-0.5 w-full truncate text-[9px] opacity-60" title={hierarchy.parentTitle}>
-            ↳ {hierarchy.parentTitle}
-          </span>
-        )}
-        <span className="mt-1 line-clamp-2 w-full font-medium leading-4" title={task.title}>{task.title}</span>
-        <span className="mt-1 flex w-full items-center gap-1 overflow-hidden text-[10px] opacity-80">
-          {delivery && delivery.state !== "implementing" ? (
-            <EpicDeliveryBadge delivery={delivery} />
-          ) : (
-            <>
-              {task.profile_id && <span className="truncate rounded bg-white/5 px-1" title={task.profile_id}>{task.profile_id}</span>}
-              {task.intelligence_class && <span className="truncate rounded bg-white/5 px-1" title={task.intelligence_class}>{task.intelligence_class}</span>}
-            </>
-          )}
-          {openGates.length > 0 && <span className="shrink-0" title={openGates.map((gate) => gate.gate_type).join(", ")}>{openGates.length} gate{openGates.length === 1 ? "" : "s"}</span>}
-        </span>
-        {(hierarchy.descendantCount > 0 || (subtasks?.total ?? 0) > 0) && (
-          <span className="mt-auto block w-full space-y-1 pt-1 text-[10px]">
-            {hierarchy.descendantCount > 0 && (
-              <span className="block">
-                <span title="Implementation progress">
-                  {hierarchy.completedCount}/{hierarchy.descendantCount} {delivery ? "tasks complete" : "descendants completed"}
-                </span>
-                <ProgressBar
-                  className="mt-0.5"
-                  done={hierarchy.completedCount}
-                  total={hierarchy.descendantCount}
-                  running={hierarchy.runningCount}
-                  blocked={hierarchy.blockedCount}
-                />
+        <div
+          role="button"
+          tabIndex={0}
+          aria-label={`Open task ${task.title}`}
+          aria-pressed={selected}
+          data-task-id={task.id}
+          className={`nopan absolute inset-0 cursor-grab rounded-[10px] active:cursor-grabbing ${FOCUS_RING}`}
+          onClick={(event) => {
+            if (onOpenTask) {
+              event.stopPropagation();
+              onOpenTask(task.id, task);
+            }
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              event.stopPropagation();
+              onOpenTask?.(task.id, task);
+            }
+          }}
+        />
+        <div className="pointer-events-none relative flex min-h-0 flex-1 flex-col gap-1.5">
+          <p className="line-clamp-2 text-[13.5px] font-semibold leading-[1.25] [text-wrap:balance]" title={task.title}>
+            <span className={treatment.titleClass}>{task.title}</span>
+          </p>
+          <div className="flex min-h-5 min-w-0 items-center gap-2">
+            {!stub && <StatusPill model={pill} />}
+            {reviewWaits.length > 0 && (
+              <span className="pointer-events-auto flex min-w-0">
+                <ReviewWaitBadge waits={reviewWaits} variant="pill" />
               </span>
             )}
-            {(subtasks?.total ?? 0) > 0 && (
-              <span className="block">
-                <span>{subtasks!.settled}/{subtasks!.total} subtasks</span>
-                <ProgressBar className="mt-0.5" done={subtasks!.settled} total={subtasks!.total} />
+            <PriorityTag priority={task.priority} />
+            {kind && (
+              <span className="ml-auto flex min-w-0 shrink items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-g-muted">
+                {phase && task.is_blocked && <LockClosedIcon aria-label="Phase gated" className="h-3 w-3 shrink-0" />}
+                <span className="truncate" title={kind}>{kind}</span>
               </span>
             )}
-          </span>
-        )}
-      </div>
-      <ReviewWaitBadge waits={reviewWaits} />
-      {hierarchy.childCount > 0 && (
-        <div className="flex shrink-0 items-center gap-1 rounded-b-md border-t border-white/10 px-2 text-[10px]">
-          {/* A count, not a control: the children are reached by ENTERING the
-            * container, never by expanding it in place. */}
-          <span className="rounded bg-white/10 px-1">{hierarchy.descendantCount} hidden</span>
-          {hierarchy.runningCount > 0 && <span className="text-indigo-300">{hierarchy.runningCount} running</span>}
-          {hierarchy.blockedCount > 0 && <span className="text-amber-300">{hierarchy.blockedCount} blocked</span>}
-          {onFocus && (
-            <button
-              type="button"
-              aria-label={`Enter ${task.title}`}
-              title={`Enter ${task.title}`}
-              className="nodrag nopan ml-auto flex h-7 shrink-0 items-center gap-1 rounded px-1.5 font-medium hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-300"
-              onClick={(event) => { event.stopPropagation(); onFocus(task.id); }}
-              onKeyDown={(event) => { if (event.key !== "Escape") event.stopPropagation(); }}
-            >
-              <MagnifyingGlassPlusIcon aria-hidden className="h-3.5 w-3.5" />
-              Enter
-            </button>
-          )}
+          </div>
+          {hierarchy.descendantCount > 0 ? (
+            <ProgressBar
+              done={hierarchy.completedCount}
+              total={hierarchy.descendantCount}
+              running={hierarchy.runningCount}
+              blocked={hierarchy.blockedCount}
+              label={`${hierarchy.completedCount} of ${hierarchy.descendantCount} tasks done`}
+            />
+          ) : subtasks && subtasks.total > 0 ? (
+            <ProgressBar done={subtasks.settled} total={subtasks.total} label={`${subtasks.settled} of ${subtasks.total} subtasks settled`} />
+          ) : null}
+          <div className="mt-auto flex min-w-0 flex-col gap-1.5">
+            {reason && <ReasonLine reason={reason} className={treatment.reasonClass} />}
+            <div className="flex h-6 min-w-0 items-center gap-1.5 border-t border-g-border pt-[7px] text-[10.5px] text-g-muted">
+              <span className="w-[10ch] shrink-0 truncate font-g-mono" title={task.id}>{task.id}</span>
+              <CopyTaskIdButton
+                taskId={task.id}
+                className="nodrag nopan pointer-events-auto relative text-g-muted hover:bg-g-card-hover hover:text-g-text"
+              />
+              <span className="min-w-0 flex-1" />
+              <MetaTags data={data} openGateTypes={openGates.map((gate) => gate.gate_type)} />
+              {epic && onFocus && (
+                <button
+                  type="button"
+                  aria-label={`Enter ${task.title}`}
+                  title={`Enter ${task.title}`}
+                  className={`nodrag nopan pointer-events-auto relative flex h-6 shrink-0 items-center gap-1 rounded-md border border-g-border bg-g-card px-[9px] text-[11px] font-medium text-g-text hover:bg-g-card-hover ${FOCUS_RING}`}
+                  onClick={(event) => { event.stopPropagation(); onFocus(task.id); }}
+                  onKeyDown={(event) => { if (event.key !== "Escape") event.stopPropagation(); }}
+                >
+                  Enter
+                  <ArrowDownRightIcon aria-hidden className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
+}
+
+function ReasonLine({ reason, className }: { reason: Reason; className: string }) {
+  return (
+    <p data-reason className={`truncate text-[11.5px] leading-4 ${className}`} title={reason.text}>
+      {reason.segments.map((segment, index) => (
+        segment.strong ? <b key={index} className="font-semibold">{segment.text}</b> : <span key={index}>{segment.text}</span>
+      ))}
+    </p>
+  );
+}
+
+/** §3.1: priority shows only when it is urgent enough to change what you do. */
+function PriorityTag({ priority }: { priority?: number }) {
+  if (priority == null || priority > 50) return null;
+  const tone = priority <= 20 ? "bg-g-failed-soft text-g-failed" : "bg-g-blocked-soft text-g-blocked";
+  return (
+    <span className={`${TAG} shrink-0 font-bold ${tone}`} title={`Priority ${priority}`}>P{priority}</span>
+  );
+}
+
+function MetaTags({ data, openGateTypes }: { data: TaskNodeData; openGateTypes: string[] }) {
+  const tags: Array<{ key: string; text: string; title: string }> = [];
+  if (data.stub?.foreign) tags.push({ key: "foreign", text: "other project", title: "This task lives in another project" });
+  for (const tag of profileTags(data.task.profile_id, data.task.intelligence_class)) {
+    tags.push({ key: `profile:${tag}`, text: tag, title: data.task.profile_id ?? tag });
+  }
+  if (openGateTypes.length > 0) {
+    tags.push({ key: "gates", text: `${openGateTypes.length} gate${openGateTypes.length === 1 ? "" : "s"}`, title: openGateTypes.join(", ") });
+  }
+  if (data.hierarchy.contextOnly) tags.push({ key: "context", text: "context only", title: "Shown for context: outside the current filter" });
+  if (tags.length === 0) return null;
+  return tags.map((tag): ReactNode => (
+    <span key={tag.key} className={`${TAG} bg-g-pending-soft text-g-muted`} title={tag.title}>{tag.text}</span>
+  ));
 }
 
 /**

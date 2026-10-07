@@ -1,7 +1,8 @@
 import { MarkerType, type Edge, type Node } from "@xyflow/react";
 import type { GraphGate, LayoutNode } from "@aq/ts-client";
 import { edgeStyleForType } from "./edgeStyle";
-import type { ContainerNodeData, SelectableTask, TaskNodeData } from "../types";
+import type { ContainerNodeData, SelectableTask, TaskNodeData, TaskRelations } from "../types";
+import { FINISHED_STATUSES } from "../taskFilters";
 import type { LayoutStore } from "./layoutStore";
 import { sizePx, toPx } from "./units";
 import { DENSITY_SCALE, type LayoutDensity } from "./density";
@@ -77,13 +78,16 @@ export function enteredBounds(store: LayoutStore, focusId: string | null | undef
   return { x: frame.x, y: frame.y, w: x1 - frame.x, h: y1 - frame.y };
 }
 
-export interface FlowHandlers { onOpenTask: (id: string, task?: SelectableTask) => void; onFocus: (id: string) => void }
+export interface FlowHandlers { onOpenTask: (id: string, task?: SelectableTask) => void; onFocus: (id: string | null) => void }
 export interface FlowContext {
   projectId: string;
   offsetY: number;
   /** The container the canvas has ENTERED, if any. It is the one node that
    *  offers no enter control of its own. */
   focusId?: string | null;
+  /** Where the entered container's "Up to" button leads: its parent, or the
+   *  project (`id: null`). Unknown until the focus node has loaded. */
+  upTarget?: { id: string | null; title: string } | null;
   handlers: FlowHandlers;
   /** Display names by project id, for stubs that live in another project. */
   projectNames?: ReadonlyMap<string, string>;
@@ -117,8 +121,50 @@ function canEnter(n: LayoutNode, ctx: FlowContext): boolean {
   return (n.agg_children ?? 0) > 0 && n.kind !== "stub" && n.id !== ctx.focusId;
 }
 
+/**
+ * The neighbours each card's reason line names (spec §3.4), from the edges and
+ * nodes already loaded: open blockers (a settled one no longer gates anything),
+ * the first open dependent, and where a READY task sits in the frontier among
+ * the loaded ones. The frontier sorts by priority then age; the layout carries
+ * no age, so a priority tie leaves the rank unknown rather than guessed.
+ */
+export function relationsByTask(store: LayoutStore): Map<string, TaskRelations> {
+  const out = new Map<string, TaskRelations>();
+  const entry = (id: string) => {
+    let r = out.get(id);
+    if (!r) out.set(id, (r = { blockerCount: 0, blockerTitle: null, dependentTitle: null, readyAhead: null }));
+    return r;
+  };
+  const titleOf = (id: string) => store.nodes.get(id)?.title ?? store.stubs.get(id)?.title ?? null;
+  const settled = (id: string) => FINISHED_STATUSES.has(store.nodes.get(id)?.status ?? "");
+  // ``from`` is the dependent, ``to`` the blocker; provenance gates nothing.
+  for (const e of store.edges.values()) {
+    if (e.dep_type === "discovered-from") continue;
+    if (!settled(e.to)) {
+      const r = entry(e.from);
+      r.blockerCount += 1;
+      r.blockerTitle ??= titleOf(e.to);
+    }
+    if (!settled(e.from)) entry(e.to).dependentTitle ??= titleOf(e.from);
+  }
+  // The frontier never offers a parent (claim_queries' `has_children` rule).
+  const ready = [...store.nodes.values()].filter((n) =>
+    n.status === "READY" && !n.is_blocked && n.kind !== "container" && (n.agg_children ?? 0) === 0);
+  const priorities = ready.map((n) => n.priority ?? 100).sort((a, b) => a - b);
+  for (const n of ready) {
+    const p = n.priority ?? 100;
+    const first = priorities.indexOf(p);
+    const tied = priorities.lastIndexOf(p) > first;
+    entry(n.id).readyAhead = tied ? null : first;
+  }
+  return out;
+}
+
+const relationsSig = (r: TaskRelations | undefined) =>
+  r ? [r.blockerCount, r.blockerTitle, r.dependentTitle, r.readyAhead].join(",") : "";
+
 /** The card payload for one layout node; shared with the flat mobile list. */
-export function taskNodeData(n: LayoutNode, ctx: FlowContext, gates: GraphGate[]): TaskNodeData {
+export function taskNodeData(n: LayoutNode, ctx: FlowContext, gates: GraphGate[], relations?: TaskRelations): TaskNodeData {
   const task = {
     id: n.id, title: n.title, status: n.status, priority: n.priority, is_blocked: n.is_blocked,
     profile_id: n.profile_id, intelligence_class: n.intelligence_class, assigned_agent_id: n.assigned_agent_id,
@@ -139,6 +185,7 @@ export function taskNodeData(n: LayoutNode, ctx: FlowContext, gates: GraphGate[]
     phase: n.phase_order != null ? { order: n.phase_order, label: n.phase_label ?? "" } : null,
     delivery: n.delivery ?? null,
     reviewWaits: n.review_waits ?? [],
+    relations,
   };
 }
 
@@ -168,7 +215,8 @@ function nodeSignature(n: LayoutNode, gates: GraphGate[]): string {
 function sameContext(a: FlowContext | null, b: FlowContext): boolean {
   return !!a && a.projectId === b.projectId && a.offsetY === b.offsetY && a.density === b.density
     && a.handlers === b.handlers && a.projectNames === b.projectNames
-    && (a.focusId ?? null) === (b.focusId ?? null) && !!a.hideEdgeLabels === !!b.hideEdgeLabels;
+    && (a.focusId ?? null) === (b.focusId ?? null) && !!a.hideEdgeLabels === !!b.hideEdgeLabels
+    && (a.upTarget?.id ?? null) === (b.upTarget?.id ?? null) && a.upTarget?.title === b.upTarget?.title;
 }
 
 export function toFlowElements(store: LayoutStore, ctx: FlowContext, previous?: FlowCache): FlowElements {
@@ -187,6 +235,9 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext, previous?: 
   }
   const NO_GATES: GraphGate[] = [];
   const gatesFor = (id: string) => gatesByTask.get(id) ?? NO_GATES;
+  // A card's reason line names its neighbours, so their titles and statuses
+  // are part of what it draws from: they join its signature below.
+  const relations = relationsByTask(store);
 
   /** Reuse the previous object when nothing this element draws from moved. */
   const push = (id: string, sig: string, build: () => Node) => {
@@ -202,20 +253,22 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext, previous?: 
     const n = frame && stored.id === ctx.focusId ? { ...stored, w: frame.w, h: frame.h } : stored;
     pos.set(n.id, { x: n.x, y: n.y });
     const gates = gatesFor(n.id);
-    const sig = nodeSignature(n, gates);
+    const rel = relations.get(n.id);
+    const sig = nodeSignature(n, gates) + SEP + relationsSig(rel);
     if (n.kind === "container") {
       push(n.id, sig, () => {
         const data: ContainerNodeData = {
           node: n, projectId: ctx.projectId, onOpenTask: ctx.handlers.onOpenTask,
           onFocus: canEnter(n, ctx) ? ctx.handlers.onFocus : undefined,
           layoutScale: DENSITY_SCALE[ctx.density ?? "comfortable"],
+          ...(n.id === ctx.focusId && ctx.upTarget ? { upTarget: ctx.upTarget, onUp: ctx.handlers.onFocus } : {}),
         };
         return { id: n.id, type: "container", position: toPx(n.x, n.y + ctx.offsetY, ctx.density), ...sizePx(n.w, n.h, ctx.density), zIndex: n.depth, selectable: false, draggable: false, connectable: false, data };
       });
     } else {
       push(n.id, sig, () => ({
         id: n.id, type: "task", position: toPx(n.x, n.y + ctx.offsetY, ctx.density), ...sizePx(1, 1, ctx.density),
-        zIndex: 100 + n.depth, draggable: false, connectable: false, data: taskNodeData(n, ctx, gates),
+        zIndex: 100 + n.depth, draggable: false, connectable: false, data: taskNodeData(n, ctx, gates, rel),
       }));
     }
   }
@@ -234,9 +287,10 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext, previous?: 
     const stub: LayoutNode = { id: s.id, title, status: "PENDING", priority: 100, is_blocked: false, x, y, w: 1, h: 1, depth: 0,
       container_id: null, kind: "stub", context_only: true, agg_children: 0, agg_descendants: 0, agg_completed: 0, agg_running: 0, agg_blocked: 0, agg_active: 0 } as LayoutNode;
     const gates = gatesFor(s.id);
-    push(s.id, nodeSignature(stub, gates), () => ({
+    push(s.id, nodeSignature(stub, gates) + SEP + foreign, () => ({
       id: s.id, type: "task", className: "aq-stub", position: toPx(x, y + ctx.offsetY, ctx.density),
-      ...sizePx(1, 1, ctx.density), zIndex: 5, draggable: false, connectable: false, data: taskNodeData(stub, ctx, gates),
+      ...sizePx(1, 1, ctx.density), zIndex: 5, draggable: false, connectable: false,
+      data: { ...taskNodeData(stub, ctx, gates), stub: { foreign } },
     }));
   }
   // Boundary markers: a card with more far dependencies than the tile carries
@@ -281,7 +335,7 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext, previous?: 
       // A `discovered-from` edge is provenance, not a dependency: it draws
       // as a quiet dashed annotation (edgeStyleForType) with no arrowhead,
       // so it never reads as another blocker line.
-      markerEnd: e.dep_type === "discovered-from" ? undefined : { type: MarkerType.ArrowClosed },
+      markerEnd: e.dep_type === "discovered-from" ? undefined : { type: MarkerType.ArrowClosed, color: "var(--g-edge)" },
       style: edgeStyleForType(e.dep_type), data: { depType: e.dep_type },
     };
     cache.edges.set(id, { sig, edge });

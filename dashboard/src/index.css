@@ -107,6 +107,38 @@
   --xy-controls-box-shadow: var(--g-shadow);
 }
 
+/* §3.3 stripes: an in-progress card wears faint diagonal stripes that drift
+   slowly so the running state is visible without stealing attention. The
+   canvas flips `.aq-static-stripes` on while zooming is low (below ~0.45)
+   or more than ~60 striped cards are on screen, so the animation never
+   becomes the most expensive frame on the page; it also stops under
+   `prefers-reduced-motion`. */
+[data-task-card].aq-stripe {
+  background-image: repeating-linear-gradient(
+    135deg, var(--g-stripe) 0 9px, transparent 9px 20px
+  );
+  background-repeat: repeat;
+  animation: aq-stripe-drift 2.8s linear infinite;
+}
+@keyframes aq-stripe-drift {
+  to { background-position: 28px 0; }
+}
+.aq-task-graph.aq-static-stripes [data-task-card].aq-stripe { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  [data-task-card].aq-stripe { animation: none; }
+}
+
+/* The running pill's dot breathes a ring under the same motion rules. */
+.aq-pulse { animation: aq-pulse 1.8s ease-out infinite; }
+@keyframes aq-pulse {
+  from { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); }
+  to { box-shadow: 0 0 0 5px transparent; }
+}
+.aq-task-graph.aq-static-stripes .aq-pulse { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .aq-pulse { animation: none; }
+}
+
 [data-theme="light"] .aq-task-graph {
   color-scheme: light;
 }
@@ -132,15 +164,16 @@
 }
 
 /* Boundary markers: a task that exists outside the loaded tiles, drawn as a
-   muted dashed placeholder so it never reads as a real card. */
+   muted dashed placeholder so it never reads as a real card. It recedes by
+   its border, not by opacity, which would take its text under 4.5:1 (§4.2). */
 .react-flow__node.aq-stub {
-  opacity: 0.6;
   filter: grayscale(0.7);
 }
 
 /* The card only: `> *` would also dash React Flow's connection handles. */
 .react-flow__node.aq-stub [data-task-card] {
   border-style: dashed;
+  border-color: color-mix(in srgb, var(--g-border) 55%, transparent);
 }
 
 /* A count, not a card: it never takes pointer events or selection. */
