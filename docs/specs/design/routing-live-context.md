@@ -37,9 +37,10 @@ route's rule.
 `aq task route-override` changes the route only; it never changes task status.
 It accepts a task no worker holds and no session is starting, running or
 draining, including a READY task just stopped; stop intent alone does not prove
-the old worker is gone. To run stopped work on the new route, restart it through
-`task_recover` or the operator's `restart_task`, whose recovery holds, retry
-budget and preserved-work handoff all apply.
+the old worker is gone. To run stopped work on the new route, restart a BLOCKED
+task through `task_recover` or the operator's `restart_task`, or resume a PAUSED
+one with `resume_task`; their recovery holds, retry budget and preserved-work
+handoff all apply.
 
 An optional `prefer_harnesses` list on a kind (overridable by origin) favors a
 compatible hosted harness after eligible local/design lane preferences. The
