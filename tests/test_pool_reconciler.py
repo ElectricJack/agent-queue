@@ -168,6 +168,53 @@ def frontier_clock(monkeypatch):
     return clock
 
 
+@pytest.mark.parametrize("cache_state", ["cold", "warm", "expired"])
+@pytest.mark.parametrize("stacked", [False, True])
+async def test_pool_diagnostics_never_fetch_hierarchy_or_stack_prerequisites(
+    orch, db, git_first_frontier, frontier_clock, monkeypatch, cache_state, stacked,
+):
+    from types import SimpleNamespace
+
+    from src.commands.handler import CommandHandler
+    from src.integration import stacked_branches
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+
+    env = git_first_frontier
+    monkeypatch.setattr(stacked_branches, "time", SimpleNamespace(monotonic=frontier_clock))
+    if stacked:
+        await db.update_project(PROJECT_ID, hierarchical_integration_policy={
+            "prerequisite_branches": "stacked",
+        })
+    if cache_state != "cold":
+        await hierarchy_frontier_modes(db)
+    if cache_state == "expired":
+        env.observer._recent = {
+            target: (stamp - env.observer.READ_MAX_AGE - 1, snapshot)
+            for target, (stamp, snapshot) in env.observer._recent.items()
+        }
+        env.observer._stack_ref_cache.clear()
+    forbidden = {}
+    for name in ("afetch_origin", "acreate_checkout", "als_remote_ref", "als_remote_refs"):
+        forbidden[name] = AsyncMock(side_effect=AssertionError(f"diagnostic called {name}"))
+        monkeypatch.setattr(env.observer.git, name, forbidden[name])
+    handler = CommandHandler(orch, orch.config)
+    explained = await handler._cmd_explain_task({"task_id": "second"})
+    # A retained sibling may be stacked when its current refs are already observed.
+    stackable = stacked and cache_state == "warm"
+    assert ("frontier_sibling_prerequisite_not_delivered" in explained["reason_codes"]) is (
+        not stackable
+    )
+    if not stackable:
+        reason = next(reason for reason in explained["reasons"]
+                      if reason["code"] == "frontier_sibling_prerequisite_not_delivered")
+        assert "missing or stale evidence" in reason["detail"]
+    status = await handler._cmd_pool_status({})
+    row = next(row for row in status["pools"] if row["profile_id"] == "worker")
+    assert row["ready"] == int(stackable)
+    for call in forbidden.values():
+        call.assert_not_awaited()
+
+
 async def test_git_first_delivery_releases_scheduler_pool_and_claim(
     orch, db, git_first_frontier, frontier_clock,
 ):

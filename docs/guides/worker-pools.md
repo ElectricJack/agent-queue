@@ -432,6 +432,13 @@ fleet-wide whether or not you pass one, because filtering them would misreport
 the pool the sizer actually acts on. A profile with no standing in the named
 project drops out of the listing entirely.
 
+`pool status` and `task explain` use cached delivery observations without network
+Git calls. A cold or expired observation withholds delivery-dependent demand
+until a background consumer refreshes it; task explanations report unknown
+delivery evidence. Claiming still obtains and validates its own fresh evidence.
+Displaying a retired intelligence class leaves its model settings unresolved
+without repeating launch warnings; launch validation continues to report it.
+
 Over the API the shape matches: `PoolStatusRow` carries `projects[]`
 (`PoolProjectStatus`: `ready`, the four counters, `max_concurrent_agents`,
 `workspace_capacity`, `quarantined_until` / `quarantined_reason`) and

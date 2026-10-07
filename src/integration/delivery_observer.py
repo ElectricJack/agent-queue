@@ -338,6 +338,10 @@ class PrerequisiteView:
     def all_ids(self):
         return self.siblings.evidence.keys() | self.default.evidence.keys()
 
+    @property
+    def snapshots(self):
+        return self.siblings.snapshots + self.default.snapshots
+
     async def fresh(self):
         return await self.siblings.fresh() and await self.default.fresh()
 
@@ -376,7 +380,7 @@ def prerequisite_observer(db):
     return None
 
 
-async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None):
+async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None, cached_only=False):
     """Request-scoped Git prerequisite evidence for scheduling and diagnostics.
 
     A cycle shares these modes between the scheduler and pool measurement.
@@ -384,6 +388,8 @@ async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None):
     revalidation uses a short connection without locks. Advisory readers reuse
     successful snapshots within READ_MAX_AGE, still checking target freshness.
     Claim activation fetches and revalidates its own view under the task locks.
+    ``cached_only`` pins existing evidence for interactive diagnostics without
+    fetching or checking remote freshness; database identities are still checked.
 
     Shadow observers preserve receipt admission. An unstable active view supplies
     an empty delivered set, so it cannot fall back to a stale receipt.
@@ -411,9 +417,18 @@ async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None):
             continue
         view = await observer.prerequisite_view(
             project.id, task_id=task_id, max_age=observer.READ_MAX_AGE,
+            **({"cached_only": True} if cached_only else {}),
         )
         verified_mode = replace(mode, delivered_prerequisite_ids=frozenset())
-        if await view.fresh():
+        if cached_only:
+            fresh = all(snapshot._freshness.get(snapshot.target_ref, True)
+                        for snapshot in view.snapshots)
+        else:
+            fresh = await view.fresh()
+            if not fresh:
+                for snapshot in view.snapshots:
+                    snapshot._freshness[snapshot.target_ref] = False
+        if fresh:
             async with db._engine.connect() as conn:
                 verified_mode = await view.mode(mode, conn=conn)
         stackable = frozenset()
@@ -421,7 +436,8 @@ async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None):
             from src.integration.stacked_branches import observe_stacks
 
             stack_view = await observe_stacks(observer, project.id, task_id=task_id,
-                                               max_age=observer.READ_MAX_AGE)
+                                               max_age=observer.READ_MAX_AGE,
+                                               **({"cached_only": True} if cached_only else {}))
             if await stack_view.fresh():
                 async with db._engine.connect() as conn:
                     stackable = frozenset(await stack_view.verified_on(conn))
@@ -482,10 +498,11 @@ class DeliveryObserver:
         """
         path = self.store_path(target.repository_id)
         recent = self._recent.get(target)
-        if max_age > 0 and recent is not None and time.monotonic() - recent[0] <= max_age:
+        if (max_age > 0 and recent is not None and time.monotonic() - recent[0] <= max_age
+            and (not cached_only or recent[1]._freshness.get(target.target_ref, True))):
             return recent[1]
         if cached_only:
-            # Interactive graph reads must never queue behind a fetch or start
+            # Interactive diagnostic reads must never queue behind a fetch or start
             # one. Expired evidence is unknown, not evidence of non-delivery.
             return DeliverySnapshot(
                 self.git, str(path), target.project_id, target.repository_id,
@@ -521,9 +538,11 @@ class DeliveryObserver:
                 f"observer_error: {type(exc).__name__}",
             )
 
-    async def snapshot(self, target: DeliveryTarget) -> DeliverySnapshot:
-        """Fetch one isolated, request-scoped snapshot for an external reader."""
-        snapshot = (await self._snapshot(target)).for_request()
+    async def snapshot(
+        self, target: DeliveryTarget, *, max_age: float = 0.0, cached_only: bool = False,
+    ) -> DeliverySnapshot:
+        """One isolated, request-scoped snapshot; diagnostics can require a cached read."""
+        snapshot = (await self._snapshot(target, max_age, cached_only=cached_only)).for_request()
         if self.truth is not None:
             from src.integration.git_truth import GitTruthSnapshot
 
@@ -566,6 +585,7 @@ class DeliveryObserver:
 
     async def prerequisite_view(
         self, project_id: str, *, task_id: str | None = None, max_age: float = 0.0,
+        cached_only: bool = False,
     ):
         """Completed prerequisites, routed to the parent or default branch.
 
@@ -591,8 +611,9 @@ class DeliveryObserver:
         cross = {tid for tid, parent, child_parent in rows
                  if parent is None or parent != child_parent}
         return PrerequisiteView(
-            await self.observe(siblings, max_age=max_age),
-            await self.observe(cross, max_age=max_age, target_loader=delivery_targets),
+            await self.observe(siblings, max_age=max_age, cached_only=cached_only),
+            await self.observe(cross, max_age=max_age, target_loader=delivery_targets,
+                               cached_only=cached_only),
         )
 
     async def observe(self, task_ids: Iterable[str], *, max_age: float = 0.0,
@@ -603,7 +624,7 @@ class DeliveryObserver:
         moving the last view is returned and :meth:`DeliveryView.fresh` stays
         false for the caller to fail closed on.  Only a read-only surface
         passes *max_age* (see :data:`READ_MAX_AGE`); every guarded writer
-        fetches. ``cached_only`` is for interactive graph reads: absent or
+        fetches. ``cached_only`` is for interactive diagnostics: absent or
         expired snapshots return unknown without fetching or waiting on Git.
         """
         ids = set(task_ids)
