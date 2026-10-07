@@ -55,7 +55,7 @@ from src.database.tables import (
     tasks,
 )
 from src.git.manager import RemoteRefState
-from src.integration.promotion import PromotionError
+from src.integration.promotion_contracts import PromotionError
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)

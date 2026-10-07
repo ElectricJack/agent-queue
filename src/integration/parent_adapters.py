@@ -13,10 +13,10 @@ from src.database import tables as t
 from src.integration.engine import EngineRefused
 from src.integration.gates import GatePrimitives
 from src.integration.models import Fence
-from src.integration.parent_engine import ParentEngineOwnership, active_parent_scope
+from src.integration.owner_guards import ParentEngineOwnership, active_parent_scope
 from src.integration.parent_subjects import ParentSubjectFacts
 from src.integration.records import RecordsPrimitives
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     PRIMITIVE_ARGS,
     SHA_PATTERN,
     MemberRef,
@@ -182,7 +182,7 @@ class ParentPrimitiveAdapters:
                 != (pending.fence, pending.expected_old_sha, pending.new_sha)
             ):
                 return PrimitiveOutcome.unknown(p, "parent_intent_identity_changed")
-            from src.integration.promotion import PromotionError, PromotionNotApplied
+            from src.integration.promotion_contracts import PromotionError, PromotionNotApplied
 
             promotion = commands._integration_promotion_service()
             try:

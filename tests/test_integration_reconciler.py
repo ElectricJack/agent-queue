@@ -12,7 +12,7 @@ from src.database import Database
 from src.database.tables import integration_subjects, playbook_artifacts
 from src.event_bus import EventBus
 from src.integration.reconciler import CompiledPolicyAdapter, IntegrationReconciler, VisitTransition
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     Decision,
     GateArgs,
     GateFacts,

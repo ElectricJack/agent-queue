@@ -2187,7 +2187,7 @@ def reconciler_primitive_authority(monkeypatch):
 async def test_reconciler_seals_live_green_without_review_or_source_ci_rows(db, monkeypatch):
     from src.integration.engine import root_admission
     from src.integration.scheduler import TrainService
-    from src.integration.subjects import AdmissionPredicate
+    from src.integration.runtime_contracts import AdmissionPredicate
 
     policy = await _enable_train(db)
     policy['root']['repair']['source_ci'] = True
@@ -2234,7 +2234,7 @@ async def test_reconciler_seal_explains_exclusions_and_rechecks_fresh_identity(
 ):
     from src.integration.engine import root_admission
     from src.integration.scheduler import TrainService
-    from src.integration.subjects import AdmissionPredicate
+    from src.integration.runtime_contracts import AdmissionPredicate
 
     await _enable_train(db)
     await _seed_leaf(db, 'first', '1' * 40)
@@ -2325,7 +2325,12 @@ async def test_live_root_admission_ignores_pr_ci_and_reads_git(condition, expect
 async def test_root_frontier_prunes_incomplete_delivered_and_closed_sources(db):
     from src.integration.observe import ObservationRows
     from src.integration.root_runtime import _RootObservationReader
-    from src.integration.subjects import PolicyArtifactPin, Subject, SubjectKind, SubjectSchedule
+    from src.integration.runtime_contracts import (
+        PolicyArtifactPin,
+        Subject,
+        SubjectKind,
+        SubjectSchedule,
+    )
 
     await _enable_train(db)
     for index, name in enumerate(('open', 'closed', 'incomplete', 'delivered'), start=1):

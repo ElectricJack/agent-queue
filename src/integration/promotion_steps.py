@@ -42,7 +42,7 @@ from src.integration.ci import (
     TrustedCIObservation,
 )
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
-from src.integration.subjects import HeadIdentity
+from src.integration.runtime_contracts import HeadIdentity
 
 log = logging.getLogger(__name__)
 PROMOTION_CONTEXT = "promotion_intent"

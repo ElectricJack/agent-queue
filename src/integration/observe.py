@@ -38,7 +38,7 @@ from src.database.tables import (
 )
 from src.git.manager import GitError, GitManager, RemoteRefState, _validate_ref
 from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     CIEvidence,
     CIState,
     ConflictFacts,

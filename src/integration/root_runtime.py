@@ -22,7 +22,7 @@ from src.integration.reconciler import (
 )
 from src.integration.root_adapters import CANDIDATE_MUTATION_BLOCKER, RootPrimitiveAdapters
 from src.integration.shadow import diagnostics_for
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     JournalMode,
     PolicyArtifactPin,
     Primitive,
@@ -785,7 +785,7 @@ def root_candidate_ci_reader(orchestrator):
     from src.integration.checks import ChecksState, ExactChecks, HostedChecks
     from src.integration.ci_producers import HostedCIProducer
     from src.integration.observe import _required
-    from src.integration.subjects import CIEvidence, CIState
+    from src.integration.runtime_contracts import CIEvidence, CIState
 
     active = orchestrator.config.integration.git_first == "active"
 

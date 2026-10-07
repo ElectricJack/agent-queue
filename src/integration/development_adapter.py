@@ -22,7 +22,7 @@ from src.integration.development_policy import PinnedDevelopmentPolicy
 from src.integration.gitops import RetainedRepository
 from src.integration.models import BranchKey, Fence
 from src.integration.reconciler import CompiledPolicyAdapter, IntegrationReconciler
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     CIState,
     JournalMode,
     MemberFacts,

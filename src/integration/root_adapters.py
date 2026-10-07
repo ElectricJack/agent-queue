@@ -22,7 +22,7 @@ from src.integration.engine import (
     root_policy_ejection,
 )
 from src.integration.ownership import BranchOwnership
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     CIState,
     HeadIdentity,
     Primitive,
@@ -384,6 +384,11 @@ class RootPrimitiveAdapters:
                 return self._answer(args, "source_moved", member=member["task_id"])
         if code == "base_moved":
             return self._answer(args, "base_moved")
+        if await self._frozen_rebuild_conflict(subject, operation):
+            # Writer recovery can answer wait after recording this same-base
+            # conflict. The active stage's frozen dossier still supplies the
+            # durable conflict the policy must route into repairing.
+            return self._answer(args, "conflict", member=None, files=[])
         # A rebuild of a stale candidate onto a moved main can supersede the
         # subject's revision and file a repair before it answers ``built``; the
         # command then reports the revision change, not a construction outcome.

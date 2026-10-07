@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.integration.models import BranchKey, Fence
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     CIEvidence,
     CIState,
     GateArgs,
@@ -270,7 +270,7 @@ def test_unclaimed_queue_time_is_not_repair_failure(artifact):
 
 
 def test_a_table_can_eject_the_earliest_conflicting_member_by_derived_path(raw_policy, artifact):
-    from src.integration.subjects import ConflictFacts, EjectArgs
+    from src.integration.runtime_contracts import ConflictFacts, EjectArgs
 
     table = copy.deepcopy(raw_policy)
     root = table["tables"]["root_batch"]

@@ -41,18 +41,17 @@ from src.git.github_app import GitHubRepositoryBinding
 from src.git.github_contracts import GitHubCredentialIdentity
 from src.git.manager import GitError, GitManager
 from src.integration.attestation import IntegrationAttestationService
-from src.integration.candidates import CandidateBuildResult, CandidateService
+from src.integration.promotion_contracts import CandidateBuildResult
+from src.integration.candidates import CandidateService
 from src.integration.ci import ATTESTATION_CHECK_NAME, AttestationPayload, CIReceiptPayload
-from src.integration.main_promotion import (
-    RootAttestationProof,
-    RootPromotionInvariantError,
-)
+from src.integration.promotion_contracts import RootAttestationProof, RootPromotionInvariantError
 from src.integration.main_promotion import (
     RootPromotionService as _RootPromotionService,
 )
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnership
-from src.integration.promotion import PromotionInvariantError, PromotionService
+from src.integration.promotion_contracts import PromotionInvariantError
+from src.integration.promotion import PromotionService
 from src.integration.repair import RepairService
 from src.models import Agent, Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from src.profiles.capabilities import DENY_ALL

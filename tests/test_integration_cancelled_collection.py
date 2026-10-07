@@ -66,7 +66,8 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.integration.ownership import BranchOwnership, StaleFence
-from src.integration.promotion import PromotionConflict, PromotionService
+from src.integration.promotion_contracts import PromotionConflict
+from src.integration.promotion import PromotionService
 from src.integration.repair import RepairService
 from src.integration.verifier_subject import latest_red_parent_evidence
 from src.models import (

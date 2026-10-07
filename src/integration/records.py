@@ -63,13 +63,13 @@ from src.integration.models import (
 )
 from src.integration.observe import ParentReadiness
 from src.integration.outbox import enqueue_integration_event
-from src.integration.parent_engine import (
+from src.integration.owner_guards import (
     active_parent_scope,
     parent_checkpoint_allowed_on,
     parent_engine_guard,
 )
 from src.integration.promotion_steps import FlowSchema, flow_targets, protected_changes
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     HeadIdentity,
     JournalMode,
     Primitive,

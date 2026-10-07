@@ -27,7 +27,7 @@ from src.integration.development_adapter import (
 from src.integration.development_policy import PinnedDevelopmentPolicy, render_development_policy
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     AdmissionPredicate,
     CIEvidence,
     CIState,
@@ -773,7 +773,7 @@ async def test_factory_admits_pushed_source_and_uses_subject_pinned_retained_sto
     from src.git.github_contracts import GitHubRepositoryBinding
     from src.integration.development import DevelopmentPrimitives
     from src.integration.development_runtime import development_runtime_for
-    from src.integration.subjects import AncestryArgs, AncestryQuery
+    from src.integration.runtime_contracts import AncestryArgs, AncestryQuery
     from src.models import Project, RepoConfig, RepoSourceType
     from src.playbooks.artifact_store import ArtifactStore
     from tests.test_integration_gitops import LocalGit, commit, git

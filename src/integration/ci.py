@@ -37,9 +37,7 @@ from src.git.github_contracts import (
 )
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.outbox import enqueue_integration_event
-from src.integration.parent_engine import (
-    parent_engine_guard,
-)
+from src.integration.owner_guards import parent_engine_guard
 
 _OID = re.compile(r"^[0-9a-f]{40}$")
 

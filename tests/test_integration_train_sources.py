@@ -334,7 +334,7 @@ async def completed_source_ci_repair(world, source, tid="repair"):
 async def test_reopen_retires_source_ci_repairs_atomically(world, status, reopen):
     from src.commands.task_commands import TaskCommandsMixin
     from src.database.tables import integration_source_ci
-    from src.integration.source_delivery import RETIREMENT_KEY
+    from src.integration.source_repairs import RETIREMENT_KEY
 
     db = world.db
     source = await completed(world, "source")
@@ -1716,7 +1716,7 @@ async def test_epic_refresh_cleanup_never_schedules_its_own_epic_target(world, t
 
 async def test_promoted_train_cleanup_protects_open_subject_target(world, tmp_path):
     from src.database.tables import integration_subjects, playbook_artifacts
-    from src.integration.subjects import (
+    from src.integration.runtime_contracts import (
         PolicyArtifactPin,
         Subject,
         SubjectKind,
@@ -2276,7 +2276,7 @@ async def test_empty_completion_root_releases_child_and_has_no_train_blocker(wor
     from src.integration.delivery_truth import DeliveryState, load_delivery_requests
     from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
     from src.integration.scheduler import TrainService
-    from src.integration.source_delivery import prove_source_delivered
+    from src.integration.source_repairs import prove_source_delivered
     from src.models import TaskCompletion
 
     db, origin = world.db, world.origin
@@ -5649,7 +5649,7 @@ async def test_local_epic_completion_reads_plan_bound_green_and_invalidates_chan
     assert len(jobs_after) > before
     assert any(job["input_ref"] == head and job["state"] == "queued" for job in jobs_after)
     # Policy projection uses the same command-bound producer as the reader.
-    from src.integration.subjects import HeadIdentity
+    from src.integration.runtime_contracts import HeadIdentity
     from src.integration.train_sources import epic_policy_on
     async with case.db._engine.connect() as conn:
         row = (await conn.execute(select(tasks).where(tasks.c.id == "epic"))).mappings().one()

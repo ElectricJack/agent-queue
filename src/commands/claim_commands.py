@@ -534,7 +534,7 @@ class ClaimCommandsMixin:
         attempt rather than a stranded repair.  Withholding is never worth a
         failed claim, so nothing here raises into the claim path.
         """
-        from src.integration.source_delivery import (
+        from src.integration.source_repairs import (
             delivered_queued_repairs,
             retire_delivered_queued_repairs,
         )

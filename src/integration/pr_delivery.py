@@ -31,7 +31,7 @@ from sqlalchemy import select
 from src.database.tables import tasks
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
-from src.integration.promotion import PromotionError
+from src.integration.promotion_contracts import PromotionError
 
 PR_CLOSED_DELIVERED_EVENT = "integration.pr_closed_delivered"
 UNDELIVERED_FILE_LIMIT = 20

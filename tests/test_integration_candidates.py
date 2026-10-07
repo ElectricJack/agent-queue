@@ -288,7 +288,8 @@ async def _seed_batch(
 
 async def test_empty_batch_build_replays_typed_terminal_outcome(db, tmp_path):
     from src.git.github_app import GitHubRepositoryBinding
-    from src.integration.candidates import CandidateBuildResult, CandidateService
+    from src.integration.promotion_contracts import CandidateBuildResult
+    from src.integration.candidates import CandidateService
 
     await _seed_batch(db, lifecycle="empty")
     app = _AppClient()
@@ -466,7 +467,7 @@ class _AuditForge:
         return None
 
     async def create_audit_pr(self, **kwargs):
-        from src.integration.candidates import AuditPullRequest
+        from src.integration.promotion_contracts import AuditPullRequest
 
         if self.backing["result"] is None:
             self.calls.append(kwargs)
@@ -805,10 +806,8 @@ async def test_build_replaces_legacy_squash_candidate_with_reviewed_ancestry(db,
 
 async def test_conflict_dispatches_and_rejects_caller_supplied_lineage(db, tmp_path):
     from src.git.github_app import GitHubRepositoryBinding
-    from src.integration.candidates import (
-        CandidateRepairLineage,
-        CandidateService,
-    )
+    from src.integration.promotion_contracts import CandidateRepairLineage
+    from src.integration.candidates import CandidateService
     from src.integration.repair import RepairService
 
     origin, work, base, members = _make_conflicting_origin(tmp_path)
@@ -893,7 +892,7 @@ async def test_conflict_dispatches_and_rejects_caller_supplied_lineage(db, tmp_p
         repair_commit_shas=(repaired,),
     )
 
-    from src.integration.candidates import CandidateAuthorizationError
+    from src.integration.promotion_contracts import CandidateAuthorizationError
 
     with pytest.raises(CandidateAuthorizationError):
         await service.accept_repair(lineage)
@@ -1375,7 +1374,8 @@ async def test_expired_ambiguous_claim_blocks_every_invalidator(db, tmp_path, in
 @pytest.mark.parametrize("invalidator", ("stage", "ordinary", "confirmed", "rebuild"))
 async def test_invalidator_commit_fences_later_mutation_reservation(db, tmp_path, invalidator):
     from src.git.github_app import GitHubRepositoryBinding
-    from src.integration.candidates import CandidateService, CandidateStaleAuthority
+    from src.integration.candidates import CandidateService
+    from src.integration.promotion_contracts import CandidateStaleAuthority
     from src.integration.models import BranchKey, Fence
     from src.integration.ownership import BranchOwnership
 
@@ -2352,11 +2352,11 @@ async def test_repair_owned_branch_cannot_advance_candidate(db, tmp_path):
 
 
 async def test_direct_caller_repair_lineage_is_not_authoritative(db, tmp_path):
-    from src.integration.candidates import (
+    from src.integration.promotion_contracts import (
         CandidateAuthorizationError,
         CandidateRepairLineage,
-        CandidateService,
     )
+    from src.integration.candidates import CandidateService
 
     service = CandidateService(db, data_dir=tmp_path / "data", git_manager=GitManager())
     caller_claim = CandidateRepairLineage(
@@ -2732,11 +2732,11 @@ async def test_candidate_mutation_reservation_names_the_refusing_constraint(
     db, tmp_path, override, sqlstate, constraint
 ):
     """A refused mutation row is a typed constraint error, never a reported race."""
-    from src.integration.candidates import (
+    from src.integration.promotion_contracts import (
         CandidateConstraintError,
-        CandidateService,
         CandidateStaleAuthority,
     )
+    from src.integration.candidates import CandidateService
 
     service = CandidateService(db, data_dir=tmp_path / "data", git_manager=GitManager())
     identity = {
@@ -3105,7 +3105,7 @@ async def test_reclaimed_mutation_successor_is_exclusive_and_replayable(db, tmp_
 
 
 async def test_reclaimed_mutation_cannot_fork_while_successor_is_reserved(db, tmp_path):
-    from src.integration.candidates import CandidateStaleAuthority
+    from src.integration.promotion_contracts import CandidateStaleAuthority
 
     service, now, built, _state, abandoned, _origin, _work, base = (
         await _abandoned_mutation_fixture(db, tmp_path, advance_stage=True)
@@ -3649,7 +3649,8 @@ async def test_member_already_contained_in_base_applies_as_noop(db, tmp_path):
 
 async def test_contained_frozen_member_accepts_any_repair_tree(db, tmp_path):
     """A contained member accepts an empty repair and any repair edit CI needs."""
-    from src.integration.candidates import CandidateRepairLineage, CandidateService
+    from src.integration.promotion_contracts import CandidateRepairLineage
+    from src.integration.candidates import CandidateService
 
     origin = tmp_path / "contained-repair-origin.git"
     work = tmp_path / "contained-repair-work"
@@ -3704,7 +3705,8 @@ async def test_contained_frozen_member_accepts_any_repair_tree(db, tmp_path):
 
 async def test_two_commit_source_repair_may_resolve_with_only_its_tip(db, tmp_path):
     """A repair need not mirror the reviewed commit series one-for-one."""
-    from src.integration.candidates import CandidateRepairLineage, CandidateService
+    from src.integration.promotion_contracts import CandidateRepairLineage
+    from src.integration.candidates import CandidateService
 
     work = tmp_path / "two-commit-repair-work"
     _git(tmp_path, "init", "--initial-branch=main", str(work))

@@ -14631,12 +14631,12 @@
       "reason": "Audit of an epic refresh the train started because the epic's root PR conflicts with the default branch, with the PR URL and the (epic head, default head) pair. The deterministic frozen refresh batch is the once-per-pair record; this event cannot replay refs or authorize delivery."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::3d42ccd676d8e3ea97e225f6a3ff602b9f5b68a48a3950e76d6d7fabbd3e03b9": {
-      "call": "set_task_meta",
-      "disposition": "ordinary",
-      "integration_signal": true,
       "line": 1276,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "call": "set_task_meta",
       "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "integration_signal": true,
+      "disposition": "ordinary",
       "reason": "Records a named preparation hold when a retained attachment cannot be safely released; ordinary claim diagnostic, never Git publication or ref replay authority."
     },
     "src/integration/cutover.py::_Activation.write_on::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
@@ -14655,6 +14655,33 @@
       "line": 147,
       "owner": "retire_reopened_source_repairs_on",
       "owner_fingerprint": "95134e1f5d3ff8c5b5c49c02fe14b2c75fc86c0344e2aaebe2cc25a26881d16c",
+      "reason": "Audit of one source-CI delegate the reopen fence already made terminal: names the discarded source head and reopen context in the same transaction. No ref replay authority; branch origins retire through the ordinary origin guard."
+    },
+    "src/integration/owner_guards.py::ParentEngineOwnership.transfer::d72aa538030c18092025092baab1417ff0264717afa94e48267098ea29798d41": {
+      "line": 212,
+      "owner": "ParentEngineOwnership.transfer",
+      "call": "append_integration_subject_journal_on",
+      "owner_fingerprint": "b6b3d0dc80940ff4d6fbbb6a9cb1c6bea3df3e863a92b759cb4871b7178d6086",
+      "integration_signal": true,
+      "disposition": "retire",
+      "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
+    },
+    "src/integration/source_repairs.py::retire_delivered_queued_repairs::4b7da187805bc601684854d077b088429d2190c9b0f5126419adee2bc186fa6a": {
+      "line": 396,
+      "owner": "retire_delivered_queued_repairs",
+      "call": "log_event",
+      "owner_fingerprint": "d9fe5f397c1b7c3200bad5020f2104a8e866228967d1d9fa7b495292f8dc4cf2",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/source_repairs.py::retire_reopened_source_repairs_on::7032d70701a482232d21878d7f693cac7a9fb3daaf68364d1511a0604d9c9d91": {
+      "line": 147,
+      "owner": "retire_reopened_source_repairs_on",
+      "call": "log_event",
+      "owner_fingerprint": "95134e1f5d3ff8c5b5c49c02fe14b2c75fc86c0344e2aaebe2cc25a26881d16c",
+      "integration_signal": true,
+      "disposition": "ordinary",
       "reason": "Audit of one source-CI delegate the reopen fence already made terminal: names the discarded source head and reopen context in the same transaction. No ref replay authority; branch origins retire through the ordinary origin guard."
     }
   },

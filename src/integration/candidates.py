@@ -2,6 +2,18 @@
 
 from __future__ import annotations
 
+from src.integration.promotion_contracts import (
+    CandidateBuildResult as CandidateBuildResult,
+    AuditPullRequest as AuditPullRequest,
+    CandidateRepairLineage as CandidateRepairLineage,
+    CandidateAuthorizationError as CandidateAuthorizationError,
+    CandidateStaleAuthority as CandidateStaleAuthority,
+    MergeConflictError as MergeConflictError,
+    CandidateConstraintError as CandidateConstraintError,
+    CandidateRepairResult as CandidateRepairResult,
+    CandidateResolutionInput as CandidateResolutionInput,
+)
+
 import errno
 import hashlib
 import inspect
@@ -13,9 +25,8 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict
 from sqlalchemy import case, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -68,76 +79,16 @@ _CANDIDATE_MUTATION_PURPOSES = frozenset(
 )
 
 
-class CandidateBuildResult(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
-
-    outcome: Literal[
-        "empty",
-        "built",
-        "already_built",
-        "conflict",
-        "source_moved",
-        "base_moved",
-        "stale_revision",
-        "wait",
-        "human_required",
-        "configuration_blocked",
-    ]
-    batch_id: str
-    revision: int
-    operation_id: str | None = None
-    head_sha: str | None = None
-    branch: str | None = None
-    pr_url: str | None = None
-    member_ordinal: int | None = None
-    #: Safe operator-facing explanation of a wait; not a contract result field.
-    reason: str | None = None
 
 
-class AuditPullRequest(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
-    url: str
-    number: int
-    head_sha: str
-    head_branch: str
-    base_branch: str
-    repository_numeric_id: int
-    repository_full_name: str
-    idempotency_key: str
-    state: Literal["open", "closed"] = "open"
 
 
-class CandidateRepairLineage(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
-
-    batch_id: str
-    revision: int
-    member_ordinal: int
-    operation_id: str
-    operation_stage: int
-    partial_head_sha: str
-    source_base_sha: str
-    source_head_sha: str
-    resolved_head_sha: str
-    repair_commit_shas: tuple[str, ...]
-    conflict_scope: Literal["member", "batch"] = "member"
-    source_head_shas: tuple[str, ...] = ()
 
 
-class CandidateAuthorizationError(ValueError):
-    """Raised when caller-supplied data attempts to stand in for durable authority."""
 
 
-class CandidateStaleAuthority(RuntimeError):
-    """The snapshotted hierarchy, lease, revision, or branch fence changed."""
 
 
-class MergeConflictError(RuntimeError):
-    """The member overlap could not be resolved by generation or absorbed by driver."""
-
-    def __init__(self, evidence: str) -> None:
-        super().__init__(evidence or "merge conflict")
-        self.evidence = evidence or "merge conflict"
 
 
 def _merge_evidence(result) -> str:
@@ -149,43 +100,10 @@ def _merge_evidence(result) -> str:
     return ""
 
 
-class CandidateConstraintError(CandidateStaleAuthority):
-    """The database refused a candidate row itself, not because a writer won a race.
-
-    Callers keep treating it as stale authority; the message and attributes
-    name the SQLSTATE and constraint instead of reporting a race.
-    """
-
-    def __init__(self, message: str, *, sqlstate: str | None, constraint: str | None):
-        super().__init__(message)
-        self.sqlstate = sqlstate
-        self.constraint = constraint
 
 
-class CandidateRepairResult(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
-
-    outcome: Literal["accepted", "already_accepted", "rejected", "stale", "wait"]
-    batch_id: str
-    revision: int
-    member_ordinal: int
-    # ``stale`` deliberately covers a changed authority snapshot as well as a
-    # rejected frozen Git proof.  Keep the latter observable: an operator
-    # cannot safely recover a pushed reservation from an opaque stale result.
-    invariant: str | None = None
 
 
-class CandidateResolutionInput(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
-
-    batch_id: str
-    revision: int
-    member_ordinal: int
-    operation_id: str
-    resolved_head_sha: str
-    resolved_tree_sha: str
-    repair_commit_shas: tuple[str, ...]
-    fence: Fence
 
 
 class AuditForgeProvider(Protocol):

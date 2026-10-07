@@ -18,7 +18,7 @@ from src.integration.engine import EngineRefused, RootEngineOwnership
 from src.integration.models import BranchKey, Fence
 from src.integration.root_adapters import RootPrimitiveAdapters
 from src.integration.root_runtime import RootObserver, RootSubjectRuntime, root_runtime_for
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     AdmissionPredicate,
     CIEvidence,
     CIObserveArgs,
@@ -1658,7 +1658,7 @@ async def test_root_remote_reads_use_retained_repository_when_base_is_unavailabl
 @pytest.mark.parametrize('sealed', [False, True])
 async def test_only_unsealed_root_defers_member_ancestry_unknown_to_admission(root, monkeypatch, sealed):
     from src.integration.observe import IntegrationObserver
-    from src.integration.subjects import MemberFacts
+    from src.integration.runtime_contracts import MemberFacts
 
     db, _, subject = root
     if not sealed:

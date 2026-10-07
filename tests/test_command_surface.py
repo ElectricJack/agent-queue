@@ -398,7 +398,7 @@ class TestNoArgumentlessCommandsByAccident:
         """The parent visit dispatch is excluded from MCP, so its fallback is
         the only place the primitive set reaches a transport — a stale enum here
         would refuse callers the reconciler itself accepts."""
-        from src.integration.subjects import Primitive
+        from src.integration.runtime_contracts import Primitive
         from src.tools.definitions import _FALLBACK_INPUT_SCHEMAS
 
         request = _FALLBACK_INPUT_SCHEMAS["integration_parent_action"]["properties"][

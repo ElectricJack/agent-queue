@@ -1252,7 +1252,7 @@ class TrainService:
             # generation on any source in its chain. Require every linked
             # source to remain an exact eligible member at sealing time, or
             # to have already delivered that exact source to the default ref.
-            from src.integration.source_delivery import delivered_repair_sources_on
+            from src.integration.source_repairs import delivered_repair_sources_on
 
             satisfied = await delivered_repair_sources_on(
                 self.db, conn, records, git_delivered=git_delivered,
@@ -1296,7 +1296,6 @@ class TrainService:
                 admitted_ids.update(covered)
             admitted = []
             for member in members:
-                record = exact.get((member["task_id"], member["source_base"], member["source_head"], member["generation"]))
                 # A green repair is Git-attested to retain the failed source's
                 # ancestry before authorization evidence is recorded. Seat
                 # both so normal exact coverage receipts/cleanup include the

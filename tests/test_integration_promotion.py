@@ -565,7 +565,8 @@ def _hierarchy_policy() -> dict:
 
 @pytest.fixture
 async def conflict_resolution_case(db, promotion_case):
-    from src.integration.promotion import PromotionConflict, PromotionService
+    from src.integration.promotion_contracts import PromotionConflict
+    from src.integration.promotion import PromotionService
 
     case = promotion_case
     work = case["work"]
@@ -1060,7 +1061,8 @@ async def test_resolution_reservation_rejects_invalid_git_proof(
     db, conflict_resolution_case, invalid_proof
 ):
     from src.commands.principal import principal_context
-    from src.integration.promotion import PromotionInvariantError, PromotionService
+    from src.integration.promotion_contracts import PromotionInvariantError
+    from src.integration.promotion import PromotionService
 
     case = conflict_resolution_case
     updates = (
@@ -1083,7 +1085,8 @@ async def test_resolution_reservation_rejects_invalid_git_proof(
 
 async def test_resolution_reservation_rejects_merge_commit_range(db, conflict_resolution_case):
     from src.commands.principal import principal_context
-    from src.integration.promotion import PromotionInvariantError, PromotionService
+    from src.integration.promotion_contracts import PromotionInvariantError
+    from src.integration.promotion import PromotionService
 
     case = conflict_resolution_case
     work = case["work"]
@@ -1121,7 +1124,8 @@ async def test_resolution_preserves_only_the_exact_reviewed_child_ancestry(
     db, conflict_resolution_case, merge_shape
 ):
     from src.commands.principal import principal_context
-    from src.integration.promotion import PromotionInvariantError, PromotionService
+    from src.integration.promotion_contracts import PromotionInvariantError
+    from src.integration.promotion import PromotionService
 
     case = conflict_resolution_case
     work = case["work"]
@@ -1163,7 +1167,8 @@ async def test_resolution_preserves_only_the_exact_reviewed_child_ancestry(
 
 async def test_resolution_push_rejects_moved_target(db, conflict_resolution_case):
     from src.commands.principal import principal_context
-    from src.integration.promotion import PromotionService, PromotionTargetMoved
+    from src.integration.promotion import PromotionService
+    from src.integration.promotion_contracts import PromotionTargetMoved
 
     case = conflict_resolution_case
     service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
@@ -1190,7 +1195,8 @@ async def test_resolution_push_requires_authenticated_instance_claim(
     db, conflict_resolution_case
 ):
     from src.commands.principal import principal_context
-    from src.integration.promotion import PromotionAuthorizationError, PromotionService
+    from src.integration.promotion_contracts import PromotionAuthorizationError
+    from src.integration.promotion import PromotionService
 
     case = conflict_resolution_case
     service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
@@ -1280,7 +1286,8 @@ async def test_resolution_push_rechecks_authority_inside_mutation_exclusion(
     db, conflict_resolution_case, authority_change
 ):
     from src.commands.principal import principal_context
-    from src.integration.promotion import PromotionService, PromotionTargetMoved
+    from src.integration.promotion import PromotionService
+    from src.integration.promotion_contracts import PromotionTargetMoved
 
     case = conflict_resolution_case
     request = _resolution_request(case)
@@ -1326,7 +1333,8 @@ async def test_debug_successor_pushes_primary_reserved_oids_after_proved_handoff
     db, conflict_resolution_case
 ):
     from src.commands.principal import principal_context
-    from src.integration.promotion import PromotionService, PromotionTargetMoved
+    from src.integration.promotion import PromotionService
+    from src.integration.promotion_contracts import PromotionTargetMoved
 
     case = conflict_resolution_case
     request = _resolution_request(case)
@@ -1462,7 +1470,8 @@ async def test_debug_successor_pushes_primary_reserved_oids_after_proved_handoff
 
 async def test_expired_repair_stage_cannot_reserve_resolution(db, conflict_resolution_case):
     from src.commands.principal import principal_context
-    from src.integration.promotion import PromotionService, PromotionTargetMoved
+    from src.integration.promotion import PromotionService
+    from src.integration.promotion_contracts import PromotionTargetMoved
 
     case = conflict_resolution_case
     service = PromotionService(
@@ -1485,11 +1494,11 @@ async def test_resolution_reservation_requires_authenticated_live_instance(
     db, conflict_resolution_case, instance_claim
 ):
     from src.commands.principal import principal_context
-    from src.integration.promotion import (
+    from src.integration.promotion_contracts import (
         PromotionAuthorizationError,
-        PromotionService,
         PromotionTargetMoved,
     )
+    from src.integration.promotion import PromotionService
 
     case = conflict_resolution_case
     service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
@@ -1759,7 +1768,8 @@ async def test_clean_promotion_preserves_independent_parent_changes(db, promotio
 
 @pytest.mark.parametrize("regeneration", ["success", "failed", "stray"])
 async def test_promotion_regenerates_conflicting_selection_catalogues(db, tmp_path, regeneration):
-    from src.integration.promotion import PromotionConflict, PromotionService
+    from src.integration.promotion_contracts import PromotionConflict
+    from src.integration.promotion import PromotionService
     from src.test_selection.catalogue import CATALOGUE_PATH
 
     work, base, target, source = _catalogue_branches(tmp_path)
@@ -1935,7 +1945,8 @@ async def test_prepare_retry_adopts_pinned_commit_when_regeneration_output_chang
     "shape", ["wrong_target", "wrong_source", "reversed", "one_parent", "extra_parent", "tree"]
 )
 async def test_prepare_retry_refuses_invalid_recovery_ref(db, promotion_case, monkeypatch, shape):
-    from src.integration.promotion import PromotionInvariantError, PromotionService
+    from src.integration.promotion_contracts import PromotionInvariantError
+    from src.integration.promotion import PromotionService
 
     case = promotion_case
     crashing = PromotionService(
@@ -2037,7 +2048,8 @@ async def test_crash_retries_make_one_merge_and_one_receipt(db, promotion_case, 
 
 
 async def test_conflict_records_inputs_and_never_creates_a_receipt(db, promotion_case):
-    from src.integration.promotion import PromotionConflict, PromotionService
+    from src.integration.promotion_contracts import PromotionConflict
+    from src.integration.promotion import PromotionService
 
     case = promotion_case
     work = case["work"]
@@ -2133,7 +2145,8 @@ print(json.dumps({
 
 
 async def test_moved_source_is_rejected_even_when_old_review_is_approved(db, promotion_case):
-    from src.integration.promotion import PromotionService, PromotionSourceMoved
+    from src.integration.promotion import PromotionService
+    from src.integration.promotion_contracts import PromotionSourceMoved
 
     case = promotion_case
     (case["work"] / "later.txt").write_text("moved\n")
@@ -2148,11 +2161,8 @@ async def test_moved_source_is_rejected_even_when_old_review_is_approved(db, pro
 
 
 async def test_divergent_target_blocks_push_and_reconcile(db, promotion_case):
-    from src.integration.promotion import (
-        PromotionInvariantError,
-        PromotionService,
-        PromotionTargetMoved,
-    )
+    from src.integration.promotion_contracts import PromotionInvariantError, PromotionTargetMoved
+    from src.integration.promotion import PromotionService
 
     case = promotion_case
     service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
@@ -2172,7 +2182,8 @@ async def test_divergent_target_blocks_push_and_reconcile(db, promotion_case):
 async def test_stale_initial_target_leaves_no_intent_and_correct_retry_succeeds(
     db, promotion_case
 ):
-    from src.integration.promotion import PromotionService, PromotionTargetMoved
+    from src.integration.promotion import PromotionService
+    from src.integration.promotion_contracts import PromotionTargetMoved
 
     case = promotion_case
     work = case["work"]
@@ -2225,7 +2236,8 @@ async def test_retained_ref_survives_disposable_source_checkout_cleanup(db, prom
 
 async def test_review_generation_comes_from_source_checkpoint_not_branch_origin(db, promotion_case):
     from src.database.tables import task_integration_checkpoints
-    from src.integration.promotion import PromotionService, PromotionSourceMoved
+    from src.integration.promotion import PromotionService
+    from src.integration.promotion_contracts import PromotionSourceMoved
 
     case = promotion_case
     async with db.immediate() as conn:
@@ -2247,7 +2259,8 @@ async def test_review_generation_comes_from_source_checkpoint_not_branch_origin(
 
 
 async def test_repository_origin_change_blocks_a_prepared_push(db, promotion_case):
-    from src.integration.promotion import PromotionInvariantError, PromotionService
+    from src.integration.promotion_contracts import PromotionInvariantError
+    from src.integration.promotion import PromotionService
 
     case = promotion_case
     service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
@@ -2743,7 +2756,8 @@ async def test_pool_resolution_rejects_mismatched_live_authority(
     from dataclasses import replace
 
     from src.commands.principal import principal_context
-    from src.integration.promotion import PromotionService, PromotionTargetMoved
+    from src.integration.promotion import PromotionService
+    from src.integration.promotion_contracts import PromotionTargetMoved
 
     case = conflict_resolution_case
     principal = _resolution_principal(task_id=None)
@@ -2767,7 +2781,8 @@ async def test_resolution_requires_the_stage_bound_to_the_exact_conflict(
 ):
     """A live repair writer cannot spend its authority on a stale sibling intent."""
     from src.commands.principal import principal_context
-    from src.integration.promotion import PromotionService, PromotionTargetMoved
+    from src.integration.promotion import PromotionService
+    from src.integration.promotion_contracts import PromotionTargetMoved
 
     case = conflict_resolution_case
     async with db.immediate() as conn:
@@ -2804,7 +2819,8 @@ async def test_resolution_push_rechecks_the_exact_conflict_stage_binding(
 ):
     """A continuation or stale event between reservation and push loses authority."""
     from src.commands.principal import principal_context
-    from src.integration.promotion import PromotionService, PromotionTargetMoved
+    from src.integration.promotion import PromotionService
+    from src.integration.promotion_contracts import PromotionTargetMoved
 
     case = conflict_resolution_case
     service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
@@ -2834,7 +2850,8 @@ async def test_resolution_push_rechecks_the_exact_conflict_stage_binding(
 
 async def test_nonexistent_resolution_does_not_poison_reservation(db, conflict_resolution_case):
     from src.commands.principal import principal_context
-    from src.integration.promotion import PromotionSourceMoved, PromotionService
+    from src.integration.promotion_contracts import PromotionSourceMoved
+    from src.integration.promotion import PromotionService
 
     case = conflict_resolution_case
     service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
@@ -2923,7 +2940,8 @@ async def test_supervisor_rebind_repair_proves_and_reserves_current_intent(
     db, conflict_resolution_case, command_handler_factory
 ):
     from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
-    from src.integration.promotion import PromotionService, PromotionTargetMoved
+    from src.integration.promotion import PromotionService
+    from src.integration.promotion_contracts import PromotionTargetMoved
     from src.profiles.capabilities import CapabilityPolicy
 
     case = conflict_resolution_case
@@ -3210,7 +3228,8 @@ async def test_detached_repair_rebind_reconnects_frozen_stage_to_published_confl
 ):
     """Operation bcab5af6: prove, rebind without new budget, then resolve normally."""
     from src.commands.principal import principal_context
-    from src.integration.promotion import PromotionService, PromotionTargetMoved
+    from src.integration.promotion import PromotionService
+    from src.integration.promotion_contracts import PromotionTargetMoved
     from src.integration.repair import RepairService
 
     case = conflict_resolution_case
@@ -3637,7 +3656,8 @@ async def test_operator_recovery_refuses_ambiguous_resolution(
     db, conflict_resolution_case, blocker
 ):
     from src.commands.principal import principal_context
-    from src.integration.promotion import PromotionInvariantError, PromotionService, PromotionTargetMoved
+    from src.integration.promotion_contracts import PromotionInvariantError, PromotionTargetMoved
+    from src.integration.promotion import PromotionService
 
     case = conflict_resolution_case
     service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
@@ -3668,7 +3688,8 @@ async def test_resolution_reservation_rejects_changed_git_proof(
     db, conflict_resolution_case, invalid_proof
 ):
     from src.commands.principal import principal_context
-    from src.integration.promotion import PromotionInvariantError, PromotionService
+    from src.integration.promotion_contracts import PromotionInvariantError
+    from src.integration.promotion import PromotionService
 
     case = conflict_resolution_case
     updates = (
@@ -3691,7 +3712,8 @@ async def test_resolution_reservation_rejects_changed_git_proof(
 
 async def test_unwritten_resolution_recovery_refuses_live_writer(db, conflict_resolution_case):
     from src.commands.principal import principal_context
-    from src.integration.promotion import PromotionInvariantError, PromotionService
+    from src.integration.promotion_contracts import PromotionInvariantError
+    from src.integration.promotion import PromotionService
     case = conflict_resolution_case
     service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
     with principal_context(_resolution_principal()):
@@ -4185,7 +4207,8 @@ async def test_parent_intent_fenced_recovery_preserves_intent_without_proof(
 ):
     from src.commands.principal import ExecutionPrincipal, principal_context
     from src.git.manager import RemoteRefResult, RemoteRefState
-    from src.integration.promotion import PromotionRuntimeError, PromotionService
+    from src.integration.promotion_contracts import PromotionRuntimeError
+    from src.integration.promotion import PromotionService
 
     case = promotion_case
     service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
@@ -4240,7 +4263,8 @@ async def test_parent_intent_recovery_finalizes_reachable_preparation(db, promot
 async def test_parent_intent_supersede_fences_a_push_that_already_loaded_the_intent(
     db, promotion_case, monkeypatch,
 ):
-    from src.integration.promotion import PromotionRecovery, PromotionService, PromotionTargetMoved
+    from src.integration.promotion_contracts import PromotionRecovery, PromotionTargetMoved
+    from src.integration.promotion import PromotionService
 
     case = promotion_case
     service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())

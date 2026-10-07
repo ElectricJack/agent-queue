@@ -29,7 +29,7 @@ from src.integration.observe import (
     _ref,
 )
 from src.integration.records import ParentEpisodeRecords
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     SHA_PATTERN,
     HoldFacts,
     PolicyArtifactPin,

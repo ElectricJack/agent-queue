@@ -41,7 +41,7 @@ from src.integration.engine import RootEngineOwnership
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.ownership import BranchOwnershipError
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     CleanupArgs,
     GateArgs,
     HeadIdentity,

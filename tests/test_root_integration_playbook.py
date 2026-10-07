@@ -19,8 +19,9 @@ from src.database.tables import (
     integration_repair_stages,
 )
 from src.git.github_app import GitHubRepositoryBinding
-from src.integration.candidates import CandidateBuildResult, CandidateService
-from src.integration.main_promotion import RootPromotionResult
+from src.integration.promotion_contracts import CandidateBuildResult
+from src.integration.candidates import CandidateService
+from src.integration.promotion_contracts import RootPromotionResult
 from src.integration.release import IntegrationReleaseResult
 from src.models import Project, RepoConfig, RepoSourceType
 from src.playbooks.definition import load_definition_json
@@ -752,7 +753,7 @@ async def test_live_supervisor_manual_green_run_reaches_guarded_promotion(
 
 def _green_first_policy_case(artifact_path, kind, facts_type, **overrides):
     from src.integration.models import BranchKey, Fence
-    from src.integration.subjects import (
+    from src.integration.runtime_contracts import (
         CIEvidence,
         CIState,
         Subject,
@@ -791,7 +792,7 @@ def _green_first_policy_case(artifact_path, kind, facts_type, **overrides):
 
 
 def test_root_exact_green_precedes_expired_budget_no_progress_and_stop_proof():
-    from src.integration.subjects import Primitive, SubjectKind
+    from src.integration.runtime_contracts import Primitive, SubjectKind
     from src.playbooks.integration_policy import IntegrationPolicyFacts
 
     decision = _green_first_policy_case(CURRENT_FIXTURE, SubjectKind.ROOT_BATCH,
@@ -800,7 +801,7 @@ def test_root_exact_green_precedes_expired_budget_no_progress_and_stop_proof():
 
 
 def test_root_green_still_obeys_holds_rejection_and_competing_lease():
-    from src.integration.subjects import HoldFacts, SubjectKind
+    from src.integration.runtime_contracts import HoldFacts, SubjectKind
     from src.playbooks.integration_policy import IntegrationPolicyFacts
 
     for hold in ("operator_hold", "review_rejected"):

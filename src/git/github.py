@@ -1807,7 +1807,7 @@ class GitHubClient:
         return f"<!-- aq-integration-audit:{idempotency_key} -->"
 
     def _audit_pull_request(self, payload: dict[str, Any], idempotency_key: str):
-        from src.integration.candidates import AuditPullRequest
+        from src.integration.promotion_contracts import AuditPullRequest
 
         head = payload.get("head")
         base = payload.get("base")

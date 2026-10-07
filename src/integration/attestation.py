@@ -54,7 +54,7 @@ from src.integration.ci import (
 )
 from src.integration.ci_producers import HostedCIProducer
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
-from src.integration.main_promotion import RootAttestationProof, RootAttestationSubject
+from src.integration.promotion_contracts import RootAttestationProof, RootAttestationSubject
 from src.integration.repair import RepairService
 from src.integration.outbox import enqueue_integration_event
 

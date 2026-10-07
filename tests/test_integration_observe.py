@@ -19,7 +19,7 @@ from src.integration.observe import (
     IntegrationObserver,
     ObservationRows,
 )
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     CIState,
     ObserveSubjectArgs,
     PolicyArtifactPin,
@@ -1301,7 +1301,7 @@ async def test_database_reader_enforces_read_only_snapshot_over_real_existing_ta
 
 @pytest.mark.parametrize("state", [CIState.GREEN, CIState.RED, CIState.PENDING, CIState.INFRA])
 async def test_reconciler_candidate_reads_live_checks_without_evidence_rows(state):
-    from src.integration.subjects import CIEvidence
+    from src.integration.runtime_contracts import CIEvidence
 
     data = snapshot(engine="reconciler")
     live = AsyncMock(return_value=CIEvidence(head_sha=HEAD, state=state, observed_at=NOW))
@@ -1313,7 +1313,7 @@ async def test_reconciler_candidate_reads_live_checks_without_evidence_rows(stat
 
 
 async def test_live_candidate_checks_cannot_answer_another_sha_or_use_stale_green():
-    from src.integration.subjects import CIEvidence
+    from src.integration.runtime_contracts import CIEvidence
 
     data = with_rows(snapshot(engine="reconciler"), integration_check_evidence=[ci_row()])
     for answer in (CIEvidence(head_sha=OTHER, state=CIState.GREEN), OSError("offline")):

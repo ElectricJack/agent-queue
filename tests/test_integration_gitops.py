@@ -29,7 +29,7 @@ from src.integration.gitops import (
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
 from src.integration.source_ancestry import effective_source_base
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     AncestryArgs,
     AncestryQuery,
     CleanupArgs,

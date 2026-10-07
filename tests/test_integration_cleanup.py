@@ -942,8 +942,12 @@ async def test_aborted_batch_moved_pr_head_is_retained(release_db):
 
 async def test_aborted_pr_cleanup_survives_repository_engine_transfer(release_db):
     from src.database.tables import playbook_artifacts
-    from src.integration.subjects import (
-        PolicyArtifactPin, Subject, SubjectKind, SubjectPhase, SubjectSchedule,
+    from src.integration.runtime_contracts import (
+        PolicyArtifactPin,
+        Subject,
+        SubjectKind,
+        SubjectPhase,
+        SubjectSchedule,
     )
 
     db, _scheduler = release_db

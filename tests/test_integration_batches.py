@@ -257,7 +257,7 @@ async def test_candidate_app_check_is_published_before_target_push(batch_env, tm
     from src.integration.attestation import IntegrationAttestationService
     from src.integration.ci import ATTESTATION_CHECK_NAME, IntegrationTrustManifest
     from src.integration.ci_producers import HostedCIProducer
-    from src.integration.main_promotion import RootAttestationSubject
+    from src.integration.promotion_contracts import RootAttestationSubject
     from tests.test_integration_train_sources import HostedGitHub
 
     db, ops, _, base, _, _, batch, members, green, _, snapshot, service = batch_env

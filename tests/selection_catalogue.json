@@ -4269,13 +4269,13 @@
         "command-dispatch"
       ],
       "default_arm": true,
-      "digest": "sha256:53007716acc90786b8c9eff990a61392964995008ec3e392135d39266db9eda6",
+      "digest": "sha256:5d6e8c738e0df060a2128cbe7dde9d6d4a38aef2bfe608bf56c3aab1aef4112c",
       "imports": [
         "src.api.codegen",
         "src.api.execute",
         "src.cli.auto_commands",
         "src.commands.handler",
-        "src.integration.subjects",
+        "src.integration.runtime_contracts",
         "src.mcp_registration",
         "src.tools.definitions"
       ],
@@ -5260,7 +5260,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:46d065427316d46d57dfd10f5ebd6ea212008a6afd141f9a84afaad4cdc60395",
+      "digest": "sha256:11a830742732897b0aa3b36d619dce287c1afdc07567dd5643088e1c0aa05a99",
       "imports": [
         "src.commands.contracts.integration",
         "src.commands.contracts.registry",
@@ -5276,7 +5276,7 @@
         "src.integration.development_runtime",
         "src.integration.models",
         "src.integration.ownership",
-        "src.integration.subjects",
+        "src.integration.runtime_contracts",
         "src.models",
         "src.playbooks.artifact_store",
         "src.playbooks.definition",
@@ -6097,7 +6097,7 @@
         "epic-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:8a60ad2c0d33866f0b7dc266c5e30a18fb6bb7ed7531704a1ca5f75aabf90ac3",
+      "digest": "sha256:8ec3df35879e8914f85553e8a750e6396ffc19869157f7cee9ee1165a579fa4d",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -6116,7 +6116,7 @@
         "src.integration.scheduler",
         "src.integration.settling",
         "src.integration.source_ci",
-        "src.integration.source_delivery",
+        "src.integration.source_repairs",
         "src.integration.train_sources",
         "src.models",
         "src.orchestrator",
@@ -6146,7 +6146,7 @@
         "epic-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:3116bfb283f708d49691453b805403c2c65e912cecbde8e2d9e60d5403c1a863",
+      "digest": "sha256:feb7519748e1492ce56e73c9d8d77909eb88526bdf5c231df2dfb33297d45e9e",
       "imports": [
         "src.commands.principal",
         "src.database",
@@ -6160,6 +6160,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.promotion",
+        "src.integration.promotion_contracts",
         "src.integration.release",
         "src.integration.repair",
         "src.integration.review_evidence",
@@ -7127,14 +7128,14 @@
         "shipped-playbooks"
       ],
       "default_arm": true,
-      "digest": "sha256:deb4df6df931ca168deef505699764d2df7bcc424bce52963757e55455bd9324",
+      "digest": "sha256:349249d47b8f2ff6b39680847463a8af749d17a863750cbc07dde24ab80019a1",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.database.tables",
         "src.integration.parent_adapters",
-        "src.integration.subjects",
+        "src.integration.runtime_contracts",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
@@ -7732,12 +7733,13 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:2cde2404d3b30299beec5ee25e677b10d0ef3a68375950ffb998002dbbf7f014",
+      "digest": "sha256:72271514bb6ff9659e5046f4bb45fea8a057376fdf120e5a45a11bd1751fb782",
       "imports": [
         "src.commands.principal",
         "src.database.tables",
         "src.integration.ci",
         "src.integration.main_promotion",
+        "src.integration.promotion_contracts",
         "src.models",
         "src.profiles.capabilities"
       ],
@@ -7780,7 +7782,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:88e41c20b8ab48ec1b4d592d74da292d0dc7d9c22fa22dd7343bcdebd7ab4661",
+      "digest": "sha256:882258dbc8565af9bd68936c84aea48c1d000c19ae540ff3e76d1e24482adfc0",
       "imports": [
         "src.database.tables",
         "src.git.github_app",
@@ -7788,7 +7790,7 @@
         "src.integration.attestation",
         "src.integration.ci",
         "src.integration.ci_producers",
-        "src.integration.main_promotion",
+        "src.integration.promotion_contracts",
         "src.integration.repair",
         "src.models"
       ],
@@ -7803,7 +7805,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:58973f8a3b1dd355e75584ea14744ce1ce1e0e5f2e02efa7df3ce7aa6e51d871",
+      "digest": "sha256:f8905eba17ebd2e5e92629cc1a44ffe94fab665e188964c68155e4d8c5e1397d",
       "imports": [
         "src.database.tables",
         "src.integration.attestation",
@@ -7813,7 +7815,7 @@
         "src.integration.delivery_truth",
         "src.integration.git_truth",
         "src.integration.gitops",
-        "src.integration.main_promotion",
+        "src.integration.promotion_contracts",
         "src.integration.provenance",
         "src.integration.train",
         "src.integration.train_sources"
@@ -7828,7 +7830,7 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:df1bd636faba7a1f3997c935684536704ef14257b293a269df3b174b66aa716e",
+      "digest": "sha256:ae58ca0bd852fc3eb4df325940af5629ac72f68f43130ad3734a6c4f22b460c5",
       "imports": [
         "src.commands.integration_commands",
         "src.database.tables",
@@ -7842,6 +7844,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.promotion",
+        "src.integration.promotion_contracts",
         "src.integration.repair",
         "src.integration.verifier_subject",
         "src.models"
@@ -7856,7 +7859,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:89c1634d2eff4f3a73c16d793df470c4e63018fdb1b85605f9b6ea043563501d",
+      "digest": "sha256:973381429bd6275ad5033df399581989714fc37027dbe5c0a761ccabc2112950",
       "imports": [
         "src.database.tables",
         "src.integration.batches",
@@ -7864,8 +7867,8 @@
         "src.integration.checks",
         "src.integration.ci_producers",
         "src.integration.repair",
+        "src.integration.runtime_contracts",
         "src.integration.status",
-        "src.integration.subjects",
         "src.integration.train",
         "src.models"
       ],
@@ -7879,7 +7882,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:e8762b116c4ad2460306f1dddd8870a9ced81ccca391cf01393852677ee0c691",
+      "digest": "sha256:5632df08147e809e780429866e921d5cb6f45faeede8c5b2a4c292f09a655614",
       "imports": [
         "src.commands.principal",
         "src.database.tables",
@@ -7889,6 +7892,7 @@
         "src.integration.candidates",
         "src.integration.models",
         "src.integration.ownership",
+        "src.integration.promotion_contracts",
         "src.integration.repair",
         "src.integration.source_trailer",
         "src.models",
@@ -7905,7 +7909,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:943ffd96828ad12cb5071445b4eb17ca8b863728e9c67fe482c1d86397cd1f0c",
+      "digest": "sha256:743d039c1e0275638ef50f8110685077a1b329f2499898fadcff3611e8d1917b",
       "imports": [
         "src.database.tables",
         "src.git.github_contracts",
@@ -7914,7 +7918,7 @@
         "src.integration.ci",
         "src.integration.ci_producers",
         "src.integration.root_runtime",
-        "src.integration.subjects",
+        "src.integration.runtime_contracts",
         "src.integration.train_sources"
       ],
       "markers": [
@@ -7975,7 +7979,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:165d68ad6cc2b61c3ca2575db14ed0cf6e4e0cfb5d99baafadbe35c5c59e89b6",
+      "digest": "sha256:82d8d05f63f2d28ec9f3dff61e84dfdfc72073055f3ab4972686107389464a82",
       "imports": [
         "src.commands.job_commands",
         "src.config",
@@ -7987,8 +7991,8 @@
         "src.integration.ci_adapters",
         "src.integration.ci_producers",
         "src.integration.development_runtime",
-        "src.integration.main_promotion",
-        "src.integration.subjects",
+        "src.integration.promotion_contracts",
+        "src.integration.runtime_contracts",
         "src.jobs.adapters",
         "src.jobs.policy",
         "src.jobs.result",
@@ -8005,7 +8009,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:dc8cba8708e4082fb05d5fd99680ce1fbab4b7ba8707f085b6ccc432448fb68a",
+      "digest": "sha256:bb00f4a31192f121290a98ffe1d6ef074f5947dd6b03cc191b43c4eb22339597",
       "imports": [
         "src.commands.principal",
         "src.database.adapters.postgresql",
@@ -8013,9 +8017,9 @@
         "src.git.github_app",
         "src.integration.cleanup",
         "src.integration.release",
+        "src.integration.runtime_contracts",
         "src.integration.scheduler",
         "src.integration.settling",
-        "src.integration.subjects",
         "src.models",
         "src.profiles.capabilities"
       ],
@@ -8210,7 +8214,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:7ecb7f44f66de665f82cfdf8acc50c28d5e443f251f4ecc1f115a5b5579717cf",
+      "digest": "sha256:eb005120916ca7259695c9357fd484a75dc02e683fee9f48b4cb8c93f62adf72",
       "imports": [
         "src.database",
         "src.database.tables",
@@ -8221,9 +8225,9 @@
         "src.integration.gitops",
         "src.integration.models",
         "src.integration.ownership",
+        "src.integration.runtime_contracts",
         "src.integration.source_ancestry",
         "src.integration.source_trailer",
-        "src.integration.subjects",
         "src.models"
       ],
       "markers": [
@@ -8312,7 +8316,7 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:8b8b20a57d91cded2f324365b013db844adba4f882be2fe92697834599dac0e5",
+      "digest": "sha256:8210201e11aa34c36af8702574af702b970d706286715bd2943142469865ddab",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -8330,6 +8334,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.promotion",
+        "src.integration.promotion_contracts",
         "src.integration.repair",
         "src.integration.scheduler",
         "src.models",
@@ -8370,7 +8375,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:91e4e09463b1575a41fbc34b7aa4126ffb3a64beea900e56865d0314fc33bd00",
+      "digest": "sha256:bdd1323fbdf4e532515d7c55a0c8ec081efc19e8a25cb035f07eb2fe4ea2858c",
       "imports": [
         "src.database",
         "src.database.tables",
@@ -8381,7 +8386,7 @@
         "src.integration.observe",
         "src.integration.parent_adapters",
         "src.integration.root_runtime",
-        "src.integration.subjects",
+        "src.integration.runtime_contracts",
         "src.playbooks.integration_policy"
       ],
       "markers": [
@@ -8552,7 +8557,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:390fd312ba42762f70a57a475dc69c32b7cc5a284c3064a7839eed9cec556235",
+      "digest": "sha256:c2a6f3e839d772aaaf246384fd40e137baf96b5e30ead2ea3631edffb437f495",
       "imports": [
         "src.commands.gate_commands",
         "src.commands.integration_commands",
@@ -8566,14 +8571,14 @@
         "src.integration.gates",
         "src.integration.hierarchy",
         "src.integration.models",
+        "src.integration.owner_guards",
         "src.integration.parent_adapters",
         "src.integration.parent_ci",
-        "src.integration.parent_engine",
         "src.integration.parent_runtime",
         "src.integration.parent_subjects",
         "src.integration.promotion",
         "src.integration.repair",
-        "src.integration.subjects",
+        "src.integration.runtime_contracts",
         "src.integration.writers",
         "src.models",
         "src.orchestrator.monitoring",
@@ -8621,14 +8626,14 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:28c0debebaa66d105def83e9bf38ef380c29c485475448c76316dcb39448f99b",
+      "digest": "sha256:ce1deaf5d7546154a7294d5ffb4c1a064c57a55bd382ac80a4c5440848e955a0",
       "imports": [
         "src.database",
         "src.database.tables",
         "src.integration.failed_verification_recovery",
-        "src.integration.parent_engine",
+        "src.integration.owner_guards",
         "src.integration.parent_subjects",
-        "src.integration.subjects",
+        "src.integration.runtime_contracts",
         "src.models"
       ],
       "markers": [
@@ -8664,7 +8669,7 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:2dd42571b19f3cc76282f6299d2647b9a68dce67162b94e4799e27efe1d7fd59",
+      "digest": "sha256:5ad2feed4305818ca7d5d1cc2f796d1e6067d5594792691422691114b669c38f",
       "imports": [
         "src.commands.contracts.integration",
         "src.commands.integration_commands",
@@ -8680,6 +8685,7 @@
         "src.integration.ownership",
         "src.integration.preserved_repair",
         "src.integration.promotion",
+        "src.integration.promotion_contracts",
         "src.integration.records",
         "src.integration.repair",
         "src.integration.source_trailer",
@@ -8739,14 +8745,14 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:47208284dd01558782c68640d6f648fd4738c9c7b70ad4870f975c88367cd786",
+      "digest": "sha256:e93eb6e61a733bcb76fcf8ccb58ff38b83a4edb393fe47a33e6cfff7bc714614",
       "imports": [
         "src.database",
         "src.database.tables",
         "src.event_bus",
         "src.integration.reconciler",
-        "src.integration.shadow",
-        "src.integration.subjects"
+        "src.integration.runtime_contracts",
+        "src.integration.shadow"
       ],
       "markers": [
         "parametrize"
@@ -8786,13 +8792,13 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:7e6d9eefc6ee759ef580e22f1b463d5dd0fe3da8225d51cda361a0f6f05fe34c",
+      "digest": "sha256:31eff3d7fa6795f1d758f2776dcea09b85c27dac5c886f56bdcf60d0cca52e69",
       "imports": [
         "src.database",
         "src.database.tables",
         "src.integration.gates",
         "src.integration.records",
-        "src.integration.subjects"
+        "src.integration.runtime_contracts"
       ],
       "markers": [
         "parametrize"
@@ -8933,7 +8939,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:7946f78cdebf9823869ec7a35f377ddb6455f353147ded076fe28031f400ec45",
+      "digest": "sha256:bb6f18091b36c5a2282ebc847cc13e50e433b36fa192afe1f372e619b1546223",
       "imports": [
         "src.commands.contracts.integration",
         "src.commands.contracts.registry",
@@ -8956,9 +8962,9 @@
         "src.integration.repair",
         "src.integration.root_adapters",
         "src.integration.root_runtime",
+        "src.integration.runtime_contracts",
         "src.integration.service",
         "src.integration.status",
-        "src.integration.subjects",
         "src.models",
         "src.playbooks.integration_policy"
       ],
@@ -9034,7 +9040,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:3bd4d087a9c4481743a0c42e0a31102cfca2c75acf19e4ce9fea231bdc148da4",
+      "digest": "sha256:a653df5a4e1b3ac6cc7d17751d9f15d7f926617592e241e4115b396b52d32b8b",
       "imports": [
         "src.commands.handler",
         "src.commands.principal",
@@ -9054,15 +9060,16 @@
         "src.integration.parent_adapters",
         "src.integration.parent_subjects",
         "src.integration.promotion",
+        "src.integration.promotion_contracts",
         "src.integration.release",
         "src.integration.repair",
         "src.integration.review_evidence",
         "src.integration.root_adapters",
         "src.integration.root_runtime",
+        "src.integration.runtime_contracts",
         "src.integration.scheduler",
         "src.integration.service",
         "src.integration.shadow",
-        "src.integration.subjects",
         "src.models",
         "src.orchestrator",
         "src.playbooks.definition",
@@ -9103,7 +9110,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:6f7de763bd9c54cefd048b776479b6ac975f5e079cac72cc4d6d9a093d7c88ad",
+      "digest": "sha256:0e1012cefdba89040866e976a56bc54741be775e2490a15c48ae729223497abc",
       "imports": [
         "src.commands.principal",
         "src.database.queries.hierarchy_queries",
@@ -9118,10 +9125,10 @@
         "src.integration.provenance",
         "src.integration.release",
         "src.integration.root_runtime",
+        "src.integration.runtime_contracts",
         "src.integration.scheduler",
         "src.integration.settling",
         "src.integration.source_ci",
-        "src.integration.subjects",
         "src.models",
         "src.profiles.capabilities",
         "src.task_graph.integration_dependencies"
@@ -9312,14 +9319,14 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:f6604f0fdf091b91b6d4aec9f1da82eabaa61bdeee868af759deea89db984c66",
+      "digest": "sha256:79a199b99fa1db2f90bd31234e1fcb741654481a9eb26feb2bb87a70bfbf2b9a",
       "imports": [
         "src.commands.contracts.integration",
         "src.database",
         "src.database.tables",
         "src.integration.models",
         "src.integration.reconciler",
-        "src.integration.subjects"
+        "src.integration.runtime_contracts"
       ],
       "markers": [
         "parametrize"
@@ -9383,7 +9390,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:6bda849d8d850d4f746edff66d0e8dcab68968458021501a13c17b577fba8a50",
+      "digest": "sha256:cfd513eca9babc07d6ed12049da0baed709705bc33da28cb3336a2b8939ee26a",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -9417,12 +9424,12 @@
         "src.integration.repair",
         "src.integration.reviews",
         "src.integration.root_pull_requests",
+        "src.integration.runtime_contracts",
         "src.integration.scheduler",
         "src.integration.selection_metrics",
-        "src.integration.source_delivery",
+        "src.integration.source_repairs",
         "src.integration.stacked_branches",
         "src.integration.status",
-        "src.integration.subjects",
         "src.integration.train",
         "src.integration.train_controls",
         "src.integration.train_sources",
@@ -9524,7 +9531,7 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:ec2ce24d71dd819698c316deee1492ffe3c970a0acef5b3ddf740b955109df44",
+      "digest": "sha256:5476651d85877be03aaba4b80400df08619165977f92a62a6e1d6d67154faf9d",
       "imports": [
         "src.database.tables",
         "src.git.manager",
@@ -9532,7 +9539,7 @@
         "src.integration.models",
         "src.integration.owner_recovery",
         "src.integration.ownership",
-        "src.integration.subjects",
+        "src.integration.runtime_contracts",
         "src.integration.writers",
         "src.models"
       ],
@@ -10365,7 +10372,7 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:a3f18671457d6cd2229a674afd1183ed5b47a1b18bc838f4c3670cf2e03cbc2d",
+      "digest": "sha256:66a953645214386352209685c1c5ba05f6039f7d0808aeec957435cb257a793f",
       "imports": [
         "src.commands.principal",
         "src.commands.session_commands",
@@ -10383,7 +10390,7 @@
         "src.integration.development_runtime",
         "src.integration.owner_recovery",
         "src.integration.provenance",
-        "src.integration.subjects",
+        "src.integration.runtime_contracts",
         "src.models",
         "src.orchestrator",
         "src.profiles.capabilities",
@@ -11815,7 +11822,7 @@
         "object-loop"
       ],
       "default_arm": true,
-      "digest": "sha256:35d32ed164340850976607a4c5f898952d0c2af570e2097da7c9ecf0b432f5b7",
+      "digest": "sha256:7124e7465f9fd579a8bf330d4d3cdcc3a33c149aa1cb91bf0c01f0232e170174",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -11828,6 +11835,7 @@
         "src.integration.child_delivery",
         "src.integration.development",
         "src.integration.promotion",
+        "src.integration.promotion_contracts",
         "src.jobs.artifacts",
         "src.jobs.matter",
         "src.models",
@@ -12494,10 +12502,10 @@
         "playbook-definition"
       ],
       "default_arm": true,
-      "digest": "sha256:3830a7c74939d964eb3c02146c5bbd07d66d5c274ddd81f395d17b6419760537",
+      "digest": "sha256:4d4fccf61fbfbddf53b34c94f6a76cf66271d3649577e523489174667b9e49eb",
       "imports": [
         "src.integration.models",
-        "src.integration.subjects",
+        "src.integration.runtime_contracts",
         "src.playbooks.artifact_diff",
         "src.playbooks.authoring",
         "src.playbooks.definition",
@@ -14769,7 +14777,7 @@
         "shipped-playbooks"
       ],
       "default_arm": true,
-      "digest": "sha256:6fd4a8b06fddba22bf46a3ed16aee5a540a470fca1540ed358fee13981243dd3",
+      "digest": "sha256:d64812d714b9ac58d8b9197c9536151c582db655cfaa892483b9fce6082b124c",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
@@ -14777,10 +14785,10 @@
         "src.database.tables",
         "src.git.github_app",
         "src.integration.candidates",
-        "src.integration.main_promotion",
         "src.integration.models",
+        "src.integration.promotion_contracts",
         "src.integration.release",
-        "src.integration.subjects",
+        "src.integration.runtime_contracts",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
@@ -16609,12 +16617,12 @@
         "task-archive"
       ],
       "default_arm": true,
-      "digest": "sha256:08e12bf4d071c9bce5095cea59f776e54c7fea8d094b5f2bfd020e862ce4d392",
+      "digest": "sha256:67edf802c78530bf53b3d82b9733a1309bccb36d757bbd7952859390beb6b99e",
       "imports": [
         "src.api.auth",
         "src.database",
         "src.database.tables",
-        "src.integration.parent_engine",
+        "src.integration.owner_guards",
         "src.integration.task_removal",
         "src.models"
       ],

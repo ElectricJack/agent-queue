@@ -14,7 +14,7 @@ from src.database.tables import (
 )
 from src.git.manager import RemoteRefState, is_valid_git_oid
 from src.integration.models import BranchKey, Fence
-from src.integration.promotion import PromotionInvariantError, PromotionTargetMoved
+from src.integration.promotion_contracts import PromotionInvariantError, PromotionTargetMoved
 
 
 class RepairRebind:

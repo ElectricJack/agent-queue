@@ -150,7 +150,7 @@ async def test_orphan_maintenance_retires_queued_delegate_before_claim(env):
 
 async def test_orphan_maintenance_skips_engine_lock_without_waiting(env):
     import asyncio
-    from src.integration.parent_engine import parent_lock_key
+    from src.integration.owner_guards import parent_lock_key
 
     await operation(env)
     async with env.db.immediate() as conn:
