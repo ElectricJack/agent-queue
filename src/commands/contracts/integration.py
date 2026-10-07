@@ -39,6 +39,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_record_root_noop",
         "integration_record_delivered",
         "integration_quiesce",
+        "integration_reconcile_expired_mutation",
         "integration_parent_verify",
         "integration_complete_parent",
         "delivery_promote",
@@ -990,6 +991,31 @@ class IntegrationRecordNoopValue(CommandValue):
     revision: int | None = None
     reviewed_head_sha: str | None = None
     reviewed_tree_sha: str | None = None
+
+
+class IntegrationReconcileExpiredMutationArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    mutation_id: str = Field(min_length=1)
+    expected_nonce: str = Field(min_length=1)
+    expected_branch_fence: StrictInt = Field(ge=0)
+    expected_lease_fence: StrictInt = Field(ge=0)
+    reason: str = Field(min_length=1)
+    dry_run: bool = True
+
+    @field_validator("reason")
+    @classmethod
+    def nonblank_reason(cls, value):
+        if not value.strip():
+            raise ValueError("reason must be nonblank")
+        return value
+
+
+class IntegrationReconcileExpiredMutationValue(CommandValue):
+    project_id: str | None = None
+    mutation_id: str | None = None
+    disposition: str | None = None
+    remote_sha: str | None = None
+    dry_run: bool = True
 
 
 class IntegrationQuiesceOwner(CommandArgs):
@@ -3189,6 +3215,38 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             return await invoke(args.model_copy(update={"dry_run": True}), ctx)
 
         registry.register(CommandRegistration(name, contract, train_control, train_control_preview))
+    name = "integration_reconcile_expired_mutation"
+    if registry.get(name) is None:
+        outcomes = ("preview", "applied", "superseded", "refused")
+        value_model = IntegrationReconcileExpiredMutationValue
+        contract = _operational_contract(
+            name, IntegrationReconcileExpiredMutationArgs, outcomes,
+            successes=frozenset({"preview", "applied", "superseded"}),
+            side_effect=SideEffectClass.COMPOSITE, result_model=value_model, supports_preview=True,
+        )
+        contract = contract.model_copy(update={
+            "execution": contract.execution.model_copy(update={"effects": (
+                ReadClause(subject=EffectSubject.INTEGRATION_OPERATION),
+                UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION,
+                             when=ClausePredicate(arg_equals=("dry_run", False))),
+            )}),
+            "presentation": CommandPresentation(
+                title="Reconcile an expired mutation after its operation ended",
+                summary="Local operator verifies nonce, fences, stopped authority and actual remote target.",
+            ),
+        })
+
+        async def reconcile_expired(args, ctx):
+            return await _hierarchy_adapter(
+                "integration_reconcile_expired_mutation", args, ctx,
+                IntegrationReconcileExpiredMutationValue,
+                {"preview", "applied", "superseded", "refused"},
+            )
+
+        async def reconcile_expired_preview(args, ctx):
+            return await reconcile_expired(args.model_copy(update={"dry_run": True}), ctx)
+
+        registry.register(CommandRegistration(name, contract, reconcile_expired, reconcile_expired_preview))
     name = "integration_release_held_gate"
     if registry.get(name) is None:
         contract = _operational_contract(

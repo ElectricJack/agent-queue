@@ -11862,6 +11862,60 @@
         "type": "object"
       }
     },
+    "integration_reconcile_expired_mutation": {
+      "name": "integration_reconcile_expired_mutation",
+      "description": "Local operator verifies nonce, fences, stopped authority and actual remote target.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "mutation_id": {
+            "minLength": 1,
+            "title": "Mutation Id",
+            "type": "string"
+          },
+          "expected_nonce": {
+            "minLength": 1,
+            "title": "Expected Nonce",
+            "type": "string"
+          },
+          "expected_branch_fence": {
+            "minimum": 0,
+            "title": "Expected Branch Fence",
+            "type": "integer"
+          },
+          "expected_lease_fence": {
+            "minimum": 0,
+            "title": "Expected Lease Fence",
+            "type": "integer"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id",
+          "mutation_id",
+          "expected_nonce",
+          "expected_branch_fence",
+          "expected_lease_fence",
+          "reason"
+        ],
+        "title": "IntegrationReconcileExpiredMutationArgs",
+        "type": "object"
+      }
+    },
     "integration_reconcile_promotion": {
       "name": "integration_reconcile_promotion",
       "description": "Compare a durable prepared intent with the remote and finalize its receipt.",

@@ -323,3 +323,19 @@ with a journal action and releases the explicitly selected detached reservations
 with fresh fences and an operator audit event. Tasks, refs and retained work stay
 intact. It changes no integration mode and does not authorize completion; the
 normal generation-fenced configuration control still governs the later cutover.
+
+## Expired mutation read-back recovery
+
+The local operator may use `integration_reconcile_expired_mutation` to preview or
+settle one expired candidate/ref mutation after its owning operation completed or
+was cancelled. It requires an explicit project, mutation id, exact nonce, recorded
+branch and lease fences, and a reason. The designated repository, operation
+episode, detached branch authority and absence of live project writers, claims
+and integration leases are re-proved. Two actual remote target reads must agree,
+with unchanged durable bindings under the project/repository locks. The desired
+OID records `applied`; a confirmed different or absent target records `superseded`.
+An unavailable remote or changed binding refuses without writes. `prewrite_at`
+is not proof of an unstarted candidate mutation. This control writes only the
+mutation observation and operator audit; it never publishes, deletes Git work,
+closes a task or restarts the old operation. Root-main mutations retain their
+original specialized recovery control.

@@ -8768,7 +8768,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:c03ed4942c700bf0a75324faac5d887a1c4ed370a5d997909151fad4867da01c",
+      "digest": "sha256:191ff13386894fea1c722ff5b4965da00ce29aeb7a9cda80ed2043ecb09a3e78",
       "imports": [
         "src.commands.contracts.integration",
         "src.commands.integration_commands",
@@ -8779,6 +8779,7 @@
         "src.integration.batches",
         "src.integration.delivered_close",
         "src.integration.models",
+        "src.integration.mutation_recovery",
         "src.integration.ownership",
         "src.integration.provenance",
         "src.integration.quiesce",
