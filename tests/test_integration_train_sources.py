@@ -247,6 +247,197 @@ async def test_pending_members_are_exact_undelivered_sources(world):
     assert batch_id(MAIN, members) == batch_id(MAIN, tuple(reversed(members)))
 
 
+async def intermediate_stack(world, *, declared=False, prerequisite_done=False, final_base=False):
+    """P forks Q1 while Q goes on to Q2; both origins name their actual bases."""
+    origin = world.origin
+    base = git(origin.clone, "rev-parse", "origin/main")
+    first = await completed(world, "q", done=False)
+    final = origin.work("q", "later")
+    if prerequisite_done:
+        await close(world.db, "q", [first, final], origin=origin)
+    git(origin.clone, "checkout", "-q", "-B", "aq/p", final if final_base else first)
+    source = commit(origin.clone, {"p-work.txt": "P\n"})
+    git(origin.clone, "push", "-q", "origin", "aq/p")
+    await completed(world, "p", head=source, needs=("q",) if declared else ())
+    return base, first, final, source
+
+
+async def test_undeclared_intermediate_stack_blocks_the_real_git_content_loss(world):
+    base, first, final, source = await intermediate_stack(world)
+    train, checks, repo = lane(world, LocalGit(Path(world.origin.url)), regenerate=None)
+    ops = (await train.lane_for(MAIN)).service.gitops
+
+    # Reproduce the old collection: only P's delta lands, but its ancestry
+    # imports Q1. Q's later target sync then silently deletes Q1's file.
+    poisoned = await ops.merge_sources(
+        repo, base, (BatchMember("p", source, first),), created_at=1.0,
+        regenerate_generated=False,
+    )
+    assert poisoned["outcome"] == "merged"
+    target = poisoned["head"]
+    clone = world.origin.clone
+    git(clone, "merge-base", "--is-ancestor", first, target)
+    assert "q-work.txt" not in git(clone, "ls-tree", "--name-only", target).splitlines()
+    assert "p-work.txt" in git(clone, "ls-tree", "--name-only", target).splitlines()
+    git(clone, "checkout", "-q", "-B", "lost-q", final)
+    git(clone, "merge", "-q", "--no-ff", "-m", "sync target", target)
+    assert not (clone / "q-work.txt").exists()
+    assert (clone / "q-later.txt").exists()
+    assert "q-work.txt" not in git(clone, "diff", "--name-only", base, "HEAD").splitlines()
+
+    # The actual visit refuses P before freezing or touching the target.
+    blocked = await train.visit(MAIN)
+    assert blocked.state == "blocked", blocked
+    assert blocked.batch_id is None and blocked.repair is None
+    [blocker] = blocked.detail["blockers"]
+    assert blocker["code"] == "undeclared_stack_base"
+    assert (blocker["task_id"], blocker["prerequisite_task_id"]) == ("p", "q")
+    assert (blocker["source_base_sha"], blocker["prerequisite_head_sha"]) == (first, final)
+    assert git(world.origin.url, "rev-parse", "refs/heads/main") == base
+
+    # Withhold declared dependents of P, while independent work still lands.
+    await completed(world, "dependent", needs=("p",))
+    independent = await completed(world, "independent")
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing", testing
+    members = await BatchStore(world.db).members(testing.batch_id)
+    assert [member.task_id for member in members] == ["independent"]
+    checks.green.add(testing.candidate_sha)
+    assert (await train.visit(MAIN)).state == "delivered"
+    git(world.origin.url, "merge-base", "--is-ancestor", independent,
+        git(world.origin.url, "rev-parse", "refs/heads/main"))
+
+
+@pytest.mark.parametrize("final_base", [False, True])
+async def test_declared_stack_merges_prerequisite_first_and_preserves_content(world, final_base):
+    base, first, final, source = await intermediate_stack(
+        world, declared=True, prerequisite_done=True, final_base=final_base,
+    )
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)), regenerate=None)
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing" and not (testing.detail or {}).get("blockers"), testing
+    members = await BatchStore(world.db).members(testing.batch_id)
+    assert [member.task_id for member in members] == ["q", "p"]
+    candidate = testing.candidate_sha
+    clone = world.origin.clone
+    for name in ("q-work.txt", "q-later.txt", "p-work.txt"):
+        assert name in git(clone, "ls-tree", "--name-only", candidate).splitlines()
+    for head in (first, final, source):
+        git(clone, "merge-base", "--is-ancestor", head, candidate)
+    checks.green.add(candidate)
+    assert (await train.visit(MAIN)).state == "delivered"
+    git(clone, "checkout", "-q", "-B", "synced-q", final)
+    git(clone, "merge", "-q", "--no-ff", "-m", "safe target sync", candidate)
+    assert (clone / "q-work.txt").read_text() == "work\n"
+    assert "q-work.txt" in git(clone, "diff", "--name-only", base, "HEAD").splitlines()
+
+
+async def test_declared_intermediate_stack_waits_for_unfinished_prerequisite(world):
+    base, _, _, _ = await intermediate_stack(world, declared=True)
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), regenerate=None)
+    blocked = await train.visit(MAIN)
+    assert blocked.state == "blocked" and blocked.batch_id is None, blocked
+    assert [blocker["code"] for blocker in blocked.detail["blockers"]] == [
+        "stack_prerequisite_pending",
+    ]
+    assert git(world.origin.url, "rev-parse", "refs/heads/main") == base
+
+
+async def test_transitive_blocks_prerequisite_authorizes_the_stack(world):
+    await intermediate_stack(world, prerequisite_done=True)
+    await completed(world, "middle", needs=("q",))
+    await world.db.add_dependency("p", "middle")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), regenerate=None)
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing" and not (testing.detail or {}).get("blockers"), testing
+    assert [m.task_id for m in await BatchStore(world.db).members(testing.batch_id)] == [
+        "q", "middle", "p",
+    ]
+    assert "q-work.txt" in git(
+        world.origin.clone, "ls-tree", "--name-only", testing.candidate_sha,
+    ).splitlines()
+
+
+@pytest.mark.parametrize("limit", [200, 1])
+@pytest.mark.parametrize("declared", [False, True])
+async def test_legacy_frozen_intermediate_stack_is_blocked_before_construction(world, limit, declared):
+    base, first, _, source = await intermediate_stack(
+        world, declared=declared, prerequisite_done=declared,
+    )
+    store = BatchStore(world.db)
+    batch = Batch("unsafe-legacy", "p", "r", MAIN.target_ref)
+    await store.freeze(batch, (BatchMember("p", source, first),), trees={"p": tree(world, source)})
+    transport = LocalGit(Path(world.origin.url))
+    train, _, _ = lane(world, transport, regenerate=None)
+    train.batches.limit = limit
+    await completed(world, "newest")
+    blocked = await train.visit(MAIN)
+    assert blocked.state == "blocked" and blocked.repair is None, blocked
+    assert blocked.detail["blockers"][0]["code"] == (
+        "stack_prerequisite_pending" if declared else "undeclared_stack_base"
+    )
+    assert blocked.detail["blockers"][0]["batch_id"] == batch.id
+    assert transport.pushes == 0
+    assert (await store.get(batch.id)).intent == "open"
+    assert git(world.origin.url, "rev-parse", "refs/heads/main") == base
+
+
+@pytest.mark.parametrize("probe", ["base_ancestor", "foreign_history"])
+async def test_unavailable_stack_probe_withholds_source_and_recovers(world, monkeypatch, probe):
+    base, first, final, _ = await intermediate_stack(
+        world, declared=True, prerequisite_done=True,
+    )
+    observed = await snapshot(world)
+    transport = observed.observation.git
+    ancestor, run = transport.ais_ancestor, transport.arun_git_result
+
+    async def unknown_ancestor(store, older, newer, **kwargs):
+        if (older, newer) == (first, base):
+            return None
+        return await ancestor(store, older, newer, **kwargs)
+
+    async def unavailable_history(args, **kwargs):
+        if args[:3] == ["--no-replace-objects", "rev-list", final]:
+            return SimpleNamespace(returncode=128, stdout="", stderr="untrusted private detail")
+        return await run(args, **kwargs)
+
+    if probe == "base_ancestor":
+        monkeypatch.setattr(transport, "ais_ancestor", unknown_ancestor)
+    else:
+        monkeypatch.setattr(transport, "arun_git_result", unavailable_history)
+    blockers = []
+    batches = DatabaseBatches(world.db)
+    members, _, _ = await batches.pending(MAIN, observed, blockers=blockers)
+    assert [m.task_id for m in members] == ["q"]
+    assert [b["code"] for b in blockers] == ["stack_ancestry_unknown"]
+    assert "private detail" not in str(blockers)
+    monkeypatch.setattr(transport, "ais_ancestor", ancestor)
+    monkeypatch.setattr(transport, "arun_git_result", run)
+    blockers = []
+    members, _, _ = await batches.pending(MAIN, observed, blockers=blockers)
+    assert {m.task_id for m in members} == {"p", "q"} and not blockers
+
+
+@pytest.mark.parametrize("dep_type", ["related", "discovered-from", "waits-for",
+                                     "conditional-blocks"])
+async def test_other_edges_do_not_authorize_a_stack_and_delivery_clears_blocker(world, dep_type):
+    _, _, final, _ = await intermediate_stack(world, prerequisite_done=True)
+    await world.db.add_dependency("p", "q", dep_type)
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)), regenerate=None)
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing", testing
+    assert [m.task_id for m in await BatchStore(world.db).members(testing.batch_id)] == ["q"]
+    assert [b["code"] for b in testing.detail["blockers"]] == ["undeclared_stack_base"]
+    checks.green.add(testing.candidate_sha)
+    assert (await train.visit(MAIN)).state == "delivered"
+    git(world.origin.url, "merge-base", "--is-ancestor", final,
+        git(world.origin.url, "rev-parse", "refs/heads/main"))
+    # Once the base is really in the target, P can land without an edge.
+    next_visit = await train.visit(MAIN)
+    assert next_visit.state == "testing" and not (next_visit.detail or {}).get("blockers")
+    assert [m.task_id for m in await BatchStore(world.db).members(next_visit.batch_id)] == ["p"]
+
+
 @pytest.mark.parametrize("mode", ["development", "train", "hierarchy"])
 async def test_root_delivered_legacy_epic_children_create_no_epic_target_or_batch(world, mode):
     db, origin = world.db, world.origin
