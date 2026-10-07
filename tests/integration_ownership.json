@@ -8166,6 +8166,21 @@
     },
     "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_task_on": {
       "reason": "Transaction-local subtree archive enforces integration ownership and delivery guards, retires branch origins and preserves audit identity before deleting active rows."
+    },
+    "dashboard/src/pages/command-center/statusPillModel.ts::import { deliveryCardStatus, deliveryHeadline, describeDelivery, type EpicDelivery } from \"../../components/epicDeliveryFormat\";": {
+      "reason": "The shared card/frame status pill imports the epic delivery projection formatters so an integration hold renders its delivery status, not a chosen pause."
+    },
+    "dashboard/src/pages/command-center/statusPillModel.ts::export interface StatusPillInput {": {
+      "reason": "The status pill input carries an epic's integration delivery projection alongside the stored lifecycle status."
+    },
+    "dashboard/src/pages/command-center/taskReason.ts::import type { EpicDelivery } from \"../../components/epicDeliveryFormat\";": {
+      "reason": "The card reason line reads the epic delivery projection type to explain an integration hold."
+    },
+    "dashboard/src/pages/command-center/taskReason.ts::export interface ReasonInput {": {
+      "reason": "The card reason input carries an epic's integration delivery projection among the fields the reason line is derived from."
+    },
+    "dashboard/src/pages/command-center/taskReason.ts::function deliveryReason(delivery: EpicDelivery | null | undefined): Reason | null {": {
+      "reason": "Renders the first line of an epic delivery projection's reason as the card's reason; display only, no integration authority."
     }
   },
   "exclusions": {
