@@ -104,7 +104,7 @@ In hierarchy/train mode with Git-first active, a completed `blocks` sibling
 must be proven on the shared parent's current branch before its dependent can
 run. One request-scoped, identity-revalidated Git prerequisite view per project
 is shared by scheduler/reconciler supply and pool demand within a tick, outside
-database locks. These advisory reads, including direct readiness, explain and
+database locks. Advisory scheduling reads, including direct readiness and
 frontier diagnostics, may reuse a successful snapshot of the same target for
 up to `DeliveryObserver.READ_MAX_AGE` (30 seconds). Each request still evaluates
 current identities and checks remote target freshness. Beyond the bound the
@@ -115,6 +115,17 @@ retains its own uncached observation (`max_age=0`) and revalidation under task
 locks, even when a tick's advisory view still makes a task look runnable. Shadow
 mode keeps the existing receipt fence, and non-hierarchy projects keep their
 existing admission policy.
+
+Interactive `task explain` and `pool status` only read snapshots inside that
+age bound. They do not clone, fetch, wait for a fetch lock, or check remote refs.
+Missing or expired evidence is unknown and conservatively withholds demand;
+current database identities are still revalidated against the pinned observation.
+If a background freshness check has already rejected that exact snapshot,
+diagnostics withhold its proof until a new observation or successful check.
+Stacked prerequisites additionally require the existing, unexpired remote-ref
+cache. An explanation shares one request-scoped pool measurement between the
+pool wait reason and capacity spill planning. Actual scheduling, routing and
+claim admission retain their existing fresh observations and guards.
 
 For a development worker close, the completion generation id becomes visible in
 the same database transaction as the `COMPLETED` transition. Git provenance is

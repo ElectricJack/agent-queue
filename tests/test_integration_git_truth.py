@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, GitManager
 from src.integration.delivery_truth import DeliveryRequest, DeliveryState
 from src.integration.git_truth import GitTruth, commits_added, epic_complete, repair_progress
@@ -822,7 +823,7 @@ async def test_spent_patch_budget_is_negative_and_merge_noop_still_proves(reposi
     assert (proof.state, proof.reason) == (DeliveryState.CONTAINED, "merge_noop")
 
 
-async def test_overlapping_train_targets_share_fetch_but_next_visit_is_fresh(repository):
+async def test_overlapping_train_targets_share_two_fetches_but_next_visit_is_fresh(repository):
     import asyncio
 
     repo = repository
@@ -846,7 +847,7 @@ async def test_overlapping_train_targets_share_fetch_but_next_visit_is_fresh(rep
     await asyncio.sleep(0)
     release.set()
     snapshots = await asyncio.gather(first, *others)
-    assert repo.git.afetch_origin.await_count == 1
+    assert repo.git.afetch_origin.await_count == 2
     assert snapshots[0].target_oid == repo.base
     for i, snapshot in enumerate(snapshots[1:]):
         assert snapshot.target_oid == (head if i % 2 else None)
@@ -855,8 +856,41 @@ async def test_overlapping_train_targets_share_fetch_but_next_visit_is_fresh(rep
 
     await repo.publish()
     assert (await repo.snapshot(truth=truth)).target_oid == head
-    assert repo.git.afetch_origin.await_count == 2
+    assert repo.git.afetch_origin.await_count == 3
     assert snapshots[0].target_oid == repo.base
+
+
+async def test_shared_fetch_started_before_a_push_cannot_answer_its_caller(repository, tmp_path):
+    import asyncio
+
+    repo = repository
+    truth = GitTruth(repo.git, share_fetches=True)
+    head = await repo.commit("new-head")
+    writer = tmp_path / "writer.git"
+    await repo.git._arun(["clone", "--bare", str(repo.path), str(writer)], cwd=str(tmp_path))
+    fetch = repo.git.afetch_origin
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def fetched_before_push(*args, **kwargs):
+        await fetch(*args, **kwargs)
+        entered.set()
+        await release.wait()
+
+    repo.git.afetch_origin = AsyncMock(side_effect=fetched_before_push)
+    first = asyncio.create_task(repo.snapshot(truth=truth))
+    await entered.wait()
+    # Train publication uses a separate repository, so it cannot update the
+    # observer's tracking refs or order against its already-started fetch.
+    await repo.git._arun(["push", str(repo.remote), "HEAD:refs/heads/main"], cwd=str(writer))
+    second = asyncio.create_task(repo.snapshot(truth=truth))
+    await asyncio.sleep(0)
+    release.set()
+    before, after = await asyncio.gather(first, second)
+    assert before.target_oid == repo.base
+    assert after.target_oid == head
+    assert await after.is_fresh()
+    assert repo.git.afetch_origin.await_count == 2
+    assert not truth._fetches
 
 
 @pytest.mark.parametrize("cancel_leader", [True, False])
@@ -883,9 +917,51 @@ async def test_shared_fetch_cancellation_does_not_strand_other_readers(repositor
     with pytest.raises(asyncio.CancelledError):
         await cancelled
     release.set()
-    assert (await survivor).target_oid == repo.base
+    if cancel_leader:
+        with pytest.raises(asyncio.CancelledError):
+            await survivor
+    else:
+        assert (await survivor).target_oid == repo.base
     assert not truth._fetches
-    assert repo.git.afetch_origin.await_count == (2 if cancel_leader else 1)
+    assert repo.git.afetch_origin.await_count == 1
+
+    repo.git.afetch_origin.side_effect = fetch
+    assert (await repo.snapshot(truth=truth)).target_oid == repo.base
+    assert repo.git.afetch_origin.await_count == 2
+
+
+@pytest.mark.parametrize("error", [
+    RuntimeError("unexpected failure"),
+    GitHubAccessError("rate_limited", "paused", retry_at=1000.0, http_status=403),
+    GitHubAccessError("forbidden", "access denied", http_status=403),
+])
+async def test_shared_fetch_propagates_non_git_failure_without_retries(repository, error):
+    import asyncio
+
+    repo = repository
+    truth = GitTruth(repo.git, share_fetches=True)
+    fetch = repo.git.afetch_origin
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def fail(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        raise error
+
+    repo.git.afetch_origin = AsyncMock(side_effect=fail)
+    leader = asyncio.create_task(repo.snapshot(truth=truth))
+    await entered.wait()
+    waiters = [asyncio.create_task(repo.snapshot(truth=truth)) for _ in range(12)]
+    await asyncio.sleep(0)
+    release.set()
+    outcomes = await asyncio.gather(leader, *waiters, return_exceptions=True)
+    assert all(outcome is error for outcome in outcomes)
+    assert repo.git.afetch_origin.await_count == 1
+    assert not truth._fetches
+
+    repo.git.afetch_origin.side_effect = fetch
+    assert (await repo.snapshot(truth=truth)).target_oid == repo.base
+    assert repo.git.afetch_origin.await_count == 2
 
 
 async def test_shared_fetch_failure_never_becomes_delivery_evidence(repository):

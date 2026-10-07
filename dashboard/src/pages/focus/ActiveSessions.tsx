@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useAgentFlock } from "../../api/agents";
-import { usePoolFlock } from "../agents/pools";
+import { poolDisplayName, usePoolFlock } from "../agents/pools";
 import { focusSessionHref } from "./routes";
 
 const isLive = (state?: string | null) => state === "running" || state === "draining";
@@ -35,7 +35,7 @@ export default function ActiveSessions() {
         seen.add(instance.id);
         // A pool card pins its process: a restart shows a notice, not a stranger.
         out.push({ id: instance.id, name: instance.name, state: instance.state ?? "",
-          detail: `Pool ${entry.profileId}`, started: instance.started_at });
+          detail: `Pool ${poolDisplayName(entry.pool)}`, started: instance.started_at });
       }
     }
     return out;

@@ -1431,7 +1431,7 @@
       ]
     }
   },
-  "digest": "sha256:735045fae9b49b5c1561516851ec4bba97465c7bccd8b3a3ac344fb7c32bb5fd",
+  "digest": "sha256:24e7a052a6a5db7505431e98046e0a9889d1eb75d6b22b14723c21f750871f3a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4902,10 +4902,13 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.handler",
+        "src.config",
         "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.admission",
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.development",
@@ -4914,7 +4917,8 @@
         "src.integration.publishable_artifact",
         "src.integration.source_trailer",
         "src.integration.status",
-        "src.models"
+        "src.models",
+        "src.orchestrator"
       ],
       "markers": [
         "parametrize"
@@ -7756,6 +7760,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
         "src.integration.delivery_truth",
@@ -11944,6 +11949,8 @@
         "src.event_schemas",
         "src.models",
         "src.orchestrator",
+        "src.profiles",
+        "src.profiles.drift",
         "src.profiles.parser",
         "src.profiles.sync"
       ],
@@ -12071,6 +12078,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.provenance",
+        "src.integration.stacked_branches",
         "src.integration.train",
         "src.integration.train_sources",
         "src.intelligence_classes",
