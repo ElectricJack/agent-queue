@@ -426,7 +426,7 @@ class DatabaseBatches:
     async def supersede_refreshed(
         self, target: TrainTarget, service: BatchService,
     ) -> tuple[dict[str, Any], ...]:
-        """Supersede auditable refreshes; report unavailable members without releasing work."""
+        """Supersede auditable refreshes; block invalid member identities without releasing work."""
         blockers = []
         for batch, refreshed in await self._open_batches(target):
             if refreshed is not None:
@@ -436,7 +436,8 @@ class DatabaseBatches:
                 except SupersedeMemberUnavailable as exc:
                     blockers.append({"code": exc.code, "ref": exc.task_id,
                         "task_id": exc.task_id, "batch_id": batch.id,
-                        "detail": f"{exc}; restore an unambiguous task identity or have an "
+                        "detail": f"{exc}; restore an unambiguous task identity in the batch "
+                                  "project or have an "
                                   f"operator use aq integration abort-batch {batch.id} "
                                   "--reason <reason> --apply; an ordinary abort keeps the "
                                   "batch's frozen inputs withheld"})

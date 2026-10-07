@@ -22,8 +22,9 @@ from src.integration.batches import SupersedeMemberUnavailable, ejection_instruc
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.stacked_branches import StackedBranches, observe_stacks, stacked_policy
 from src.integration.train import TrainTarget
+from src.integration.train_controls import TrainControls
 from src.integration.train_sources import DatabaseBatches, _never_trusted
-from src.models import Task, TaskCompletion, TaskStatus
+from src.models import Project, Task, TaskCompletion, TaskStatus
 from tests.test_delivery_consumers import close, git
 from tests.test_integration_gitops import LocalGit
 from tests.test_integration_train_sources import completed, lane, snapshot, world  # noqa: F401
@@ -183,7 +184,9 @@ async def test_changed_prerequisite_merges_preserves_child_and_rotates_completio
     assert await stack.service.refresh("child", stack.gitops) == "unchanged"
 
 
-@pytest.mark.parametrize("unavailable", ["missing", "ambiguous"])
+@pytest.mark.parametrize("unavailable", [
+    "missing", "ambiguous", "foreign_project", "foreign_project_archived",
+])
 async def test_unavailable_refreshed_member_preserves_batch_and_other_targets_progress(
     stack, unavailable,
 ):
@@ -202,13 +205,21 @@ async def test_unavailable_refreshed_member_preserves_batch_and_other_targets_pr
     await checkpoint(stack.db, "first", next_head)
     assert await stack.service.refresh("child", stack.gitops) == "refreshed"
     refreshed = (await stack_record(stack))["refreshed_head"]
+    if unavailable.startswith("foreign_project"):
+        await stack.db.create_project(Project(id="foreign", name="Foreign"))
     async with stack.db.immediate() as conn:
         task_row = dict((await conn.execute(select(tasks).where(
             tasks.c.id == "child",
         ))).mappings().one())
         if unavailable == "missing":
             await stack.db._delete_one("child", conn=conn)
+        elif unavailable == "foreign_project":
+            await conn.execute(update(tasks).where(tasks.c.id == "child")
+                               .values(project_id="foreign"))
         else:
+            if unavailable == "foreign_project_archived":
+                await stack.db._delete_one("child", conn=conn)
+                task_row["project_id"] = "foreign"
             await conn.execute(insert(archived_tasks).values(
                 **{key: value for key, value in task_row.items() if key in archived_tasks.c},
                 archived_at=1.0,
@@ -220,7 +231,7 @@ async def test_unavailable_refreshed_member_preserves_batch_and_other_targets_pr
             task_branch_origins.c.task_id == "child",
         ))
 
-    code = "stack_member_" + unavailable
+    code = "stack_member_" + unavailable.removesuffix("_archived")
     with pytest.raises(SupersedeMemberUnavailable) as refusal:
         await store.supersede(batch, "child", reason="stacked source was refreshed")
     assert refusal.value.code == code and refusal.value.task_id == "child"
@@ -263,6 +274,26 @@ async def test_unavailable_refreshed_member_preserves_batch_and_other_targets_pr
         ))
     assert await store.members(batch.id) == frozen
     assert git(stack.origin.url, "rev-parse", target.target_ref) == stack.base
+
+    if unavailable.startswith("foreign_project"):
+        controls = TrainControls(stack.db, snapshot=lambda db, requested: snapshot(
+            stack.world, requested,
+        ))
+        aborted = await controls.abort_batch(batch.id, dry_run=False,
+            operator_id="human:local-operator", reason="withhold foreign-project inputs")
+        assert aborted["outcome"] == "aborted"
+        recovered = await train.visit(target)
+        assert recovered.state == "testing" and recovered.batch_id != batch.id
+        assert all(blocker["code"] != code for blocker in (recovered.detail or {}).get("blockers", []))
+        assert [member.task_id for member in await store.members(recovered.batch_id)] == ["first"]
+        assert (await store.get(batch.id)).intent == "aborted"
+        async with stack.db._engine.connect() as conn:
+            assert not await conn.scalar(select(ejection_instruction(batch.id)))
+            assert not await conn.scalar(select(events.c.id).where(
+                events.c.event_type == "integration.batch_superseded",
+            ))
+        assert await store.members(batch.id) == frozen
+        return
 
     # Restoring an unambiguous identity lets a later visit audit the release.
     async with stack.db.immediate() as conn:

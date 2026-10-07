@@ -136,12 +136,16 @@ def ordered_members(
 
 
 class SupersedeMemberUnavailable(ValueError):
-    """A refreshed frozen member has no unambiguous task identity to audit."""
+    """A refreshed frozen member has no auditable task identity in its batch project."""
 
-    def __init__(self, task_id: str, *, ambiguous: bool = False):
+    def __init__(self, task_id: str, *, ambiguous: bool = False, foreign_project: bool = False):
         self.task_id = task_id
-        self.code = "stack_member_ambiguous" if ambiguous else "stack_member_missing"
-        detail = "appears in both tasks and archived_tasks" if ambiguous else "has no task row"
+        if foreign_project:
+            self.code = "stack_member_foreign_project"
+            detail = "belongs to a different project"
+        else:
+            self.code = "stack_member_ambiguous" if ambiguous else "stack_member_missing"
+            detail = "appears in both tasks and archived_tasks" if ambiguous else "has no task row"
         super().__init__(f"Cannot supersede: refreshed member {task_id} {detail}")
 
 
@@ -387,7 +391,7 @@ class BatchStore:
             if len(source_projects) != 1:
                 raise SupersedeMemberUnavailable(task_id, ambiguous=bool(source_projects))
             if source_projects != [batch.project_id]:
-                raise ValueError("superseded member does not belong to the frozen batch project")
+                raise SupersedeMemberUnavailable(task_id, foreign_project=True)
             instruction = {"batch_id": batch.id, "project_id": batch.project_id,
                            "task_id": task_id, "replacement_batch_id": None,
                            "operator_id": "service:integration-train", "reason": reason}

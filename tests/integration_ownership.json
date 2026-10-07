@@ -14304,10 +14304,10 @@
       "reason": "Audit of an explicit batch ejection with principal and reason. Admission reads the separate release instruction, not this event; no ref replay or duplicated delivery lifecycle."
     },
     "src/integration/batches.py::BatchStore.supersede::71ad4246d258b2576f1bae229c1e92b1ae60dbae8a616cd7a77cd72c8e6b53f0": {
-      "line": 399,
+      "line": 403,
       "owner": "BatchStore.supersede",
       "call": "log_event",
-      "owner_fingerprint": "5a9185a86344b07f4885608d70b93d2f4df282eef71b0ec7447f1b950689bf12",
+      "owner_fingerprint": "168f97beaf0573ede334f27b30c2bf1350b76fddb7d20f8f975ea40639d814bc",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Audit of an obsolete batch superseded after prerequisite refresh. The batch-owned ejection record authorizes input release; this event never replays refs or asserts delivery."
