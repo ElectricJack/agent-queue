@@ -363,6 +363,8 @@ class ProjectIntegrationMode:
     delivered_prerequisite_ids: frozenset[str] | None = None
     cross_epic_prerequisites: str = "default_branch"
     default_prerequisite_ids: frozenset[str] = frozenset()
+    #: Dependents whose epic branch already contains every cross-epic source.
+    parent_contained_task_ids: frozenset[str] = frozenset()
     stacked: bool = False
     stackable_prerequisite_ids: frozenset[str] = frozenset()
 
@@ -737,6 +739,12 @@ def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = 
     ))
     if mode is None:
         return ~(enabled & (missing | pending))
+    if mode.parent_contained_task_ids:
+        # Its epic already holds every cross-epic source: an unrelated open
+        # batch on the epic (an ordinary child delivery, a repair) does not
+        # have to finish first, since no refresh is needed.
+        pending = pending & ~(tasks.c.id == any_(literal(
+            sorted(mode.parent_contained_task_ids), type_=ARRAY(Text))))
     return ~missing & ~pending
 
 

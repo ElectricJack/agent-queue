@@ -1079,10 +1079,6 @@ class EpicRefresh:
         row, target, observed, result = await self.inspect(task.parent_task_id)
         from src.integration.train_sources import DatabaseBatches
 
-        current = await DatabaseBatches(self.db).current(target)
-        if current is not None:
-            raise EpicRefreshPending(f"epic refresh pending: {current.id}")
-
         async def contains_prerequisites():
             from src.integration.delivery_truth import DeliveryState
 
@@ -1103,6 +1099,11 @@ class EpicRefresh:
 
         refreshed = {}
         if not await contains_prerequisites():
+            # Only a child that needs the refresh waits on the epic's open batch;
+            # one whose epic already holds every cross-epic source starts now.
+            current = await DatabaseBatches(self.db).current(target)
+            if current is not None:
+                raise EpicRefreshPending(f"epic refresh pending: {current.id}")
             refreshed = await self.refresh(task.parent_task_id, dry_run=False)
             if refreshed["outcome"] == "pending":
                 raise EpicRefreshPending(f"epic refresh pending: {refreshed['batch_id']}")
