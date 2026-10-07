@@ -879,8 +879,8 @@ class CandidateService:
             await conn.execute(
                 update(integration_batches)
                 .where(integration_batches.c.id == batch_id)
-                .values(current_revision=next_revision, tested_candidate_sha=None,
-                        ci_evidence_id=None, updated_at=now)
+                .values(current_revision=next_revision, lifecycle="building",
+                        tested_candidate_sha=None, ci_evidence_id=None, updated_at=now)
             )
             if preserved_head:
                 member_rows = (await conn.execute(select(integration_candidate_member_results).where(

@@ -886,6 +886,7 @@ class DatabaseBatches:
             for source_id in sorted(sources):
                 if not _reaches(edges, source_id, repair_id):
                     edges.setdefault(repair_id, set()).add(source_id)
+                    direct_edges.setdefault(repair_id, set()).add(source_id)
         requests = await load_delivery_requests(
             self.db, ids, repository_id=target.repository_id, target_ref=target.target_ref,
             reduced=True,
@@ -1013,12 +1014,24 @@ class DatabaseBatches:
                 if request.task_status == "COMPLETED" and (await snapshot.is_delivered(
                         request, source_base=outside_bases.get(task_id))).satisfied:
                     delivered.add(task_id)
+        # Proven delivery settles an intervening prerequisite. Reopening its
+        # own ancestor cannot revoke that delivery or block descendants whose
+        # immediate prerequisite already landed on this target.
+        admission_edges = {}
+        for task_id in members:
+            needs, remaining = set(), list(direct_edges.get(task_id, ()))
+            while remaining:
+                need = remaining.pop()
+                if need not in needs and need not in delivered:
+                    needs.add(need)
+                    remaining.extend(direct_edges.get(need, ()))
+            admission_edges[task_id] = needs
         blocked = (set(ids) | required) - members.keys() - delivered
         changed = True
         while changed:
             changed = False
             for task_id in list(members):
-                if (edges.get(task_id, set()) & blocked
+                if (admission_edges.get(task_id, set()) & blocked
                         or (task_id in paired_sources
                             and not paired_sources[task_id] & members.keys())):
                     if task_id in paired_sources and blockers is not None:
@@ -1029,7 +1042,7 @@ class DatabaseBatches:
                     changed = True
         if not members:
             return None
-        dependencies = {task_id: edges.get(task_id, set()) & members.keys()
+        dependencies = {task_id: admission_edges.get(task_id, set()) & members.keys()
                         for task_id in members}
         return tuple(members.values()), {key: requests[key] for key in members}, dependencies
 
