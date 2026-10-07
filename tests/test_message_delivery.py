@@ -1,6 +1,6 @@
 """Tests for :class:`MessageDeliveryEngine` — supervisor-agent §5, §7, §11.1.
 
-Uses the real SQLite adapter fixture (as :mod:`tests.test_message_queries`
+Uses the real PostgreSQL adapter fixture (as :mod:`tests.test_message_queries`
 does) plus an in-process :class:`FakeSessionManager` that implements
 :class:`SessionManagerProto`. Covers each policy branch listed in
 `.superpowers/sdd/task-2-brief.md` Step 1.
@@ -8,6 +8,7 @@ does) plus an in-process :class:`FakeSessionManager` that implements
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -23,7 +24,9 @@ from sqlalchemy import update as sa_update
 from src.config import MessagesConfig
 from src.database import Database
 from src.database.tables import messages
+from src.event_bus import EventBus
 from src.messages.delivery import PARK_AFTER_SECONDS, MessageDeliveryEngine
+from src.messages.service import MessageDeliveryService
 from src.models import Project
 from tests.db_fixtures import lease_dsn
 
@@ -1117,6 +1120,16 @@ class _StubOrch:
 
 
 class TestCascadeWiring:
+    async def test_independent_service_is_the_only_delivery_owner(self):
+        from src.orchestrator.core import Orchestrator
+
+        engine = _FakeEngine()
+        stub = _StubOrch(enabled=True, engine=engine)
+        stub.message_delivery_service = SimpleNamespace(running=True)
+        await Orchestrator._deliver_messages(stub)
+        assert engine.pass_calls == engine.timeout_calls == 0
+        stub.db.queue_task_recovery_notifications.assert_awaited_once()
+
     async def test_conversation_routing_failure_does_not_block_other_inbox_delivery(self):
         from src.orchestrator.core import Orchestrator
 
@@ -1324,3 +1337,163 @@ async def test_wait_result_never_fabricates_transcript_reply(db, body_kind):
     await _age_delivery(db, [msg.id])
     manager = FakeSessionManager(tail_map={("session", "supervisor-p1", "p1"): "next turn"})
     assert await make_engine(db, manager).check_reply_timeouts() == 0
+
+
+class TestIndependentDelivery:
+    async def test_refused_pointer_retries_without_any_prompt_or_new_event(self, db):
+        msg = await _send(db)
+        manager = FakeSessionManager(
+            activity_map={("session", "supervisor-p1", "p1"): "idle"},
+            nudge_results=[False, False, True],
+        )
+        bus = EventBus(validate_events=False)
+        cfg = MessagesConfig(delivery_interval=0.1, transcript_tail_fallback=False)
+        delivered = asyncio.Event()
+        bus.subscribe("message.delivered", lambda _: delivered.set())
+        service = MessageDeliveryService(make_engine(db, manager, config=cfg, bus=bus),
+                                         lambda: cfg, bus)
+        service.start()
+        try:
+            await asyncio.wait_for(delivered.wait(), timeout=5)
+            assert len(manager.nudges) == 3
+            assert all(msg.id in nudge[3] for nudge in manager.nudges)
+            assert (await db.get_message(msg.id)).read_at is None
+        finally:
+            await service.stop()
+
+    async def test_backlog_wakes_without_scheduler_cron_or_new_event(self, db):
+        """A restart must recover persisted rows without replaying message.sent."""
+        msg = await _send(db)
+        manager = FakeSessionManager(
+            activity_map={("session", "supervisor-p1", "p1"): "idle"},
+            nudge_results=[False, True],
+        )
+        bus = EventBus(validate_events=False)
+        cfg = MessagesConfig(delivery_interval=0.1, transcript_tail_fallback=False)
+        engine = make_engine(db, manager, config=cfg, bus=bus)
+        assert (await engine.run_delivery_pass())["delivered"] == 0
+        assert (await db.get_message(msg.id)).delivered_at is None
+        delivered = asyncio.Event()
+        bus.subscribe("message.delivered", lambda _: delivered.set())
+        # A fresh engine/service has no retry counters or notifications in RAM.
+        service = MessageDeliveryService(make_engine(db, manager, config=cfg, bus=bus),
+                                         lambda: cfg, bus)
+        service.start()
+        try:
+            await asyncio.wait_for(delivered.wait(), timeout=5)
+            stored = await db.get_message(msg.id)
+            assert stored.via == "nudge"
+            assert stored.read_at is None  # submission is not acknowledgement
+            assert len(manager.nudges) == 2
+            assert (await engine.run_delivery_pass())["delivered"] == 0
+        finally:
+            await service.stop()
+        assert not service.running
+
+    async def test_events_coalesce_and_never_block_the_sender(self):
+        bus = EventBus(validate_events=False)
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def slow_pass():
+            started.set()
+            await release.wait()
+
+        engine = SimpleNamespace(run_delivery_pass=AsyncMock(side_effect=slow_pass),
+                                 check_reply_timeouts=AsyncMock())
+        cfg = MessagesConfig(delivery_interval=10)
+        service = MessageDeliveryService(engine, lambda: cfg, bus)
+        service.start()
+        service.start()  # idempotent lifecycle
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            for _ in range(50):
+                await bus.emit("message.sent", {"to_kind": "session"})
+            assert engine.run_delivery_pass.await_count == 1
+            release.set()
+            await asyncio.sleep(0.05)
+            assert engine.run_delivery_pass.await_count == 1
+        finally:
+            await service.stop()
+        assert bus._handlers["message.sent"] == []
+
+    async def test_disabled_service_resumes_backlog_after_live_enable(self):
+        bus = EventBus(validate_events=False)
+        resumed = asyncio.Event()
+
+        async def passed():
+            resumed.set()
+
+        engine = SimpleNamespace(run_delivery_pass=AsyncMock(side_effect=passed),
+                                 check_reply_timeouts=AsyncMock())
+        cfg = MessagesConfig(enabled=False, delivery_interval=0.1)
+        service = MessageDeliveryService(engine, lambda: cfg, bus)
+        service.start()
+        try:
+            await asyncio.sleep(0.02)
+            assert engine.run_delivery_pass.await_count == 0
+            cfg.enabled = True
+            await bus.emit("message.sent", {"to_kind": "task"})
+            await asyncio.wait_for(resumed.wait(), timeout=5)
+        finally:
+            await service.stop()
+
+    async def test_cross_project_mailbox_coalesces_while_busy_and_idle(self, db):
+        await db.create_project(Project(id="p2", name="p2"))
+        first = await _send(db)
+        second = await _send(db, project_id="p2")
+        manager = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "busy"})
+        engine = make_engine(db, manager)
+        assert (await engine.run_delivery_pass())["skipped_busy"] == 1
+        assert manager.nudges == []
+        manager.activity_map[("session", "supervisor-p1", "p1")] = "idle"
+        manager.activity_map[("session", "supervisor-p1", "p2")] = "idle"
+        assert (await engine.run_delivery_pass())["delivered"] == 1
+        assert len(manager.nudges) == 1
+        assert (await db.get_message(first.id)).delivered_at is not None
+        assert (await db.get_message(second.id)).delivered_at is None
+        assert (await engine.run_delivery_pass())["delivered"] == 1
+
+    @pytest.mark.parametrize("failure", ["exception", "timeout"])
+    async def test_bad_recipient_does_not_starve_other_mailboxes(self, db, monkeypatch, failure):
+        bad = await _send(db, to_id="bad")
+        good = await _send(db, to_id="good")
+        manager = FakeSessionManager()
+
+        async def activity(*, kind, target_id, project_id):
+            if target_id == "bad":
+                if failure == "exception":
+                    raise RuntimeError("provider failure")
+                await asyncio.Event().wait()
+            return "idle"
+
+        monkeypatch.setattr(manager, "activity", activity)
+        monkeypatch.setattr("src.messages.delivery.RECIPIENT_TIMEOUT_SECONDS", 0.5)
+        result = await make_engine(db, manager).run_delivery_pass()
+        assert result["delivered"] == 1
+        assert (await db.get_message(bad.id)).delivered_at is None
+        assert (await db.get_message(good.id)).delivered_at is not None
+
+    async def test_concurrent_delivery_pass_cannot_duplicate_transport(self, db, monkeypatch):
+        msg = await _send(db)
+        manager = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "idle"})
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def nudge(**kwargs):
+            started.set()
+            await release.wait()
+            return True
+
+        mocked = AsyncMock(side_effect=nudge)
+        monkeypatch.setattr(manager, "nudge", mocked)
+        engine = make_engine(db, manager)
+        first = asyncio.create_task(engine.run_delivery_pass())
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            assert (await engine.run_delivery_pass())["delivered"] == 0
+            release.set()
+            assert (await first)["delivered"] == 1
+            assert mocked.await_count == 1
+            assert (await db.get_message(msg.id)).read_at is None
+        finally:
+            release.set()
+            await first

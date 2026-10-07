@@ -5138,7 +5138,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:3a66ba3ee5e0a100ce1e8c34ccc4544cd69db9729a517063e6edd7fb35dcba44",
+      "digest": "sha256:103525f49d949b84f60f89771b2cce26da828dbd8ae7d136c50943d552285de1",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -5150,7 +5150,9 @@
         "src.sessions.provider",
         "src.sessions.spec"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "P3 end-to-end delivery integration test — supervisor-agent §5/§7/§8."
     },
     "tests/test_delivery_precondition_refusals.py": {
@@ -10614,7 +10616,7 @@
         "messages"
       ],
       "default_arm": true,
-      "digest": "sha256:8a973112aada206b2c89f33bd6e414ba495cc7443f792f87654a4804f2e1f674",
+      "digest": "sha256:aaa08ed2adf60e74f41f0f003ae32ce4271c3ac99e0bd88537bec3f655db9d77",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -10622,7 +10624,9 @@
         "src.config",
         "src.database",
         "src.database.tables",
+        "src.event_bus",
         "src.messages.delivery",
+        "src.messages.service",
         "src.models",
         "src.orchestrator.core",
         "src.profiles.capabilities",

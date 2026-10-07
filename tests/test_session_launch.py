@@ -313,6 +313,8 @@ _START_SITES = {
     ("src/orchestrator/core.py", "self._config_watcher.start"): 1,
     ("src/orchestrator/core.py", "self.integration_service.start"): 1,
     ("src/orchestrator/core.py", "self.knowledge_generation_loop.start"): 1,
+    # Runs the async mailbox consumer; session starts still use launch_session.
+    ("src/orchestrator/core.py", "self.message_delivery_service.start"): 1,
     ("src/orchestrator/core.py", "self.record_outbox.start"): 1,
     ("src/orchestrator/core.py", "self.timer_service.start"): 1,
     ("src/orchestrator/sync_workflow.py", "adapter.start"): 1,

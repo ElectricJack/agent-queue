@@ -560,9 +560,8 @@ class Orchestrator(
         # ---- Message substrate (supervisor-agent.md §5) ------------------
         # SessionLens is the read-only window from the delivery engine into
         # the session runtime; MessageDeliveryEngine owns the delivery
-        # policy.  Both are constructed unconditionally — the cascade step
-        # (``_deliver_messages``) gates on ``config.messages.enabled`` and
-        # ``delivery_interval``, so nothing runs while the flag is off.
+        # policy. The independent consumer gates on messages.enabled and
+        # delivery_interval, so scheduler/Git latency cannot strand mail.
         from src.messages.delivery import MessageDeliveryEngine
         from src.messages.session_lens import SessionLens
 
@@ -591,8 +590,13 @@ class Orchestrator(
             config=config,
             bus=self.bus,
         )
-        #: Wall-clock epoch of the last successful delivery pass — used to
-        #: throttle ``_deliver_messages`` to ``config.messages.delivery_interval``.
+        from src.messages.service import MessageDeliveryService
+
+        self.message_delivery_service = MessageDeliveryService(
+            self.message_delivery, lambda: self.config.messages, self.bus
+        )
+        #: Wall-clock epoch of the last message maintenance pass. Delivery is
+        #: owned by the independent service after initialize.
         self._last_delivery_pass: float = 0.0
         # aq-surface Phase S2: session-scoped API bearer-token store.
         # Constructed on ``initialize()`` once the DB is up; the API layer
@@ -2440,6 +2444,10 @@ class Orchestrator(
         # dependencies are wired. Only the bounded scan is awaited here.
         await self._recover_interrupted_playbook_runs()
 
+        # A slow scheduling/frontier/Git pass must not strand live recipients.
+        # Start only after tokens, providers and command dependencies are ready.
+        self.message_delivery_service.start()
+
     async def refresh_required_playbook_status(self) -> dict[str, Any]:
         """Recompute required-playbook readiness from the activations as they are now.
 
@@ -2857,6 +2865,7 @@ class Orchestrator(
         from src.integration.completion_recovery import stop_ready_owner_recovery
 
         await stop_ready_owner_recovery(self)
+        await self.message_delivery_service.stop()
         await self.provider_availability.close()
         await self.wait_for_pool_launches(cancel=True)
         await self.wait_for_running_tasks(timeout=10)
@@ -3649,13 +3658,11 @@ class Orchestrator(
         return await self.db.get_profile(profile_id)
 
     async def _deliver_messages(self) -> None:
-        """Deliver queued inter-agent messages to their recipients.
+        """Maintain recovery/conversation routing and delivery diagnostics.
 
-        Cascade step (supervisor-agent.md §5): throttled to
-        ``config.messages.delivery_interval`` so it piggybacks the 5 s
-        orchestrator cycle without over-polling on faster cadences.  Any
-        exception from the engine is logged and swallowed — a delivery
-        failure must never break the cascade.
+        Live delivery belongs to the independent consumer. Direct cycle
+        callers that skip initialize retain a throttled fallback. A failure
+        in one maintenance operation must never break the cascade.
         """
         if not self.config.messages.enabled:
             return
@@ -3674,8 +3681,12 @@ class Orchestrator(
         except Exception:
             logger.exception("Conversation input routing pass failed")
         try:
-            await self.message_delivery.run_delivery_pass()
-            await self.message_delivery.check_reply_timeouts()
+            service = getattr(self, "message_delivery_service", None)
+            if service is None or not service.running:
+                # Direct cycle callers that skip initialize retain the old
+                # delivery seam. Production has exactly one independent owner.
+                await self.message_delivery.run_delivery_pass()
+                await self.message_delivery.check_reply_timeouts()
         except Exception:
             logger.exception("Message delivery pass failed")
         try:

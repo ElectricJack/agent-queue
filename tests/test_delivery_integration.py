@@ -17,13 +17,15 @@ the three delivery paths the P3 wave promises end-to-end:
 3. **Reply thread.**  A reply flows back on the supervisor thread and
    ``message.list`` (command layer) surfaces both sides of the exchange.
 
-The test uses ``run_one_cycle`` where cheap and calls the specific cascade
-step (``_deliver_messages``) where the wider cycle would drag in irrelevant
-work.  Both are on the real ``Orchestrator`` instance — no stubs.
+Tests that drive individual passes stop the independent consumer first, so
+the real cascade fallback and delivery engine run without a competing pass.
+A separate test starts the consumer and awaits delivery without a scheduler
+cycle. Both paths use the real ``Orchestrator`` instance — no stubs.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -74,6 +76,11 @@ async def orch(tmp_path):
 
     o = Orchestrator(config, runtimes=_NullRuntimeFactory())
     await o.initialize()
+    assert o.message_delivery_service.running
+    # These tests drive individual delivery passes and inspect their counts.
+    # Stop the autonomous consumer before seeding mailboxes so it cannot race
+    # those passes; the background-delivery test below exercises it separately.
+    await o.message_delivery_service.stop()
     # Seed the supervisor profile the SessionLens needs to cold-start the
     # supervisor session (spec §6: only supervisor-named sessions are
     # wake-on-demand).
@@ -209,6 +216,63 @@ async def _seed_idle_supervisor_session(orch):
     )
     fake.sessions[handle.name].activity = time.time() - 300  # stale → idle
     return handle
+
+
+# ---------------------------------------------------------------------------
+# Independent delivery without a scheduler cycle
+# ---------------------------------------------------------------------------
+
+
+class TestBackgroundDelivery:
+    @pytest.mark.parametrize("already_running", [False, True])
+    async def test_delivers_persisted_message_without_a_scheduler_cycle(
+        self, orch, handler, already_running
+    ):
+        await _seed_project(orch)
+        if already_running:
+            await _seed_idle_supervisor_session(orch)
+        result = await handler.execute(
+            "message_send",
+            {
+                "project_id": PROJECT_ID,
+                "to_kind": "session",
+                "to_id": _supervisor_address(),
+                "from_kind": "user",
+                "from_id": "discord:1",
+                "body": "deliver without a scheduler pass",
+            },
+        )
+        assert "error" not in result, result
+        message_id = result["message_id"]
+        assert (await orch.db.get_message(message_id)).delivered_at is None
+        delivered = asyncio.Event()
+
+        def on_delivered(payload):
+            if payload["message_id"] == message_id:
+                delivered.set()
+
+        unsubscribe = orch.bus.subscribe("message.delivered", on_delivered)
+        # The enqueue event happened while the consumer was stopped. Starting
+        # it must recover the durable row without a new event or cascade call.
+        orch.message_delivery_service.start()
+        try:
+            await asyncio.wait_for(delivered.wait(), timeout=5)
+            fake = orch.session_providers.create("fake")
+            assert len(fake.starts) == 1
+            assert fake.sent_nudges == [
+                (
+                    _supervisor_runtime_name(),
+                    f"Handle `aq message status {message_id} --json`.",
+                )
+            ]
+            stored = await orch.db.get_message(message_id)
+            assert stored.delivered_at is not None
+            assert stored.via == "nudge"
+            assert stored.read_at is None
+        finally:
+            await orch.message_delivery_service.stop()
+            unsubscribe()
+        assert not orch.message_delivery_service.running
 
 
 # ---------------------------------------------------------------------------
