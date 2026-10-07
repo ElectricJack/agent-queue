@@ -51,7 +51,11 @@ from src.integration.ci import (
     select_trusted_attestation,
 )
 from src.integration.delivery_observer import DeliveryTarget, delivery_targets
-from src.integration.delivery_truth import DeliveryState, load_delivery_requests
+from src.integration.delivery_truth import (
+    DeliveryState,
+    load_delivery_requests,
+    superseded_source_repairs_on,
+)
 from src.integration.epics import EpicGraphReader, EpicPolicy, EpicReadinessEvaluator, HeadChecks
 from src.integration.git_truth import GitTruth, GitTruthSnapshot
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
@@ -325,8 +329,6 @@ class DatabaseBatches:
             # Retired members disappear from the pending frontier but remain
             # in a frozen batch. Explain why its publication is now refused.
             async with self.db._engine.connect() as conn:
-                from src.integration.source_delivery import superseded_source_repairs_on
-
                 superseded = await superseded_source_repairs_on(
                     self.db, conn, [member.task_id for member in members],
                     repository_id=target.repository_id,
@@ -373,8 +375,6 @@ class DatabaseBatches:
         """Exact pending inputs; report unknown delivery that prevents batching."""
         async with self.db._engine.connect() as conn:
             ids = await _pending_tasks(conn, target.project_id, target.repository_id, limit=None)
-            from src.integration.source_delivery import superseded_source_repairs_on
-
             superseded = await superseded_source_repairs_on(
                 self.db, conn, ids, repository_id=target.repository_id,
             )
@@ -497,8 +497,6 @@ class DatabaseBatches:
         """Ordinary identity is still current: completed, routed to this target."""
         ids = [member.task_id for member in members]
         async with self.db._engine.connect() as conn:
-            from src.integration.source_delivery import superseded_source_repairs_on
-
             if await superseded_source_repairs_on(
                 self.db, conn, ids, repository_id=batch.repository_id,
             ):
