@@ -916,7 +916,7 @@ async def test_slow_target_never_stalls_another():
     assert not any(row["running"] for row in status.values())
 
 
-async def test_status_reports_a_first_visit_in_flight_as_visiting():
+async def test_status_reports_a_first_visit_in_flight_as_visiting(monkeypatch):
     """After a restart, a lane whose first visit is running is not 'unvisited'."""
     slow = TrainTarget("p", "r", "refs/heads/main")
     release = asyncio.Event()
@@ -926,16 +926,24 @@ async def test_status_reports_a_first_visit_in_flight_as_visiting():
 
     batches = Batches({slow.key: (batch(), MEMBERS)})
     t = train(Targets(slow), batches, {slow.key: lane(Service("delivered"), fetch=blocked_fetch)})
+    now = [100.0]
+    monkeypatch.setattr("src.integration.train.time", SimpleNamespace(monotonic=lambda: now[0]))
     await t.tick()
     for _ in range(5):
         await asyncio.sleep(0)
+    now[0] += 7.5
     [row] = t.status()
     assert row["state"] == "visiting" and row["running"] and row["visits"] == 0
     assert row["progress"]["stage"]
+    assert row["timing"]["stages_seconds"]["fetch_snapshot"] == 7.5
+    assert row["timing"]["elapsed_seconds"] == 7.5
     release.set()
     await t.drain()
     [row] = t.status()
     assert row["state"] == "delivered" and not row["running"] and "progress" not in row
+    now[0] += 10
+    assert t.status()[0]["timing"] == row["timing"]
+    assert sum(row["timing"]["stages_seconds"].values()) == 7.5
 
 
 async def test_one_target_failure_is_recorded_and_others_continue():

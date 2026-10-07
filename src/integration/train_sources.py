@@ -1243,7 +1243,7 @@ class DaemonLanes:
                  review_requirements: ReviewRequirements | None = None) -> None:
         self.orchestrator, self.batches, self.clock = orchestrator, batches, clock
         self.db, self.git = orchestrator.db, orchestrator.git
-        self.truth = GitTruth(orchestrator.git)
+        self.truth = GitTruth(orchestrator.git, share_fetches=True)
         self.store = BatchStore(self.db, clock=clock)
         self.publish = LeasedPublish(self.db, self.git, clock=clock)
         if self.batches is not None and self.batches.pr_gate is None:
@@ -1272,6 +1272,7 @@ class DaemonLanes:
 
     async def __call__(self, target: TrainTarget) -> TrainLane:
         from src.integration.development_runtime import development_repository
+        from src.integration.train import _progress
 
         policy = await self._policy(target.project_id)
         repair_policy = (policy.get("parent" if target.kind == "epic" else "root") or {}).get(
@@ -1279,15 +1280,21 @@ class DaemonLanes:
         )
         settings, version = await self._settings(policy)
         repo_row = await self.db.get_repo(target.repository_id)
+        _progress("repository_binding")
         binding = await self.orchestrator.github_repository_binding_resolver(repo_row)
         primitives = self.orchestrator.development_integration
+        _progress("retained_store")
+        # snapshot() below owns the fetch. Fetching here as well queues two
+        # serialized repository-wide fetches per target after every restart.
         if settings is not None:
-            retained = await development_repository(primitives, repo_row, binding, settings)
+            retained = await development_repository(
+                primitives, repo_row, binding, settings, fetch=False)
         else:
             # A non-development project still merges generated artifacts; the
             # lane rebuilds them with the project's own regenerator.
             retained = RetainedRepository(
-                repository_id=target.repository_id, store=await primitives.store(repo_row),
+                repository_id=target.repository_id,
+                store=await primitives.store(repo_row, fetch=False),
                 binding=binding, default_branch=repo_row.default_branch,
                 regenerate=DEFAULT_REGENERATE_COMMAND,
             )

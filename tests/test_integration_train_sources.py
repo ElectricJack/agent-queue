@@ -2197,7 +2197,8 @@ async def hosted_train(world, *, retained_store=None, clock=time.time, settling=
     async def binding(repo_row):
         return GitHubRepositoryBinding(123, HostedGitHub.full_name)
 
-    async def store(repo_row):
+    async def store(repo_row, *, fetch=True):
+        assert not fetch
         return retained_store or origin.clone
 
     attestation = IntegrationAttestationService(
@@ -3088,7 +3089,8 @@ async def development_train(world, tmp_path, monkeypatch, validation: str, *, mo
     retained = RetainedRepository(repository_id="r", store=origin.clone, binding=None,
                                   default_branch="main")
 
-    async def development_repository(primitives, repo_row, binding, settings):
+    async def development_repository(primitives, repo_row, binding, settings, *, fetch=True):
+        assert not fetch
         return retained
 
     async def binding(repo_row):

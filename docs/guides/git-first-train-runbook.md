@@ -190,6 +190,20 @@ recorded stall's Git, check, tree-review and task-transition evidence.
    repairs; `blockers` names why delivery waits. The daemon log shows no repeated
    `integration train` timeouts or errors.
 
+Each target also reports `timing.elapsed_seconds` and `timing.stages_seconds`,
+both during its visit and after completion. These monotonic durations include
+waiting for shared work. `repository_binding` measures GitHub identity lookup,
+`retained_store` local repository setup, `fetch_snapshot` the Git observation,
+and `resolve_checks` / `refresh_checks` the candidate check reads. The daemon
+logs the completed timing breakdown under `src.integration.train.timing`,
+including failed and timed-out visits. A long `select_batch` or `settle_epic`
+can include admission or epic-head check reads as well as Git containment work.
+
+Overlapping targets of one project/repository share an in-flight fetch and pin
+their own target OIDs from its immutable ref map. Setup does not fetch again.
+A visit arriving after that observation completes fetches afresh; this is not
+a time-based freshness cache. Targets in different repositories remain independent.
+
 ## Reading blockers
 
 | Code | Meaning | Operator action |

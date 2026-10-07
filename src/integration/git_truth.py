@@ -9,6 +9,7 @@ Legacy consumers remain on delivery_truth until the protocol cutover.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import OrderedDict
@@ -86,6 +87,13 @@ class GitDeliveryEvidence(DeliveryEvidence):
     error_detail: str | None = None
 
 
+@dataclass
+class _SharedFetch:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    snapshot: GitTruthSnapshot | None = None
+    readers: int = 0
+
+
 class GitTruth:
     """Bounded OID-pair cache and nonblocking fetch backoff for repository visits."""
 
@@ -93,6 +101,7 @@ class GitTruth:
         self, git: GitManager, *, cache_limit: int = 2048,
         retry_delay: float = 1, max_retry_delay: float = 60,
         clock: Callable[[], float] = time.monotonic,
+        share_fetches: bool = False,
     ):
         if cache_limit < 1 or retry_delay <= 0 or max_retry_delay < retry_delay:
             raise ValueError("invalid Git truth cache/backoff limits")
@@ -101,12 +110,42 @@ class GitTruth:
         self.retry_delay, self.max_retry_delay, self.clock = retry_delay, max_retry_delay, clock
         self._cache: OrderedDict[tuple[str, str, str, str], _PairFacts] = OrderedDict()
         self._failures: dict[tuple[str, str], tuple[float, float, str]] = {}
+        self.share_fetches = share_fetches
+        self._fetches: dict[tuple[str, str, str, str], _SharedFetch] = {}
 
     async def snapshot(
         self, store: str, *, project_id: str, repository_id: str,
         repository_url: str, target_ref: str,
     ) -> GitTruthSnapshot:
-        """Fetch once; all sources and additional targets share that observation."""
+        """Fetch once; overlapping train readers may share the same observation.
+
+        There is no age-based cache: a caller arriving after a fetch completes
+        always fetches again. The lock covers the ref capture as well as fetch.
+        Cancellation of the fetching caller leaves waiters free to retry.
+        """
+        if not self.share_fetches:
+            return await self._snapshot(store, project_id=project_id,
+                repository_id=repository_id, repository_url=repository_url, target_ref=target_ref)
+        key = str(store), project_id, repository_id, repository_url
+        shared = self._fetches.setdefault(key, _SharedFetch())
+        previous = shared.snapshot
+        shared.readers += 1
+        try:
+            async with shared.lock:
+                if shared.snapshot is previous:
+                    shared.snapshot = await self._snapshot(store, project_id=project_id,
+                        repository_id=repository_id, repository_url=repository_url,
+                        target_ref=target_ref)
+                return shared.snapshot.for_target(target_ref)
+        finally:
+            shared.readers -= 1
+            if not shared.readers:
+                del self._fetches[key]
+
+    async def _snapshot(
+        self, store: str, *, project_id: str, repository_id: str,
+        repository_url: str, target_ref: str,
+    ) -> GitTruthSnapshot:
         key = repository_id, repository_url
         failure = self._failures.get(key)
         if failure is not None and self.clock() < failure[0]:

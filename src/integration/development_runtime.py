@@ -1322,9 +1322,9 @@ def project_development_pin(project) -> PolicyArtifactPin | None:
 
 
 async def development_repository(
-    primitives, repo, binding: GitHubRepositoryBinding, settings
+    primitives, repo, binding: GitHubRepositoryBinding, settings, *, fetch: bool = True,
 ) -> RetainedRepository:
-    """The existing retained clone, freshly fetched, bound to the pinned rebuild.
+    """The existing retained clone, bound to the pinned rebuild.
 
     A worker checkout is never a delivery source: the store is the repository's
     own retained clone through the existing delivery path (created on first use
@@ -1333,10 +1333,12 @@ async def development_repository(
     of the validation mode: ``validation: none`` still rebuilds generated files.
     An unset policy command falls back to the project's own regenerator, exactly
     as the legacy candidate and promotion paths do.
+    The train passes ``fetch=False`` because its Git snapshot owns the fetch;
+    other callers retain the freshly fetched default.
     """
     return RetainedRepository(
         repository_id=repo.id,
-        store=await primitives.store(repo),
+        store=await primitives.store(repo, **({"fetch": False} if not fetch else {})),
         binding=binding,
         default_branch=repo.default_branch,
         regenerate=settings.regenerate or DEFAULT_REGENERATE_COMMAND,
