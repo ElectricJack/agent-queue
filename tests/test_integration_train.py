@@ -1252,6 +1252,28 @@ async def test_visit_timeout_frees_the_target_for_the_next_tick():
     await t.stop()
 
 
+async def test_visit_timeout_status_keeps_the_last_known_state():
+    lanes = {ROOT.key: lane(Service())}
+    t = train(Targets(ROOT), Batches(), lanes, visit_timeout_seconds=0.5)
+    await t.tick()
+    await t.drain()
+    [first] = t.status()
+    known = first["state"]
+
+    async def hang():
+        await asyncio.sleep(3600)
+
+    lanes[ROOT.key] = lane(Service(), fetch=hang)
+    for _ in range(2):  # consecutive timeouts keep the chain
+        assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
+        await t.drain()
+        [row] = t.status()
+        assert row["state"] == known
+        assert row["detail"]["reason"] == "visit_timeout"
+        assert row["detail"]["previous_state"] == known
+    await t.stop()
+
+
 async def test_requested_visit_shares_running_lane_and_respects_rate_limit_pause():
     gate, entered = asyncio.Event(), asyncio.Event()
     calls = []

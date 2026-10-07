@@ -97,6 +97,16 @@ class _VisitTiming:
         return {"elapsed_seconds": now - self.started, "stages_seconds": stages}
 
 
+def _previous_state(last: TrainVisit | None) -> dict[str, str]:
+    """The last state a finished visit knew, carried across consecutive timeouts."""
+    if last is None:
+        return {}
+    detail = last.detail or {}
+    if detail.get("reason") == "visit_timeout":
+        return {"previous_state": detail["previous_state"]} if detail.get("previous_state") else {}
+    return {"previous_state": last.state}
+
+
 def _progress(stage: str, **facts) -> None:
     timing = _TIMING.get()
     if timing is not None:
@@ -553,6 +563,12 @@ class IntegrationTrain:
                 # and how far it has got, until its result replaces this row.
                 "state": "visiting" if running else "unvisited",
             }
+            detail = row.get("detail") or {}
+            if (row.get("state") == "unknown" and detail.get("reason") == "visit_timeout"
+                    and detail.get("previous_state")):
+                # A visit that ran out of time did not change the target: show
+                # its last known state (the timeout stays in detail/blockers).
+                row["state"] = detail["previous_state"]
             row["running"] = running
             if lane.timing is not None:
                 row["timing"] = lane.timing.as_dict()
@@ -604,7 +620,8 @@ class IntegrationTrain:
                                candidate_sha=progress.get("candidate_sha"),
                                target_sha=progress.get("target_sha"),
                                detail={"reason": "visit_timeout", **progress,
-                                       "timeout_seconds": self.visit_timeout_seconds},
+                                       "timeout_seconds": self.visit_timeout_seconds,
+                                       **_previous_state(lane.last)},
                                observed_at=self.clock())
             logger.warning("integration train visit timed out for %s", target.key)
         except Exception as exc:  # one target's failure never stops the train
