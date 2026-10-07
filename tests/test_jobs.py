@@ -241,7 +241,8 @@ async def development_lanes(world, tmp_path, monkeypatch, validation: str):
                                   default_branch="main")
     built, hosted = [], []
 
-    async def development_repository(primitives, repo_row, binding, settings):
+    async def development_repository(primitives, repo_row, binding, settings, *, fetch=True):
+        assert not fetch
         built.append(settings)
         return retained
 
