@@ -1429,7 +1429,7 @@
       ]
     }
   },
-  "digest": "sha256:3658c568298693ff0ef67b5d47ddc7157677cd5bc86dada082e2cffe28e5b7f4",
+  "digest": "sha256:b19c29c3a1764b8cecdc899462365e4381aebc32c90341dc1785de273c9a6201",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6893,7 +6893,9 @@
         "src.models",
         "src.orchestrator"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Container settlement — spec §7."
     },
     "tests/test_hosted_attestation.py": {

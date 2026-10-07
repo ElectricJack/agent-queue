@@ -252,6 +252,21 @@ def _settlement_clauses() -> list:
                 select(literal(1)).where(
                     task_integration_checkpoints.c.task_id == tasks.c.id,
                     task_integration_checkpoints.c.episode_id.is_not(None),
+                    # In a train project the git-first train never runs the
+                    # legacy collector, and orphan settlement cancels its
+                    # operation; a cancelled episode owns nothing, so the
+                    # container settles here (grand-lantern-78, 2026-10-07).
+                    or_(
+                        projects.c.hierarchical_integration_mode != "train",
+                        exists(
+                            select(literal(1)).where(
+                                integration_repair_operations.c.parent_task_id == tasks.c.id,
+                                integration_repair_operations.c.episode_id
+                                == task_integration_checkpoints.c.episode_id,
+                                integration_repair_operations.c.state != "cancelled",
+                            )
+                        ),
+                    ),
                 )
             ),
         ),
