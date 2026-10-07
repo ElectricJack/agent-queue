@@ -22,7 +22,7 @@ from dataclasses import asdict, replace
 from typing import Any
 
 import yaml
-from sqlalchemy import and_, delete, select, update
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from src.database.tables import (
@@ -66,6 +66,7 @@ from src.integration.git_truth import GitTruth, GitTruthSnapshot
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey, IntegrationTrainPolicy, RepairPolicy
+from src.integration.promotion_steps import flow_status, flow_targets
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
@@ -87,6 +88,10 @@ TRAIN_HOLDER = "service:integration-train"
 # detached validation clone sees it. Never pushed.
 RETAINED_CANDIDATE_PREFIX = "refs/heads/aq/train-candidate/"
 MEMBER_LIMIT = 200
+#: A promotion lane is rebuilt on every visit; its subject trust and App client
+#: are kept per batch this long after last use, so a held request does not
+#: refetch S's manifest each time. S is immutable; the key carries the policy.
+PROMOTION_RESOLUTION_TTL_SECONDS = 900.0
 
 
 def _push_branch_allowed(push: dict, ref: str) -> bool | None:
@@ -138,6 +143,10 @@ def _branch(ref: str) -> str:
 
 async def _pending_tasks(conn, project_id: str, repository_id: str, *, limit: int | None) -> list[str]:
     """Completed tasks with a live branch origin in the repository, newest first."""
+    flow = await conn.scalar(select(projects.c.promotion_flow).where(projects.c.id == project_id))
+    promotion_refs = {
+        ref for name in flow_targets(flow) for ref in (name, _branch(name))
+    }
     rows = await conn.execute(
         select(tasks.c.id)
         .select_from(tasks.join(task_branch_origins, and_(
@@ -145,7 +154,10 @@ async def _pending_tasks(conn, project_id: str, repository_id: str, *, limit: in
             task_branch_origins.c.repository_id == repository_id,
             task_branch_origins.c.retired_at.is_(None),
         )))
-        .where(tasks.c.project_id == project_id, tasks.c.status == "COMPLETED")
+        .where(tasks.c.project_id == project_id, tasks.c.status == "COMPLETED",
+               or_(tasks.c.task_type.is_(None), tasks.c.task_type != "promotion"),
+               or_(task_branch_origins.c.parent_ref.is_(None),
+                   task_branch_origins.c.parent_ref.not_in(promotion_refs)))
         .distinct()
         .order_by(tasks.c.id)
     )
@@ -262,16 +274,18 @@ class DatabaseTargets:
     parent branches its completed work routes to, and any open batch's target."""
 
     def __init__(self, db, *, limit: int = MEMBER_LIMIT, snapshot=project_snapshot,
-                 probe_timeout_seconds: float = 5.0) -> None:
+                 probe_timeout_seconds: float = 5.0, flow_problems=None) -> None:
         self.db, self.limit = db, limit
         self.snapshot = snapshot
         self.probe_timeout_seconds = probe_timeout_seconds
+        self.flow_problems = flow_problems
 
     async def targets(self, now: float) -> list[TrainTarget]:
         found: dict[tuple[str, str, str], TrainTarget] = {}
         async with self.db._engine.connect() as conn:
             rows = (await conn.execute(
                 select(projects.c.id, projects.c.hierarchical_integration_mode,
+                       projects.c.promotion_flow,
                        repos.c.id.label("repository_id"), repos.c.default_branch)
                 .select_from(projects.join(
                     repos, repos.c.id == projects.c.integration_repository_id))
@@ -291,6 +305,17 @@ class DatabaseTargets:
         default = _branch(row["default_branch"])
         kind = "development" if row["hierarchical_integration_mode"] == "development" else "root"
         root = TrainTarget(project_id, repository_id, default, kind)
+        recorded = self.flow_problems() if callable(self.flow_problems) else self.flow_problems
+        status = flow_status(
+            row["promotion_flow"], default_branch=row["default_branch"],
+            recorded=(recorded or {}).get(project_id),
+        )
+        flow = row["promotion_flow"] if status and status["state"] == "configured" else []
+        promotions = {
+            _branch(step["target"]): TrainTarget(
+                project_id, repository_id, _branch(step["target"]), "promotion", step=step,
+            ) for step in flow
+        }
         async with self.db._engine.connect() as conn:
             pending = await _pending_tasks(conn, project_id, repository_id, limit=None)
             routed = await delivery_targets(conn, pending, reduced=True)
@@ -313,8 +338,9 @@ class DatabaseTargets:
                     if task_id not in delivered and
                     (target.project_id, target.repository_id) == (project_id, repository_id))
         refs.update(_branch(branch) for task_id, branch in epics.items() if task_id not in delivered)
-        return [root if ref == default else TrainTarget(project_id, repository_id, ref, "epic")
-                for ref in sorted(refs)]
+        refs.update(promotions)
+        return [root if ref == default else promotions.get(ref) or
+                TrainTarget(project_id, repository_id, ref, "epic") for ref in sorted(refs)]
 
 
 class DatabaseBatches:
@@ -450,9 +476,12 @@ class DatabaseBatches:
         stacks = StackedBranches(self.db)
         found = []
         async with self.db._engine.connect() as conn:
+            query = _open_batch_rows(target.project_id, target.repository_id).where(
+                integration_batches.c.target_ref == target.target_ref)
+            if target.kind == "promotion":
+                query = query.where(integration_batches.c.trigger == "promotion")
             rows = (await conn.execute(
-                _open_batch_rows(target.project_id, target.repository_id)
-                .where(integration_batches.c.target_ref == target.target_ref)
+                query
                 .order_by(integration_batches.c.created_at, integration_batches.c.id)
             )).mappings().all()
             for row in rows:
@@ -555,6 +584,8 @@ class DatabaseBatches:
         gate_pr: bool = True,
     ):
         """Exact pending inputs; report unknown delivery that prevents batching."""
+        if target.kind == "promotion":
+            return None
         ids = await self._candidate_ids(target, snapshot)
         async with self.db._engine.connect() as conn:
             if not ids:
@@ -734,19 +765,34 @@ class DatabaseBatches:
         ids = [member.task_id for member in members]
         async with self.db._engine.connect() as conn:
             mode = (await conn.execute(
-                select(projects.c.hierarchical_integration_mode, projects.c.status)
+                select(projects.c.hierarchical_integration_mode, projects.c.status,
+                       projects.c.promotion_flow)
                 .where(projects.c.id == batch.project_id)
             )).first()
             routed = await delivery_targets(conn, ids, reduced=True)
-            live = set((await conn.execute(select(task_branch_origins.c.task_id).where(
-                task_branch_origins.c.task_id.in_(ids),
-                task_branch_origins.c.repository_id == batch.repository_id,
-                task_branch_origins.c.retired_at.is_(None),
-            ))).scalars().all())
+            flow = () if mode is None else mode.promotion_flow or ()
+            promotion_refs = {
+                ref for name in flow_targets(flow) for ref in (name, _branch(name))
+            }
+            live = set((await conn.execute(
+                select(task_branch_origins.c.task_id)
+                .select_from(task_branch_origins.join(
+                    tasks, tasks.c.id == task_branch_origins.c.task_id))
+                .where(
+                    task_branch_origins.c.task_id.in_(ids),
+                    task_branch_origins.c.repository_id == batch.repository_id,
+                    task_branch_origins.c.retired_at.is_(None),
+                    or_(tasks.c.task_type.is_(None), tasks.c.task_type != "promotion"),
+                    or_(task_branch_origins.c.parent_ref.is_(None),
+                        task_branch_origins.c.parent_ref.not_in(promotion_refs)),
+                )
+            )).scalars().all())
         if mode is None or mode[0] not in TRAIN_MODES or mode[1] != "ACTIVE":
             return False
         if batch.epic_sync and await self.closed_epic_graph(TrainTarget(
                 batch.project_id, batch.repository_id, batch.target_ref, "epic")) is None:
+            return False
+        if batch.target_ref in promotion_refs:
             return False
         requests = await load_delivery_requests(
             self.db, ids, repository_id=batch.repository_id, target_ref=batch.target_ref,
@@ -875,7 +921,15 @@ class DatabaseBatches:
         return True
 
     async def settle(self, batch: Batch, observation: BatchObservation) -> None:
+        async with self.db._engine.connect() as conn:
+            trigger = await conn.scalar(select(integration_batches.c.trigger).where(
+                integration_batches.c.id == batch.id,
+            ))
         async with self.db.immediate() as conn:
+            if trigger == "promotion":
+                from src.integration.promotion_steps import settle_promotion
+
+                await settle_promotion(self.db, batch, observation, clock=self.clock, conn=conn)
             await conn.execute(
                 update(integration_batches)
                 .where(integration_batches.c.id == batch.id,
@@ -1054,6 +1108,7 @@ class LeasedPublish:
                  clock: Callable[[], float] = time.time) -> None:
         self.locks, self.git = BranchLock(db, clock=clock), git
         self.holder, self.ttl_seconds = holder, ttl_seconds
+        self.clock = clock
 
     async def __call__(
         self, repo: RetainedRepository, ref: str, *, expected_old_oid: str, new_oid: str,
@@ -1068,6 +1123,51 @@ class LeasedPublish:
                 fence, git=self.git, checkout_path=str(repo.store), repository=repo.binding,
                 tip_oid=new_oid, expected_old_oid=expected_old_oid, authorize=authorize,
             )
+        finally:
+            await self.locks.release(fence)
+
+    async def qualified(self, repo, target_ref, ref, *, expected_old_oid, new_oid, authorize):
+        """An immutable tag write shares the promotion target's branch fence."""
+        from src.integration.lock import CRITICAL_SECTION_SECONDS, PublishWithdrawn
+
+        fence = await self.locks.acquire(
+            BranchKey(repository_id=repo.repository_id, branch=target_ref), self.holder,
+            ttl_seconds=self.ttl_seconds, role="integration",
+        )
+        try:
+            async with self.locks.exclusion(fence) as row:
+                if not await authorize():
+                    raise PublishWithdrawn("promotion tag is no longer authorized")
+                remaining = min(CRITICAL_SECTION_SECONDS, row["expires_at"] - self.clock())
+                deadline = asyncio.get_running_loop().time() + remaining
+                async with asyncio.timeout(remaining):
+                    return await self.git.apush_qualified_ref(
+                        str(repo.store), repository=repo.binding, ref=ref, tip_oid=new_oid,
+                        expected_old_oid=expected_old_oid, authority_deadline=deadline,
+                    )
+        finally:
+            await self.locks.release(fence)
+
+    async def delete(self, repo, ref, *, expected_old_oid, authorize):
+        """Cleanup of a private promotion head shares the managed-ref fence."""
+        from src.integration.lock import CRITICAL_SECTION_SECONDS, PublishWithdrawn
+
+        fence = await self.locks.acquire(
+            BranchKey(repository_id=repo.repository_id, branch=ref), self.holder,
+            ttl_seconds=self.ttl_seconds, role="integration",
+        )
+        try:
+            async with self.locks.exclusion(fence) as row:
+                if not await authorize():
+                    raise PublishWithdrawn("promotion cleanup no longer has delivery proof")
+                remaining = min(CRITICAL_SECTION_SECONDS, row["expires_at"] - self.clock())
+                deadline = asyncio.get_running_loop().time() + remaining
+                async with asyncio.timeout(remaining):
+                    await self.git.adelete_repository_ref(
+                        str(repo.store), repository=repo.binding,
+                        branch=ref.removeprefix("refs/heads/"), expected_old_oid=expected_old_oid,
+                        authority_deadline=deadline,
+                    )
         finally:
             await self.locks.release(fence)
 
@@ -1129,6 +1229,8 @@ class DaemonLanes:
                 return await hosted_pr_gate(target, member)
 
             self.batches.pr_gate = pr_gate
+        #: batch id -> (key, expires_at, trust, client); see _promotion_trust.
+        self._promotion_trust_cache: dict[str, tuple[str, float, Any, Any]] = {}
 
     async def __call__(self, target: TrainTarget) -> TrainLane:
         from src.integration.development_runtime import development_repository
@@ -1194,16 +1296,19 @@ class DaemonLanes:
             )
             return (await attestation.publish(subject, producer=producer)).outcome
 
-        service = BatchService(self.store, gitops, publish=self.publish,
-                               eligible=self.batches.eligible, gate=checks.gate,
-                               attest=None if local else attest, require_attestation=not local)
-
         async def snapshot() -> GitTruthSnapshot:
             return await self.truth.snapshot(
                 str(retained.store), project_id=target.project_id,
                 repository_id=target.repository_id, repository_url=repo_row.url,
                 target_ref=target.target_ref,
             )
+
+        if target.kind == "promotion":
+            return await self._promotion_lane(target, retained, binding, gitops, policy, snapshot)
+
+        service = BatchService(self.store, gitops, publish=self.publish,
+                               eligible=self.batches.eligible, gate=checks.gate,
+                               attest=None if local else attest, require_attestation=not local)
 
         complete_epic = None
         sync_default_branch = None
@@ -1394,6 +1499,80 @@ class DaemonLanes:
 
         return complete
 
+    async def _promotion_lane(self, target, retained, binding, gitops, policy, snapshot):
+        from src.integration.checks import ExactChecks, HostedChecks
+        from src.integration.ci import IntegrationTrustManifest
+        from src.integration.ci_producers import HostedCIProducer
+        from src.integration.promotion_steps import (
+            PromotionChecks,
+            PromotionIntentInvalid,
+            PromotionVisit,
+            StepAdmission,
+            StepPullRequestGate,
+            frozen_required_checks,
+            publish_step_attestation,
+        )
+
+        admission = StepAdmission(self.db, gitops, target.step)
+        resolved = {}
+
+        async def resolve(batch, sha):
+            members = await self.store.members(batch.id)
+            meta = await admission.load(batch, members)
+            attestation = getattr(self.orchestrator, "integration_attestation_service", None)
+            if attestation is None:
+                raise PromotionIntentInvalid("promotion requires hosted App attestation service")
+            state = {
+                "project_id": target.project_id, "canonical_repository_id": target.repository_id,
+                "repository_numeric_id": binding.repository_id,
+                "repository_full_name": binding.full_name, "candidate_sha": sha,
+                "batch_id": batch.id, "operation_id": batch.id,
+                "revision": batch.repair_attempt_count,
+                "policy_snapshot": {"root": policy.get("root") or {}},
+            }
+            # The App identity checks refuse a subject naming another identity;
+            # the check set is the one the request froze from committed trust,
+            # never S's own manifest (attestation I3).
+            trust, client = await self._promotion_trust(attestation, batch, state)
+            if not isinstance(trust, IntegrationTrustManifest):
+                raise PromotionIntentInvalid("promotion requires App-mode trust")
+            required = frozen_required_checks(meta)
+            resolved[batch.id] = trust, client, StepPullRequestGate(client, binding)
+            selected = trust.model_copy(update={"required_checks": required})
+            return ExactChecks(self.db, HostedChecks(HostedCIProducer(client, selected)))
+
+        checks = PromotionChecks(admission, resolve, pull_request=lambda batch: resolved[batch.id][2])
+
+        async def attest(batch, sha):
+            trust, client, _pr_gate = resolved[batch.id]
+            return await publish_step_attestation(
+                admission, batch, await self.store.members(batch.id), trust, client,
+            )
+
+        service = PromotionVisit(
+            self.store, gitops, admission=admission, checks=checks, publish=self.publish,
+            publish_tag=self.publish.qualified, delete_ref=self.publish.delete,
+            attest=attest, snapshot=snapshot, clock=self.clock,
+        )
+        await service.reconcile_cleanup(target)
+        return TrainLane(snapshot=snapshot, service=service, checks=checks)
+
+    async def _promotion_trust(self, attestation, batch, state):
+        """The visit's subject trust, reused while S, revision and policy are unchanged."""
+        key = json.dumps([state["candidate_sha"], state["revision"],
+                          state["policy_snapshot"]], sort_keys=True, default=str)
+        now = self.clock()
+        cache = self._promotion_trust_cache
+        for batch_id in [b for b, entry in cache.items() if entry[1] <= now]:
+            del cache[batch_id]
+        cached = cache.get(batch.id)
+        if cached is not None and cached[0] == key:
+            trust, client = cached[2], cached[3]
+        else:
+            trust, client = await attestation._load_trust(state)
+        cache[batch.id] = (key, now + PROMOTION_RESOLUTION_TTL_SECONDS, trust, client)
+        return trust, client
+
     async def _policy(self, project_id: str) -> dict:
         async with self.db._engine.connect() as conn:
             policy = (await conn.execute(
@@ -1553,7 +1732,10 @@ def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> Integr
     batches = DatabaseBatches(orchestrator.db, clock=clock,
                              cleanup=getattr(orchestrator, "integration_cleanup_service", None))
     return IntegrationTrain(
-        targets=DatabaseTargets(orchestrator.db),
+        targets=DatabaseTargets(
+            orchestrator.db,
+            flow_problems=lambda: getattr(orchestrator, "promotion_flow_problems", None),
+        ),
         batches=batches,
         lane_for=DaemonLanes(orchestrator, batches=batches, clock=clock),
         repair=OrdinaryRepairService(orchestrator.db, clock=clock),

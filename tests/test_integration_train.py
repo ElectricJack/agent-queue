@@ -194,6 +194,25 @@ def test_target_rejects_unknown_kind_and_missing_fields():
         TrainTarget("p", "r", "main")
 
 
+async def test_promotion_target_visits_its_own_lane_and_keeps_a_step_snapshot():
+    step = {"id": "release", "target": "main", "gate": {"approval": "operator"}}
+    promotion = TrainTarget("p", "r", "refs/heads/main", "promotion", step=step)
+    development = TrainTarget("p", "r", "refs/heads/dev", "development")
+    step["gate"]["approval"] = "requester"
+    assert promotion.step_id == "release"
+    assert promotion.step["gate"]["approval"] == "operator"
+    t = train(Targets(development, promotion), Batches(), {
+        development.key: lane(Service()), promotion.key: lane(Service()),
+    })
+    started = await t.tick()
+    await t.drain()
+    assert len(started["started"]) == 2
+    assert {(row["target_ref"], row["kind"], row["state"]) for row in t.status()} == {
+        ("refs/heads/dev", "development", "idle"),
+        ("refs/heads/main", "promotion", "idle"),
+    }
+
+
 async def test_no_open_batch_is_idle_and_reports_the_fetched_target():
     t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service())})
     visit = await t.visit(ROOT)
@@ -911,6 +930,82 @@ async def test_rate_limited_visit_defers_the_target_with_backoff(caplog):
     assert "p/r/refs/heads/main" in message
     assert "code=rate_limited" in message and "http=403" in message
     assert "\n" not in message
+
+
+class Holding(Service):
+    """A promotion lane that names what each visit waits for."""
+
+    def __init__(self, *reasons):
+        super().__init__()
+        self.reasons = list(reasons)
+
+    async def visit(self, batch, members, snapshot):
+        self.calls += 1
+        return BatchObservation("held", SOURCE, TARGET_SHA,
+                                detail={"reason": self.reasons.pop(0)})
+
+
+PROMOTION = TrainTarget("p", "r", "refs/heads/main", "promotion",
+                        step={"id": "release", "target": "main", "gate": {"approval": "operator"}})
+
+
+async def test_named_promotion_hold_defers_its_target_until_woken():
+    """grand-lantern-78.4: a request waiting on a person is not re-polled every tick."""
+    clock = [100.0]
+    approval, vetoed = "promotion_operator_approval_missing", "promotion_pr_changes_requested"
+    service = Holding(approval, approval, vetoed, vetoed)
+
+    async def lane_for(target):
+        return lane(service)
+
+    t = IntegrationTrain(targets=Targets(PROMOTION),
+                         batches=Batches({PROMOTION.key: (batch(), MEMBERS)}),
+                         lane_for=lane_for, repair=Repair(), clock=lambda: clock[0])
+    label = "p/r/refs/heads/main"
+
+    assert (await t.tick())["started"] == [label]
+    await t.drain()
+    [row] = t.status()
+    assert (row["state"], row["detail"]["reason"]) == ("held", approval)
+    assert row["detail"]["retry_at"] == row["deferred_until"] == 130.0
+
+    clock[0] = 129.0
+    assert await t.tick() == {"started": [], "running": [], "skipped": [], "deferred": [label]}
+    assert service.calls == 1
+
+    clock[0] = 130.0
+    assert (await t.tick())["started"] == [label]
+    await t.drain()
+    # The same refusal again doubles the wait.
+    assert t.status()[0]["detail"]["retry_at"] == 130.0 + 60.0
+
+    clock[0] = 190.0
+    assert (await t.tick())["started"] == [label]
+    await t.drain()
+    # A different refusal starts the wait over.
+    assert t.status()[0]["detail"]["retry_at"] == 190.0 + 30.0
+
+    # A promote command wakes only its own target, at once.
+    assert t.wake("p", "r", "refs/heads/release") == 0
+    assert t.wake("p", "r", "refs/heads/main") == 1
+    assert (await t.tick())["started"] == [label]
+    await t.drain()
+    assert service.calls == 4
+
+
+async def test_only_a_named_promotion_hold_defers_its_target():
+    root = train(Targets(ROOT), Batches({ROOT.key: (batch(), MEMBERS)}),
+                 {ROOT.key: lane(Holding("promotion_operator_approval_missing"))})
+    unnamed = train(Targets(PROMOTION), Batches({PROMOTION.key: (batch(), MEMBERS)}),
+                    {PROMOTION.key: lane(Service("held", "held"))})
+    for t, target, visits in ((root, ROOT, 1), (unnamed, PROMOTION, 2)):
+        for _ in range(visits):
+            assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
+            await t.drain()
+        [row] = t.status()
+        assert row["state"] == "held" and "deferred_until" not in row
+        assert "retry_at" not in (row["detail"] or {})
+    assert root.wake("p") == 0
 
 
 async def test_rate_limited_visit_honours_a_later_github_retry_time():

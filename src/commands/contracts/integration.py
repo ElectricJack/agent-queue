@@ -55,6 +55,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_recover_candidate_member",
         "integration_recover_unwritten_resolution",
         "integration_promote_main",
+        "integration_promotion_publish",
         "integration_release",
         "integration_cleanup",
         "integration_status",
@@ -93,6 +94,46 @@ class IntegrationScheduleDueArgs(CommandArgs):
 
 class IntegrationStatusArgs(CommandArgs):
     project_id: str = Field(min_length=1)
+
+
+class PromoteSchemaArgs(CommandArgs):
+    pass
+
+
+class PromoteSchemaValue(CommandValue):
+    # Avoid shadowing BaseModel.schema while preserving the command wire field.
+    schema_document: dict[str, Any] = Field(default_factory=dict, alias="schema")
+
+
+class PromoteValidateArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    #: The session scope gate injects these before the handler validates arguments.
+    task_id: str | None = None
+    session_id: str | None = None
+    flow: Any = None
+    #: False when flow supplies a document, including explicit null.
+    use_stored: bool = True
+    remote: bool = False
+
+
+class PromoteValidateValue(CommandValue):
+    project_id: str | None = None
+    valid: bool = False
+    flow: list[dict[str, Any]] | None = None
+    layer: int | None = None
+    problems: tuple[dict[str, Any], ...] = ()
+    warnings: tuple[dict[str, Any], ...] = ()
+
+
+class IntegrationPromotionPublishArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+
+
+class IntegrationPromotionPublishValue(CommandValue):
+    batch_id: str | None = None
+    source_sha: str | None = None
+    target_sha: str | None = None
+    detail: dict[str, Any] | None = None
 
 
 class IntegrationAbortBatchArgs(CommandArgs):
@@ -550,6 +591,9 @@ class IntegrationStatusValue(IntegrationOperationalValue):
     #: Non-blocking App-mode configuration warnings (spec §6.2); never part
     #: of ``blockers``, their digest or ``ready``.
     warnings: tuple[dict[str, Any], ...] = ()
+    #: The stored promotion flow as a chain, re-validated on read; its
+    #: targets are ``misconfigured`` when the flow no longer validates.
+    promotion_flow: dict[str, Any] | None = None
 
 
 class IntegrationRedriveRootValue(CommandValue):
@@ -1088,6 +1132,17 @@ def _operational_contract(
     )
 
 
+PROMOTE_SCHEMA = _operational_contract(
+    "promote_schema", PromoteSchemaArgs, ("schema",),
+    successes=frozenset({"schema"}), side_effect=SideEffectClass.READ,
+    result_model=PromoteSchemaValue,
+)
+PROMOTE_VALIDATE = _operational_contract(
+    "promote_validate", PromoteValidateArgs, ("valid", "invalid", "not_found"),
+    successes=frozenset({"valid"}), side_effect=SideEffectClass.READ,
+    result_model=PromoteValidateValue,
+)
+
 INTEGRATION_STATUS = _operational_contract(
     "integration_status",
     IntegrationStatusReadArgs,
@@ -1096,6 +1151,22 @@ INTEGRATION_STATUS = _operational_contract(
     side_effect=SideEffectClass.READ,
     result_model=IntegrationStatusValue,
 )
+
+INTEGRATION_PROMOTION_PUBLISH = _operational_contract(
+    "integration_promotion_publish", IntegrationPromotionPublishArgs,
+    ("delivered", "testing", "held", "moved", "unknown", "published",
+     "unavailable", "not_found", "promotion_intent_invalid"),
+    successes=frozenset({"delivered", "testing", "held", "moved", "unknown", "published"}),
+    side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationPromotionPublishValue,
+)
+
+
+async def _promotion_publish_adapter(args, ctx):
+    return await _hierarchy_adapter(
+        "integration_promotion_publish", args, ctx, IntegrationPromotionPublishValue,
+        {"delivered", "testing", "held", "moved", "unknown", "published", "unauthorized",
+         "unavailable", "not_found", "promotion_intent_invalid"},
+    )
 #: Every refusal names its cause (spec §3 I6); ``manifest`` is the only success.
 TRUST_MANIFEST_OUTCOMES = (
     "manifest",
@@ -2679,6 +2750,25 @@ async def _status_adapter(args: IntegrationStatusReadArgs, ctx: CommandContext |
     )
 
 
+async def _promote_schema_adapter(args: PromoteSchemaArgs, ctx: CommandContext | None):
+    from src.commands.contracts.builtin import _handler
+
+    if ctx is None:
+        raw = await _handler().execute("promote_schema", {})
+    else:
+        with principal_context(ctx):
+            raw = await _handler().execute("promote_schema", {})
+    return CommandResult(outcome=raw["outcome"], value=PromoteSchemaValue(
+        schema=raw.get("schema", {})
+    ), summary="Promotion-flow JSON schema")
+
+
+async def _promote_validate_adapter(args: PromoteValidateArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "promote_validate", args, ctx, PromoteValidateValue, {"valid", "invalid", "not_found"},
+    )
+
+
 async def _trust_manifest_adapter(
     args: IntegrationTrustManifestArgs, ctx: CommandContext | None
 ):
@@ -2960,6 +3050,9 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         )
     for contract, adapter in (
         (INTEGRATION_STATUS, _status_adapter),
+        (INTEGRATION_PROMOTION_PUBLISH, _promotion_publish_adapter),
+        (PROMOTE_SCHEMA, _promote_schema_adapter),
+        (PROMOTE_VALIDATE, _promote_validate_adapter),
         (INTEGRATION_TRUST_MANIFEST, _trust_manifest_adapter),
         (INTEGRATION_APP_VERIFY, _app_verify_adapter),
         (INTEGRATION_EJECT, _eject_adapter),

@@ -536,7 +536,7 @@
       ]
     },
     "integration-promotion": {
-      "description": "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, explicit root authorization, parent CI publication and legacy deliveries.",
+      "description": "Promotion-flow validation, child-to-parent and root-to-main promotion, parent assembly and completion, root PRs and authorization, bounded repairs, trusted review evidence, parent CI publication, legacy deliveries and proven closure of delivered PRs.",
       "modules": [
         "tests/test_integration_cancelled_collection.py",
         "tests/test_integration_child_delivery.py",
@@ -555,7 +555,11 @@
         "tests/test_integration_root_authorization.py",
         "tests/test_integration_root_pull_requests.py",
         "tests/test_integration_stranded_children.py",
+        "tests/test_integration_train_promotion.py",
         "tests/test_parent_ci_publication.py",
+        "tests/test_promote_commands.py",
+        "tests/test_promotion_flow.py",
+        "tests/test_promotion_steps.py",
         "tests/test_repair_checkout_refs.py"
       ]
     },
@@ -1421,7 +1425,7 @@
       ]
     }
   },
-  "digest": "sha256:d3aa1708ca5042b7d672bd5344b672917fb144321cfbf0ddcff9b29d07dfb29f",
+  "digest": "sha256:3ce2402ce43dcee8fd617f96c2182404847ed70ac418501197d6efacad27b805",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7704,7 +7708,8 @@
         "src.integration.ownership",
         "src.integration.source_ancestry",
         "src.integration.source_trailer",
-        "src.integration.subjects"
+        "src.integration.subjects",
+        "src.models"
       ],
       "markers": [
         "parametrize"
@@ -8733,6 +8738,19 @@
         "parametrize"
       ],
       "summary": "The reduced train: per-target level-triggered visits over Git, checks and intent."
+    },
+    "tests/test_integration_train_promotion.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.integration.train",
+        "src.integration.train_sources"
+      ],
+      "markers": [],
+      "summary": "One-step request → pinned human review → exact FF and annotated release tag."
     },
     "tests/test_integration_train_sources.py": {
       "areas": [
@@ -12526,6 +12544,93 @@
       ],
       "summary": "Configuration and diagnostics for project onboarding roots."
     },
+    "tests/test_promote_commands.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.app",
+        "src.commands.contracts",
+        "src.commands.contracts.models",
+        "src.commands.principal",
+        "src.commands.promote_commands",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.integration.batches",
+        "src.integration.ci",
+        "src.integration.delivery_observer",
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.promotion_steps",
+        "src.integration.provenance",
+        "src.integration.train",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "PR intent commands over real PostgreSQL and Git, with isolated GitHub transports."
+    },
+    "tests/test_promotion_flow.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.cli.app",
+        "src.commands.contracts",
+        "src.commands.contracts.integration",
+        "src.commands.contracts.models",
+        "src.commands.principal",
+        "src.commands.project_commands",
+        "src.commands.promote_commands",
+        "src.database.tables",
+        "src.doctor",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.git.manager",
+        "src.integration.promotion_steps",
+        "src.integration.records",
+        "src.integration.status",
+        "src.integration.train_sources",
+        "src.models",
+        "src.orchestrator.core",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Dev-branch releases §3.1/§3.11: pure validation and its command surfaces."
+    },
+    "tests/test_promotion_steps.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.ci",
+        "src.integration.git_truth",
+        "src.integration.models",
+        "src.integration.promotion_steps",
+        "src.integration.provenance",
+        "src.integration.train",
+        "src.integration.train_sources",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real Git/PostgreSQL promotion crash matrix (dev-branch releases §3.3)."
+    },
     "tests/test_prompt_builder.py": {
       "areas": [
         "prompts"
@@ -14372,6 +14477,7 @@
         "src.sessions.tmux"
       ],
       "markers": [
+        "parametrize",
         "tmux"
       ],
       "summary": "Semantics every :class:`SessionProvider` must share."

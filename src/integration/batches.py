@@ -172,13 +172,24 @@ class BatchStore:
                                  row["source_base_sha"], row["ordinal"]) for row in rows)
 
     async def freeze(self, batch: Batch, members: Iterable[BatchMember], *,
-                     trees: Mapping[str, str], exclusive_target=False):
+                     trees: Mapping[str, str], exclusive_target=False,
+                     promotion: Mapping | None = None, conn=None):
         """Atomic immutable membership; replay must name exactly the same inputs."""
-        async with self.db.immediate() as conn:
-            await self._target_lock(conn, batch)
-            if exclusive_target:
-                await self._exclusive_target(conn, batch)
-            return await self._freeze_on(conn, batch, tuple(members), trees=trees)
+        members = tuple(members)
+        if conn is not None:
+            return await self._freeze_locked(conn, batch, members, trees=trees,
+                                             exclusive_target=exclusive_target,
+                                             promotion=promotion)
+        async with self.db.immediate() as owned:
+            return await self._freeze_locked(owned, batch, members, trees=trees,
+                                             exclusive_target=exclusive_target,
+                                             promotion=promotion)
+
+    async def _freeze_locked(self, conn, batch, members, *, trees, exclusive_target, promotion):
+        await self._target_lock(conn, batch)
+        if exclusive_target:
+            await self._exclusive_target(conn, batch)
+        return await self._freeze_on(conn, batch, members, trees=trees, promotion=promotion)
 
     @staticmethod
     async def _target_lock(conn, batch):
@@ -201,13 +212,18 @@ class BatchStore:
         if other:
             raise ValueError("another batch already owns this target")
 
-    async def _freeze_on(self, conn, batch, members, *, trees):
+    async def _freeze_on(self, conn, batch, members, *, trees, promotion=None):
         if tuple(member.order for member in members) != tuple(range(len(members))):
             raise ValueError("membership must have contiguous frozen order")
         if not members:
             raise ValueError("empty work needs no batch")
         if len({member.task_id for member in members}) != len(members):
             raise ValueError("duplicate batch member")
+        integration_branch = candidate_ref(batch.id)
+        if promotion is not None:
+            from src.integration.promotion_steps import promotion_ref
+
+            integration_branch = promotion_ref(promotion["step"], promotion)
         now = self.clock()
         active = (await conn.execute(select(integration_batches.c.id).where(
             integration_batches.c.project_id == batch.project_id,
@@ -238,6 +254,13 @@ class BatchStore:
                                       r["source_base_sha"], r["ordinal"]) for r in frozen)
             if identity != wanted or inputs != members:
                 raise ValueError("batch id already names different frozen inputs")
+            if promotion is not None and (
+                existing["trigger"] != "promotion"
+                or existing["request_id"] != promotion["request_id"]
+                or existing["policy_snapshot"].get("promotion_step") != promotion["step"]
+                or existing["policy_snapshot"].get("promotion_intent") != dict(promotion)
+            ):
+                raise ValueError("batch id already names a different promotion request")
             return Batch.from_row(existing)
         manifest = hashlib.sha256(repr(members).encode()).hexdigest()
         policy = await conn.scalar(select(projects.c.hierarchical_integration_policy).where(
@@ -249,11 +272,17 @@ class BatchStore:
             target_ref=batch.target_ref, intent=batch.intent,
             repair_attempt_count=batch.repair_attempt_count,
             created_at=batch.created_at or now, updated_at=now,
-            # Legacy required fields and the immutable cleanup policy snapshot.
-            request_id=batch.id, source_manifest_digest=manifest,
-            base_sha=members[0].base_sha, integration_branch=candidate_ref(batch.id),
-            lifecycle="sealing", policy_snapshot=policy,
-            artifact_snapshot={}, cleanup_state="pending",
+            # Legacy required fields, the immutable cleanup policy snapshot and,
+            # for a promotion, its frozen step and intent.
+            request_id=batch.id if promotion is None else promotion["request_id"],
+            trigger="manual" if promotion is None else "promotion",
+            source_manifest_digest=manifest,
+            base_sha=members[0].base_sha, integration_branch=integration_branch,
+            lifecycle="sealing", policy_snapshot=dict(policy) if promotion is None else {
+                **policy,
+                "promotion_step": promotion["step"],
+                "promotion_intent": dict(promotion),
+            }, artifact_snapshot={}, cleanup_state="pending",
         ))
         for member in members:
             tree = trees[member.task_id]

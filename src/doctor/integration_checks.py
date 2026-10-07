@@ -358,6 +358,66 @@ async def _fix_finished_branch_owners(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_promotion_flow(ctx: DoctorContext) -> CheckResult:
+    """Re-run layers 1-3 on every stored promotion flow (R17, spec §3.11).
+
+    A flow that stopped validating (a manifest change, a default-branch rename,
+    a tightened schema) leaves its targets ``misconfigured`` and the train
+    promoting to the default branch; this names the first failing pointer per
+    project. Read-only: the flow is operator configuration, so nothing is
+    fixed here.
+    """
+    from src.integration.promotion_steps import recheck_stored_flows
+
+    check_id = "integration.promotion_flow"
+    if ctx.db is None or ctx.handler is None:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.INFO,
+            detail="promotion flow re-validation unavailable without database and command handler",
+        )
+    handler = ctx.handler
+    try:
+        found = await recheck_stored_flows(
+            ctx.db,
+            lambda project_id: handler.execute("promote_validate", {"project_id": project_id}),
+        )
+    except Exception as exc:  # noqa: BLE001 - any read failure is the named finding
+        return CheckResult(
+            id=check_id,
+            severity=Severity.ERROR,
+            detail="could not read stored promotion flows; check db.migrations",
+            data={"errors": [{"error": f"{type(exc).__name__}: {exc}"}]},
+        )
+    if not found:
+        return CheckResult(
+            id=check_id, severity=Severity.OK, detail="every stored promotion flow validates"
+        )
+    projects = [
+        {
+            "project_id": project_id,
+            "code": problems[0].get("code"),
+            "pointer": problems[0].get("pointer"),
+            "message": problems[0].get("message"),
+            "problems": problems,
+        }
+        for project_id, problems in sorted(found.items())
+    ]
+    named = "; ".join(
+        f"{entry['project_id']}: {entry['code']} at {entry['pointer']!r}" for entry in projects
+    )
+    return CheckResult(
+        id=check_id,
+        severity=Severity.ERROR,
+        detail=(
+            f"{len(projects)} stored promotion flow(s) no longer validate; their targets are "
+            f"misconfigured and the train promotes to the default branch ({named}). Fix the "
+            "flow with `aq promote validate --file` and `aq project set <id> promotion-flow`."
+        ),
+        data={"projects": projects},
+    )
+
+
 def integration_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(id="integration.legacy_deliveries", run=_check_legacy_deliveries,
@@ -374,6 +434,10 @@ def integration_checks() -> list[DoctorCheck]:
         ),
         DoctorCheck(
             id="integration.trust", run=_check_trust, owner=OWNER, timeout_s=60.0
+        ),
+        DoctorCheck(
+            id="integration.promotion_flow", run=_check_promotion_flow, owner=OWNER,
+            timeout_s=60.0,
         ),
     ]
 

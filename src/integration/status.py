@@ -22,11 +22,13 @@ from src.database.tables import (
     integration_subject_journal,
     integration_subjects,
     projects,
+    repos,
     task_integration_checkpoints,
     tasks,
 )
 from src.integration.delivery_truth import DeliveryState
 from src.integration.models import RepairPolicy
+from src.integration.promotion_steps import flow_status
 from src.integration.records import ParentEpisodeRecords
 
 ACTIVE_BATCH_STATES = (
@@ -77,9 +79,13 @@ class IntegrationStatusService:
     def __init__(
         self, db, *, clock: Callable[[], float] = time.time, delivery: Any = None,
         git_first: str = "shadow", train: Any = None,
+        flow_problems: Any = None,
     ) -> None:
         self.db = db
         self.clock = clock
+        # Per project, the layer 1-3 problems the daemon found re-validating
+        # a stored promotion flow at start (R17); status re-runs layers 1-2.
+        self.flow_problems = flow_problems or {}
         # ``git_first: active`` projects the train's Git, check, review and
         # intent facts; it never reads subjects, journals, generations or
         # receipts. ``train`` is the daemon's IntegrationTrain, for its last
@@ -315,7 +321,23 @@ class IntegrationStatusService:
             "repository_id": project["integration_repository_id"],
             "subjects": subjects,
             "operator_decisions": await history_on(conn, project_id),
+            "promotion_flow": await self._promotion_flow_on(conn, project),
         }
+
+    async def _promotion_flow_on(self, conn: AsyncConnection, project) -> dict[str, Any] | None:
+        """The stored flow as a chain; ``misconfigured`` when it no longer validates."""
+        if not project["promotion_flow"]:
+            return None
+        default_branch = None
+        if project["integration_repository_id"] is not None:
+            default_branch = await conn.scalar(select(repos.c.default_branch).where(
+                repos.c.id == project["integration_repository_id"],
+                repos.c.project_id == project["id"]))
+        return flow_status(
+            project["promotion_flow"],
+            default_branch=default_branch or project["repo_default_branch"],
+            recorded=self.flow_problems.get(project["id"]),
+        )
 
     async def status(self, project_id: str) -> dict[str, Any] | None:
         """Subject facts and Git delivery evidence, verified on one snapshot."""
@@ -633,6 +655,7 @@ class IntegrationStatusService:
             from src.operator_decisions import history_on
 
             decisions = await history_on(conn, project_id)
+            promotion_flow = await self._promotion_flow_on(conn, project)
         blockers: list[dict[str, Any]] = []
         for batch in batches:
             blockers.extend(self._train_batch_blockers(batch, visits))
@@ -679,6 +702,7 @@ class IntegrationStatusService:
             "batches": batches,
             "epics": epics,
             "blockers": _sorted_blockers(blockers),
+            "promotion_flow": promotion_flow,
         }
 
     async def train_task_blockers(self, task_id: str) -> dict[str, Any] | None:

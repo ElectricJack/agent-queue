@@ -423,9 +423,12 @@ areas:
       - tests/test_integration_eject.py
       - tests/test_doctor_stranded_fences_fix.py
   - id: integration-promotion
-    description: "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, parent CI publication, legacy deliveries and proven closure of delivered PRs."
-    description: "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, explicit root authorization, parent CI publication and legacy deliveries."
+    description: "Promotion-flow validation, child-to-parent and root-to-main promotion, parent assembly and completion, root PRs and authorization, bounded repairs, trusted review evidence, parent CI publication, legacy deliveries and proven closure of delivered PRs."
     match:
+      - tests/test_promotion_flow.py
+      - tests/test_promotion_steps.py
+      - tests/test_promote_commands.py
+      - tests/test_integration_train_promotion.py
       - tests/test_integration_promotion.py
       - tests/test_integration_child_delivery.py
       - tests/test_integration_cancelled_collection.py

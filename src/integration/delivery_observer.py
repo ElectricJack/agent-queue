@@ -43,6 +43,7 @@ from src.database.tables import (
     task_completion_records,
     task_branch_origins,
     tasks,
+    task_branch_origins,
 )
 from src.integration.delivery_truth import (
     DeliveryEvidence,
@@ -212,6 +213,25 @@ async def delivery_targets(conn, task_ids: Iterable[str], *, reduced=False) -> d
                         target.project_id, target.repository_id, target.repository_url,
                         "refs/heads/" + str(parent_ref).removeprefix("refs/heads/"),
                     )
+    # A hotfix's recorded origin selects its chain target even for ordinary
+    # delivery readers. Arbitrary parent refs retain the existing routing.
+    from src.integration.promotion_routing import promotion_origin_target
+
+    origins = (await conn.execute(select(task_branch_origins).where(
+        task_branch_origins.c.task_id.in_(ids), task_branch_origins.c.retired_at.is_(None),
+    ))).mappings().all()
+    flows = dict((await conn.execute(select(projects.c.id, projects.c.promotion_flow).where(
+        projects.c.id.in_({target.project_id for target in found.values()}),
+    ))).all())
+    for origin in origins:
+        task_id = origin["task_id"]
+        target = found.get(task_id)
+        if target is None:
+            continue
+        branch = promotion_origin_target(target.target_ref, flows.get(target.project_id), origin,
+                                         target.repository_id)
+        found[task_id] = DeliveryTarget(target.project_id, target.repository_id,
+                                        target.repository_url, "refs/heads/" + branch)
     return found
 
 

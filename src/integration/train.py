@@ -35,10 +35,11 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
-from src.git.github_contracts import GitHubAccessError
+from src.git.github_contracts import GitHubAccessError, rate_limit_cause
 from src.integration.batches import (
     Batch,
     BatchMember,
@@ -64,8 +65,13 @@ logger = logging.getLogger(__name__)
 #: or until GitHub's own retry time when that is later.
 RATE_LIMIT_BACKOFF_SECONDS = 60.0
 RATE_LIMIT_MAX_BACKOFF_SECONDS = 900.0
+#: A promotion held on a named reason waits on a person or on GitHub, so its
+#: target is revisited this long after, doubling while the same refusal repeats.
+#: A promote command wakes the target at once.
+PROMOTION_WAIT_SECONDS = 30.0
+PROMOTION_MAX_WAIT_SECONDS = 300.0
 
-TRAIN_KINDS = ("root", "epic", "development")
+TRAIN_KINDS = ("root", "epic", "development", "promotion")
 _PROGRESS: ContextVar[dict | None] = ContextVar("train_visit_progress", default=None)
 
 
@@ -86,6 +92,7 @@ class TrainTarget:
     repository_id: str
     target_ref: str
     kind: str = "root"
+    step: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not (self.project_id and self.repository_id and self.target_ref):
@@ -94,6 +101,12 @@ class TrainTarget:
             raise ValueError("train target must be a fully qualified branch ref")
         if self.kind not in TRAIN_KINDS:
             raise ValueError(f"unknown train target kind: {self.kind}")
+        if self.step is not None:
+            object.__setattr__(self, "step", deepcopy(self.step))
+
+    @property
+    def step_id(self) -> str | None:
+        return self.step.get("id") if self.step is not None else None
 
     @property
     def key(self) -> tuple[str, str, str]:
@@ -386,6 +399,11 @@ class _Lane:
     start: int = 0
     visits: int = 0
     errors: int = 0
+    #: No visit starts before this time; :meth:`IntegrationTrain.wake` clears it.
+    not_before: float = 0.0
+    #: The (batch, reason) a promotion is waiting on, and how many visits in a row.
+    wait: tuple[str | None, str] | None = None
+    waits: int = 0
 
 
 @dataclass
@@ -403,18 +421,6 @@ class _RateLimitPause:
     since: int = 0
     retry_at: float = 0.0
     probe: tuple[str, str, str] | None = None
-
-
-def _rate_limit(exc: BaseException) -> GitHubAccessError | None:
-    """The ``rate_limited`` GitHub failure anywhere in *exc*'s cause chain."""
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, GitHubAccessError) and current.category == "rate_limited":
-            return current
-        current = current.__cause__ or current.__context__
-    return None
 
 
 class IntegrationTrain:
@@ -461,7 +467,7 @@ class IntegrationTrain:
                 if lane.task is not None and not lane.task.done():
                     running.append(label)
                     continue
-                if not self._admit(target.key, now):
+                if lane.not_before > now or not self._admit(target.key, now):
                     deferred.append(label)
                     continue
                 self._starts += 1
@@ -512,8 +518,33 @@ class IntegrationTrain:
             }
             row["running"] = lane.task is not None and not lane.task.done()
             row["visits"], row["errors"] = lane.visits, lane.errors
+            if lane.not_before:
+                row["deferred_until"] = lane.not_before
             rows.append(row)
         return rows
+
+    def wake(self, project_id: str, repository_id: str | None = None,
+             target_ref: str | None = None) -> int:
+        """Let the matching targets' next tick start a visit; returns how many waited."""
+        woken = 0
+        for key, lane in self._lanes.items():
+            if (key[0] == project_id and repository_id in (None, key[1])
+                    and target_ref in (None, key[2]) and lane.not_before):
+                lane.not_before, woken = 0.0, woken + 1
+        return woken
+
+    def _wait(self, target: TrainTarget, lane: _Lane, visit: TrainVisit) -> TrainVisit:
+        """Back off a promotion whose visit named what it is waiting for."""
+        reason = (visit.detail or {}).get("reason")
+        if target.kind != "promotion" or visit.state != "held" or not isinstance(reason, str):
+            lane.not_before, lane.wait, lane.waits = 0.0, None, 0
+            return visit
+        wait = (visit.batch_id, reason)
+        lane.waits = lane.waits + 1 if lane.wait == wait else 1
+        lane.wait = wait
+        delay = min(PROMOTION_WAIT_SECONDS * 2 ** (lane.waits - 1), PROMOTION_MAX_WAIT_SECONDS)
+        lane.not_before = self.clock() + delay
+        return replace(visit, detail={**(visit.detail or {}), "retry_at": lane.not_before})
 
     async def _bounded(self, target: TrainTarget, lane: _Lane) -> None:
         progress = {"stage": "lane_setup"}
@@ -533,7 +564,7 @@ class IntegrationTrain:
             logger.warning("integration train visit timed out for %s", target.key)
         except Exception as exc:  # one target's failure never stops the train
             lane.errors += 1
-            limit = _rate_limit(exc)
+            limit = rate_limit_cause(exc)
             if limit is not None:
                 visit = self._defer_rate_limited(target, lane, exc, limit)
             else:
@@ -549,7 +580,7 @@ class IntegrationTrain:
             # A visit begun after the pause got past GitHub: the limit is over.
             del self._pauses[target.key[:2]]
         lane.visits += 1
-        lane.last = visit
+        lane.last = self._wait(target, lane, visit)
 
     def _admit(self, key: tuple[str, str, str], now: float) -> bool:
         """Whether the repository's rate-limit pause lets *key* start a visit."""
@@ -667,7 +698,8 @@ class IntegrationTrain:
             # observes again. None of these is a member's content conflict, so
             # none allocates a repair.
             return self._visit(target, observation.state, batch, observation)
-        head = candidate_head(batch, observation.candidate_sha)
+        head = (await lane.checks.head(batch, observation.candidate_sha)
+                if target.kind == "promotion" else candidate_head(batch, observation.candidate_sha))
         _progress("resolve_checks")
         checks = await lane.checks.for_candidate(batch, observation.candidate_sha)
         result = None if checks is None else await self._checks(checks, head)
@@ -684,6 +716,10 @@ class IntegrationTrain:
                 await self.batches.settle(batch, published)
             return self._visit(target, published.state, batch, published, result)
         if result.state == ChecksState.RED:
+            if target.kind == "promotion":
+                return self._visit(target, "held", batch, replace(observation, detail={
+                    "reason": "promotion_checks_failed",
+                }), result)
             return await self._red(
                 target, lane, batch, members, observation, result, head, checks, snapshot
             )
@@ -696,7 +732,8 @@ class IntegrationTrain:
                     **diagnostic.detail, "reason": diagnostic.reason,
                 },
             })
-            return await self._repair(target, lane, batch, members, observation, result)
+            if target.kind != "promotion":
+                return await self._repair(target, lane, batch, members, observation, result)
         return self._visit(target, "testing", batch, observation, result)
 
     async def _red(
