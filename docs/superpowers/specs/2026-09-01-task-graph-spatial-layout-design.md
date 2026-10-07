@@ -560,6 +560,10 @@ flag, then is removed together with the grid layout.
 - `onlyRenderVisibleElements` is enabled.
 - The 200 ms transform transition on nodes is removed. Nothing moves except by explicit
   user action; a Tidy is followed by a full refetch.
+- Wheel and trackpad pinch zoom smoothly around the cursor, clamped to 0.15–2.
+  Wheel gestures always zoom; dragging empty canvas pans. Zoom buttons and fit-to-view
+  remain available. With the canvas focused, `+`/`-` zoom and `0` fits the view; typing
+  in controls and scrolling side panels or the detail drawer retain their usual behavior.
 
 ### 6.2 Level of detail
 
