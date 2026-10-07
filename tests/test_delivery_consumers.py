@@ -596,3 +596,44 @@ async def test_registered_prerequisite_observer_releases_pool_demand_without_rec
     await db.transition_task("done", TaskStatus.IN_PROGRESS, force=True)
     with pytest.raises(ValueError, match="delivery is not current"):
         await db.hierarchy_prerequisite_delivery_head("dependent")
+
+
+@pytest.mark.parametrize("reduced", [False, True])
+async def test_cached_graph_observation_never_fetches_and_rechecks_identity(world, tmp_path, reduced):
+    from src.integration.git_truth import GitTruth
+
+    db, _origin, _observer, _service = world
+    transport = GitManager()
+    observer = DeliveryObserver(
+        db, git=transport, data_dir=tmp_path / "cached-only",
+        truth=GitTruth(transport) if reduced else None,
+    )
+    # A cold interactive read cannot even create a Git store, much less fetch.
+    original_store = observer._store
+    observer._store = AsyncMock(side_effect=AssertionError("graph attempted network Git"))
+    cold = await observer.observe(["done"], max_age=30, cached_only=True)
+    assert cold.get("done").state is DeliveryState.UNKNOWN
+    assert cold.get("done").reason == "snapshot_unavailable"
+    observer._store.assert_not_awaited()
+
+    # A normal background/guarded observation populates the existing cache.
+    observer._store = original_store
+    await observer.observe(["done"])
+    observer._store = AsyncMock(side_effect=AssertionError("graph attempted network Git"))
+    warm = await observer.observe(["done"], max_age=30, cached_only=True)
+    assert warm.satisfied("done")
+    async with db._engine.connect() as conn:
+        assert (await warm.verified_on(conn, ["done"]))["done"].satisfied
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "done").values(status="READY"))
+    async with db._engine.connect() as conn:
+        assert "done" not in await warm.verified_on(conn, ["done"])
+
+    # Expiry never serves an old delivered answer and never refreshes on read.
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "done").values(status="COMPLETED"))
+    observer._recent = {key: (0, value[1]) for key, value in observer._recent.items()}
+    expired = await observer.observe(["done"], max_age=30, cached_only=True)
+    assert expired.get("done").reason == "snapshot_unavailable"
+    assert not expired.satisfied("done")
+    observer._store.assert_not_awaited()

@@ -466,3 +466,28 @@ async def test_typed_delete_requires_global_scope_and_returns_agent_identity(han
         deleted = await client.post("/api/agent/delete", json={"agent_id": "a"})
         assert deleted.status_code == 200
         assert deleted.json() == {"deleted": "a", "name": "Ada"}
+
+
+async def test_roster_does_not_resolve_retired_classes_or_live_launch_settings(handler, monkeypatch):
+    from src.models import SessionRecord
+
+    await handler.db.create_agent(Agent(id="retired", name="Old", profile_id="coder"))
+    await handler.db.create_agent(Agent(id="live", name="Live", profile_id="coder"))
+    await handler.db.create_session(SessionRecord(
+        id="live-session", project_id=None, profile_id="coder", harness="claude",
+        provider="tmux", name="live", lifecycle="named", work_dir="/tmp", epoch="e",
+        instance_token="token", started_at=1, agent_id="live", state="running",
+        llm_provider="anthropic", model="retained-model", intelligence_class="retired-class",
+    ))
+    builder = handler.orchestrator.session_spec_builder
+    builder._intelligence_classes.clear()
+
+    def no_launch_resolution(*args, **kwargs):
+        raise AssertionError("a roster read tried to resolve an obsolete launch class")
+
+    monkeypatch.setattr(builder, "_resolve_model", no_launch_resolution)
+    rows = {row["id"]: row for row in (await handler._cmd_list_agents({}))["agents"]}
+    assert rows["live"]["model"] == "retained-model"
+    assert rows["live"]["intelligence_class"] == "retired-class"
+    assert rows["retired"]["model"] is None
+    assert rows["retired"]["intelligence_class"] == "standard-medium"

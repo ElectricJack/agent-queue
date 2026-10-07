@@ -511,8 +511,8 @@ async def test_failed_git_observation_does_not_exclude_a_root(db, adopted_root, 
     service, *_rest = adopted_root
     snapshot = service.delivery_observer._snapshot
 
-    async def failed_snapshot(target, max_age=0.0):
-        return replace(await snapshot(target, max_age), target_oid=None, error="fetch_failed")
+    async def failed_snapshot(target, max_age=0.0, **kwargs):
+        return replace(await snapshot(target, max_age, **kwargs), target_oid=None, error="fetch_failed")
 
     monkeypatch.setattr(service.delivery_observer, "_snapshot", failed_snapshot)
     request = await _request(db)
