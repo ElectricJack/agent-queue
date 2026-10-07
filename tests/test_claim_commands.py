@@ -3123,6 +3123,85 @@ async def test_conflicting_multiple_stacked_prerequisites_cannot_activate_claim(
     assert git(env.remote, "rev-parse", "refs/heads/second-prerequisite") == second
 
 
+@pytest.mark.parametrize("completion_kind", [
+    "no_change", "commits", "changed_empty", "contained_empty", "missing",
+])
+async def test_cross_epic_no_change_readiness_demand_explain_and_claim_agree(
+    handler, db, tmp_path, development_admission, completion_kind,
+):
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.integration.git_truth import GitTruth
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+    from src.models import TaskCompletion
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+    from src.scheduler import PoolKey
+
+    env = development_admission
+    source = env.head if completion_kind in {
+        "commits", "changed_empty", "contained_empty",
+    } else env.base
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="train")
+    await db.remove_dependency("dependent", "prerequisite")
+    await db.update_task("dependent", branch_name="aq/dependent")
+    await mktask(db, "no-change", status=TaskStatus.COMPLETED, repo_id="repo",
+                 branch_name="aq/no-change")
+    await db.add_dependency("dependent", "no-change")
+    env.git(env.source, "push", "origin", f"{source}:refs/heads/aq/no-change",
+            f"{env.base}:refs/heads/aq/dependent")
+    if completion_kind == "contained_empty":
+        env.git(env.source, "push", "origin", f"{source}:refs/heads/main")
+    async with db.immediate() as conn:
+        await conn.execute(task_branch_origins.insert().values(
+            id="origin-dependent", task_id="dependent", repository_id="repo",
+            branch_name="aq/dependent", base_sha=env.base, creation_generation=1,
+            reserved=True, materialized=True, created_at=time.time(),
+        ))
+        await conn.execute(task_integration_checkpoints.insert().values(
+            task_id="dependent", repository_id="repo", branch="aq/dependent",
+            checkpoint_sha=env.base, updated_at=time.time(),
+        ))
+        await conn.execute(task_branch_origins.insert().values(
+            id="origin-no-change", task_id="no-change", repository_id="repo",
+            branch_name="aq/no-change", base_sha=env.base, creation_generation=1,
+            reserved=True, materialized=True, created_at=time.time(),
+        ))
+    await db.save_task_completion(TaskCompletion(
+        id="close-no-change", task_id="no-change", outcome="pass",
+        commits=[source] if completion_kind == "commits" else [], completed_at=time.time(),
+    ))
+    if completion_kind != "missing":
+        await GitProvenance(handler.orchestrator.git, str(env.source),
+                            repository_url=str(env.remote)).write_completion(CompletedSource(
+            CompletionIdentity(PROJECT_ID, "repo", "no-change", "close-no-change"), source,
+        ))
+    observer = DeliveryObserver(db, git=handler.orchestrator.git,
+        truth=GitTruth(handler.orchestrator.git), data_dir=tmp_path / "prerequisites")
+    db.set_prerequisite_observer(observer)
+    sid, work_dir = await pool_session(db, tmp_path)
+    env.git(tmp_path, "clone", str(env.remote), str(work_dir))
+    await BranchOwnership(db).acquire(BranchKey(repository_id="repo", branch="aq/dependent"),
+                                      "dependent", "worker")
+    handler.orchestrator._worktree_slots = MagicMock(return_value=WorktreeSlotManager(
+        db=db, git=handler.orchestrator.git, bus=handler.orchestrator.bus,
+        config=handler.config.worktrees, git_mutex=handler.orchestrator._git_mutex,
+    ))
+    allowed = completion_kind in {"no_change", "contained_empty"}
+    assert await db.is_hierarchy_task_runnable("dependent") is allowed
+    assert ("dependent" in await db.hierarchy_runnable_task_ids(["dependent"])) is allowed
+    assert await db.count_ready_by_profile(PROJECT_ID) == ({"worker": 1} if allowed else {})
+    assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == int(allowed)
+    explanation = await handler._cmd_explain_task({"task_id": "dependent"})
+    blockers = [reason for reason in explanation["reasons"]
+                if reason["code"] == "prerequisite_not_on_default_branch"]
+    assert bool(blockers) is not allowed
+    if blockers:
+        assert blockers[0]["ref"] == "no-change"
+    claim = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert claim["result"] == ("claimed" if allowed else "no_ready_work"), claim
+    if allowed:
+        assert claim["task"]["id"] == "dependent"
+
+
 @pytest.mark.parametrize("source_parent", [None, "other-epic"])
 async def test_cross_epic_demand_explain_claim_and_refreshed_child_base(
     handler, db, tmp_path, development_admission, source_parent

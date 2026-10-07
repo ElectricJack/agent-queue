@@ -42,8 +42,8 @@ mode that matters is stranding real work:
 * ``no_artifact`` and ``settled`` -- neither is delivery to the default
   branch, so repair.
 
-Only ``contained`` on the exact target, revalidated against the exact
-source identity the observation names, may withhold work.
+Only ``contained`` or proven ``no_change`` on the exact target, revalidated
+against the exact source identity the observation names, may withhold work.
 
 An unclaimed READY delegate can be retired by the command handler after a
 fresh proof and a locked identity check. A claimed delegate keeps its writer;
@@ -169,7 +169,7 @@ async def prove_source_delivered(db, observer, *, task_id: str, source) -> Sourc
         target.project_id, target.repository_id, target.target_ref
     ):
         return _undelivered("scope_mismatch", target.target_ref, proof)
-    if proof.state != DeliveryState.CONTAINED:
+    if proof.state not in {DeliveryState.CONTAINED, DeliveryState.NO_CHANGE}:
         # ``no_artifact`` and ``settled`` answer a different question: a
         # generation that owes nothing to this target is not one that
         # delivered to it.

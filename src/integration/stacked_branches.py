@@ -1089,7 +1089,7 @@ class EpicRefresh:
             if not view.default.evidence:
                 return False
             for proof in view.default.evidence.values():
-                if proof.state is DeliveryState.NO_ARTIFACT:
+                if proof.state in {DeliveryState.NO_CHANGE, DeliveryState.NO_ARTIFACT}:
                     continue
                 if not proof.satisfied or not proof.source_oid:
                     return False

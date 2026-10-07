@@ -1559,7 +1559,7 @@ class SessionCommandsMixin:
                 tests=_string_list(args.get("tests")),
                 commands=_string_list(args.get("commands")),
                 branch=(final_task.branch_name if final_task else task.branch_name),
-                commits=[commit] if commit else [],
+                commits=result.get("completion_commits", [commit] if commit else []),
                 pr_url=(
                     (final_task.pr_url if final_task else None)
                     or result.get("pr_url")
