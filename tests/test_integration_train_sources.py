@@ -3,6 +3,90 @@
 Targets come from project mode and completed work's routing, members are the
 exact completion sources Git does not yet hold, and a whole visit freezes,
 builds, gates and fast-forwards a target through the ref lease.
+
+Fidelity replay (2026-10-06-git-first-train-fidelity.md, §6 test 12)
+----------------------------------------------------------------
+Re-read ``47ad054f0:tests/test_epic_train_end_to_end.py`` alongside the
+spec's §1 process comparison. Line numbers below belong to that revision,
+not this checkout. Counterpart keys resolve to exact test names in the second
+table; §6 numbers identify the restored acceptance scenarios, not old DB rows.
+
+| Old asserted state (lines) | §6 | Named counterpart key / disposition |
+| --- | --- | --- |
+| Delete only in the bound repository (95) | 9 | Cleanup; Replay |
+| Three child sources contained in epic (163) | 1 | Open; Replay |
+| PR opened once; body lists children (328-332) | 1 | Open; Replay |
+| Repeated open returns already_open (333-335) | 1 | Move; Replay |
+| GitHub human approval identity (349) | 2 | Gate; Replay; policy choice, §2.3 |
+| Not due before 300 s; due at deadline (350-352) | 5 | Cadence; Cap |
+| Sealed with exact epic, tree and ref (354, 359, 361-362) | 2, 3 | Replay |
+| Frozen review_evidence_id points at approval (360) | 2 | Gate; see R1 below |
+| Distinct built candidate pushed at exact OID (377-379) | 3 | Replay; Hosted |
+| Red CI leaves tested_candidate_sha empty (419-422) | 3, 7 | Replay; Red |
+| Promotion refused without candidate CI (439) | 3 | Replay; Hosted |
+| Old candidate revision marked superseded (460-467) | — | R2: §2.3 |
+| Repair rebuild uses repaired OID on same ref (469-470) | 3, 7 | Replay |
+| Revision 1; same audit PR; two audit revisions (469, 471-472) | — | R2: §2.3 |
+| Green checks record the exact repaired OID (518-521) | 3, 7 | Replay |
+| Promoted OID is exactly main's head (528-530) | 3 | Replay; Hosted |
+| Delivery receipt points at main (531-535) | 4 | Git; Forged; see R3 below |
+| Cleanup materialized once (548) | 9 | Replay; Cleanup |
+| Red and repaired-green CI evidence retained (572-575) | 3, 9 | Replay; R2 for revision |
+| source_pr/remote_ref/local_ref/audit_pr items (576-581) | 9 | Replay; R2 for PR items |
+| Every cleanup item finishes; batch complete (583-587) | 9 | Replay; Cleanup |
+| Source and candidate audit PRs closed (588) | 3, 9 | Replay; R2 for audit PR |
+| One comment names repaired promoted SHA (589-590) | 3, 9 | Replay; Cleanup |
+| Epic, candidate and three child refs deleted (591-597) | 9 | Replay |
+| Cleanup leaves exact promoted main unchanged (598) | 9 | Replay |
+
+| Counterpart key | Exact callable (in this module unless qualified) |
+| --- | --- |
+| Replay | test_fidelity_replay_pr_repair_promotion_cleanup |
+| Open | test_train_opens_three_child_epic_pr_from_completion_ref |
+| Move | test_epic_branch_move_resettles_completion_and_existing_pr |
+| Gate | test_root_pr_gate_refuses_before_freeze_then_admits_exact_green_head |
+| Cadence | test_root_cadence_uses_latest_admission_and_survives_restart |
+| Cap | test_root_settling_cap_bounds_continuous_admissions_across_restart |
+| Hosted | test_hosted_lane_publishes_only_the_exact_candidate_github_passed |
+| Red | test_hosted_red_candidate_files_one_repair_and_never_publishes |
+| Git | test_train_opens_three_child_epic_pr_from_completion_ref |
+| Forged | test_forged_promoted_audit_does_not_deliver_a_pending_member |
+| Cleanup | test_promoted_train_cleans_refs_and_comments_only_repair_commits |
+
+R1: The approval FK was record authority. §2.1 makes live exact-head PR checks
+and reviews gate inputs and their DB evidence a refreshable cache. §2.3 does
+not restore the journal/intent machinery that bound that approval to a seal.
+Replay asserts the frozen source/tree/ref and Gate asserts admission instead.
+Roots do not require a human unless the boundary selects reviewed admission
+(§2.3); Replay selects it explicitly and checks the reviewer and exact head.
+
+R2: §2.3 deliberately does not restore candidate revisions, episodes, parent
+verifications or the stage dossier. The revision-indexed candidate audit PR
+and its separate cleanup item belong to that removed machinery (§2.2 keeps
+aq/batches/* and exact-OID publication). Train cleanup reuses the audit_pr
+item kind for the member PR's comment; it has no separate candidate PR or
+source_pr item that closes a PR. Replay proves that the same source PR and
+candidate ref survive repair, GitHub reports the source PR merged, and
+cleanup comments the repair commit without closing PRs itself. Red/green
+evidence is keyed by exact SHA, not a candidate revision number.
+
+R3: §2.1 replaces delivery receipts/journal authority with Git containment.
+Git deletes batch/member audit rows and still sees delivery; Forged inserts
+a lying promoted record and still sees pending work. No receipt is restored
+to decide delivery (§2.3's removal of record machinery).
+
+Process coverage beyond the old replay: §6 test 6's leaf root follows Gate
+through GitHub's merged report. Test 7's bounded debug/human escalation is
+``test_integration_train.py::
+test_repair_escalation_debug_then_one_supervisor_incident_and_green_recovery``.
+Test 8 is ``test_train_eject_preserves_frozen_members_pr_and_readmits_after_cadence``.
+Test 9's rewritten-source exception is
+``test_promoted_train_bundles_rewritten_member_without_deleting_it``; its
+abort-only cleanup is
+``test_abort_cleanup_removes_retained_candidate_but_keeps_local_member``.
+The missing connected root red-CI -> repair -> exact promotion -> cleanup
+assertions are supplied by Replay below. No old process step is excluded;
+only the explicitly superseded record/audit representations above are omitted.
 """
 
 from __future__ import annotations
@@ -2056,9 +2140,11 @@ async def test_daemon_lane_refreshes_boundary_repair_policy_on_each_visit(world,
 
 
 @pytest.fixture
-async def collected_epic(world):
+async def collected_epic(world, request):
     """Two ordinary completions collected through the daemon's actual epic lane."""
     db, origin = world.db, world.origin
+    now = [time.time()]
+    clock = (lambda: now[0]) if getattr(request, "param", None) == "controlled_clock" else time.time
     base = git(origin.url, "rev-parse", "main")
     await db.create_task(Task(id="epic", project_id="p", repo_id="r", title="epic",
                               description="", branch_name="aq/epic",
@@ -2072,7 +2158,7 @@ async def collected_epic(world):
         ))
     children = [await completed(world, tid, parent="epic") for tid in ("child-a", "child-b")]
     await db.transition_task("epic", TaskStatus.COMPLETED)
-    train, github, trusts = await hosted_train(world)
+    train, github, trusts = await hosted_train(world, clock=clock)
     required = {"version": "v1", "names": ["unit"], "producer_id": "15368"}
     async with db._engine.begin() as conn:
         await conn.execute(update(projects).where(projects.c.id == "p").values(
@@ -2082,7 +2168,7 @@ async def collected_epic(world):
             },
         ))
     return SimpleNamespace(world=world, db=db, origin=origin, train=train, github=github,
-                           trusts=trusts, base=base, children=children,
+                           trusts=trusts, base=base, children=children, now=now,
                            target=TrainTarget("p", "r", "refs/heads/aq/epic", "epic"))
 
 
@@ -3126,6 +3212,161 @@ async def test_train_opens_three_child_epic_pr_from_completion_ref(collected_epi
     delivery = await case.db._delivery_observer.observe(["epic"])
     async with case.db._engine.connect() as conn:
         assert (await delivery.verified_on(conn, ["epic"]))["epic"].satisfied
+
+
+@pytest.mark.parametrize("collected_epic", ["controlled_clock"], indirect=True)
+async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_path):
+    """§6 tests 1-3, 7, 9, 12: keep the source PR through a repaired root delivery."""
+    from src.database.tables import (
+        integration_batch_members,
+        integration_check_evidence,
+        integration_cleanup_items,
+    )
+    from src.integration.root_pull_requests import EpicPullRequestService
+
+    case = collected_epic
+    db, origin, train, github = case.db, case.origin, case.train, case.github
+    await db.update_task("epic", status=TaskStatus.IN_PROGRESS)
+    case.children.append(await completed(case.world, "child-c", parent="epic"))
+    await db.transition_task("epic", TaskStatus.COMPLETED)
+    collected = await train.visit(case.target)
+    github.runs[collected.candidate_sha] = "success"
+    assert (await train.visit(case.target)).state == "delivered"
+    head = git(origin.url, "rev-parse", "aq/epic")
+    await review_epic(case)
+    opened = (await train.visit(case.target)).detail["epic_completions"][0]
+    url = opened["pr_url"]
+    assert opened["outcome"] == "opened" and opened["head_sha"] == head
+    assert (await github.pull_request(url))["state"] == "open"
+    assert (await train.visit(case.target)).state == "idle"
+    assert (await EpicPullRequestService(db, git_manager=train.lane_for.git).open_for_epic("epic"))[
+        "outcome"
+    ] == "already_open"
+    train.lane_for.git.acreate_pr.assert_awaited_once()
+
+    # A DB tree approval does not stand in for the reviewed PR boundary's gate.
+    [approval] = github.reviews
+    assert approval["user"]["login"] == "jack" and approval["commit_id"] == head
+    github.reviews.clear()
+    blocked = await train.visit(MAIN)
+    assert blocked.batch_id is None
+    assert blocked.detail["blockers"][0]["code"] == "pr_review_missing"
+    github.reviews.append(approval)
+    # Retained admission refusals are refreshed only at their retry deadline.
+    assert (await train.visit(MAIN)).detail["blockers"][0]["code"] == "pr_review_missing"
+    case.now[0] = blocked.detail["blockers"][0]["retry_at"]
+    testing = await train.visit(MAIN)
+    assert (testing.state, testing.checks) == ("testing", "pending")
+    batch = await db.get_integration_batch(testing.batch_id)
+    assert batch["lifecycle"] == "sealed"
+    async with db._engine.connect() as conn:
+        [member] = (await conn.execute(select(integration_batch_members).where(
+            integration_batch_members.c.batch_id == testing.batch_id,
+        ))).mappings().all()
+    assert (member["task_id"], member["source_sha"], member["reviewed_tree_sha"],
+            member["source_ref"], member["pr_url"]) == (
+        "epic", head, tree(case.world, head), case.target.target_ref, url,
+    )
+    ref = candidate_ref(testing.batch_id)
+    assert testing.candidate_sha != head
+    assert git(origin.url, "rev-parse", ref) == testing.candidate_sha
+    assert f"AQ-Source: epic@{head}" in git(origin.url, "show", "-s", "--format=%B", ref)
+    github.runs[testing.candidate_sha] = "failure"
+    red = await train.visit(MAIN)
+    assert (red.state, red.checks) == ("repair", "red")
+    assert red.repair["outcome"] == "filed"
+    assert (await train.visit(MAIN)).repair["task_id"] == red.repair["task_id"]
+    assert (await db.get_integration_batch(testing.batch_id))["tested_candidate_sha"] is None
+    assert git(origin.url, "rev-parse", "main") == case.base
+    assert github.records[-1]["head_sha"] == head  # Only the epic has been attested.
+
+    # The ordinary repair changes the candidate under its real managed lease.
+    repaired = commit(origin.clone, {"fix.txt": "fix failed unit check\n"},
+                      base=testing.candidate_sha)
+    fence = Fence.model_validate(red.repair["fence"])
+    locks = BranchLock(db)
+    await locks.fenced_push(
+        fence, git=train.lane_for.git, checkout_path=str(origin.clone),
+        repository=GitHubRepositoryBinding(123, github.full_name),
+        tip_oid=repaired, expected_old_oid=testing.candidate_sha,
+    )
+    await close(db, red.repair["task_id"], [repaired], origin=origin)
+    await locks.release(fence)
+    # The repaired SHA needs its own checks despite the source's green PR checks.
+    awaiting = await train.visit(MAIN)
+    assert (awaiting.state, awaiting.checks) == ("testing", "pending")
+    assert awaiting.batch_id == testing.batch_id and awaiting.candidate_sha == repaired
+    assert git(origin.url, "rev-parse", ref) == repaired
+    assert git(origin.url, "rev-parse", "main") == case.base
+    assert (await github.pull_request(url))["head"]["sha"] == head
+    github.runs[repaired] = "success"
+    delivered = await train.visit(MAIN)
+    assert (delivered.state, delivered.checks) == ("delivered", "green")
+    assert delivered.candidate_sha == delivered.target_sha == repaired
+    assert git(origin.url, "rev-parse", "main") == repaired
+    batch = await db.get_integration_batch(testing.batch_id)
+    assert batch["tested_candidate_sha"] == batch["final_main_sha"] == repaired
+    assert github.records[-1]["head_sha"] == repaired
+    assert github.records[-1]["name"] == ATTESTATION_CHECK_NAME
+    pull = await github.pull_request(url)
+    assert pull["merged"] and pull["state"] == "closed" and pull["merge_commit_sha"] == repaired
+    git(origin.url, "merge-base", "--is-ancestor", pull["merge_commit_sha"], "main")
+    for source in [head, *case.children]:
+        git(origin.url, "merge-base", "--is-ancestor", source, repaired)
+    train.lane_for.git.acreate_pr.assert_awaited_once()
+    assert (await db.get_task("epic")).pr_url == url
+
+    # Retire the child collection and root batches; both source and private refs go.
+    number = int(url.rsplit("/", 1)[-1])
+    forge = TrainCleanupForge([(number, head)])
+    forge.prs[number]["repository_full_name"] = github.full_name
+    binding = GitHubRepositoryBinding(123, github.full_name)
+    transport = LocalGit(Path(origin.url))
+    transport.adelete_repository_ref = AsyncMock(wraps=transport.adelete_repository_ref)
+    cleanup = IntegrationCleanupService(
+        db, data_dir=tmp_path, git_manager=transport, forge_provider=forge,
+        binding_resolver=AsyncMock(return_value=binding),
+        candidate_store=AsyncMock(return_value=origin.clone),
+    )
+    cleanup_batches = (collected.batch_id, testing.batch_id)
+    for cleanup_batch_id in cleanup_batches:
+        assert (await cleanup.materialize(cleanup_batch_id)).outcome == "materialized"
+        assert (await cleanup.materialize(cleanup_batch_id)).outcome == "already_materialized"
+    for cleanup_batch_id in cleanup_batches:
+        async with db._engine.connect() as conn:
+            items = (await conn.execute(select(integration_cleanup_items).where(
+                integration_cleanup_items.c.batch_id == cleanup_batch_id,
+            ))).mappings().all()
+        assert {item["kind"] for item in items} == (
+            {"audit_pr", "remote_ref", "local_ref"} if cleanup_batch_id == testing.batch_id
+            else {"remote_ref", "local_ref"}
+        )
+        if cleanup_batch_id == testing.batch_id:
+            [pr_item] = [item for item in items if item["kind"] == "audit_pr"]
+            assert pr_item["target_pr_url"] == url and pr_item["expected_sha"] == head
+        results = await cleanup.advance(cleanup_batch_id)
+        assert len(results) == len(items) and {result.outcome for result in results} == {"complete"}
+        assert (await db.get_integration_batch(cleanup_batch_id))["cleanup_state"] == "complete"
+        assert not git(origin.url, "for-each-ref", "--format=%(refname)",
+                       candidate_ref(cleanup_batch_id))
+        assert not git(origin.clone, "for-each-ref", "--format=%(refname)",
+                       RETAINED_CANDIDATE_PREFIX + cleanup_batch_id)
+    for tid in ("epic", "child-a", "child-b", "child-c"):
+        assert not git(origin.url, "for-each-ref", "--format=%(refname)", f"refs/heads/aq/{tid}")
+    assert transport.adelete_repository_ref.await_count == 6
+    assert all(call.kwargs["repository"] == binding
+               for call in transport.adelete_repository_ref.await_args_list)
+    [(commented_pr, body)] = forge.comments
+    assert commented_pr == number and repaired in body
+    assert f"- `{repaired}`" in body.split("Integration repair commits", 1)[1]
+    assert await cleanup.advance(testing.batch_id) == [] and len(forge.comments) == 1
+    assert git(origin.url, "rev-parse", "main") == repaired
+    assert (await train.visit(MAIN)).state == "idle"
+    async with db._engine.connect() as conn:
+        evidence = (await conn.execute(select(integration_check_evidence))).mappings().all()
+    assert any(row["sha"] == testing.candidate_sha and row["conclusion"] == "failure"
+               for row in evidence)
+    assert any(row["sha"] == repaired and row["conclusion"] == "success" for row in evidence)
 
 
 async def test_forged_promoted_audit_does_not_deliver_a_pending_member(world):
