@@ -538,6 +538,7 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
             "SELECT count(*) FROM information_schema.columns "
             "WHERE table_name='projects' AND column_name='default_branch_cutover'"
         )) == 1
+        assert await conn.scalar(text("SELECT to_regclass('public.agent_cron')")) == "agent_cron"
         assert await conn.scalar(text("SELECT id FROM tasks")) == "original"
 
 

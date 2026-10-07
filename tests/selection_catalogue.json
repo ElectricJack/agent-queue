@@ -1,5 +1,11 @@
 {
   "areas": {
+    "agent-cron": {
+      "description": "Session-owned recurring prompts: recurrence, durable delivery, scope, lifecycle and CLI.",
+      "modules": [
+        "tests/test_agent_cron.py"
+      ]
+    },
     "agent-questions": {
       "description": "Agent questions: detecting a question in a native transcript, persisting and routing it, scoped answers back to the original worker, the waiting badge and question invalidation events.",
       "modules": [
@@ -1933,6 +1939,34 @@
         "parametrize"
       ],
       "summary": "Release migration checks use literal source, never execute branch code."
+    },
+    "tests/test_agent_cron.py": {
+      "areas": [
+        "agent-cron"
+      ],
+      "default_arm": true,
+      "digest": "sha256:20bac558a4201a345c2a67febb08fbb500d8b9cea2eaa995dc3a07c4b0a97ab3",
+      "imports": [
+        "src.agent_cron",
+        "src.api.codegen",
+        "src.api.models",
+        "src.cli",
+        "src.cli.app",
+        "src.commands",
+        "src.commands.contracts",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.mcp_registration",
+        "src.messages.delivery",
+        "src.models",
+        "src.orchestrator",
+        "src.profiles.parser"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Controlled-time recurring prompts, scope and real durable message delivery."
     },
     "tests/test_agent_deletion_supply.py": {
       "areas": [

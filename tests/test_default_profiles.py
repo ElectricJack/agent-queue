@@ -159,17 +159,21 @@ def test_seeded_supervisor_profile_carries_operating_rules(tmp_path):
 
     for instruction in (
         "First action on a cold start: establish the patrol",
-        "harness's scheduled jobs",
-        "about every 15 minutes, off the :00 and :30 marks",
+        "aq cron list --json",
+        "aq cron register --every 900 --offset 120",
+        "--idempotency-key supervisor-patrol-v1",
         "stall sweep",
         "aq --json message inbox --inject",
         "profile:supervisor",
         "session:<your supervisor session id>",
         "fixes",
         "Never create a second patrol",
-        "Re-establish it after every session restart",
-        "scheduler job is not",
-        "run the sweep at the start of every turn",
+        "does not run the prompt immediately",
+        "Daemon restart preserves",
+        "owner-session replacement expires it",
+        "aq cron show ID --consume --json",
+        "aq cron cancel ID",
+        "Do not also register a native harness patrol",
         "never hand the human a command to run",
         "Retry up to three times",
         "equivalent authorized route",
@@ -190,7 +194,7 @@ def test_seeded_supervisor_profile_carries_operating_rules(tmp_path):
     ):
         assert repair in rules, repair
 
-    assert "~/.agent-queue/operator-checks/" not in rules
+    assert "~/.agent-queue/operator-checks/stall-sweep.py" in rules
     assert "supervisor-agent-queue" not in rules
 
 

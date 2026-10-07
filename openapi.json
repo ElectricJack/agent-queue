@@ -3702,6 +3702,194 @@
         }
       }
     },
+    "/api/cron/cancel": {
+      "post": {
+        "tags": [
+          "cron"
+        ],
+        "summary": "Cancel future ticks and pending delivery for this owner instance.",
+        "description": "Cancel future ticks and pending delivery for this owner instance.",
+        "operationId": "cron_cancel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CronCancelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CronResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/cron/get": {
+      "post": {
+        "tags": [
+          "cron"
+        ],
+        "summary": "Read prompt and next-fire/delivery diagnostics; optionally consume its wake.",
+        "description": "Read prompt and next-fire/delivery diagnostics; optionally consume its wake.",
+        "operationId": "cron_get",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CronGetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CronResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/cron/list": {
+      "post": {
+        "tags": [
+          "cron"
+        ],
+        "summary": "List this session instance's recurring prompts, including global scope.",
+        "description": "List this session instance's recurring prompts, including global scope.",
+        "operationId": "cron_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CronListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CronListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/cron/register": {
+      "post": {
+        "tags": [
+          "cron"
+        ],
+        "summary": "Register a session-owned recurring prompt; first fire is strictly future.",
+        "description": "Register a session-owned recurring prompt; first fire is strictly future.",
+        "operationId": "cron_register",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CronRegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CronResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/dashboard/state-get": {
       "post": {
         "tags": [
@@ -26775,6 +26963,363 @@
           "project_id"
         ],
         "title": "CreateTaskResponse"
+      },
+      "CronCancelRequest": {
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "schedule_id": {
+            "type": "string",
+            "title": "Schedule Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "schedule_id"
+        ],
+        "title": "CronCancelRequest"
+      },
+      "CronGetRequest": {
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "schedule_id": {
+            "type": "string",
+            "title": "Schedule Id",
+            "description": ""
+          },
+          "consume": {
+            "type": "boolean",
+            "title": "Consume",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "schedule_id"
+        ],
+        "title": "CronGetRequest"
+      },
+      "CronListRequest": {
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "",
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "description": "",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "CronListRequest"
+      },
+      "CronListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "schedules": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Schedules"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "schedules",
+          "count"
+        ],
+        "title": "CronListResponse"
+      },
+      "CronRegisterRequest": {
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "prompt": {
+            "type": "string",
+            "title": "Prompt",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "every": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Every",
+            "description": ""
+          },
+          "offset": {
+            "type": "number",
+            "title": "Offset",
+            "description": "",
+            "default": 0
+          },
+          "cron": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cron",
+            "description": "MINUTE HOUR * * *: minute 0\u201359, * or */N; hour 0\u201323 or *."
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone",
+            "description": "",
+            "default": "UTC"
+          }
+        },
+        "type": "object",
+        "required": [
+          "prompt",
+          "idempotency_key"
+        ],
+        "title": "CronRegisterRequest"
+      },
+      "CronResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "schedule": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Schedule"
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          }
+        },
+        "type": "object",
+        "required": [
+          "schedule"
+        ],
+        "title": "CronResponse"
       },
       "DaemonMetrics": {
         "properties": {

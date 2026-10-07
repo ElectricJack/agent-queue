@@ -5366,6 +5366,46 @@ test_selection_promotions = Table(
 )
 
 
+# Durable recurring prompts, including projectless named supervisors. Soft
+# owner references preserve history after session/claim turnover.
+agent_cron = Table(
+    "agent_cron",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=True),
+    Column("session_id", Text, nullable=False),
+    Column("session_instance_token", Text, nullable=False),
+    Column("owner_task_id", Text, nullable=True),
+    Column("claim_epoch", Integer, nullable=False, server_default="0"),
+    Column("idempotency_key", Text, nullable=False),
+    Column("prompt", Text, nullable=False),
+    Column("recurrence", JSONB, nullable=False),
+    Column("state", Text, nullable=False, server_default="active"),
+    Column("created_at", Float, nullable=False),
+    Column("next_fire_at", Float, nullable=False),
+    Column("checked_at", Float, nullable=False, server_default="0"),
+    Column("stopped_at", Float, nullable=True),
+    Column("tick_count", Integer, nullable=False, server_default="0"),
+    Column("coalesced_count", Integer, nullable=False, server_default="0"),
+    Column("pending_message_id", Text, nullable=True),
+    Column("pending_until", Float, nullable=True),
+    Column("delivery_attempts", Integer, nullable=False, server_default="0"),
+    Column("next_attempt_at", Float, nullable=False, server_default="0"),
+    Column("last_delivery_at", Float, nullable=True),
+    Column("last_delivery_status", Text, nullable=True),
+    Column("last_error", Text, nullable=True),
+    CheckConstraint("state IN ('active','cancelled','expired')", name="ck_agent_cron_state"),
+    CheckConstraint(
+        "delivery_attempts >= 0 AND delivery_attempts <= 5 AND claim_epoch >= 0",
+        name="ck_agent_cron_attempts_epoch",
+    ),
+    UniqueConstraint(
+        "session_id", "session_instance_token", "idempotency_key",
+        name="uq_agent_cron_idempotency",
+    ),
+    Index("idx_agent_cron_scan", "state", "checked_at", "next_fire_at"),
+)
+
 # Durable agent-owned waits. Soft owner/source references survive archival and
 # claim turnover; delivery receipts live exclusively on the result message.
 agent_waits = Table(

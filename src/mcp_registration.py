@@ -49,6 +49,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_EXCLUDED_COMMANDS = {
+    "reconcile_agent_cron",
+    "cron_delivery_begin",
+    "cron_delivery_finish",
     # Trusted daemon facts carry a SourceCIObservation, never agent-authored JSON.
     "observe_integration_source_ci",
     # Parent reconciler visit dispatch.  The authority is the process-bound

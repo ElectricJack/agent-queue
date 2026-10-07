@@ -693,6 +693,11 @@ class TestDriftDetection:
             # orchestrator supplies its clock, so it carries a codegen-only
             # fallback schema rather than an LLM-facing definition.
             "reconcile_agent_waits",
+            # Cron reconciliation and delivery run only under the daemon's
+            # agent-cron service principal and remain excluded from MCP.
+            "reconcile_agent_cron",
+            "cron_delivery_begin",
+            "cron_delivery_finish",
             # Daemon-only collaboration expiry/retention uses a fallback schema.
             "reconcile_collaborations",
             # Daemon-only git-first train dispatch uses a fallback schema.

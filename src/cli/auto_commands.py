@@ -108,6 +108,13 @@ HANDCRAFTED_COVERAGE = {
     "prime",
     # questions.py — exact question identity and the authenticated daemon scope.
     "wait_register",
+    "cron_register",
+    "cron_get",
+    "cron_list",
+    "cron_cancel",
+    "reconcile_agent_cron",
+    "cron_delivery_begin",
+    "cron_delivery_finish",
     "message_wait",
     "wait_get",
     "wait_list",

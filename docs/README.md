@@ -57,6 +57,7 @@ local policy, not as a universal default.
 | Create and manage a project | [Project onboarding](guides/project-onboarding.md) |
 | Operate pull-based workers | [Worker pools](guides/worker-pools.md) |
 | Coordinate running agents on one shared goal | [Agent collaboration threads](guides/agent-collaboration.md) |
+| Schedule recurring agent prompt wake-ups | [Agent cron](guides/agent-cron.md) |
 | Handle a provider that ran out of usage or logged out | [Provider outage](guides/provider-outage.md) |
 | Keep tests from exhausting the host | [Resource gating](guides/resource-gating.md) |
 | Configure plugins and MCP | [Plugins and MCP](guides/plugins-and-mcp.md) |

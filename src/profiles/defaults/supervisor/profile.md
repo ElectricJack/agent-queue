@@ -221,6 +221,10 @@ start code work, tests or QA from a digest author turn.
     "message_send",
     "message_wait",
     "message_status",
+    "cron_register",
+    "cron_get",
+    "cron_list",
+    "cron_cancel",
     "phase_create",
     "phase_list",
     "pool_status",
@@ -306,16 +310,22 @@ start code work, tests or QA from a digest author turn.
   `--evidence-ref REF` for each reference before the deadline. The server inserts links and the
   marker and enforces 1,200 characters. Do not initiate code work for a report
   request. A closed request is final; never send a second report or edit it.
-- **First action on a cold start: establish the patrol.** List your harness's
-  scheduled jobs and, if none is already running, schedule one recurring patrol
-  about every 15 minutes, off the :00 and :30 marks. Its prompt runs the
+- **First action on a cold start: establish the patrol.** Run `aq cron list --json`
+  and register one AQ-owned patrol with `aq cron register --every 900 --offset 120
+  --idempotency-key supervisor-patrol-v1 --prompt 'Run python3
+  ~/.agent-queue/operator-checks/stall-sweep.py; poll all three supervisor inbox
+  addresses with --inject; handle findings using the supervisor stall actions.'`.
+  Registration is idempotent in your session and does not run the prompt immediately.
+  The prompt runs the
   installed supervisor stall sweep, polls all three supervisor inbox addresses
   (`aq --json message inbox --inject`, `--to profile:supervisor`, and `--to
   session:<your supervisor session id>`), and **fixes** findings using the stall
   actions below. Never create a second patrol alongside an existing one.
-  Re-establish it after every session restart. A harness scheduler job is not
-  the banned background inbox polling loop or shell sleep loop. If the harness
-  has no scheduler, say so once and run the sweep at the start of every turn.
+  AQ cron works on Codex, Claude and other harnesses. Daemon restart preserves
+  the same session's patrol; owner-session replacement expires it, so register
+  again in the new session. `aq cron show ID --consume --json` reads a scheduled
+  wake and consumes only its notification. Cancel with `aq cron cancel ID`.
+  Do not also register a native harness patrol. See `docs/guides/agent-cron.md`.
 - **Fix it yourself; never hand the human a command to run.** Use your allowed
   tools to resolve operational stalls, then report what you did. Do not end a
   turn with a command for the human or a request to do routine supervisor work.

@@ -102,6 +102,40 @@ async def test_promotion_flow_upgrade_preserves_projects_and_uses_nullable_jsonb
         await conn.close()
 
 
+async def test_agent_cron_upgrade_adds_global_schedule_storage_without_losing_projects():
+    dsn = await create_scratch_database("agentcron85")
+    before = _alembic_pg(dsn, "upgrade", "a00000000085")
+    assert before.returncode == 0, before.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        # Live-metadata baseline already has the table. Reproduce the old install.
+        await conn.execute("DROP TABLE agent_cron")
+        await conn.execute("INSERT INTO projects (id, name, created_at) VALUES ('keep','Keep',0)")
+    finally:
+        await conn.close()
+    upgraded = _alembic_pg(dsn, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        assert await conn.fetchval("SELECT name FROM projects WHERE id='keep'") == "Keep"
+        assert await conn.fetchval(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name='agent_cron' AND column_name='recurrence'"
+        ) == "jsonb"
+        await conn.execute(
+            "INSERT INTO agent_cron (id, session_id, session_instance_token, idempotency_key, "
+            "prompt, recurrence, created_at, next_fire_at) "
+            "VALUES ('cron', 'global', 'instance', 'patrol', 'Prompt', '{}', 0, 900)"
+        )
+        row = await conn.fetchrow("SELECT * FROM agent_cron WHERE id='cron'")
+        assert row["project_id"] is None
+        assert row["state"] == "active" and row["delivery_attempts"] == row["tick_count"] == 0
+    finally:
+        await conn.close()
+    again = _alembic_pg(dsn, "upgrade", "head")
+    assert again.returncode == 0, again.stderr
+
+
 async def test_upgrade_head_applies_the_baseline_on_postgres():
     """Empty database -> head, on real PostgreSQL, with no manual repair."""
     if not POSTGRES_DSN:
