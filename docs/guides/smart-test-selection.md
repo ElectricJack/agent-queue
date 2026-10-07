@@ -125,7 +125,9 @@ The mandatory/rule inputs are authored, not learned:
   modules, global invalidators.
 - `tests/selection_catalogue.json` — the generated digest of the map.
 
-After adding or moving a test module:
+The catalogue records each module's areas and the `src` modules it imports,
+so after adding, moving or renaming a test module, or changing what one
+imports:
 
 ```bash
 python scripts/generate-selection-catalogue.py
@@ -134,6 +136,14 @@ python scripts/generate-selection-catalogue.py
 and commit the catalogue. `tests/test_selection_catalogue.py` fails the build
 when a tracked file is unmapped — an unmapped path is also the runtime's own
 `unmapped_path` reason, not a silent omission.
+
+Running a test file by name (`aq test tests/test_x.py`, `pytest
+tests/test_x.py::test_y`) checks that file's catalogue entry first:
+`tests/conftest.py` stops with a usage error naming the module and whether it is
+uncatalogued, matches no area, or has drifted fields. Without that check, the
+first sign is `tests/test_generated_artifacts.py` failing on the candidate CI
+run. Directory runs skip the check, and so does any run with `CI` set, where
+that test is the authoritative check.
 
 ## Promotion, and why it is still off
 
