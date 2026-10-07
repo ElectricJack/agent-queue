@@ -8233,9 +8233,6 @@
     "src/commands/promote_commands.py::import from src.database.tables import integration_batch_members, integration_batches, integration_check_evidence, integration_review_evidence, projects, task_context, task_metadata, tasks": {
       "reason": "Promotion intent commands read and write integration batch, member and evidence storage alongside the daemon-authored task."
     },
-    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, promotion_ref": {
-      "reason": "Promotion intents use the integration-owned step identity, result and private request ref."
-    },
     "src/commands/promote_commands.py::PromoteCommandsMixin._woken": {
       "reason": "Wakes the integration train target when a promotion request, approval or cancellation changes its admission inputs."
     },
@@ -8256,6 +8253,24 @@
     },
     "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._episode_completion_token": {
       "reason": "Reads a container's collection episode checkpoint and repair operation under the caller's lock to admit only a cancelled train episode to guarded completion; refuses a live episode."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_integration_promotion_notes_input": {
+      "reason": "Daemon-only read of immutable release notes inputs through the integration train Git runtime and pinned source history."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_prepare": {
+      "reason": "Files a release preparation root in the ordinary integration train, pinned to the source used for its immutable notes inputs."
+    },
+    "src/commands/promote_commands.py::_increasing_version": {
+      "reason": "Validates promotion versions against the previous step tag before admitting preparation or a promotion request."
+    },
+    "src/commands/promote_commands.py::_source_inputs": {
+      "reason": "Reads and validates the pinned promotion version and reviewed notes from the integration Git store."
+    },
+    "src/commands/promote_commands.py::import from src.integration.promotion_notes import PREPARE_CONTEXT, NotesRefusal, assemble_notes_input, draft_notes, notes_metadata, previous_tag, semver, source_version, step_pr_body": {
+      "reason": "Promotion commands assemble immutable source notes, draft release content and validate source version and notes metadata."
+    },
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, promotion_ref, check_source_green, PromotionSourceRefusal": {
+      "reason": "Promotion intents use integration step identity, result and private request ref, and require exact green source evidence."
     }
   },
   "exclusions": {
@@ -12678,40 +12693,40 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit_auto'"
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::6081f9d27dc57e18ce5f31c465cfb8159e76c4d4c1a37d2b8b8d0c741d9fbeca": {
+      "line": 302,
+      "owner": "SurfaceCommandsMixin._cmd_task_set",
+      "call": "log_event",
+      "owner_fingerprint": "3074eae5f9913e577499afb2e74e99d98c7eba859a041531488a5c8c64492121",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary label-removal audit event; no ref replay authority. Re-reviewed after task_set added refusal of daemon-owned promotion preparation metadata."
+    },
+    "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::8513b8ad44440cd5bfaed1abc65ab824b7856f8b84f009f84e3bd7f9a0f86647": {
+      "line": 309,
+      "owner": "SurfaceCommandsMixin._cmd_task_set",
+      "call": "set_task_meta",
+      "owner_fingerprint": "3074eae5f9913e577499afb2e74e99d98c7eba859a041531488a5c8c64492121",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary task work_dir metadata; no ref replay authority. Re-reviewed after task_set added refusal of daemon-owned promotion preparation metadata."
+    },
+    "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::cc1e1a1a54bb465b81b098e4b9a03d3717342bf5a286fd44dbf8b548c7a49003": {
+      "line": 314,
+      "owner": "SurfaceCommandsMixin._cmd_task_set",
+      "call": "set_task_meta",
+      "owner_fingerprint": "3074eae5f9913e577499afb2e74e99d98c7eba859a041531488a5c8c64492121",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary work-state metadata API; reserved promotion_prepare and notes_input keys are refused before any write. No added integration lifecycle or ref replay authority."
+    },
+    "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::efc628222166414397713182d90d1198aedc0c7804e05b3ccfd55c64a58c99f5": {
       "line": 295,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "log_event",
-      "owner_fingerprint": "b0a6110b153fe2803e1eea4c5e2f6dea26ece7b537cf571e7e7a83d65186f384",
+      "owner_fingerprint": "3074eae5f9913e577499afb2e74e99d98c7eba859a041531488a5c8c64492121",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
-    },
-    "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::8513b8ad44440cd5bfaed1abc65ab824b7856f8b84f009f84e3bd7f9a0f86647": {
-      "line": 302,
-      "owner": "SurfaceCommandsMixin._cmd_task_set",
-      "call": "set_task_meta",
-      "owner_fingerprint": "b0a6110b153fe2803e1eea4c5e2f6dea26ece7b537cf571e7e7a83d65186f384",
-      "integration_signal": true,
-      "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_dir'"
-    },
-    "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::cc1e1a1a54bb465b81b098e4b9a03d3717342bf5a286fd44dbf8b548c7a49003": {
-      "line": 307,
-      "owner": "SurfaceCommandsMixin._cmd_task_set",
-      "call": "set_task_meta",
-      "owner_fingerprint": "b0a6110b153fe2803e1eea4c5e2f6dea26ece7b537cf571e7e7a83d65186f384",
-      "integration_signal": true,
-      "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: key"
-    },
-    "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::efc628222166414397713182d90d1198aedc0c7804e05b3ccfd55c64a58c99f5": {
-      "line": 288,
-      "owner": "SurfaceCommandsMixin._cmd_task_set",
-      "call": "log_event",
-      "owner_fingerprint": "b0a6110b153fe2803e1eea4c5e2f6dea26ece7b537cf571e7e7a83d65186f384",
-      "integration_signal": true,
-      "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary label-addition audit event; no ref replay authority. Re-reviewed after task_set added refusal of daemon-owned promotion preparation metadata."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_add_dependency::a4b11d12e44641f31dec92eda6c8cd14f1b9c6975b961f527226962bd27130a5": {
       "line": 3869,
@@ -14467,6 +14482,15 @@
       "integration_signal": false,
       "disposition": "intent",
       "reason": "Write-once authorization for this exact promotion request, source and target after its live PR gate and attestation pass. Permits missing-tag recovery only after Git independently proves target containment; the record does not assert publication, delivery or successful ref mutation."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_prepare::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "line": 426,
+      "owner": "PromoteCommandsMixin._cmd_promote_prepare",
+      "call": "insert",
+      "owner_fingerprint": "e24cf7627a6abd84ad425610f16458cc448f120b441c5533ebe5d99032888c1b",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Immutable release preparation inputs (step, version, source SHA and notes provenance) for an ordinary task; no ref replay authority or duplicate integration lifecycle. task_set refuses these daemon-owned keys."
     }
   },
   "generic_dependencies": {

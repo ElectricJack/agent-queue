@@ -302,6 +302,9 @@ _START_SITES = {
     ("src/dashboard_server/proxy.py", "self.start"): 1,
     ("src/discord/adapter.py", "self._bot.start"): 1,
     ("src/integration/candidates.py", "self.repair.start"): 1,
+    # Changelog section boundaries use re.Match offsets, never agent launches.
+    ("src/integration/promotion_notes.py", "following.start"): 1,
+    ("src/integration/promotion_notes.py", "match.start"): 3,
     ("src/intelligence_classes/editing.py", "block.start"): 1,
     ("src/main.py", "adapter.start"): 1,
     ("src/main.py", "metrics_sampler.start"): 1,
