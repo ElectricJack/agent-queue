@@ -25,7 +25,6 @@ class TaskRouteOverrideResponse:
         provider_intent (str | Unset):  Default: 'pinned'.
         route_source (str | Unset):  Default: 'override'.
         resolved_gate_ids (list[str] | Unset):
-        restarted (bool | Unset):  Default: False.
     """
 
     task_id: str
@@ -37,7 +36,6 @@ class TaskRouteOverrideResponse:
     provider_intent: str | Unset = "pinned"
     route_source: str | Unset = "override"
     resolved_gate_ids: list[str] | Unset = UNSET
-    restarted: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -65,8 +63,6 @@ class TaskRouteOverrideResponse:
         if not isinstance(self.resolved_gate_ids, Unset):
             resolved_gate_ids = self.resolved_gate_ids
 
-        restarted = self.restarted
-
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -87,8 +83,6 @@ class TaskRouteOverrideResponse:
             field_dict["route_source"] = route_source
         if resolved_gate_ids is not UNSET:
             field_dict["resolved_gate_ids"] = resolved_gate_ids
-        if restarted is not UNSET:
-            field_dict["restarted"] = restarted
 
         return field_dict
 
@@ -120,8 +114,6 @@ class TaskRouteOverrideResponse:
 
         resolved_gate_ids = cast(list[str], d.pop("resolved_gate_ids", UNSET))
 
-        restarted = d.pop("restarted", UNSET)
-
         task_route_override_response = cls(
             task_id=task_id,
             profile_id=profile_id,
@@ -132,7 +124,6 @@ class TaskRouteOverrideResponse:
             provider_intent=provider_intent,
             route_source=route_source,
             resolved_gate_ids=resolved_gate_ids,
-            restarted=restarted,
         )
 
         task_route_override_response.additional_properties = d

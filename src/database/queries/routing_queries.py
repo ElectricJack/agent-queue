@@ -354,7 +354,6 @@ class RoutingQueryMixin:
         profile_id: str,
         intelligence_class: str,
         route: Mapping[str, Any],
-        restart: bool = False,
     ) -> bool:
         """Write an audited emergency override (spec §7) under the claim guard.
 
@@ -363,10 +362,6 @@ class RoutingQueryMixin:
         keeps spill and reroute on it too (§6.8).  Any route but a role's may
         be overridden; a task that is claimed, assigned, running, finished or
         in a live session is left alone and ``False`` is returned.
-
-        With ``restart``, the READY transition and route commit together;
-        frontier listeners cannot wake a worker on the superseded route.
-        Hierarchical integration uses its existing fenced restart after this write.
         """
         values: dict[str, Any] = {
             "profile_id": profile_id,
@@ -377,27 +372,18 @@ class RoutingQueryMixin:
             "updated_at": time.time(),
         }
         async with self._engine.begin() as conn:
-            guard = and_(
-                tasks.c.id == task_id,
-                tasks.c.status.in_(OVERRIDABLE_STATUSES),
-                tasks.c.assigned_agent_id.is_(None),
-                tasks.c.route_source != ROLE,
-                ~_active_session(),
-            )
-            if restart:
-                transition = await self._apply_transition(
-                    conn, task_id, TaskStatus.READY, context="restart_task",
-                    extra_where=guard, extra_values=values, returning=True, retry_count=0,
+            result = await conn.execute(
+                update(tasks)
+                .where(
+                    tasks.c.id == task_id,
+                    tasks.c.status.in_(OVERRIDABLE_STATUSES),
+                    tasks.c.assigned_agent_id.is_(None),
+                    tasks.c.route_source != ROLE,
+                    ~_active_session(),
                 )
-                changed = transition.row is not None
-            else:
-                result = await conn.execute(update(tasks).where(guard).values(**values))
-                changed = result.rowcount == 1
-        if restart and changed:
-            await self.log_blocked_flips(transition.flipped)
-            await self._notify_settled(transition.settled)
-            await self._notify_ready(transition.ready)
-        return changed
+                .values(**values)
+            )
+        return result.rowcount == 1
 
     async def task_is_container(self, task_id: str) -> bool:
         """Whether the router never routes *task_id*: it is a container (§6.1).

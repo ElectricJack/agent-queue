@@ -8,13 +8,20 @@ to the reviewed policy and deterministic placement.
 
 ## Routine hosted preference
 
-Lane harness selectors accept shell glob patterns. A narrow lane excludes every
-matching harness from general candidates, using the same matcher as lane
-admission. The shipped `narrow-hosted` lane selects `opencode-zen*`, including
-new preview variants. Integration and development repair origins keep
-`narrow: false` even when the task kind is `bugfix` or classification reports
-narrow, test-verified work; neither local OpenCode nor a Zen variant is eligible.
-Changing this policy requires activating the rebuilt reviewed routing artifact.
+A lane harness selector is an exact harness id or a prefix with a single
+trailing `*`. Any other glob character makes the policy invalid, so routing
+stops with `routing.invalid_policy` instead of admitting a harness a malformed
+exclusion meant to remove. A design lane's `prefer` names exact harnesses. A
+narrow lane excludes every matching harness from general candidates, using the
+same matcher as lane admission. The route reason names any selector that
+matches no installed harness. That is a report, not a refusal: OpenCode is
+installed by the operator, so the shipped lanes can match nothing.
+
+The shipped `narrow-hosted` lane selects `opencode-zen*`, including new preview
+variants. Integration and development repair origins keep `narrow: false` even
+when the task kind is `bugfix` or classification reports narrow, test-verified
+work; neither local OpenCode nor a Zen variant is eligible. Changing this policy
+requires activating the rebuilt reviewed routing artifact.
 
 Ordinary train repairs retain `created_by_kind: system` for their ordinary
 claim and managed publication lifecycle. Routing resolves their origin to
@@ -22,17 +29,17 @@ claim and managed publication lifecycle. Routing resolves their origin to
 ordinary filing identity. This projection applies to existing filings as well
 as new ones, without reclassifying them as legacy operation delegates. A
 generic system filing with no ordinary repair input keeps its original origin.
+Source-CI repairs are filed with `created_by_kind: source_ci_repair` and route
+as `integration_repair` too; a repair filed before that origin existed is
+recognised by its source-CI record. Replay reads the routed origin from the
+route's rule.
 
-`aq task route-override --task-id <id> --profile-id <profile> --reason "..."
---restart` installs the audited override before waking stopped work. Ordinary
-tasks commit the route, READY status and retry reset in one transaction, then
-emit frontier notifications. Projects using hierarchical integration retain
-the existing restart command's canonical branch reservation and repair delegate
-handoff checks, with the override saved before that guarded restart. If the
-handoff refuses, report that the override was saved and leave the task stopped.
-An unclaimed READY task can also be overridden without restarting it. Held
-tasks and tasks with starting, running or draining sessions remain refused;
-stop intent alone does not prove that the old worker is gone.
+`aq task route-override` changes the route only; it never changes task status.
+It accepts a task no worker holds and no session is starting, running or
+draining, including a READY task just stopped; stop intent alone does not prove
+the old worker is gone. To run stopped work on the new route, restart it through
+`task_recover` or the operator's `restart_task`, whose recovery holds, retry
+budget and preserved-work handoff all apply.
 
 An optional `prefer_harnesses` list on a kind (overridable by origin) favors a
 compatible hosted harness after eligible local/design lane preferences. The

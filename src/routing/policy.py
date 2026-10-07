@@ -22,12 +22,19 @@ A harness a narrow lane matches is reachable only through a narrow lane: the
 general candidates of a task never include it.  That is what keeps an
 integration repair (``origins: {integration_repair: {narrow: false}}``) off
 OpenCode although OpenCode may have a rung at the repair's class.
+
+A lane names harnesses by selector: an exact harness id, or a prefix with a
+single trailing ``*`` (``opencode-zen*``).  Anything else is a policy error,
+so a malformed exclusion stops the router instead of silently admitting the
+harness it meant to exclude.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
+from collections.abc import Iterable
 from typing import Any
 
 import yaml
@@ -39,8 +46,19 @@ CLASSIFICATION_FLAGS: frozenset[str] = frozenset(
 )
 
 
+#: A lane's harness selector: an exact harness id, optionally ending in one ``*``.
+_SELECTOR = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\*?")
+
+
 class PolicyError(ValueError):
     """The policy text is not YAML, or does not satisfy the schema."""
+
+
+def selector_matches(harness: str, selector: str) -> bool:
+    """Whether *harness* is the id *selector* names, or has its ``*`` prefix."""
+    if selector.endswith("*"):
+        return harness.startswith(selector[:-1])
+    return harness == selector
 
 
 class _Strict(BaseModel):
@@ -71,7 +89,7 @@ class Lane(_Strict):
     """``lanes.<name>``: a design lane (``class``) or a narrow lane (``classes``)."""
 
     class_: str | None = Field(default=None, alias="class")
-    #: Harness ids or shell glob patterns, used for lane admission and
+    #: Harness selectors (module docstring), used for lane admission and
     #: exclusion from general candidates.
     harnesses: tuple[str, ...] = Field(min_length=1)
     #: A design lane lists the harnesses tried first; a narrow lane says
@@ -90,8 +108,17 @@ class Lane(_Strict):
     def preferred_harnesses(self) -> tuple[str, ...]:
         return self.prefer if isinstance(self.prefer, tuple) else ()
 
+    def admits(self, harness: str) -> bool:
+        return any(selector_matches(harness, selector) for selector in self.harnesses)
+
     @model_validator(mode="after")
     def _shape(self) -> Lane:
+        bad = [selector for selector in self.harnesses if not _SELECTOR.fullmatch(selector)]
+        if bad:
+            raise ValueError(
+                f"harness selectors {bad} are not an exact harness id or one with a "
+                "single trailing '*'"
+            )
         if self.narrow:
             if self.class_ is not None:
                 raise ValueError("a narrow lane maps classes; it takes no 'class'")
@@ -106,7 +133,10 @@ class Lane(_Strict):
                 raise ValueError("'requires' belongs to a narrow lane")
             if self.prefer is True:
                 raise ValueError("a design lane's 'prefer' lists harnesses")
-            unknown = set(self.preferred_harnesses) - set(self.harnesses)
+            unknown = {
+                harness for harness in self.preferred_harnesses
+                if harness.endswith("*") or not self.admits(harness)
+            }
             if unknown:
                 raise ValueError(f"'prefer' names harnesses outside the lane: {sorted(unknown)}")
         unknown_flags = set(self.requires) - CLASSIFICATION_FLAGS
@@ -245,8 +275,18 @@ class RoutingPolicy(_Strict):
         return [(name, lane) for name, lane in self.lanes.items() if lane.narrow]
 
     def narrow_harnesses(self) -> frozenset[str]:
-        """Harnesses reachable only through a narrow lane (module docstring)."""
+        """Selectors of harnesses reachable only through a narrow lane (module docstring)."""
         return frozenset(h for _name, lane in self.narrow_lanes() for h in lane.harnesses)
+
+    def unmatched_selectors(self, installed: Iterable[str]) -> list[str]:
+        """``lane:selector`` for every lane selector matching no *installed* harness."""
+        ids = set(installed)
+        return [
+            f"{name}:{selector}"
+            for name, lane in self.lanes.items()
+            for selector in lane.harnesses
+            if not any(selector_matches(harness, selector) for harness in ids)
+        ]
 
     def canonical_json(self) -> str:
         return json.dumps(
@@ -297,4 +337,5 @@ __all__ = [
     "RoutingPolicy",
     "parse_policy",
     "policy_digest",
+    "selector_matches",
 ]

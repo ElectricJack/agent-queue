@@ -17971,7 +17971,6 @@
         ],
         "optional": [
           "--intelligence-class",
-          "--restart",
           "--json",
           "--brief",
           "--save-output",

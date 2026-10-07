@@ -169,6 +169,42 @@ async def test_system_filing_without_ordinary_input_keeps_its_routing_origin(han
     assert facts.created_by_kind == "system"
 
 
+@pytest.mark.parametrize("stamped", [True, False], ids=["stamped", "record-only"])
+async def test_a_source_ci_repair_routes_as_an_integration_repair(handler, orch, stamped):
+    from sqlalchemy import insert
+
+    from src.commands.integration_commands import SOURCE_CI_REPAIR_ORIGIN
+    from src.database.tables import integration_source_ci
+    from src.models import RepoConfig, RepoSourceType
+
+    await _create(orch.db, "source", task_type=TaskType.FEATURE)
+    await _create(orch.db, "ci-fix", task_type=TaskType.BUGFIX,
+                  created_by_kind=SOURCE_CI_REPAIR_ORIGIN if stamped else None)
+    await _create(orch.db, "plain-fix", task_type=TaskType.BUGFIX)
+    # Every repair carries its record; one filed before the origin was stamped
+    # is known only by it.
+    await orch.db.create_repo(RepoConfig(
+        id="repo", project_id="p", source_type=RepoSourceType.CLONE, url="/private/repo.git",
+    ))
+    async with orch.db.immediate() as conn:
+        await conn.execute(insert(integration_source_ci).values(
+            task_id="source", repository_id="repo", source_base="a" * 40,
+            source_head="b" * 40, generation=0, policy_generation=0, state="red",
+            evidence={}, repair_task_id="ci-fix", observed_at=1000.0,
+        ))
+
+    project = await orch.db.get_project("p")
+    facts = await handler._routing_task_facts(await orch.db.get_task("ci-fix"), project)
+    assert facts.created_by_kind == "integration_repair"
+    plan = await _plan(handler, "ci-fix")
+    assert plan["success"] and plan["outcome"] == "planned", plan
+    # ``origins.integration_repair`` is ``narrow: false``: no OpenCode lane at all.
+    assert plan["rule"] == "kinds.bugfix+origins.integration_repair"
+
+    facts = await handler._routing_task_facts(await orch.db.get_task("plain-fix"), project)
+    assert facts.created_by_kind is None
+
+
 def _context_profile(context, profile_id="standard-high-codex"):
     return next(p for p in context["profiles"] if p["profile_id"] == profile_id)
 

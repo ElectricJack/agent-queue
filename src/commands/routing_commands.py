@@ -19,6 +19,7 @@ from collections import Counter
 from dataclasses import replace
 from typing import Any
 
+from src.commands.integration_commands import SOURCE_CI_REPAIR_ORIGIN
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 from src.database.queries.routing_queries import ROUTABLE_STATUSES, RoutingBusyError
 from src.models import TASK_TYPE_VALUES, TaskStatus
@@ -398,7 +399,13 @@ class RoutingCommandsMixin:
             global_cap=self.orchestrator._pool_global_cap(),
             workspace_capacity=workspace_capacity, quarantine=quarantine, headroom_out=headroom,
         )
-        return replace(snapshot, context=context, headroom=headroom)
+        registry = getattr(self.orchestrator, "harness_registry", None)
+        installed = {profile.harness for profile in profiles if profile.harness}
+        if registry is not None:
+            installed |= {h.id for h in registry.list_for_scope(task.project_id) if h.id}
+        return replace(
+            snapshot, context=context, headroom=headroom, harnesses=frozenset(installed)
+        )
 
     async def _preferred_provider_serves(
         self, project_id: str, provider: str, class_id: str | None
@@ -436,6 +443,13 @@ class RoutingCommandsMixin:
             # routing origin without changing their claim/restart lifecycle.
             if await OrdinaryRepairService(self.db).input(task.id) is not None:
                 origin = "integration_repair"
+        elif origin == SOURCE_CI_REPAIR_ORIGIN or (
+            origin is None and await self.db.list_source_ci_inherited_oids(task.id)
+        ):
+            # A source-CI repair routes as an integration repair; it keeps its
+            # own stored origin for the same reason.  The record lookup covers
+            # repairs filed before the origin was stamped.
+            origin = "integration_repair"
         class_hint = (getattr(task, "class_hint", None) or "").strip() or None
         if class_hint is None and (getattr(task, "route_source", None) or UNROUTED) == UNROUTED:
             # Rows filed before creation recorded the filer's class as
@@ -1030,9 +1044,6 @@ class RoutingCommandsMixin:
         ``route.override = {by, at, reason}``, resolves the task's routing
         gates, emits ``task.route_overridden`` and comments on the task.
         ``aq task route`` clears it and hands the task back to the router.
-        ``restart`` installs the route before waking stopped work. Ordinary
-        tasks become READY in the route transaction; hierarchical integration
-        retains the restart command's branch reservation and repair handoff checks.
         """
         task_id = args.get("task_id")
         profile_id = args.get("profile_id")
@@ -1158,15 +1169,8 @@ class RoutingCommandsMixin:
                 "intelligence_class": task.intelligence_class,
                 "provider_intent": getattr(task, "provider_intent", None),
             }
-        restart = args.get("restart") is True
-        fenced_restart = restart and (
-            project is not None
-            and project.hierarchical_integration_mode in {"hierarchy", "train"}
-            and task.status in {TaskStatus.BLOCKED, TaskStatus.PAUSED}
-        )
         if not await self.db.write_override_route(
             task.id, profile_id=facts.id, intelligence_class=class_id, route=route,
-            restart=restart and not fenced_restart,
         ):
             return {
                 "success": False,
@@ -1214,7 +1218,7 @@ class RoutingCommandsMixin:
             "back to the project's router.",
         )
         await self._announce_route_change(task.id)
-        result = {
+        return {
             "success": True,
             "task_id": task.id,
             "profile_id": facts.id,
@@ -1224,11 +1228,4 @@ class RoutingCommandsMixin:
             "route_source": OVERRIDE,
             "by": actor["by"],
             "resolved_gate_ids": resolved,
-            "restarted": restart,
         }
-        if fenced_restart:
-            restarted = await self._cmd_restart_task({"task_id": task.id})
-            if "error" in restarted:
-                return {**result, "success": False, "restarted": False,
-                        "error": f"Override saved, but restart refused: {restarted['error']}"}
-        return result
