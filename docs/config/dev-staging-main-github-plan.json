@@ -195,6 +195,12 @@
                 }
               ]
             }
+          },
+          {
+            "type": "deletion"
+          },
+          {
+            "type": "non_fast_forward"
           }
         ],
         "bypass_actors": []
@@ -229,6 +235,12 @@
                 }
               ]
             }
+          },
+          {
+            "type": "deletion"
+          },
+          {
+            "type": "non_fast_forward"
           }
         ],
         "bypass_actors": []
@@ -263,6 +275,72 @@
                 }
               ]
             }
+          },
+          {
+            "type": "deletion"
+          },
+          {
+            "type": "non_fast_forward"
+          }
+        ],
+        "bypass_actors": []
+      }
+    },
+    {
+      "id": "restrict-release-tag-creation",
+      "method": "POST",
+      "path": "repos/ElectricJack/agent-queue/rulesets",
+      "body": {
+        "target": "tag",
+        "enforcement": "active",
+        "conditions": {
+          "ref_name": {
+            "include": [
+              "refs/tags/v*"
+            ],
+            "exclude": []
+          }
+        },
+        "name": "Promotion-tag creation (release)",
+        "rules": [
+          {
+            "type": "creation"
+          }
+        ],
+        "bypass_actors": [
+          {
+            "actor_id": 5075923,
+            "actor_type": "Integration",
+            "bypass_mode": "always"
+          }
+        ]
+      }
+    },
+    {
+      "id": "freeze-release-tags",
+      "method": "POST",
+      "path": "repos/ElectricJack/agent-queue/rulesets",
+      "body": {
+        "target": "tag",
+        "enforcement": "active",
+        "conditions": {
+          "ref_name": {
+            "include": [
+              "refs/tags/v*"
+            ],
+            "exclude": []
+          }
+        },
+        "name": "Promotion-tag immutability (release)",
+        "rules": [
+          {
+            "type": "update"
+          },
+          {
+            "type": "deletion"
+          },
+          {
+            "type": "non_fast_forward"
           }
         ],
         "bypass_actors": []
