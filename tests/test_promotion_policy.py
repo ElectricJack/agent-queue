@@ -399,7 +399,7 @@ async def test_malformed_debt_is_named_and_status_performs_no_network(promote_en
     e = promote_env
     async with e.db.immediate() as conn:
         await conn.execute(insert(tasks).values(id='debt', project_id='p', repo_id='r',
-            title='Debt', task_type='backmerge', created_at=1000, updated_at=1000))
+            title='Debt', description='', task_type='backmerge', created_at=1000, updated_at=1000))
         await conn.execute(insert(task_metadata).values(task_id='debt', key='backmerge', value=value))
     e.ops.remote = AsyncMock(side_effect=AssertionError('status performed network I/O'))
     result = await e.handler._cmd_promote_status({'project_id': 'p'})
@@ -416,7 +416,7 @@ async def test_hotfix_notification_survives_task_completed_subscriber_failure(pr
     e = promote_env
     async with e.db.immediate() as conn:
         await conn.execute(insert(tasks).values(id='hotfix', project_id='p', repo_id='r',
-            title='Hotfix', status='COMPLETED', task_type='bugfix', created_at=1000, updated_at=1000))
+            title='Hotfix', description='', status='COMPLETED', task_type='bugfix', created_at=1000, updated_at=1000))
         await conn.execute(insert(task_metadata).values(task_id='hotfix', key='promotion_hotfix',
             value=json.dumps({'step_id': 'release'})))
     task = await e.db.get_task('hotfix')
