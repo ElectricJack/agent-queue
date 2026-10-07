@@ -52,7 +52,7 @@ from src.integration.root_runtime import PinnedRootPolicy, RootObserver, RootSub
 from src.integration.scheduler import IntegrationScheduler, TrainService
 from src.integration.service import IntegrationService
 from src.integration.subjects import PrimitivePorts, RemoteHead, Subject, SubjectPhase, WriterStatus
-from src.models import Project, RepoConfig, RepoSourceType, SessionRecord
+from src.models import Project, RepoConfig, RepoSourceType, SessionRecord, TaskCompletion
 from src.orchestrator import Orchestrator
 from src.playbooks.definition import load_definition_json
 from src.playbooks.integration_policy import IntegrationPolicyFacts, policy_from_markdown
@@ -140,8 +140,8 @@ async def git_first_case(git_first_repository):  # noqa: F811 - imported pytest 
         "default_branch": "main", "checkout_base_path": str(repo.path), "url": str(repo.remote),
     }, rows)
     reader = SimpleNamespace(read=AsyncMock(return_value=snapshot))
-    db = SimpleNamespace(get_task_completion=AsyncMock(return_value=SimpleNamespace(
-        id=request.completion_id, completed_at=1, commits=[head],
+    db = SimpleNamespace(get_task_completion=AsyncMock(return_value=TaskCompletion(
+        id=request.completion_id, task_id="task", outcome="pass", completed_at=1, commits=[head],
     )))
     return SimpleNamespace(repo=repo, subject=subject, facts=facts, snapshot=snapshot,
                            reader=reader, diagnostics=GitFirstDiagnostics(db, repo.git, reader))
