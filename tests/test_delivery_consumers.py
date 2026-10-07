@@ -847,9 +847,15 @@ async def test_multi_target_fetch_warms_every_target_without_renewing_age(world,
 
     observer._store = AsyncMock(side_effect=AssertionError("display attempted fetch"))
     warm = await observer.observe(ids, max_age=30, cached_only=True)
-    assert {tid: (proof.state, proof.reason) for tid, proof in warm.evidence.items()} == {
+    assert {tid: (proof.state, proof.reason) for tid, proof in warm.evidence.items()
+            if tid != "missing"} == {
         tid: (proof.state, proof.reason) for tid, proof in view.evidence.items()
+        if tid != "missing"
     }
+    assert view.get("missing").reason == "missing_git_provenance"
+    assert warm.get("missing").state is view.get("missing").state
+    assert warm.get("missing").reason == "proof_unavailable"
+    assert not warm.satisfied("missing")
     assert {observer._recent[target][0] for target in targets.values()} == stamps
     observer._store.assert_not_awaited()
     observer.truth.snapshot.assert_awaited_once()
@@ -892,6 +898,12 @@ async def test_missing_target_fetch_warms_peers_but_decisions_refetch_it(world, 
     observer.truth.snapshot = AsyncMock(wraps=observer.truth.snapshot)
     assert (await observer.snapshot(missing)).observation.error == "missing_target"
     observer.truth.snapshot.assert_awaited_once()
+    warm = await observer.observe(["done"], max_age=30, cached_only=True)
+    # A fetched peer ref warms its observation, but diagnostics cannot build
+    # a proof that no background reader has evaluated yet.
+    assert warm.get("done").reason == "proof_unavailable"
+    assert not warm.satisfied("done")
+    assert (await observer.observe(["done"], max_age=30)).satisfied("done")
     warm = await observer.observe(["done"], max_age=30, cached_only=True)
     assert warm.satisfied("done")
     assert (await observer.snapshot(missing, max_age=30, cached_only=True)
@@ -952,28 +964,34 @@ async def test_frontier_freshness_failure_does_not_poison_unchecked_targets(
     from src.integration.delivery_observer import (
         DeliveryTarget, DeliveryView, PrerequisiteView, hierarchy_frontier_modes,
     )
-    from src.integration.delivery_truth import DeliverySnapshot
     from src.integration.git_truth import GitTruth
 
     db, origin, observer, _service = world
-    git(origin.clone, "push", "origin", "main:aq/peer")
+    git(origin.clone, "push", "origin", "main:aq/peer", "main:aq/unchecked")
     main = DeliveryTarget("p", "r", origin.url, "refs/heads/main")
     peer = DeliveryTarget("p", "r", origin.url, "refs/heads/aq/peer")
+    uninspected = DeliveryTarget("p", "r", origin.url, "refs/heads/aq/unchecked")
     await observer.snapshot(main)
     first = observer._recent[main][1]
-    unchecked = observer._recent[peer][1]
+    current_peer = observer._recent[peer][1]
+    unchecked = observer._recent[uninspected][1]
     assert not first._freshness
-    remote = AsyncMock(return_value=False)
-    monkeypatch.setattr(DeliverySnapshot, "_remote_is_fresh", remote)
+    origin.work("advance-main")
+    origin.land("advance-main")
+    remote = AsyncMock(wraps=observer.git.als_remote_refs)
+    monkeypatch.setattr(observer.git, "als_remote_refs", remote)
     observer.truth = GitTruth(observer.git)
     db.set_prerequisite_observer(observer)
     await db.update_project("p", hierarchical_integration_mode="train")
     observer.prerequisite_view = AsyncMock(return_value=PrerequisiteView(
-        DeliveryView(db, snapshots=(first, unchecked)), DeliveryView(db),
+        DeliveryView(db, snapshots=(first, current_peer)), DeliveryView(db),
     ))
     modes = await hierarchy_frontier_modes(db, project_ids={"p"})
     assert modes["p"].delivered_prerequisite_ids == frozenset()
     remote.assert_awaited_once()
+    assert set(remote.call_args.args[1]) == {"main", "aq/peer"}
     assert first._freshness == {main.target_ref: False}
-    assert peer.target_ref not in unchecked._freshness
+    assert current_peer._freshness == {peer.target_ref: True}
+    assert uninspected.target_ref not in unchecked._freshness
     assert (await observer._snapshot(peer, max_age=30, cached_only=True)).error is None
+    assert (await observer._snapshot(uninspected, max_age=30, cached_only=True)).error is None

@@ -117,12 +117,12 @@ mode keeps the existing receipt fence, and non-hierarchy projects keep their
 existing admission policy.
 
 A cross-epic dependent whose epic already contains every prerequisite's exact
-default-branch source needs no refresh. An open collection or refresh batch
-therefore does not withhold that child. A conflict repair that publishes such
-a merge can release the child while the refresh candidate still awaits checks
-and attestation; those gates remain required to promote the refresh itself.
-If the repair only resolves content and leaves a prerequisite outside the epic,
-the child still waits for the checked refresh to publish it.
+default-branch source needs no new refresh. Ordinary sibling collection does
+not withhold that child. An existing open epic refresh still withholds it until
+checks and attestation finish, including when a conflict repair publishes a
+merge containing every prerequisite. If the repair only resolves content and
+leaves a prerequisite outside the epic, containment also remains unproven until
+the checked refresh publishes it.
 
 Interactive `task explain` and `pool status` only read snapshots inside that
 age bound. They do not clone, fetch, wait for a fetch lock, or check remote refs.

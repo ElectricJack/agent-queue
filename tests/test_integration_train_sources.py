@@ -1655,6 +1655,15 @@ async def test_empty_completion_root_releases_child_and_has_no_train_blocker(wor
     proof = await (await snapshot(world)).is_delivered(requests["no-change"], source_base=base)
     assert proof.state is (DeliveryState.CONTAINED if changed else DeliveryState.NO_CHANGE)
     assert proof.satisfied
+    if changed:
+        # Root delivery alone cannot release a cross-epic child whose parent
+        # still lacks the exact source, regardless of descriptive close commits.
+        assert not await db.is_hierarchy_task_runnable("child")
+        assert "frontier_epic_refresh_pending" in {
+            item["code"] for item in await db.claim_frontier_exclusions("child")}
+        git(origin.clone, "checkout", "-B", "aq/epic", "origin/aq/epic")
+        git(origin.clone, "merge", "--no-ff", "-m", "contain root prerequisite", "origin/main")
+        git(origin.clone, "push", "origin", "aq/epic")
     assert await db.is_hierarchy_task_runnable("child")
     assert not [item for item in await db.claim_frontier_exclusions("child")
                 if "prerequisite" in item["code"]]
@@ -1840,20 +1849,20 @@ async def test_epic_refresh_conflict_files_ordinary_repair_on_epic(
     assert git(origin.url, "rev-parse", "aq/epic") == repaired
     assert checking["candidate_sha"] not in checks.green
     (await train.lane_for(target)).service.attest.assert_not_awaited()
-    # Fresh Git proof, rather than the open batch, decides whether the child
-    # already has its required input. Content-only repairs still withhold it.
+    # Containment and completion of the open refresh are independent gates.
+    # Both repair forms still owe checks and attestation before child admission.
     view = await db._delivery_observer.prerequisite_view("p", task_id="child")
     assert view.default.satisfied("prerequisite")
     assert view.parent_containment == {"child": {"prerequisite": repair_contains_prerequisite}}
-    assert await db.is_hierarchy_task_runnable("child") is repair_contains_prerequisite
+    assert not await db.is_hierarchy_task_runnable("child")
+    assert "frontier_epic_refresh_pending" in {
+        item["code"] for item in await db.claim_frontier_exclusions("child")}
     task = await db.get_task("child")
     filing = await db.get_task_branch_origin_for_promotion("child", "r")
     if repair_contains_prerequisite:
         git(origin.url, "merge-base", "--is-ancestor", prerequisite, repaired)
-        assert await EpicRefresh(db, train).child_base(task, filing) == repaired
-    else:
-        with pytest.raises(EpicRefreshPending, match="epic refresh pending"):
-            await EpicRefresh(db, train).child_base(task, filing)
+    with pytest.raises(EpicRefreshPending, match="epic refresh pending"):
+        await EpicRefresh(db, train).child_base(task, filing)
     checks.green.add(checking["candidate_sha"])
     delivered = await EpicRefresh(db, train).refresh("epic", dry_run=False)
     assert delivered["outcome"] == "refreshed"
