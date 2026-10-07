@@ -153,6 +153,9 @@ class Repair:
         self.calls.append((batch_id, kwargs))
         return {"outcome": "filed", "task_id": f"repair-{batch_id}", "attempts": 1}
 
+    async def recover_reservation(self, batch_id, **kwargs):
+        return {"outcome": "none"}
+
 
 ROOT = TrainTarget("p", "r", "refs/heads/main")
 
@@ -347,6 +350,60 @@ async def test_red_candidate_files_one_ordinary_repair_on_the_candidate_ref(db):
     assert task.branch_name == candidate_ref("batch-db").removeprefix("refs/heads/")
     assert task.branch_name != "main"
     assert (await store.get("batch-db")).repair_attempt_count == 1
+
+
+@pytest.mark.parametrize("state", ["testing", "unknown"])
+@pytest.mark.parametrize("lost", ["released", "expired"])
+async def test_train_restores_ready_repair_without_waiting_for_red_checks(db, state, lost):
+    from src.database.queries.claim_queries import _frontier_where
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+    from src.database.tables import tasks
+    from src.integration.batches import BatchStore
+    from src.integration.lock import BranchLock
+    from src.integration.models import BranchKey
+    from src.integration.repair import OrdinaryRepairService
+    from src.models import TaskStatus
+
+    store, now = BatchStore(db), [100.0]
+    await store.freeze(batch("batch-retry"), MEMBERS, trees={"t-1": "d" * 40})
+    locks = BranchLock(db, clock=lambda: now[0])
+    repair = OrdinaryRepairService(db, locks=locks, clock=lambda: now[0])
+    ref = candidate_ref("batch-retry")
+    target = BranchKey(repository_id="r", branch=ref)
+    filed = await repair.allocate("batch-retry", target_ref=ref, head_sha=CANDIDATE,
+                                  authorize=AsyncMock(return_value=True), ttl_seconds=10)
+    task_id = filed["task_id"]
+    original = await repair.input(task_id)
+    await db.update_task(task_id, status=TaskStatus.READY)
+    old = (await locks.get(target)).grant()
+    if lost == "released":
+        await locks.release(old)
+        async with db._engine.connect() as conn:
+            assert await conn.scalar(select(tasks.c.id).where(
+                tasks.c.id == task_id, _frontier_where("p", ProjectIntegrationMode(True, "r")),
+            )) is None
+    else:
+        now[0] += 10
+    frozen = await store.get("batch-retry")
+    t = train(Targets(ROOT), Batches({ROOT.key: (frozen, MEMBERS)}),
+              {ROOT.key: lane(Service(state), Checks(ChecksState.PENDING))}, repair)
+
+    visit = await t.visit(ROOT)
+
+    assert visit.state == state
+    lease = await locks.get(target)
+    assert (lease.holder, lease.fence) == (task_id, old.token + 1)
+    assert await repair.input(task_id) == original
+    assert (await store.get("batch-retry")).repair_attempt_count == 1
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.id).where(
+            tasks.c.id == task_id, _frontier_where("p", ProjectIntegrationMode(True, "r")),
+        )) == task_id
+    # A repeated visit keeps the same task/fence rather than allocating again.
+    t = train(Targets(ROOT), Batches({ROOT.key: (frozen, MEMBERS)}),
+              {ROOT.key: lane(Service(state), Checks(ChecksState.PENDING))}, repair)
+    await t.visit(ROOT)
+    assert await locks.get(target) == lease
 
 
 async def test_filed_conflict_repair_task_carries_the_plain_english_brief(db):

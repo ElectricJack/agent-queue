@@ -152,6 +152,12 @@ class BatchSource(Protocol):
 
 
 class RepairAllocator(Protocol):
+    async def recover_reservation(
+        self, batch_id: str, *, target_ref: str, head_sha: str,
+        authorize: Callable[[], Awaitable[bool]], held: bool = False,
+    ) -> dict:
+        """Restore only an existing detached repair; never allocate new work."""
+
     async def allocate(
         self, batch_id: str, *, target_ref: str, head_sha: str,
         green_sha: str | None = None, held: bool = False, review_rejected: bool = False,
@@ -599,6 +605,22 @@ class IntegrationTrain:
             _progress("settle_batch")
             await self.batches.settle(batch, observation)
             return self._visit(target, "delivered", batch, observation)
+        if (batch.repair_attempt_count and observation.candidate_sha
+                and observation.state != "held"):
+            # A retry can lose its lease on close/recovery. Red/conflict
+            # allocation is not visited while CI is pending (or observation
+            # is unknown), so restore the existing filing on every such visit.
+            async def authorize_reservation():
+                return await lane.service.repair_authorized(
+                    batch, members, observation.candidate_sha,
+                )
+
+            _progress("recover_repair_reservation")
+            await self.repair.recover_reservation(
+                batch.id, target_ref=candidate_ref(batch.id),
+                head_sha=observation.candidate_sha, authorize=authorize_reservation,
+                held=batch.intent != "open",
+            )
         if observation.state == "conflict":
             async def completion_blocker(task_id, starting_sha):
                 return await lane.service.repair_completion_blocker(
