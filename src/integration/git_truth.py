@@ -1,6 +1,7 @@
 """Git facts for the reduced train, without delivery records or state mutations.
 
 A visit reuses the fetched delivery snapshot and the completion source locator.
+Overlapping readers share only fetches started after their own arrival.
 Only immutable Git facts survive visits, keyed by repository and source/target
 OIDs. Task identity, authorization and remote freshness are checked separately
 at use; a cached fact never authorizes a close or publication on its own.
@@ -90,7 +91,9 @@ class GitDeliveryEvidence(DeliveryEvidence):
 @dataclass
 class _SharedFetch:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    fetch_starts: int = 0
     snapshot: GitTruthSnapshot | None = None
+    error: Exception | asyncio.CancelledError | None = None
     readers: int = 0
 
 
@@ -117,25 +120,35 @@ class GitTruth:
         self, store: str, *, project_id: str, repository_id: str,
         repository_url: str, target_ref: str,
     ) -> GitTruthSnapshot:
-        """Fetch once; overlapping train readers may share the same observation.
+        """Share only an observation whose fetch starts after this caller arrives.
 
-        There is no age-based cache: a caller arriving after a fetch completes
-        always fetches again. The lock covers the ref capture as well as fetch.
-        Cancellation of the fetching caller leaves waiters free to retry.
+        A caller arriving during a fetch waits for the next one; readers queued
+        behind that fetch share its successor, bounding a burst to two fetches.
+        There is no age-based cache. The lock covers fetch and ref capture.
+        Unexpected failure or cancellation of a fetching caller propagates to
+        all overlapping readers without retrying; a later visit can try again.
         """
         if not self.share_fetches:
             return await self._snapshot(store, project_id=project_id,
                 repository_id=repository_id, repository_url=repository_url, target_ref=target_ref)
         key = str(store), project_id, repository_id, repository_url
         shared = self._fetches.setdefault(key, _SharedFetch())
-        previous = shared.snapshot
+        arrival = shared.fetch_starts
         shared.readers += 1
         try:
             async with shared.lock:
-                if shared.snapshot is previous:
-                    shared.snapshot = await self._snapshot(store, project_id=project_id,
-                        repository_id=repository_id, repository_url=repository_url,
-                        target_ref=target_ref)
+                if shared.error is not None:
+                    raise shared.error
+                if shared.fetch_starts <= arrival:
+                    shared.fetch_starts += 1
+                    try:
+                        shared.snapshot = await self._snapshot(store, project_id=project_id,
+                            repository_id=repository_id, repository_url=repository_url,
+                            target_ref=target_ref)
+                    except (Exception, asyncio.CancelledError) as exc:
+                        shared.error = exc
+                        raise
+                assert shared.snapshot is not None
                 return shared.snapshot.for_target(target_ref)
         finally:
             shared.readers -= 1

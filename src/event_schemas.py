@@ -1563,6 +1563,10 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
         "required": ["project_id", "profile_id", "enabled"],
         "optional": ["request_id"],
     },
+    "pool.renamed": {
+        "required": ["profile_id", "old_name", "name", "backup_path"],
+        "optional": ["seq"],
+    },
 }
 
 # ---------------------------------------------------------------------------

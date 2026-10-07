@@ -1030,7 +1030,9 @@ class SessionSpecBuilder:
             logger.warning("Harness %r has no effort_flag; effort %r not applied", harness.id, effort)
         return effort
 
-    def _resolve_class_config(self, profile, harness, task_intelligence_class) -> dict:
+    def _resolve_class_config(
+        self, profile, harness, task_intelligence_class, *, for_display: bool = False,
+    ) -> dict:
         """Resolve the whole provider slice without dropping its thinking fields.
 
         Worker class > task class > profile default. Unknown classes, providers,
@@ -1046,6 +1048,8 @@ class SessionSpecBuilder:
             return {}
         cls = self._intelligence_classes.get(class_id)
         if cls is None:
+            if for_display:
+                return {}
             logger.warning(
                 "intelligence-class '%s' not found; no launch model resolved",
                 class_id,

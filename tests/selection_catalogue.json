@@ -1431,7 +1431,7 @@
       ]
     }
   },
-  "digest": "sha256:9d88d3ee88edcc8f97aa6ecf5a45c9a892d3681daf48d723312e854df4c79e8f",
+  "digest": "sha256:a2f8863c4bcee1f3c3eeebca939517d61440ab6d581ef40d419ce506dee21323",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -1628,6 +1628,9 @@
         "src.api.graph_layout",
         "src.database.queries.layout_queries",
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
+        "src.models",
         "src.task_graph.layout.driver",
         "src.task_graph.layout.view"
       ],
@@ -2468,6 +2471,8 @@
         "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
         "src.integration.epic_delivery",
         "src.models",
         "src.task_graph.layout.driver"
@@ -4776,6 +4781,8 @@
         "src.commands.principal",
         "src.config",
         "src.database",
+        "src.integration.batches",
+        "src.integration.repair",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
@@ -4895,10 +4902,13 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.handler",
+        "src.config",
         "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.admission",
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.development",
@@ -4907,9 +4917,12 @@
         "src.integration.publishable_artifact",
         "src.integration.source_trailer",
         "src.integration.status",
-        "src.models"
+        "src.models",
+        "src.orchestrator"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Every delivery consumer asks git the same question and gets the same answer."
     },
     "tests/test_delivery_integration.py": {
@@ -7747,6 +7760,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
         "src.integration.delivery_truth",
@@ -11935,6 +11949,8 @@
         "src.event_schemas",
         "src.models",
         "src.orchestrator",
+        "src.profiles",
+        "src.profiles.drift",
         "src.profiles.parser",
         "src.profiles.sync"
       ],
@@ -12062,6 +12078,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.provenance",
+        "src.integration.stacked_branches",
         "src.integration.train",
         "src.integration.train_sources",
         "src.intelligence_classes",
@@ -14033,11 +14050,13 @@
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.commands.handler",
+        "src.commands.integration_commands",
         "src.commands.principal",
         "src.commands.routing_commands",
         "src.config",
         "src.database",
         "src.database.queries.routing_queries",
+        "src.database.tables",
         "src.event_schemas",
         "src.intelligence_classes",
         "src.models",

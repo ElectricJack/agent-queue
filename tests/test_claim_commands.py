@@ -3236,6 +3236,92 @@ async def test_cross_epic_demand_explain_claim_and_refreshed_child_base(
     assert origin["base_refresh"]["default_sha"] == env.head
 
 
+async def test_cross_epic_child_already_in_epic_ignores_open_epic_batch(
+    handler, db, tmp_path, development_admission,
+):
+    """An epic that already holds a cross-epic source needs no refresh.
+
+    2026-10-07: a child whose epic already contained every cross-epic
+    prerequisite was withheld for as long as an unrelated sibling batch on
+    that epic sat in repair, and explain blamed the default branch.
+    """
+    from src.integration.batches import Batch, BatchMember, BatchStore
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.integration.git_truth import GitTruth
+    from src.scheduler import PoolKey
+
+    env, git = development_admission, development_admission.git
+    await mktask(db, "epic", status=TaskStatus.IN_PROGRESS, repo_id="repo", branch_name="aq/epic")
+    await db.add_dependency("dependent", "epic", "parent-child")
+    await mktask(db, "other-epic", status=TaskStatus.IN_PROGRESS, repo_id="repo",
+                 branch_name="aq/other-epic")
+    await db.add_dependency("prerequisite", "other-epic", "parent-child")
+    await db.update_task("dependent", branch_name="aq/dependent", is_blocked=False)
+    # The prerequisite is on main and the dependent's epic already contains it.
+    git(env.source, "push", "origin", f"{env.head}:refs/heads/main",
+        f"{env.head}:refs/heads/aq/other-epic", f"{env.head}:refs/heads/aq/epic",
+        f"{env.head}:refs/heads/aq/dependent")
+    async with db.immediate() as conn:
+        await conn.execute(task_branch_origins.insert().values(
+            id="origin-dependent", task_id="dependent", repository_id="repo",
+            branch_name="aq/dependent", parent_task_id="epic", parent_repository_id="repo",
+            parent_ref="aq/epic", base_sha=env.head, creation_generation=1,
+            reserved=True, materialized=True, created_at=time.time(),
+        ))
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="train", repo_url=str(env.remote))
+    transport = handler.orchestrator.git
+    observer = DeliveryObserver(db, git=transport, truth=GitTruth(transport),
+                                data_dir=tmp_path / "prerequisites")
+    db.set_prerequisite_observer(observer)
+    store = BatchStore(db)
+    collection = Batch("train-unrelated-collection", PROJECT_ID, "repo", "refs/heads/aq/epic")
+    await store.freeze(collection, (BatchMember("epic", env.head, env.base),),
+                       trees={"epic": git(env.remote, "rev-parse", f"{env.head}^{{tree}}")})
+
+    view = await observer.prerequisite_view(PROJECT_ID, task_id="dependent")
+    assert view.parent_containment == {"dependent": {"prerequisite": True}}
+    assert not [item for item in await db.claim_frontier_exclusions("dependent")
+                if "prerequisite" in item["code"]]
+    assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == 1
+
+    # The same open batch still withholds a child whose epic lacks the source.
+    git(env.source, "push", "-f", "origin", f"{env.base}:refs/heads/aq/epic")
+    view = await observer.prerequisite_view(PROJECT_ID, task_id="dependent")
+    assert view.parent_containment == {"dependent": {"prerequisite": False}}
+    assert [item for item in await db.claim_frontier_exclusions("dependent")
+            if item["code"] == "frontier_prerequisite_not_on_default_branch"]
+
+
+async def test_slow_frontier_view_fails_closed_within_its_bound(
+    db, monkeypatch, development_admission,
+):
+    """A Git view that never answers withholds Git-gated work instead of hanging."""
+    import asyncio
+
+    import src.integration.delivery_observer as module
+
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="train",
+                            repo_url=str(development_admission.remote))
+
+    class Hanging:
+        truth = object()
+        READ_MAX_AGE = 30.0
+
+        async def prerequisite_view(self, *args, **kwargs):
+            await asyncio.sleep(3600)
+
+    db.set_prerequisite_observer(Hanging())
+    monkeypatch.setattr(module, "FRONTIER_MODE_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(module, "FRONTIER_DISPLAY_TIMEOUT_SECONDS", 0.05)
+    for cached_only in (False, True):
+        modes = await asyncio.wait_for(module.hierarchy_frontier_modes(
+            db, project_ids={PROJECT_ID}, cached_only=cached_only), 5)
+        mode = modes[PROJECT_ID]
+        assert mode.delivered_prerequisite_ids == frozenset()
+        assert mode.default_prerequisite_ids == frozenset()
+        assert mode.parent_contained_task_ids == frozenset()
+
+
 @pytest.mark.parametrize("misleading_history", [False, True])
 async def test_development_readiness_pool_and_claim_follow_git(
     handler, db, tmp_path, development_admission, misleading_history

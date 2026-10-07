@@ -145,6 +145,9 @@ async def test_source_ci_repair_is_deduplicated_and_replaced_only_after_failure(
     assert filing.await_count == 1
     args = filing.call_args.args[0]
     assert args["repo_id"] == "repo" and args["task_type"] == "bugfix" and args["root"] is True
+    # Its origin routes it as an integration repair: never on an OpenCode lane.
+    assert args["_created_by_kind"] == "source_ci_repair"
+    assert args["_created_by_id"] == handler._integration_source_ci_identity(observation)
     assert source["head"] in args["description"] and "tests/test_source.py::test_delivery" in args["description"]
     await case["db"].transition_task(first["repair_task_id"], TaskStatus.FAILED, force=True)
     successor = await handler._cmd_observe_integration_source_ci(observation)

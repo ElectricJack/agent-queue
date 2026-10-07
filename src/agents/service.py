@@ -126,11 +126,12 @@ async def list_agent_flock(
         if harness is None:
             harness = SimpleNamespace(id=harness_id or "", command=harness_id or "", provider="")
         settings = {"llm_provider": None, "model": None, "intelligence_class": None}
-        if effective is not None and builder is not None:
+        if not live and effective is not None and builder is not None:
             settings = resolve_launch_settings(
                 effective, harness, builder, task.intelligence_class if task else None,
+                for_display=True,
             )
-        elif effective is not None:
+        elif not live and effective is not None:
             settings["model"] = getattr(effective, "model", None) or None
             settings["intelligence_class"] = getattr(effective, "default_class", None) or None
         if live:

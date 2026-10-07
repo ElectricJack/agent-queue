@@ -346,6 +346,11 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
   }
 
   if (type.startsWith("pool.")) {
+    if (type === "pool.renamed") {
+      queryClient.invalidateQueries({ queryKey: ["profiles"] });
+      queryClient.invalidateQueries({ queryKey: ["profile"] });
+      queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
+    }
     queryClient.invalidateQueries({ queryKey: ["pools"] });
     queryClient.invalidateQueries({ queryKey: ["sessions", "pool"] });
     // The Providers view groups the same profiles and supply by provider.

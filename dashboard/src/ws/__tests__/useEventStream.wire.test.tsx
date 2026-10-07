@@ -79,6 +79,21 @@ describe("WebSocket wire discriminators", () => {
     client.clear();
   });
 
+  it("refreshes profile names and pool views on an audited rename", () => {
+    const client = new QueryClient();
+    const keys = [["pools", "all"], ["profiles"], ["profile", "worker"], ["effective-profile"]];
+    for (const key of keys) client.setQueryData(key, {});
+    renderHook(() => useEventStream(), {
+      wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+    });
+    transport.instance.onmessage?.({ data: JSON.stringify({
+      _event_type: "pool.renamed", profile_id: "worker", name: "Space Bunny",
+      old_name: "Worker", backup_path: "/vault/profile.md.bak-1", seq: 10,
+    }) });
+    for (const key of keys) expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+    client.clear();
+  });
+
   it("refreshes the provider allocation view on pool and session frames", () => {
     vi.useFakeTimers();
     const client = new QueryClient();
