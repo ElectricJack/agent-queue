@@ -1320,6 +1320,86 @@ async def test_visit_timeout_frees_the_target_for_the_next_tick():
     await t.stop()
 
 
+@pytest.mark.parametrize("bounded_leader", [True, False])
+async def test_cancelled_shared_fetch_records_waiter_failure_and_retries(setup, bounded_leader):
+    from src.integration.git_truth import GitTruth
+
+    _db, ops, _subject, _fence, repo, base, head, _green = setup
+    waiters = [TrainTarget("p", "r", f"refs/heads/waiter-{i}") for i in range(3)]
+    for target in waiters:
+        await ops.push(repo, target.target_ref, base, "")
+    truth = GitTruth(ops.git, share_fetches=True)
+    fetch = ops.git.afetch_origin
+    entered, release = asyncio.Event(), asyncio.Event()
+    arrivals = {target.key: asyncio.Event() for target in waiters}
+
+    async def blocked_fetch(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await fetch(*args, **kwargs)
+
+    ops.git.afetch_origin = AsyncMock(side_effect=blocked_fetch)
+
+    async def lane_for(target):
+        async def snapshot_for():
+            if target.key in arrivals:
+                arrivals[target.key].set()
+            return await truth.snapshot(
+                str(repo.store), project_id="p", repository_id="r",
+                repository_url=str(ops.git.remote_path), target_ref=target.target_ref,
+            )
+
+        return TrainLane(snapshot=snapshot_for, service=Service(),
+                         checks=CandidateChecks.fixed(Checks()))
+
+    t = IntegrationTrain(targets=Targets(*waiters), batches=Batches(), lane_for=lane_for,
+                         repair=Repair(), clock=lambda: 100.0)
+    if bounded_leader:
+        await t.tick(target=ROOT)
+        leader = t._lanes[ROOT.key].task
+    else:
+        leader = asyncio.create_task(t.visit(ROOT, seal_now=True))
+    requests = []
+    try:
+        await entered.wait()
+        requests = [asyncio.create_task(t.request_visit(target)) for target in waiters]
+        await asyncio.gather(*(arrival.wait() for arrival in arrivals.values()))
+        leader.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await leader
+
+        visits = await asyncio.gather(*requests)
+        assert ops.git.afetch_origin.await_count == 1
+        assert not truth._fetches
+        for target, visit in zip(waiters, visits, strict=True):
+            assert visit.state == "unknown"
+            assert visit.detail["reason"] == "SharedFetchCancelled"
+            lane_state = t._lanes[target.key]
+            assert lane_state.last is visit
+            assert (lane_state.visits, lane_state.errors) == (1, 1)
+            assert not lane_state.task.cancelled()
+
+        # A later visit must fetch the current remote rather than reuse the
+        # failed observation or a tracking ref from before the cancellation.
+        for target in waiters:
+            await ops.push(repo, target.target_ref, head, base)
+        release.set()
+        assert len((await t.tick())["started"]) == len(waiters)
+        await t.drain()
+        assert ops.git.afetch_origin.await_count == 3
+        assert not truth._fetches
+        for target in waiters:
+            lane_state = t._lanes[target.key]
+            assert (lane_state.last.state, lane_state.last.target_sha) == ("idle", head)
+            assert (lane_state.visits, lane_state.errors) == (2, 1)
+    finally:
+        leader.cancel()
+        for request in requests:
+            request.cancel()
+        await t.stop()
+        await asyncio.gather(leader, *requests, return_exceptions=True)
+
+
 async def test_visit_timeout_status_keeps_the_last_known_state():
     lanes = {ROOT.key: lane(Service())}
     t = train(Targets(ROOT), Batches(), lanes, visit_timeout_seconds=0.5)
