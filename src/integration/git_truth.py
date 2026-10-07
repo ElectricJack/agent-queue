@@ -32,6 +32,10 @@ from src.integration.provenance import CompletionIdentity, GitProvenance
 logger = logging.getLogger(__name__)
 
 
+class SharedFetchCancelled(RuntimeError):
+    """The fetching reader was cancelled; overlapping readers can retry a later visit."""
+
+
 class _HistoricalPatchFailure(GitError):
     """A historical comparison failed after all other patch candidates were tried."""
 
@@ -94,7 +98,7 @@ class _SharedFetch:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     fetch_starts: int = 0
     snapshot: GitTruthSnapshot | None = None
-    error: Exception | asyncio.CancelledError | None = None
+    error: Exception | None = None
     readers: int = 0
 
 
@@ -131,8 +135,9 @@ class GitTruth:
         A caller arriving during a fetch waits for the next one; readers queued
         behind that fetch share its successor, bounding a burst to two fetches.
         There is no age-based cache. The lock covers fetch and ref capture.
-        Unexpected failure or cancellation of a fetching caller propagates to
-        all overlapping readers without retrying; a later visit can try again.
+        Unexpected failures propagate to overlapping readers without retrying.
+        If the fetching caller is cancelled, only it receives CancelledError;
+        other readers receive SharedFetchCancelled. A later visit can try again.
         """
         if not self.share_fetches:
             return await self._snapshot(store, project_id=project_id,
@@ -151,7 +156,10 @@ class GitTruth:
                         shared.snapshot = await self._snapshot(store, project_id=project_id,
                             repository_id=repository_id, repository_url=repository_url,
                             target_ref=target_ref)
-                    except (Exception, asyncio.CancelledError) as exc:
+                    except asyncio.CancelledError:
+                        shared.error = SharedFetchCancelled("shared fetch was cancelled")
+                        raise
+                    except Exception as exc:
                         shared.error = exc
                         raise
                 assert shared.snapshot is not None

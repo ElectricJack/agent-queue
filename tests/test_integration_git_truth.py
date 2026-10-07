@@ -9,7 +9,13 @@ import pytest
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, GitManager
 from src.integration.delivery_truth import DeliveryRequest, DeliveryState
-from src.integration.git_truth import GitTruth, commits_added, epic_complete, repair_progress
+from src.integration.git_truth import (
+    GitTruth,
+    SharedFetchCancelled,
+    commits_added,
+    epic_complete,
+    repair_progress,
+)
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 
 
@@ -1057,7 +1063,7 @@ async def test_shared_fetch_cancellation_does_not_strand_other_readers(repositor
         await cancelled
     release.set()
     if cancel_leader:
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(SharedFetchCancelled, match="shared fetch was cancelled"):
             await survivor
     else:
         assert (await survivor).target_oid == repo.base
