@@ -1243,12 +1243,29 @@ class AuthenticatedGitHubObserver:
                          and record.get("head_sha") == head_sha]
             if not expected_runs or any(record.get("status") != "completed" for record in expected_runs):
                 missing_push = self.expected_event == "push" and not expected_runs
+                missing_pr = self.expected_event == "pull_request" and not expected_runs
+                if missing_pr:
+                    # Missing PR CI cannot hide a real failing or unavailable
+                    # required check from another event on this exact source.
+                    # Successful push checks still do not replace PR checks.
+                    for name in missing:
+                        alternatives = [record for record in all_records
+                                        if record.get("name") == name
+                                        and record.get("head_sha") == head_sha
+                                        and _producer_matches(record.get("app"), trust)]
+                        if alternatives:
+                            newest = max(alternatives, key=lambda record: record["id"])
+                            if (newest.get("status") != "completed" or
+                                newest.get("conclusion") != "success"):
+                                missing_pr = False
+                                break
                 raise CIObservationDeferred(
                     f"required check is pending: {', '.join(missing)}",
                     classification="none" if missing_push else (
                         "pending" if workflow_records or selected else "none"
                     ),
-                    details={"missing_push_run": True} if missing_push else {},
+                    details=({"missing_push_run": True} if missing_push else
+                             {"missing_pr_run": True} if missing_pr else {}),
                 )
             for record in expected_runs:
                 suite_id = _strict_int(record.get("check_suite_id"))
