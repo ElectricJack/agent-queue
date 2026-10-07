@@ -460,6 +460,7 @@ class DatabaseBatches:
         self.db, self.limit, self.clock = db, limit, clock
         self._stack_scan = {}
         self.pr_gate = pr_gate
+        self.repaired_source_gate = getattr(pr_gate, "admit_repaired_source", None)
         self.cleanup = cleanup
         self._refresh_snapshots = {}
         #: epic task id -> ((epic head, default head), refresh detail)
@@ -536,7 +537,9 @@ class DatabaseBatches:
 
         stacks = StackedBranches(self.db, clock=self.clock)
         admission_blockers = []
-        candidates = (await self._candidate_ids(target, snapshot, blockers=admission_blockers)
+        delivered_ids = set()
+        candidates = (await self._candidate_ids(target, snapshot, blockers=admission_blockers,
+                                                delivered_ids=delivered_ids)
                       if not snapshot.error and snapshot.target_oid else [])
         async with self.db._engine.connect() as conn:
             stacked_ids = (await conn.execute(select(task_branch_origins.c.task_id).where(
@@ -565,7 +568,7 @@ class DatabaseBatches:
             pending = await self.pending(target, snapshot, blockers=blockers,
                                          gate_pr=current is None,
                                          include_ids={member.task_id for member in frozen_members},
-                                         candidate_ids=candidates)
+                                         candidate_ids=candidates, delivered_ids=delivered_ids)
             await self._refresh_conflicting_epics(target, snapshot, blockers)
         if current is not None:
             if target.kind == "root":
@@ -759,7 +762,8 @@ class DatabaseBatches:
         return IntegrationTrainPolicy.model_validate({} if raw is None else raw)
 
     async def _candidate_ids(self, target: TrainTarget, snapshot: GitTruthSnapshot, *,
-                             include_ids: set[str] | None = None, blockers=None):
+                             include_ids: set[str] | None = None, blockers=None,
+                             delivered_ids: set[str] | None = None):
         """Only undelivered completions routed to this target's member window."""
         if target.kind == "promotion":
             # A promotion freezes its request, never a frontier of completions.
@@ -785,6 +789,8 @@ class DatabaseBatches:
         ids = [task_id for task_id in ids if task_id not in superseded]
         with selection_stage("root_delivery", items=len(ids)):
             delivered_to_project = await self.delivered(target, snapshot, ids)
+        if delivered_ids is not None:
+            delivered_ids.update(delivered_to_project)
         ids = [task_id for task_id in ids if task_id not in delivered_to_project]
         async with self.db._engine.connect() as conn:
             if len(ids) > self.limit:
@@ -801,12 +807,15 @@ class DatabaseBatches:
         gate_pr: bool = True,
         include_ids: set[str] | None = None,
         candidate_ids: list[str] | None = None,
+        delivered_ids: set[str] | None = None,
     ):
         """Exact pending inputs; report unknown delivery that prevents batching."""
         if target.kind == "promotion":
             return None
+        delivered_to_project = set(delivered_ids or ())
         if candidate_ids is None:
-            ids = await self._candidate_ids(target, snapshot, include_ids=include_ids, blockers=blockers)
+            ids = await self._candidate_ids(target, snapshot, include_ids=include_ids, blockers=blockers,
+                                            delivered_ids=delivered_to_project)
         else:
             selection_count("candidate_window_reuses")
             ids = candidate_ids
@@ -960,7 +969,7 @@ class DatabaseBatches:
         # A genuinely red source can travel only with its exact authorized,
         # separately admitted repair. Review authorization is observed again;
         # final candidate checks still validate both trees together.
-        admit_repaired = getattr(self.pr_gate, "admit_repaired_source", None)
+        admit_repaired = self.repaired_source_gate
         if admit_repaired is not None:
             for repair_id, sources in repair_bindings.items():
                 if repair_id not in members:
@@ -977,7 +986,7 @@ class DatabaseBatches:
                         if blockers is not None and refusal in blockers:
                             blockers.remove(refusal)
         unsafe = await self._stacked_bases(
-            target, snapshot, members, edges, delivered, blockers,
+            target, snapshot, members, edges, delivered | delivered_to_project, blockers,
             frozen_ids=include_ids,
         )
         for task_id in unsafe:
@@ -1693,6 +1702,7 @@ class DaemonLanes:
                 return await hosted_pr_gate(target, member)
 
             self.batches.pr_gate = pr_gate
+            self.batches.repaired_source_gate = hosted_pr_gate.admit_repaired_source
         #: batch id -> (key, expires_at, trust, client); see _promotion_trust.
         self._promotion_trust_cache: dict[str, tuple[str, float, Any, Any]] = {}
 
