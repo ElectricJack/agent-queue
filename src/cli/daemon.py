@@ -603,7 +603,9 @@ def _post_daemon_checks() -> None:
     try:
         result = subprocess.run(
             [
-                _resolve_agent_queue_bin(),
+                sys.executable,
+                "-m",
+                "src.cli.app",
                 "doctor",
                 "--check",
                 "pools.stale_worktree_checkouts",
