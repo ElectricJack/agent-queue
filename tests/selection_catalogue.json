@@ -580,6 +580,7 @@
         "tests/test_integration_ci.py",
         "tests/test_integration_ci_producers.py",
         "tests/test_integration_cleanup.py",
+        "tests/test_integration_cli_controls_present.py",
         "tests/test_integration_completion_recovery.py",
         "tests/test_integration_contracts.py",
         "tests/test_integration_cutover.py",
@@ -1429,7 +1430,7 @@
       ]
     }
   },
-  "digest": "sha256:1b4f34ad9901a527ddde5a89ae9f7497a86da41d2d6964e4e6b994475b78b614",
+  "digest": "sha256:841482ef665a06ce8138860acb8a0d01f5136e6f82e4da2e3ecb29687a59dc4c",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7587,6 +7588,17 @@
         "skipif"
       ],
       "summary": "Atomic train release and independent normalized cleanup."
+    },
+    "tests/test_integration_cli_controls_present.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.app"
+      ],
+      "markers": [],
+      "summary": "Ensure the operator integration controls are registered in the CLI."
     },
     "tests/test_integration_completion_recovery.py": {
       "areas": [
