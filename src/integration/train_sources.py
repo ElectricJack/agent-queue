@@ -70,6 +70,7 @@ from src.integration.models import (
 )
 from src.integration.promotion_steps import flow_status, flow_targets
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+from src.integration.publishable_artifact import completed_without_delivery_source
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
 from src.integration.subjects import Subject
@@ -622,10 +623,15 @@ class DatabaseBatches:
             )).all():
                 bases[task_id] = base
             edges: dict[str, set[str]] = {}
+            prerequisite = tasks.alias("batch_prerequisite")
             for task_id, needs in (await conn.execute(
                 select(task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id)
+                .select_from(task_dependencies.join(
+                    prerequisite, prerequisite.c.id == task_dependencies.c.depends_on_task_id,
+                ))
                 .where(task_dependencies.c.task_id.in_(ids),
-                       task_dependencies.c.dep_type == "blocks")
+                       task_dependencies.c.dep_type == "blocks",
+                       ~completed_without_delivery_source(prerequisite))
             )).all():
                 edges.setdefault(task_id, set()).add(needs)
         requests = await load_delivery_requests(

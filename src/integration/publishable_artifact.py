@@ -1,6 +1,6 @@
 """The branch rule shared by development readiness and publication."""
 
-from sqlalchemy import cast, literal, select
+from sqlalchemy import and_, cast, literal, literal_column, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -17,6 +17,42 @@ EMPTY_SOURCE_KEY = "development_empty_source"
 LEGACY_ARTIFACT_KEY = "development_legacy_artifact"
 
 
+def completed_without_delivery_source(task):
+    """A completed graph prerequisite with no delivery identity to prove.
+
+    Proof/chore closes may have no branch or Git completion at all. A PR,
+    recorded commit, checkpoint, live origin or legacy source instead keeps
+    delivery required even after the task's branch identity is cleared.
+    This is a graph exception, not proof that a missing worker ref is empty.
+    """
+    from src.database.tables import (
+        task_branch_origins,
+        task_completion_records,
+        task_integration_checkpoints,
+    )
+
+    completion = task_completion_records.alias()
+    checkpoint = task_integration_checkpoints.alias()
+    origin = task_branch_origins.alias()
+    # Fixed SQL constants preserve the frontier's bind budget when this
+    # predicate appears in both sibling and cross-parent checks.
+    return and_(
+        task.c.status == literal_column("'COMPLETED'"),
+        task.c.branch_name.is_(None),
+        task.c.pr_url.is_(None),
+        ~select(literal_column("1")).where(
+            completion.c.task_id == task.c.id, completion.c.commits != literal_column("'[]'"),
+        ).correlate(task).exists(),
+        ~select(literal_column("1")).where(
+            checkpoint.c.task_id == task.c.id,
+        ).correlate(task).exists(),
+        ~select(literal_column("1")).where(
+            origin.c.task_id == task.c.id, origin.c.retired_at.is_(None),
+        ).correlate(task).exists(),
+        ~legacy_artifact(task),
+    )
+
+
 def legacy_artifact(task):
     """``EXISTS``: *task*'s current generation has a legacy artifact of unknown provenance.
 
@@ -29,13 +65,13 @@ def legacy_artifact(task):
     latest_id = (
         select(completion.c.id).where(completion.c.task_id == task.c.id)
         .order_by(completion.c.completed_at.desc(), completion.c.id.desc())
-        .limit(1).correlate(task).scalar_subquery()
+        .limit(literal_column("1")).correlate(task).scalar_subquery()
     )
     marker = task_metadata.alias()
     fact = cast(marker.c.value, JSONB)
-    return select(literal(1)).where(
+    return select(literal_column("1")).where(
         marker.c.task_id == task.c.id,
-        marker.c.key == LEGACY_ARTIFACT_KEY,
+        marker.c.key == literal(LEGACY_ARTIFACT_KEY, literal_execute=True),
         fact["completion_id"].as_string().is_not_distinct_from(latest_id),
     ).correlate(task).exists()
 

@@ -62,6 +62,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
+from src.integration.publishable_artifact import completed_without_delivery_source
 from src.models import AgentState, SessionRecord, Task, TaskEvent, TaskStatus, Workspace
 from src.routing.sources import CLAIMABLE_SOURCES, LEGACY, claimable_sources
 
@@ -530,6 +531,7 @@ class ClaimQueryMixin:
                         .join(dependent, dependent.c.id == task_dependencies.c.task_id))
                     .where(dependent.c.id == task_id, task_dependencies.c.dep_type == "blocks",
                            source.c.status == "COMPLETED",
+                           ~completed_without_delivery_source(source),
                            source.c.parent_task_id.is_distinct_from(dependent.c.parent_task_id)
                            | source.c.parent_task_id.is_(None)))).all()
             exclusions.extend({"code": "prerequisite_not_on_default_branch", "ref": tid,

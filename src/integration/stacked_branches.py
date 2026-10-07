@@ -29,6 +29,7 @@ from src.database.tables import (
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.integration.batches import Batch, BatchMember, BatchStore
 from src.integration.delivery_observer import DeliveryTarget, prerequisite_observer
+from src.integration.publishable_artifact import completed_without_delivery_source
 from src.integration.train import TrainTarget
 
 
@@ -93,6 +94,7 @@ async def _inputs(conn, project_id, task_id=None):
             source.c.project_id == project_id,
             source.c.parent_task_id == dependent.c.parent_task_id,
             task_dependencies.c.dep_type == "blocks",
+            ~completed_without_delivery_source(source),
         )
     )
     if task_id is not None:
@@ -1032,6 +1034,7 @@ class EpicRefresh:
             cross = await conn.scalar(select(source.c.id).select_from(task_dependencies.join(
                 source, source.c.id == task_dependencies.c.depends_on_task_id,
             )).where(task_dependencies.c.task_id == task.id, task_dependencies.c.dep_type == "blocks",
+                     ~completed_without_delivery_source(source),
                      source.c.parent_task_id.is_distinct_from(task.parent_task_id)
                      | source.c.parent_task_id.is_(None)).limit(1))
         if cross is None:
@@ -1095,6 +1098,7 @@ class EpicRefresh:
             required = set((await conn.execute(select(source.c.id).select_from(
                 task_dependencies.join(source, source.c.id == task_dependencies.c.depends_on_task_id),
             ).where(task_dependencies.c.task_id == task.id, task_dependencies.c.dep_type == "blocks",
+                    ~completed_without_delivery_source(source),
                     source.c.parent_task_id.is_distinct_from(live_parent)
                     | source.c.parent_task_id.is_(None)))).scalars())
             current = await view.default.verified_on(conn, view.default.evidence)

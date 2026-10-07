@@ -52,6 +52,7 @@ from src.integration.delivery_truth import (
     delivery_snapshot,
     load_delivery_requests,
 )
+from src.integration.publishable_artifact import completed_without_delivery_source
 
 logger = logging.getLogger(__name__)
 
@@ -571,6 +572,7 @@ class DeliveryObserver:
             dependent.c.project_id == project_id,
             dependent.c.status.in_(("READY", "IN_PROGRESS")),
             tasks.c.status == "COMPLETED", task_dependencies.c.dep_type == "blocks",
+            ~completed_without_delivery_source(tasks),
         )
         if task_id is not None:
             query = query.where(dependent.c.id == task_id)

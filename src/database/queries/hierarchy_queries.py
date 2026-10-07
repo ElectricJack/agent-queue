@@ -59,6 +59,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
+from src.integration.publishable_artifact import completed_without_delivery_source
 from src.models import AgentState, DepType, Task, TaskStatus
 from src.task_names import MAX_STRUCTURAL_DEPTH, child_task_id
 
@@ -631,6 +632,7 @@ def delivered_same_parent_prerequisites_when_hierarchical(
             tasks.c.parent_task_id.is_not(None),
             prerequisite.c.parent_task_id == tasks.c.parent_task_id,
             prerequisite.c.status == TaskStatus.COMPLETED.value,
+            ~completed_without_delivery_source(prerequisite),
             ~delivered,
         )
     )
@@ -715,6 +717,7 @@ def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = 
         source.c.parent_task_id.is_distinct_from(tasks.c.parent_task_id)
         | source.c.parent_task_id.is_(None),
         source.c.status == literal_column("'COMPLETED'"),
+        ~completed_without_delivery_source(source),
     )
     missing = exists(cross_edge.where(unproven))
     if mode is None:
@@ -878,6 +881,7 @@ class HierarchyQueryMixin:
                     dependency.c.task_id == task_id,
                     dependency.c.dep_type == DepType.BLOCKS.value,
                     prerequisite.c.parent_task_id == current["parent_task_id"],
+                    ~completed_without_delivery_source(prerequisite),
                 ))).scalars())
                 if not ids:
                     return None

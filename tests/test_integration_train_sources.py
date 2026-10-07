@@ -1606,6 +1606,118 @@ async def test_cross_epic_completed_policy_is_explicit_legacy_admission(world):
                 if "prerequisite" in item["code"]]
 
 
+@pytest.mark.parametrize("relation", ["sibling", "cross_epic", "root"])
+@pytest.mark.parametrize("branches", ["wait-for-parent", "stacked"])
+@pytest.mark.parametrize("git_first", [True, False])
+@pytest.mark.parametrize("completion_record", [True, False])
+async def test_completed_prerequisite_without_source_releases_frontier_and_preparation(
+    world, relation, branches, git_first, completion_record,
+):
+    from src.integration.stacked_branches import EpicRefresh, StackedBranches
+    from src.models import AgentProfile
+
+    db = world.db
+    await db.create_profile(AgentProfile(id="worker", name="Worker"))
+    await db.update_project("p", hierarchical_integration_policy={"prerequisite_branches": branches})
+    await completed(world, "epic", done=False)
+    parent = "epic" if relation == "sibling" else None
+    if relation == "cross_epic":
+        await completed(world, "other", done=False)
+        parent = "other"
+    await db.create_task(Task(id="proof", project_id="p", title="Proof chore", description="",
+                             parent_task_id=parent, status=TaskStatus.IN_PROGRESS))
+    await completed(world, "child", parent="epic", needs=("proof",), done=False)
+    await db.update_task("child", profile_id="worker", route_source="override")
+    await db.transition_task("child", TaskStatus.READY)
+    # No recorded source is an exception only after graph completion.
+    assert await db.count_ready_by_profile("p") == {}
+    if completion_record:
+        await close(db, "proof", [], origin=world.origin)
+    else:
+        await db.transition_task("proof", TaskStatus.COMPLETED)
+    if not git_first:
+        db.set_delivery_observer(None)
+
+    assert not [item for item in await db.claim_frontier_exclusions("child")
+                if "prerequisite" in item["code"]]
+    assert await db.is_hierarchy_task_runnable("child")
+    assert await db.count_ready_by_profile("p") == {"worker": 1}
+    async with db._engine.begin() as conn:
+        assert await db.select_ready_for_profile(conn, project_id="p", profile_id="worker",
+                                               agent_id="agent") == "child"
+    assert await db.hierarchy_prerequisite_delivery_head("child") is None
+    assert await StackedBranches(db).prepare("child") is None
+    origin = await db.get_task_branch_origin_for_promotion("child", "r")
+    assert await EpicRefresh(db).child_base(await db.get_task("child"), origin) is None
+
+
+@pytest.mark.parametrize("relation", ["sibling", "cross_epic"])
+@pytest.mark.parametrize("artifact", ["branch", "pr", "commits", "checkpoint", "origin", "legacy"])
+async def test_prerequisite_with_delivery_identity_still_requires_proof(world, relation, artifact):
+    from src.database.tables import task_integration_checkpoints
+    from src.integration.publishable_artifact import LEGACY_ARTIFACT_KEY
+
+    db = world.db
+    await completed(world, "epic", done=False)
+    parent = "epic" if relation == "sibling" else None
+    await db.create_task(Task(id="proof", project_id="p", title="Proof chore", description="",
+                             parent_task_id=parent, status=TaskStatus.IN_PROGRESS))
+    await completed(world, "child", parent="epic", needs=("proof",), done=False)
+    await db.transition_task("child", TaskStatus.READY)
+    base = git(world.origin.clone, "rev-parse", "main")
+    await close(db, "proof", [base] if artifact == "commits" else [])
+    if artifact == "branch":
+        await db.update_task("proof", branch_name="aq/proof")
+    elif artifact == "pr":
+        await db.update_task("proof", pr_url="https://github.com/acme/widgets/pull/1")
+    elif artifact == "checkpoint":
+        async with db._engine.begin() as conn:
+            # A checkpoint without a source yet is still a delivery request.
+            await conn.execute(insert(task_integration_checkpoints).values(
+                task_id="proof", repository_id="r", branch="aq/proof", updated_at=time.time(),
+            ))
+    elif artifact == "origin":
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(task_branch_origins).values(
+                id="proof-origin", task_id="proof", repository_id="r", branch_name="aq/proof",
+                base_sha=base, creation_generation=0, reserved=True, materialized=False,
+                created_at=time.time(),
+            ))
+    elif artifact == "legacy":
+        await db.set_task_meta("proof", LEGACY_ARTIFACT_KEY, {
+            "completion_id": "close-proof", "source_sha": base,
+            "reason": "historical source without provenance",
+        })
+    assert not await db.is_hierarchy_task_runnable("child")
+    assert await db.count_ready_by_profile("p") == {}
+    assert any("prerequisite" in item["code"]
+               for item in await db.claim_frontier_exclusions("child"))
+
+
+async def test_no_source_prerequisite_is_omitted_from_mixed_frontier_diagnostics(world):
+    db = world.db
+    await cross_epic_world(world)
+    await db.create_task(Task(id="proof", project_id="p", title="Proof", description=""))
+    await close(db, "proof", [])
+    await db.add_dependency("child", "proof")
+    reasons = await db.claim_frontier_exclusions("child")
+    assert [item["ref"] for item in reasons
+            if item["code"] == "prerequisite_not_on_default_branch"] == ["prerequisite"]
+
+
+async def test_train_delivers_work_with_completed_no_source_prerequisite(world):
+    await world.db.create_task(Task(id="proof", project_id="p", title="Proof", description=""))
+    await close(world.db, "proof", [])
+    head = await completed(world, "child", needs=("proof",))
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)))
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing", testing
+    assert [m.task_id for m in await BatchStore(world.db).members(testing.batch_id)] == ["child"]
+    checks.green.add(testing.candidate_sha)
+    assert (await train.visit(MAIN)).state == "delivered"
+    git(world.origin.url, "merge-base", "--is-ancestor", head, "main")
+
+
 async def test_epic_refresh_preview_apply_attestation_lease_and_origin(world):
     from src.integration.stacked_branches import EpicRefresh
 

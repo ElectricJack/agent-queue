@@ -116,6 +116,14 @@ locks, even when a tick's advisory view still makes a task look runnable. Shadow
 mode keeps the existing receipt fence, and non-hierarchy projects keep their
 existing admission policy.
 
+A completed prerequisite with no delivery request or source satisfies both
+sibling and cross-epic delivery admission by completion alone. This covers
+branchless proof and chore tasks without a PR, recorded commits, integration
+checkpoint, live branch origin or legacy artifact. Such tasks require no Git
+observation, stack overlay or epic refresh. A missing source for a task that
+does carry any of these delivery identities remains unknown and withholds work;
+the task's type or description never exempts recorded code from delivery.
+
 For a development worker close, the completion generation id becomes visible in
 the same database transaction as the `COMPLETED` transition. Git provenance is
 already retained before that transition. Delivery readers use this current id

@@ -181,6 +181,12 @@ proof. The project integration policy defaults to
 `cross_epic_prerequisites: default_branch`; an explicit `completed` value restores
 the legacy rule that completion alone releases cross-epic dependencies.
 
+A completed proof or chore prerequisite with no delivery request or source
+also releases its dependents, including siblings. It has no branch, PR,
+recorded commits, integration checkpoint, live origin or legacy artifact,
+so there is no Git source to deliver or use for a stack or epic refresh.
+Recorded code still needs delivery proof, including when its branch was deleted.
+
 Before starting a cross-epic dependent, preparation refreshes its epic from the
 default branch through a frozen train batch. Publication needs the epic's lease,
 checks on the exact candidate and attestation. Checks or an occupied lease keep
