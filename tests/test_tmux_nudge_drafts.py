@@ -131,6 +131,21 @@ def handle():
 
 
 class TestBackgroundNudgeDrafts:
+    @pytest.mark.parametrize("prefix", ["› ", "❯ ", "> ", "┃"])
+    @pytest.mark.parametrize("fields,reason", [
+        ({"attached": 1}, "client attached"),
+        ({"in_mode": 1}, "pane in copy mode"),
+        ({"cursor_y": 8}, "cursor outside pane"),
+        ({"prefix": ""}, "unknown prompt prefix"),
+    ])
+    async def test_refusal_names_the_guard_condition_without_typing(self, prefix, fields, reason):
+        composer = Composer(**({"prefix": prefix} | fields))
+        provider = provider_for(composer)
+        with pytest.raises(NotSubmitted, match=reason):
+            await provider.nudge(handle(), "Handle `aq message status msg-test --json`.")
+        assert composer.mutations == []
+        assert composer.submitted == []
+
     @pytest.mark.parametrize(
         "composer",
         [

@@ -57,8 +57,7 @@ class SupervisorRestartError(ValueError):
 #:
 #: * ``idle``     — live and quiet; safe to nudge.
 #: * ``busy``     — live and mid-turn; delivery engine skips this pass and
-#:                  lets the ``UserPromptSubmit`` inject hook catch the
-#:                  message at the next prompt boundary.
+#:                  retries at the next idle observation.
 #: * ``sleeping`` — a wake-able target (supervisor) with no live session.
 #: * ``absent``   — no live session and the messenger must not spawn one
 #:                  (task sessions are launched by the task lifecycle).
@@ -725,10 +724,12 @@ class SessionLens:
                 "; AQ text remains in the composer" if exc.composer_dirty else "",
             )
             return False
-        except CapabilityUnsupported:
-            # Row stays pending. The delivery engine retries with backoff.
+        except CapabilityUnsupported as exc:
+            self._record_nudge_failure(row.id, exc)
+            logger.warning("message nudge to %s (%s): %s", row.name, row.id, exc)
             return False
-        except Exception:
+        except Exception as exc:
+            self._record_nudge_failure(row.id, exc)
             logger.exception("nudge failed for %s", row.name)
             return False
         self._nudge_failures.pop(row.id, None)
@@ -745,7 +746,7 @@ class SessionLens:
         """The latest refused nudge for *session_id* since its last success."""
         return self._nudge_failures.get(session_id)
 
-    def _record_nudge_failure(self, session_id: str, exc: NotSubmitted) -> None:
+    def _record_nudge_failure(self, session_id: str, exc: Exception) -> None:
         if session_id not in self._nudge_failures and len(self._nudge_failures) >= 256:
             self._nudge_failures.pop(next(iter(self._nudge_failures)))
         self._nudge_failures[session_id] = {
@@ -758,7 +759,7 @@ class SessionLens:
             "reason_kind": (
                 str(exc.reason) if isinstance(exc, NudgeDeferred) else None
             ),
-            "composer_dirty": exc.composer_dirty,
+            "composer_dirty": getattr(exc, "composer_dirty", False),
         }
 
     async def tail_assistant_turn(
@@ -933,6 +934,12 @@ class SessionLens:
             return None, None
 
         if row is None:
+            return None, None
+        if kind == "session" and (
+            row.state not in {"starting", "running"} or row.desired_state != "running"
+        ):
+            # An immutable UUID must never fall through to a successor with
+            # the same runtime name. Named addresses may wake separately.
             return None, None
         handle = SessionHandle(
             name=row.name,

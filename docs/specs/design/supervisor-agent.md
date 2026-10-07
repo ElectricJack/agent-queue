@@ -247,8 +247,21 @@ exchange. Columns (schema detail in the implementation spec):
 
 ### 6.1 Delivery policy
 
-The delivery engine (a cascade step plus a `message.sent` subscriber) resolves the target
-to a concrete session and picks one of three paths:
+The delivery engine runs in one independent daemon service, started after session/token
+initialization and stopped before database shutdown. It resolves the target to a concrete
+session and picks one of three paths below. Scheduling, Git operations and patrol
+playbooks do not own its progress. A `message.sent` subscriber supplies a coalesced wake
+hint; pending database rows are authoritative, including at startup and when an event was
+missed. Passes run no faster than `messages.delivery_interval`. Disabled delivery performs
+no message work and resumes the durable backlog when enabled again.
+
+Each mailbox is visited once per pass even when it has messages from several projects;
+the first pending row supplies its project context. Each recipient has a 120-second
+budget, including cold start. Failure or timeout leaves undelivered rows retryable and
+does not abort other recipients. Transcript reply recovery has a separate 120-second
+budget. The scheduler retains recovery/notification maintenance but does not run a second
+delivery consumer. A direct cycle caller without the service retains the delivery seam.
+Concurrent engine passes are skipped while one is in flight.
 
 1. **Target session idle** → provider `nudge` for the first pending message only, as a
    single line pointing at its durable body (``Handle `aq message status <id> --json`.``);
@@ -271,12 +284,11 @@ to a concrete session and picks one of three paths:
    sleeping `on_demand` session first **wakes** it
    (session-runtime start with `--resume`); this is the "wakes on first message" behavior.
 2. **Target session busy (mid-turn)** → do not interrupt. The message waits and is
-   nudged on the first cycle that observes the session idle. This *was* a
+   nudged on the first delivery pass that observes the session idle. This *was* a
    `UserPromptSubmit` hook running `aq inbox --inject`; it was removed 2026-08-27 because
    the command was a stub, so it cost ~1.3 s per prompt and delivered nothing. The two
-   moments — "next prompt boundary" and "first idle observation" — are within one cascade
-   tick of each other, so the path is a latency optimization rather than a delivery
-   mechanism, and it should be reinstated only with a measurement behind it.
+   moments — "next prompt boundary" and "first idle observation" — are usually close;
+   prompt-boundary injection should be reinstated only with a measurement behind it.
 3. **Session starting** → pending messages ride into the first prompt via `aq prime`
    (prime content assembly is owned by the aq-surface spec; this spec only defines that
    undelivered messages are part of it, and that `archive_after_inject` rows are archived
@@ -285,6 +297,23 @@ to a concrete session and picks one of three paths:
 Idle/busy detection is **not** defined here: the engine consumes the session-runtime
 spec's activity signal (transcript in-turn state, A.6) through a narrow interface. Until
 that lands, the engine can only queue and prime-inject — an acceptable degraded mode.
+
+Session recipients may be immutable UUIDs or historical named supervisor addresses.
+A retired UUID is never redirected to a successor with the same name. The global
+supervisor has no project and can receive project-scoped messages without acquiring that
+project as its session scope. Profile recipients remain inbox/prime broadcasts; they do
+not identify a live session to wake. A per-project supervisor address does not silently
+become a global supervisor address.
+
+Wake logs identify the message and recipient, and distinguish refused from submitted.
+Terminal guard refusals name the observed condition (attached client, copy mode, unknown
+prompt prefix, or cursor outside the pane), retaining the existing guard behavior. All
+provider failures, including unsupported nudges, are available in session diagnostics;
+logs retain evidence across daemon restarts. A confirmed nudge stamps `delivered_at`,
+never `read_at`. Inbox injection exposes the body, explicit acknowledgement/reply stamps
+`read_at`, and neither stamp alone proves the requested work was performed. A process
+crash after submit but before the delivery CAS can repeat a pointer on restart: this is
+at-least-once transport, not an exactly-once handling guarantee.
 
 ### 6.2 Reply protocol
 

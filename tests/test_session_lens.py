@@ -616,6 +616,49 @@ class TestEnsureStarted:
 
 
 class TestNudge:
+    @pytest.mark.parametrize("harness", ["codex", "claude", "gemini", "opencode"])
+    @pytest.mark.parametrize("failure_kind", ["unsupported", "provider_error"])
+    async def test_provider_failure_is_visible_for_every_harness(
+        self, db, providers, lens, monkeypatch, caplog, harness, failure_kind
+    ):
+        from src.sessions.provider import Cap, CapabilityUnsupported
+
+        row, _ = await _seed_running_task(db, providers)
+        await db.update_session(row.id, harness=harness)
+        exc = (CapabilityUnsupported("fake", Cap.NUDGE) if failure_kind == "unsupported"
+               else RuntimeError("provider disconnected"))
+
+        async def refuse(handle, text):
+            raise exc
+
+        monkeypatch.setattr(providers.create("fake"), "nudge", refuse)
+        with caplog.at_level(logging.WARNING):
+            assert not await lens.nudge(kind="session", target_id=row.id,
+                                        project_id="proj1", text="message pointer")
+        assert lens.nudge_failure(row.id)["reason"] == str(exc)
+        assert row.name in caplog.text
+
+    async def test_global_uuid_is_resolved_without_a_project(self, db, providers, lens):
+        row, handle = await _seed_running_supervisor(db, providers, project_id=None)
+        assert await lens.nudge(kind="session", target_id=row.id,
+                                project_id="proj1", text="wake global")
+        assert providers.create("fake").sent_nudges == [(handle.name, "wake global")]
+
+    async def test_retired_uuid_cannot_nudge_same_name_successor(self, db, providers, lens):
+        row, _ = await _seed_running_task(db, providers)
+        await db.update_session(row.id, state="stopped", desired_state="stopped")
+        successor = SessionRecord(id="successor", name=row.name, project_id="proj1",
+                                  profile_id=row.profile_id, harness=row.harness,
+                                  provider=row.provider, lifecycle="named", work_dir=row.work_dir,
+                                  epoch="e2", started_at=row.started_at + 1,
+                                  instance_token="new-instance", state="running",
+                                  desired_state="running")
+        await db.create_session(successor)
+        assert not await lens.nudge(kind="session", target_id=row.id,
+                                    project_id="proj1", text="stale mail")
+        assert not await lens.ensure_started(kind="session", target_id=row.id, project_id="proj1")
+        assert providers.create("fake").sent_nudges == []
+
     async def test_nudge_delivers_and_records(self, db, providers, lens):
         row, handle = await _seed_running_task(db, providers)
         ok = await lens.nudge(kind="task", target_id=row.task_id, project_id="proj1", text="hello")
@@ -1002,7 +1045,7 @@ async def _seed_running_task(db, providers) -> tuple[SessionRecord, SessionHandl
 
 
 async def _seed_running_supervisor(
-    db, providers, *, project_id: str
+    db, providers, *, project_id: str | None
 ) -> tuple[SessionRecord, SessionHandle]:
     from src.sessions.provider import SessionSpec
 

@@ -1470,18 +1470,22 @@ class TmuxProvider(SessionProvider):
         try:
             before = await self._tmux("display-message", "-p", "-t", pane, fmt)
             x, y, width, height, visible, in_mode, attached = map(int, before.split())
-            if (
-                not prefix.strip()
-                or in_mode != 0
-                or attached != 0
-                or not 0 <= x < width
-                or not 0 <= y < height
-            ):
+            reasons = []
+            if not prefix.strip():
+                reasons.append("unknown prompt prefix")
+            if in_mode != 0:
+                reasons.append("pane in copy mode")
+            if attached != 0:
+                reasons.append("client attached")
+            if not 0 <= x < width or not 0 <= y < height:
+                reasons.append(f"cursor outside pane ({x},{y}; {width}x{height})")
+            if reasons:
                 # Copy mode, an attached client, or a layout with no known
                 # input line: a person is at this terminal.
                 return (
                     _ComposerRefusal(
-                        f"terminal {name!r} is busy or its input is unknown",
+                        f"terminal {name!r} is busy or its input is unknown: "
+                        + "; ".join(reasons),
                         NudgeReason.TERMINAL_BUSY,
                     ),
                     False,
