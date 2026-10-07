@@ -20,6 +20,14 @@ interface BaseEvent {
   project_id?: string | null;
 }
 
+export interface PoolRenamedEvent extends BaseEvent {
+  event_type: "pool.renamed";
+  profile_id: string;
+  old_name: string;
+  name: string;
+  backup_path: string;
+}
+
 // --- Task lifecycle ---
 
 export interface TaskStartedEvent extends BaseEvent {
@@ -510,4 +518,5 @@ export type NotifyEvent =
   | ReviewWithdrawnEvent
   | ReviewCommentedEvent
   | MetricsTickEvent
-  | DashboardStateChangedEvent;
+  | DashboardStateChangedEvent
+  | PoolRenamedEvent;

@@ -70,6 +70,14 @@ def test_sparse_workspace_pool_and_profile_rows_render_without_keyerror():
     assert "Workspaces" in out
 
 
+def test_pool_status_shows_display_name_and_stable_id_as_literal_text():
+    out = _render("pool_status", {"pools": [{
+        "profile_id": "rung", "name": "Space Bunny [bold]",
+    }]})
+    assert "Space Bunny [bold]" in out
+    assert "rung" in out
+
+
 def test_task_progress_renders_a_raw_response_dict():
     """`aq task progress` crashed with AttributeError: the ``task_progress``
     spec had no proxy, so ``_render_progress`` got the raw response dict and

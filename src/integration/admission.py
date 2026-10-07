@@ -338,8 +338,12 @@ class AdmissionSnapshot:
         return self.inputs == current[-1]
 
 
-async def observe_admission(db, candidate_ids, service):
-    """One batch for readiness, pool demand, explanation and actual claims."""
+async def observe_admission(db, candidate_ids, service, *, cached_only=False):
+    """One batch for readiness, pool demand, explanation and actual claims.
+
+    Only diagnostics set ``cached_only``. Writers retain fresh Git observations
+    and remote-ref guards; both paths recheck the current database inputs.
+    """
     candidate_ids = set(candidate_ids)
     async with db._engine.connect() as conn:
         dev_ids, required, requests, obsolete, repo_rows, inputs = await _inputs(
@@ -360,7 +364,9 @@ async def observe_admission(db, candidate_ids, service):
             continue  # Missing/wrong configuration withholds the prerequisite.
         try:
             snapshot = await service.delivery_observer.snapshot(
-                DeliveryTarget(project_id, repo_id, repo["url"], target)
+                DeliveryTarget(project_id, repo_id, repo["url"], target),
+                **({"max_age": service.delivery_observer.READ_MAX_AGE, "cached_only": True}
+                   if cached_only else {}),
             )
             batch.snapshots.append(snapshot)
             scoped = [
@@ -395,6 +401,10 @@ async def observe_admission(db, candidate_ids, service):
     # A moving target/generation never produces a usable allowed set. Callers
     # retry snapshots; they never write this answer back into the database.
     for snapshot in batch.snapshots:
+        if cached_only:
+            # Display pins the last observed target OID, as graph reads do.
+            # Remote freshness is a writer's guard, not a diagnostic fetch.
+            continue
         if not await snapshot.is_fresh():
             batch.changed |= snapshot.error is None
             for task_id, deps in required.items():

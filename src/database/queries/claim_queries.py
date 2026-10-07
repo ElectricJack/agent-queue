@@ -507,7 +507,7 @@ class ClaimQueryMixin:
     """
 
     async def claim_frontier_exclusions(
-        self, task_id: str, *, router_ready: bool | None = None
+        self, task_id: str, *, router_ready: bool | None = None, cached_only: bool = False,
     ) -> list[dict]:
         """Evaluate the real claim filters for one READY task, without scheduler guesses.
 
@@ -516,7 +516,7 @@ class ClaimQueryMixin:
         """
         from src.integration.delivery_observer import hierarchy_frontier_modes
 
-        modes = await hierarchy_frontier_modes(self, task_id=task_id)
+        modes = await hierarchy_frontier_modes(self, task_id=task_id, cached_only=cached_only)
         predicates = claim_frontier_predicates(modes)
         if router_ready is not None:
             predicates["route_not_claimable"] = route_claimable(router_ready)
@@ -557,6 +557,16 @@ class ClaimQueryMixin:
                 "epic_id": parent, "detail": f"Prerequisite {tid} (epic {parent or tid}) "
                 "is not proven on the default branch"}
                 for tid, parent in sources if mode is None or tid not in mode.default_prerequisite_ids)
+        if cached_only:
+            for exclusion in exclusions:
+                if exclusion["code"] in {
+                    "frontier_sibling_prerequisite_not_delivered",
+                    "frontier_prerequisite_not_on_default_branch",
+                    "prerequisite_not_on_default_branch",
+                }:
+                    exclusion["detail"] += (
+                        "; delivery read is cache-only; missing or stale evidence withholds work"
+                    )
         return exclusions
 
     async def take_claim_slot(self, conn, session_id: str, *, now: float, cap: int | None):

@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
 import { usePoolScale, usePoolStatus, useProfiles } from "../../api/hooks";
 import { scaleRequest, validateBounds, type BoundsDraft } from "./PoolScaleFields";
-import { isPoolProfile, poolAddress } from "./pools";
+import { isPoolProfile, poolAddress, poolDisplayName } from "./pools";
 
 const inputClass = "mt-1 w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none";
 
@@ -96,7 +96,7 @@ export default function AddPool({ onCreated, onCancel }: {
       )}
       {existing && (
         <p role="status" className="text-xs text-gray-400">
-          {profileId} already runs a pool ({existing.desired} desired, {existing.running_busy} busy
+          {poolDisplayName(existing)} already runs a pool ({existing.desired} desired, {existing.running_busy} busy
           across {existing.projects?.length ?? 0} project{(existing.projects?.length ?? 0) === 1 ? "" : "s"}).
           Saving updates its bounds rather than adding a second pool.
         </p>
