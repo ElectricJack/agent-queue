@@ -232,6 +232,74 @@ async def test_contained_candidate_settles_without_checks_or_repair():
     assert checks.requests == [] and repair.calls == []
 
 
+async def test_post_delivery_epic_snapshot_does_not_reuse_an_older_sibling_fetch(setup, tmp_path):
+    from src.integration.git_truth import GitTruth
+
+    _db, ops, _subject, _fence, repo, base, head, _green = setup
+    epic = TrainTarget("p", "r", "refs/heads/epic", kind="epic")
+    await ops.push(repo, epic.target_ref, base, "")
+    writer = tmp_path / "writer.git"
+    await ops.git._arun(["clone", "--bare", str(repo.store), str(writer)], cwd=str(tmp_path))
+    truth = GitTruth(ops.git, share_fetches=True)
+    fetch = ops.git.afetch_origin
+    entered, release, resnapshot = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def blocked_sibling_fetch(*args, **kwargs):
+        await fetch(*args, **kwargs)
+        if ops.git.afetch_origin.await_count == 2:
+            entered.set()
+            await release.wait()
+
+    ops.git.afetch_origin = AsyncMock(side_effect=blocked_sibling_fetch)
+
+    async def snapshot_for(target):
+        return await truth.snapshot(
+            str(repo.store), project_id="p", repository_id="r",
+            repository_url=str(ops.git.remote_path), target_ref=target.target_ref,
+        )
+
+    epic_reads = 0
+
+    async def epic_snapshot():
+        nonlocal epic_reads
+        epic_reads += 1
+        if epic_reads == 2:
+            resnapshot.set()
+        return await snapshot_for(epic)
+
+    siblings = []
+
+    async def deliver(batch, members, snapshot):
+        assert snapshot.target_oid == base
+        siblings.append(asyncio.create_task(snapshot_for(ROOT)))
+        await entered.wait()
+        await ops.push(replace(repo, store=writer), epic.target_ref, head, base)
+        return BatchObservation("delivered", head, head)
+
+    completion_heads = []
+
+    async def complete_epic(snapshot):
+        completion_heads.append(snapshot.target_oid)
+        assert await snapshot.is_fresh()
+        return ({"blocking": False, "outcome": "completed", "head": snapshot.target_oid},)
+
+    batches = Batches({epic.key: (batch(ref=epic.target_ref), MEMBERS)})
+    t = train(Targets(epic), batches, {epic.key: TrainLane(
+        snapshot=epic_snapshot, service=SimpleNamespace(visit=deliver),
+        checks=CandidateChecks.fixed(Checks()), complete_epic=complete_epic,
+    )})
+    visit_task = asyncio.create_task(t.visit(epic))
+    await resnapshot.wait()
+    release.set()
+    visit = await visit_task
+    [sibling] = await asyncio.gather(*siblings)
+    assert (visit.state, completion_heads) == ("delivered", [head])
+    assert visit.detail["epic_completions"][0]["head"] == head
+    assert sibling.for_target(epic.target_ref).target_oid == base
+    assert ops.git.afetch_origin.await_count == 3
+    assert not truth._fetches
+
+
 async def test_green_exact_candidate_publishes_within_the_visit():
     service, checks = Service("testing", "delivered"), Checks(ChecksState.GREEN)
     batches = Batches({ROOT.key: (batch(), MEMBERS)})
