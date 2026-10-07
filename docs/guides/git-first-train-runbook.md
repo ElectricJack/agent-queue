@@ -199,10 +199,14 @@ logs the completed timing breakdown under `src.integration.train.timing`,
 including failed and timed-out visits. A long `select_batch` or `settle_epic`
 can include admission or epic-head check reads as well as Git containment work.
 
-Overlapping targets of one project/repository share an in-flight fetch and pin
-their own target OIDs from its immutable ref map. Setup does not fetch again.
-A visit arriving after that observation completes fetches afresh; this is not
-a time-based freshness cache. Targets in different repositories remain independent.
+Overlapping targets of one project/repository share a fetch only if it started
+after they requested their snapshots, and pin their own target OIDs from its
+immutable ref map. Callers arriving during a fetch wait for a shared successor,
+so a burst during one fetch needs at most two fetches. A post-delivery snapshot
+therefore observes a fetch started after publication. Unexpected fetch failures
+and cancellation propagate to all waiting readers without repeated GitHub calls.
+Setup does not fetch again; each later visit fetches afresh. Targets in different
+repositories remain independent.
 
 ## Reading blockers
 

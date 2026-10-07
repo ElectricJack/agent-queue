@@ -1431,7 +1431,7 @@
       ]
     }
   },
-  "digest": "sha256:735045fae9b49b5c1561516851ec4bba97465c7bccd8b3a3ac344fb7c32bb5fd",
+  "digest": "sha256:9aea38fdd68115722d2b09d94615587955ce17d6744cbbc4a43fd019ba68172c",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7756,6 +7756,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
         "src.integration.delivery_truth",
