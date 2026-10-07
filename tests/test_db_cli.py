@@ -489,6 +489,9 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         await conn.execute(text("UPDATE alembic_version SET version_num = :rev"), {"rev": older})
         await conn.execute(text("CREATE TABLE integration_batches (id text PRIMARY KEY)"))
         await conn.execute(text("INSERT INTO integration_batches VALUES ('original')"))
+        # The schema the head migration (a00000000085) creates is absent at
+        # its down revision; keep this in step when the head moves.
+        await conn.execute(text("CREATE TABLE projects (id text PRIMARY KEY)"))
     dump = tmp_path / "older.dump"
     assert (await invoke("db", "backup", str(dump))).exit_code == 0
     clients = await backup.postgres_clients(config.database.url)
@@ -526,7 +529,10 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
             await conn.scalar(text("SELECT version_num FROM alembic_version"))
             == alembic_head_revisions()[0]
         )
-        assert await conn.scalar(text("SELECT baseline_generation FROM integration_batches")) == 0
+        assert await conn.scalar(text(
+            "SELECT count(*) FROM information_schema.columns "
+            "WHERE table_name='projects' AND column_name='promotion_flow'"
+        )) == 1
         assert await conn.scalar(text("SELECT id FROM tasks")) == "original"
 
 
