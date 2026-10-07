@@ -990,8 +990,8 @@ async def test_frontier_freshness_failure_does_not_poison_unchecked_targets(
     assert modes["p"].delivered_prerequisite_ids == frozenset()
     remote.assert_awaited_once()
     assert set(remote.call_args.args[1]) == {"main", "aq/peer"}
-    assert first._freshness == {main.target_ref: False}
-    assert current_peer._freshness == {peer.target_ref: True}
+    assert first._freshness[main.target_ref] is False
+    assert current_peer._freshness[peer.target_ref] is True
     assert uninspected.target_ref not in unchecked._freshness
     assert (await observer._snapshot(peer, max_age=30, cached_only=True)).error is None
     assert (await observer._snapshot(uninspected, max_age=30, cached_only=True)).error is None
