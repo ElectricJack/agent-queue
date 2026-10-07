@@ -135,6 +135,16 @@ def ordered_members(
     return tuple(result)
 
 
+class SupersedeMemberUnavailable(ValueError):
+    """A refreshed frozen member has no unambiguous task identity to audit."""
+
+    def __init__(self, task_id: str, *, ambiguous: bool = False):
+        self.task_id = task_id
+        self.code = "stack_member_ambiguous" if ambiguous else "stack_member_missing"
+        detail = "appears in both tasks and archived_tasks" if ambiguous else "has no task row"
+        super().__init__(f"Cannot supersede: refreshed member {task_id} {detail}")
+
+
 class BatchStore:
     """Intent/input writes invoked by commands; legacy columns retire at stage four."""
 
@@ -372,7 +382,11 @@ class BatchStore:
                 select(table.c.project_id).where(table.c.id == task_id)
                 for table in (tasks, archived_tasks)
             )))).scalars().all()
-            if member is None or source_projects != [batch.project_id]:
+            if member is None:
+                raise ValueError("superseded member does not belong to the frozen batch project")
+            if len(source_projects) != 1:
+                raise SupersedeMemberUnavailable(task_id, ambiguous=bool(source_projects))
+            if source_projects != [batch.project_id]:
                 raise ValueError("superseded member does not belong to the frozen batch project")
             instruction = {"batch_id": batch.id, "project_id": batch.project_id,
                            "task_id": task_id, "replacement_batch_id": None,

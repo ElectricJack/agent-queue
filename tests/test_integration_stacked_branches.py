@@ -6,11 +6,19 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.tables import task_branch_origins, task_integration_checkpoints, tasks
+from src.database.tables import (
+    archived_tasks,
+    events,
+    integration_batches,
+    task_branch_origins,
+    task_integration_checkpoints,
+    tasks,
+)
 from src.git.github_contracts import GitHubRepositoryBinding
+from src.integration.batches import SupersedeMemberUnavailable, ejection_instruction
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.stacked_branches import StackedBranches, observe_stacks, stacked_policy
 from src.integration.train import TrainTarget
@@ -18,7 +26,7 @@ from src.integration.train_sources import DatabaseBatches, _never_trusted
 from src.models import Task, TaskCompletion, TaskStatus
 from tests.test_delivery_consumers import close, git
 from tests.test_integration_gitops import LocalGit
-from tests.test_integration_train_sources import completed, snapshot, world  # noqa: F401
+from tests.test_integration_train_sources import completed, lane, snapshot, world  # noqa: F401
 
 
 async def generation(db, tid):
@@ -173,6 +181,110 @@ async def test_changed_prerequisite_merges_preserves_child_and_rotates_completio
     await stack.service.prepare("child")
     assert (await stack_record(stack))["refreshed_head"] == head
     assert await stack.service.refresh("child", stack.gitops) == "unchanged"
+
+
+@pytest.mark.parametrize("unavailable", ["missing", "ambiguous"])
+async def test_unavailable_refreshed_member_preserves_batch_and_other_targets_progress(
+    stack, unavailable,
+):
+    target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    train, _, _ = lane(stack.world, LocalGit(stack.origin.url), target=target)
+    visit = await train.visit(target)
+    assert visit.state == "testing"
+    service = (await train.lane_for(target)).service
+    store = service.store
+    batch = await store.get(visit.batch_id)
+    frozen = await store.members(batch.id)
+    assert {member.task_id for member in frozen} == {"first", "child"}
+
+    next_head = stack.origin.work("first", "revision")
+    await close(stack.db, "first", [next_head], close_id="first-revised", origin=stack.origin)
+    await checkpoint(stack.db, "first", next_head)
+    assert await stack.service.refresh("child", stack.gitops) == "refreshed"
+    refreshed = (await stack_record(stack))["refreshed_head"]
+    async with stack.db.immediate() as conn:
+        task_row = dict((await conn.execute(select(tasks).where(
+            tasks.c.id == "child",
+        ))).mappings().one())
+        if unavailable == "missing":
+            await stack.db._delete_one("child", conn=conn)
+        else:
+            await conn.execute(insert(archived_tasks).values(
+                **{key: value for key, value in task_row.items() if key in archived_tasks.c},
+                archived_at=1.0,
+            ))
+        original = dict((await conn.execute(select(integration_batches).where(
+            integration_batches.c.id == batch.id,
+        ))).mappings().one())
+        assert await conn.scalar(select(task_branch_origins.c.stack_snapshot).where(
+            task_branch_origins.c.task_id == "child",
+        ))
+
+    code = "stack_member_" + unavailable
+    with pytest.raises(SupersedeMemberUnavailable) as refusal:
+        await store.supersede(batch, "child", reason="stacked source was refreshed")
+    assert refusal.value.code == code and refusal.value.task_id == "child"
+    for _ in range(2):
+        blocked = await train.visit(target)
+        assert blocked.state == "blocked" and blocked.batch_id is None
+        [blocker] = blocked.detail["blockers"]
+        assert blocker["code"] == code
+        assert blocker["task_id"] == "child" and blocker["batch_id"] == batch.id
+        assert f"aq integration abort-batch {batch.id}" in blocker["detail"]
+        assert "frozen inputs withheld" in blocker["detail"]
+
+    # A daemon tick can keep visiting the held target while batching another.
+    await completed(stack.world, "independent")
+    root = TrainTarget("p", "r", "refs/heads/main", "root")
+    root_train, _, _ = lane(stack.world, LocalGit(stack.origin.url))
+    epic_lane, root_lane = train.lane_for, root_train.lane_for
+
+    async def lane_for(requested):
+        return await (epic_lane(requested) if requested == target else root_lane(requested))
+
+    train.lane_for = lane_for
+    await train.tick()
+    await train.drain()
+    status = {row["target_ref"]: row for row in train.status()}
+    assert status[target.target_ref]["state"] == "blocked"
+    assert status[root.target_ref]["state"] == "testing"
+    assert all(row["errors"] == 0 for row in status.values())
+    assert [member.task_id for member in await store.members(
+        status[root.target_ref]["batch_id"],
+    )] == ["independent"]
+    async with stack.db._engine.connect() as conn:
+        unchanged = dict((await conn.execute(select(integration_batches).where(
+            integration_batches.c.id == batch.id,
+        ))).mappings().one())
+        assert unchanged == original
+        assert not await conn.scalar(select(ejection_instruction(batch.id)))
+        assert not await conn.scalar(select(events.c.id).where(
+            events.c.event_type == "integration.batch_superseded",
+        ))
+    assert await store.members(batch.id) == frozen
+    assert git(stack.origin.url, "rev-parse", target.target_ref) == stack.base
+
+    # Restoring an unambiguous identity lets a later visit audit the release.
+    async with stack.db.immediate() as conn:
+        if unavailable == "missing":
+            await conn.execute(insert(tasks).values(**task_row))
+        else:
+            await conn.execute(delete(archived_tasks).where(archived_tasks.c.id == "child"))
+    if unavailable == "missing":
+        await stack.db.add_dependency("child", "first")
+        await close(stack.db, "child", [refreshed], close_id="child-restored", origin=stack.origin)
+    recovered = await train.visit(target)
+    assert recovered.state == "testing" and recovered.batch_id != batch.id
+    assert {member.task_id for member in await store.members(recovered.batch_id)} == {
+        "first", "child",
+    }
+    assert (await store.get(batch.id)).intent == "aborted"
+    async with stack.db._engine.connect() as conn:
+        assert await conn.scalar(select(ejection_instruction(batch.id)))
+        record = await conn.scalar(select(integration_batches.c.ejection_record).where(
+            integration_batches.c.id == batch.id,
+        ))
+    assert record["task_id"] == "child" and record["operator_id"] == "service:integration-train"
 
 
 async def test_reclosed_dependent_retains_its_new_recorded_completion(stack):

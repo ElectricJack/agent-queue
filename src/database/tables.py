@@ -3471,7 +3471,7 @@ integration_batches = Table(
     Column("ci_evidence_id", Text, nullable=True),
     Column("final_main_sha", Text, nullable=True),
     Column("human_abort_reason", Text, nullable=True),
-    # Only the authorized eject command writes this release instruction.
+    # Only authorized eject or daemon supersede writes this release instruction.
     # It outlives task metadata and never changes the frozen source manifest.
     Column("ejection_record", JSONB(none_as_null=True), nullable=True),
     Column("policy_snapshot", JSON, nullable=False),
