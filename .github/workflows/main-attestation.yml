@@ -1,13 +1,13 @@
 name: Main attestation
-# The break-glass audit (App-mode integration train spec §7.2). A train
-# promotion moves `main` to a candidate the daemon already attested, so this
-# workflow only verifies that attestation and runs no second CI. A push to
-# `main` without a valid attestation runs the full suite after the fact. With
+# Branch audit: dev requires an integration attestation; staging and main
+# require their promotion step's attestation. An attested promotion arrives
+# already tested, so this workflow verifies it without a second CI run.
+# An unattested push runs the full suite after the fact. With
 # the two Actions variables unset the repository is not in App mode yet, and
 # nothing runs.
 on:
   push:
-    branches: [main]
+    branches: [dev, staging, main]
 permissions:
   contents: read
   checks: read
@@ -32,6 +32,9 @@ jobs:
           SHA: ${{ github.sha }}
           APP_ID: ${{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}
           CHECK_VERSION: ${{ vars.AQ_INTEGRATION_REQUIRED_CHECK_VERSION }}
+          ATTESTATION_NAME: ${{ github.ref_name == 'staging' && 'Agent Queue Promotion Attestation (staging)' || github.ref_name == 'main' && 'Agent Queue Promotion Attestation (release)' || 'Agent Queue Integration Attestation' }}
+          STEP: ${{ github.ref_name == 'staging' && 'staging' || github.ref_name == 'main' && 'release' || '' }}
+          TARGET_REF: ${{ github.ref }}
         run: python3 src/integration/hosted_attestation.py
   unattested-ci:
     needs: attestation

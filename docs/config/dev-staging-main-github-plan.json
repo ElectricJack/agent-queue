@@ -1,0 +1,280 @@
+{
+  "schema": "aq.github-activation-plan.v1",
+  "repository": "ElectricJack/agent-queue",
+  "repository_id": 1160639300,
+  "observed_at": "2026-10-07T20:25:38.190627+00:00",
+  "observed": {
+    "default_branch": "main",
+    "delivery_branches": [
+      "main"
+    ],
+    "main_sha": "259c0f56ecf9a9d9e3c0a18d31df9b67264eea3f",
+    "rulesets": [
+      {
+        "id": 21960669,
+        "name": "Basic Protection",
+        "target": "branch",
+        "source_type": "Repository",
+        "source": "ElectricJack/agent-queue",
+        "enforcement": "active",
+        "conditions": {
+          "ref_name": {
+            "exclude": [],
+            "include": [
+              "refs/heads/main"
+            ]
+          }
+        },
+        "rules": [
+          {
+            "type": "deletion"
+          },
+          {
+            "type": "non_fast_forward"
+          }
+        ],
+        "node_id": "RRS_lACqUmVwb3NpdG9yec5FLfNEzgFPF90",
+        "created_at": "2026-08-31T14:46:56.468-07:00",
+        "updated_at": "2026-08-31T14:47:26.912-07:00",
+        "bypass_actors": [],
+        "current_user_can_bypass": "never",
+        "_links": {
+          "self": {
+            "href": "https://api.github.com/repos/ElectricJack/agent-queue/rulesets/21960669"
+          },
+          "html": {
+            "href": "https://github.com/ElectricJack/agent-queue/rules/21960669"
+          }
+        }
+      },
+      {
+        "id": 24002443,
+        "name": "Train-only main",
+        "target": "branch",
+        "source_type": "Repository",
+        "source": "ElectricJack/agent-queue",
+        "enforcement": "active",
+        "conditions": {
+          "ref_name": {
+            "exclude": [],
+            "include": [
+              "refs/heads/main"
+            ]
+          }
+        },
+        "rules": [
+          {
+            "type": "required_status_checks",
+            "parameters": {
+              "strict_required_status_checks_policy": false,
+              "do_not_enforce_on_create": false,
+              "required_status_checks": [
+                {
+                  "context": "Agent Queue Integration Attestation",
+                  "integration_id": 5075923
+                }
+              ]
+            }
+          }
+        ],
+        "node_id": "RRS_lACqUmVwb3NpdG9yec5FLfNEzgFuP4s",
+        "created_at": "2026-09-25T07:23:02.745-07:00",
+        "updated_at": "2026-10-07T02:50:05.680-07:00",
+        "bypass_actors": [],
+        "current_user_can_bypass": "never",
+        "_links": {
+          "self": {
+            "href": "https://api.github.com/repos/ElectricJack/agent-queue/rulesets/24002443"
+          },
+          "html": {
+            "href": "https://github.com/ElectricJack/agent-queue/rules/24002443"
+          }
+        }
+      }
+    ],
+    "variables": [
+      {
+        "name": "AQ_INTEGRATION_ATTESTATION_APP_ID",
+        "value": "5075923",
+        "created_at": "2026-09-29T06:36:05Z",
+        "updated_at": "2026-09-29T06:36:05Z"
+      },
+      {
+        "name": "AQ_INTEGRATION_REQUIRED_CHECK_VERSION",
+        "value": "ci-4c6e0c2a989c",
+        "created_at": "2026-09-29T06:36:05Z",
+        "updated_at": "2026-09-29T06:36:05Z"
+      }
+    ]
+  },
+  "operations": [
+    {
+      "id": "correct-check-version",
+      "method": "PATCH",
+      "path": "repos/ElectricJack/agent-queue/actions/variables/AQ_INTEGRATION_REQUIRED_CHECK_VERSION",
+      "body": {
+        "name": "AQ_INTEGRATION_REQUIRED_CHECK_VERSION",
+        "value": "ci-4f7c710bba01"
+      }
+    },
+    {
+      "id": "seed-dev",
+      "method": "POST",
+      "path": "repos/ElectricJack/agent-queue/git/refs",
+      "body": {
+        "ref": "refs/heads/dev",
+        "sha": "${LANDED_MAIN_SHA}"
+      },
+      "precondition": "Final takeover commit has landed on main; dev does not exist."
+    },
+    {
+      "id": "seed-staging",
+      "method": "POST",
+      "path": "repos/ElectricJack/agent-queue/git/refs",
+      "body": {
+        "ref": "refs/heads/staging",
+        "sha": "${LANDED_MAIN_SHA}"
+      },
+      "precondition": "Final takeover commit has landed on main; staging does not exist."
+    },
+    {
+      "id": "protect-delivery-branches",
+      "method": "PUT",
+      "path": "repos/ElectricJack/agent-queue/rulesets/21960669",
+      "body": {
+        "name": "Basic Protection",
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": {
+          "ref_name": {
+            "exclude": [],
+            "include": [
+              "refs/heads/dev",
+              "refs/heads/staging",
+              "refs/heads/main"
+            ]
+          }
+        },
+        "rules": [
+          {
+            "type": "deletion"
+          },
+          {
+            "type": "non_fast_forward"
+          }
+        ],
+        "bypass_actors": []
+      }
+    },
+    {
+      "id": "require-dev-integration-proof",
+      "method": "POST",
+      "path": "repos/ElectricJack/agent-queue/rulesets",
+      "body": {
+        "name": "Train-only dev",
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": {
+          "ref_name": {
+            "include": [
+              "refs/heads/dev"
+            ],
+            "exclude": []
+          }
+        },
+        "rules": [
+          {
+            "type": "required_status_checks",
+            "parameters": {
+              "strict_required_status_checks_policy": false,
+              "do_not_enforce_on_create": false,
+              "required_status_checks": [
+                {
+                  "context": "Agent Queue Integration Attestation",
+                  "integration_id": 5075923
+                }
+              ]
+            }
+          }
+        ],
+        "bypass_actors": []
+      }
+    },
+    {
+      "id": "require-staging-promotion-proof",
+      "method": "POST",
+      "path": "repos/ElectricJack/agent-queue/rulesets",
+      "body": {
+        "name": "Promotion-only staging",
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": {
+          "ref_name": {
+            "include": [
+              "refs/heads/staging"
+            ],
+            "exclude": []
+          }
+        },
+        "rules": [
+          {
+            "type": "required_status_checks",
+            "parameters": {
+              "strict_required_status_checks_policy": false,
+              "do_not_enforce_on_create": false,
+              "required_status_checks": [
+                {
+                  "context": "Agent Queue Promotion Attestation (staging)",
+                  "integration_id": 5075923
+                }
+              ]
+            }
+          }
+        ],
+        "bypass_actors": []
+      }
+    },
+    {
+      "id": "replace-main-proof",
+      "method": "PUT",
+      "path": "repos/ElectricJack/agent-queue/rulesets/24002443",
+      "body": {
+        "name": "Promotion-only main",
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": {
+          "ref_name": {
+            "include": [
+              "refs/heads/main"
+            ],
+            "exclude": []
+          }
+        },
+        "rules": [
+          {
+            "type": "required_status_checks",
+            "parameters": {
+              "strict_required_status_checks_policy": false,
+              "do_not_enforce_on_create": false,
+              "required_status_checks": [
+                {
+                  "context": "Agent Queue Promotion Attestation (release)",
+                  "integration_id": 5075923
+                }
+              ]
+            }
+          }
+        ],
+        "bypass_actors": []
+      }
+    },
+    {
+      "id": "set-default-branch",
+      "method": "PATCH",
+      "path": "repos/ElectricJack/agent-queue",
+      "body": {
+        "default_branch": "dev"
+      }
+    }
+  ]
+}

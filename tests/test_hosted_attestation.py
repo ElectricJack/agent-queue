@@ -228,13 +228,17 @@ def test_promotion_payload_roundtrips_independently_of_integration_payload():
         AttestationPayload.from_canonical_bytes(payload.canonical_bytes())
 
 
+@pytest.mark.parametrize("step,target", [("staging", "staging"), ("release", "main")])
 @pytest.mark.parametrize("proof", ["promotion", "integration", "other-step"])
-def test_step_verifier_accepts_only_this_steps_promotion_proof(proof):
-    payload = _promotion_payload("staging" if proof == "other-step" else "release")
-    name = "Agent Queue Promotion Attestation (release)"
+def test_step_verifier_accepts_only_this_steps_promotion_proof(proof, step, target):
+    other_step = "release" if step == "staging" else "staging"
+    target_ref = f"refs/heads/{target}"
+    payload = _promotion_payload(other_step if proof == "other-step" else step,
+                                 target_ref=target_ref)
+    name = f"Agent Queue Promotion Attestation ({step})"
     github = FakeGitHub(name=name)
     _publish(github, _payload() if proof == "integration" else payload, name=name)
-    verdict = hosted.verify(_env(ATTESTATION_NAME=name, STEP="release", TARGET_REF="refs/heads/main"),
+    verdict = hosted.verify(_env(ATTESTATION_NAME=name, STEP=step, TARGET_REF=target_ref),
                             github)
     assert verdict.configured and verdict.attested is (proof == "promotion"), verdict
 

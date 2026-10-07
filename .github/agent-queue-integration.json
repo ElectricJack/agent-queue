@@ -4,6 +4,10 @@
   "canonical_repository_id": "agent-queue2",
   "ci_producer_app_id": 15368,
   "full_name": "ElectricJack/agent-queue",
+  "promotion_attestation_names": [
+    "Agent Queue Promotion Attestation (staging)",
+    "Agent Queue Promotion Attestation (release)"
+  ],
   "repository_id": 1160639300,
   "required_checks": {
     "names": [

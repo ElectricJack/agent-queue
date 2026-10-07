@@ -31,7 +31,10 @@ POLICY_PATH = REPO / "docs/config/agent-queue-train-policy.json"
 EXAMPLE_PATH = REPO / ".github/agent-queue-integration.example.json"
 MANIFEST_PATH = REPO / trust_manifest.TRUST_MANIFEST_PATH
 SHA = "a" * 40
-FLOW = [{"gate": {"attestation": "Agent Queue Promotion Attestation (release)"}}]
+FLOW = [
+    {"gate": {"attestation": "Agent Queue Promotion Attestation (staging)"}},
+    {"gate": {"attestation": "Agent Queue Promotion Attestation (release)"}},
+]
 
 #: Spec §9.2 step 3: agent-queue's committed manifest, the text
 #: ``aq integration trust-manifest agent-queue --policy
@@ -46,13 +49,14 @@ def _policy() -> dict:
     return json.loads(POLICY_PATH.read_text())
 
 
-def _agent_queue_manifest(policy=None) -> dict:
+def _agent_queue_manifest(policy=None, *, promotion_flow=FLOW) -> dict:
     return trust_manifest.manifest_for_policy(
         policy or _policy(),
         canonical_repository_id="agent-queue2",
         repository_id=1160639300,
         full_name="ElectricJack/agent-queue",
         attestation_app_id=5075923,
+        promotion_flow=promotion_flow,
     )
 
 
@@ -85,18 +89,19 @@ def test_the_committed_manifest_is_the_builder_output_for_the_reviewed_policy():
 
 
 def test_promotion_trust_is_explicit_without_changing_existing_manifests():
-    original = _agent_queue_manifest()
+    original = _agent_queue_manifest(promotion_flow=())
     assert "promotion_attestation_names" not in original
     assert "check_sets" not in original
-    assert trust_manifest.compare(original, AGENT_QUEUE_MANIFEST).status == "ok"
+    original_text = trust_manifest.canonical_text(original)
+    assert trust_manifest.compare(original, original_text).status == "ok"
     extended = trust_manifest.manifest_for_policy(
         _policy(), canonical_repository_id="agent-queue2", repository_id=1160639300,
         full_name="ElectricJack/agent-queue", attestation_app_id=5075923,
         promotion_flow=FLOW, check_sets={"release": ["release-unit"]},
     )
-    assert extended["promotion_attestation_names"] == [FLOW[0]["gate"]["attestation"]]
+    assert extended["promotion_attestation_names"] == [step["gate"]["attestation"] for step in FLOW]
     assert extended["check_sets"] == {"release": ["release-unit"]}
-    result = trust_manifest.compare(extended, AGENT_QUEUE_MANIFEST)
+    result = trust_manifest.compare(extended, original_text)
     assert result.status == "fail"
     assert {diff.field for diff in result.diff} == {"promotion_attestation_names", "check_sets"}
     assert all(not diff.committed_present for diff in result.diff)
@@ -306,6 +311,7 @@ def _handler(client, *, bound_policy=None, designated="agent-queue2"):
         id="agent-queue",
         hierarchical_integration_policy=bound_policy,
         integration_repository_id=designated,
+        promotion_flow=FLOW,
     )
     repository = SimpleNamespace(
         id="agent-queue2",
