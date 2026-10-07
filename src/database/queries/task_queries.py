@@ -179,6 +179,7 @@ _READY_REASONS = {
     # was promoted: the task goes back on the frontier to wait for the
     # owner-recovery sweep, exactly as a slot-reset failure does.
     "branch_fenced": "released",
+    "stack_prerequisites_conflict": "released",
     "prepare_timeout": "released",
     # provider-failover D13: a launch or session its provider killed hands the
     # task back; the sweep resumes a provider pause early.

@@ -1431,7 +1431,7 @@
       ]
     }
   },
-  "digest": "sha256:08fb1bb9bcac287e1877d291af51f9e6dcce5c0b22b795fd279306b2a6f3b6ba",
+  "digest": "sha256:e42e0c3a65ffbf888e6062de1271251608b0bc6a9538436d4e11c77ede31f289",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3101,6 +3101,7 @@
         "src.event_bus",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
         "src.integration.admission",
         "src.integration.batches",
         "src.integration.delivery_observer",
@@ -3112,6 +3113,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.provenance",
+        "src.integration.regeneration",
         "src.integration.repair",
         "src.integration.stacked_branches",
         "src.integration.status",
@@ -8681,10 +8683,13 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.database.queries.claim_queries",
         "src.database.tables",
         "src.git.github_contracts",
         "src.integration.batches",
+        "src.integration.branch_materialization",
         "src.integration.gitops",
+        "src.integration.hierarchy",
         "src.integration.stacked_branches",
         "src.integration.train",
         "src.integration.train_controls",
@@ -16815,6 +16820,7 @@
         "src.git.manager",
         "src.integration.models",
         "src.integration.ownership",
+        "src.integration.stacked_branches",
         "src.models",
         "src.orchestrator"
       ],

@@ -1,5 +1,7 @@
 """Stacked source admission and refresh over real Git and disposable PostgreSQL."""
 
+import json
+import logging
 import subprocess
 
 from types import SimpleNamespace
@@ -20,7 +22,13 @@ from src.database.tables import (
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.integration.batches import SupersedeMemberUnavailable, ejection_instruction
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
-from src.integration.stacked_branches import StackedBranches, observe_stacks, stacked_policy
+from src.integration.stacked_branches import (
+    StackPrerequisitesConflict,
+    StackedBranches,
+    merge_heads,
+    observe_stacks,
+    stacked_policy,
+)
 from src.integration.train import TrainTarget
 from src.integration.train_controls import TrainControls
 from src.integration.train_sources import DatabaseBatches, _never_trusted
@@ -163,6 +171,145 @@ async def test_multiple_sources_merge_on_epic_and_pin_exact_base(stack):
         git(store, "merge-base", "--is-ancestor", head, base)
     assert git(store, "show", f"{base}:first-work.txt") == "work"
     assert git(store, "show", f"{base}:second-work.txt") == "work"
+
+
+async def test_prepare_regenerates_two_real_prerequisite_catalogues(
+    world, tmp_path, caplog,  # noqa: F811 - imported pytest fixture
+):
+    from tests.test_generated_artifacts import _catalogue_branches
+
+    fixture = tmp_path / "catalogue-inputs"
+    fixture.mkdir()
+    repo, base, first, second = _catalogue_branches(fixture)
+    db, origin = world.db, world.origin
+    await db.update_project("p", hierarchical_integration_policy={"prerequisite_branches": "stacked"})
+    git(origin.clone, "fetch", str(repo), base, first, second)
+    git(origin.clone, "push", "origin", f"{base}:refs/heads/aq/epic", f"{first}:refs/heads/aq/first",
+        f"{second}:refs/heads/aq/second", f"{base}:refs/heads/aq/child")
+    await db.create_task(Task(id="epic", project_id="p", repo_id="r", title="epic",
+                              description="", branch_name="aq/epic", status=TaskStatus.IN_PROGRESS))
+    await checkpoint(db, "epic", base)
+    for tid, head in (("first", first), ("second", second)):
+        await completed(world, tid, parent="epic", head=head, source_base=base)
+        await checkpoint(db, tid, head)
+    await completed(world, "child", parent="epic", needs=("first", "second"),
+                    head=base, source_base=base, done=False)
+    service = StackedBranches(db)
+    with caplog.at_level(logging.INFO, logger="src.integration.regeneration"):
+        overlay = await service.prepare("child")
+    store, head = overlay["stack_store"], overlay["base_sha"]
+    for prerequisite in (base, first, second):
+        git(store, "merge-base", "--is-ancestor", prerequisite, head)
+    catalogue = json.loads(git(store, "show", f"{head}:tests/selection_catalogue.json"))
+    assert set(catalogue["modules"]) == {"tests/test_a.py", "tests/test_b.py", "tests/test_c.py"}
+    assert "regeneration: rebuilt" in caplog.text
+    recorded = (await db.get_task_branch_origin_for_promotion("child", "r"))["stack_snapshot"]
+    assert set(recorded["prerequisites"]) == {"first", "second"}
+    assert recorded["regenerations"][0]["files"] == ["tests/selection_catalogue.json"]
+    assert recorded["regenerations"][0]["commit"] == head
+    assert recorded["regenerations"][0]["prerequisites"] == recorded["prerequisites"]
+    assert await service.prepare("child") == overlay
+    assert await db.get_task_meta("child", StackPrerequisitesConflict.code) is None
+    assert git(origin.url, "rev-parse", "aq/child") == base
+
+
+@pytest.mark.parametrize("repair_result", ["pass", "failed", "unrelated", "moved"])
+async def test_prepare_conflict_files_once_and_requires_published_resolution(stack, repair_result):
+    from src.database.queries.claim_queries import _claim_preparation_predicates
+
+    db, origin = stack.db, stack.origin
+
+    async def admission_open():
+        async with db._engine.connect() as conn:
+            return await conn.scalar(select(
+                _claim_preparation_predicates()[StackPrerequisitesConflict.code],
+            ).select_from(tasks).where(tasks.c.id == "child"))
+
+    git(origin.clone, "checkout", "-b", "aq/second", stack.base)
+    (origin.clone / "first-work.txt").write_text("conflicting second prerequisite\n")
+    git(origin.clone, "add", ".")
+    git(origin.clone, "commit", "-qm", "second prerequisite")
+    second = git(origin.clone, "rev-parse", "HEAD")
+    git(origin.clone, "push", "origin", "aq/second")
+    await completed(stack.world, "second", parent="epic", head=second, source_base=stack.base)
+    await checkpoint(db, "second", second)
+    await db.add_dependency("child", "second")
+    await db.transition_task("child", TaskStatus.READY, force=True)
+    before_generation = await generation(db, "epic")
+    with pytest.raises(StackPrerequisitesConflict) as refusal:
+        await stack.service.prepare("child")
+    detail = refusal.value.detail
+    assert detail["files"] == ["first-work.txt"]
+    assert set(detail["prerequisites"]) == {"first", "second"}
+    repair = await db.get_task(detail["repair_task_id"])
+    assert repair.parent_task_id == "epic" and repair.status is TaskStatus.DEFINED
+    for required in ("first", "second", stack.first, second, "first-work.txt", "never hand-merge"):
+        assert required in repair.description
+    assert (await db.get_task("child")).status is TaskStatus.READY
+    assert not await admission_open()
+    for _ in range(4):
+        with pytest.raises(StackPrerequisitesConflict) as repeated:
+            await stack.service.prepare("child")
+        assert repeated.value.detail == detail
+    assert await generation(db, "epic") == before_generation + 1
+    assert git(origin.url, "rev-parse", "aq/child") == stack.child
+    from src.integration.branch_materialization import BranchMaterializationService
+    from src.integration.hierarchy import HierarchyIntegration
+
+    def materialize(repository, branch, head):
+        git(origin.clone, "push", "origin", f"{head}:refs/heads/{branch}")
+        return head
+
+    scanner = BranchMaterializationService(
+        db, hierarchy_service_factory=lambda: HierarchyIntegration(db, branch_materializer=materialize),
+        legacy_container_collection=False,
+    )
+    assert await scanner.drain_due()
+    assert (await db.get_task(repair.id)).status is TaskStatus.READY
+    assert git(origin.url, "rev-parse", repair.branch_name) == detail["starting_head"]
+    # Simulate a worker resolving the source conflict on the materialized branch.
+    git(origin.clone, "checkout", "-b", repair.branch_name,
+        stack.base if repair_result == "unrelated" else detail["starting_head"])
+    if repair_result != "unrelated":
+        conflict = subprocess.run(["git", "merge", "--no-commit", second], cwd=origin.clone,
+                                  capture_output=True)
+        assert conflict.returncode == 1
+        (origin.clone / "first-work.txt").write_text("resolved prerequisites\n")
+    else:
+        (origin.clone / "unrelated.txt").write_text("unrelated history\n")
+    git(origin.clone, "add", ".")
+    git(origin.clone, "commit", "-qm", "resolve prerequisites")
+    resolved = git(origin.clone, "rev-parse", "HEAD")
+    git(origin.clone, "push", *(["--force"] if repair_result == "unrelated" else []),
+        "origin", repair.branch_name)
+    await db.save_task_completion(TaskCompletion(
+        id="prepare-repair", task_id=repair.id,
+        outcome="fail" if repair_result == "failed" else "pass", commits=[resolved],
+    ))
+    await db.transition_task(repair.id, TaskStatus.COMPLETED, force=True)
+    assert await admission_open() is (repair_result != "failed")
+    if repair_result == "moved":
+        (origin.clone / "unreviewed.txt").write_text("moved after close\n")
+        git(origin.clone, "add", ".")
+        git(origin.clone, "commit", "-qm", "unrecorded movement")
+        git(origin.clone, "push", "origin", repair.branch_name)
+    if repair_result != "pass":
+        with pytest.raises(StackPrerequisitesConflict):
+            await stack.service.prepare("child")
+        updated = await db.get_task_meta("child", StackPrerequisitesConflict.code)
+        if repair_result != "failed":
+            assert updated["repair_task_id"] != repair.id
+            assert updated["superseded_repair_task_id"] == repair.id
+            assert not await admission_open()
+        return
+    overlay = await stack.service.prepare("child")
+    for head in (stack.child, stack.first, second, resolved):
+        git(overlay["stack_store"], "merge-base", "--is-ancestor", head, overlay["base_sha"])
+    assert "hold" not in overlay["stack_snapshot"]
+    assert not (await db.get_task("child")).is_blocked
+    assert await stack.service.prepare("child") == overlay
+    assert await merge_heads(stack.gitops.git, origin.clone, resolved,
+                             [stack.first, second], stamp=0) == resolved
 
 
 async def test_changed_prerequisite_merges_preserves_child_and_rotates_completion(stack):

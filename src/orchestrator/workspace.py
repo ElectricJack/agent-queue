@@ -205,7 +205,12 @@ class WorkspaceMixin:
                 )
             except (BranchBusy, StaleFence, ValueError) as exc:
                 logger.info("Task %s hierarchy workspace wait: %s", task.id, exc)
-                self._workspace_wait_reasons[task.id] = "branch_materialization_pending"
+                from src.integration.stacked_branches import StackPrerequisitesConflict
+
+                self._workspace_wait_reasons[task.id] = (
+                    exc.code if isinstance(exc, StackPrerequisitesConflict)
+                    else "branch_materialization_pending"
+                )
                 return None
         lock_mode = task.workspace_mode or WorkspaceMode.EXCLUSIVE
 

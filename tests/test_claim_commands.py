@@ -3039,10 +3039,17 @@ async def test_hierarchy_claim_inherits_git_proven_parent_without_resetting_chil
         assert owner["handoff_state"] == "reserved"
 
 
-@pytest.mark.parametrize("conflict_kind", ["merge", "incarnation"])
+@pytest.mark.parametrize("conflict_kind, repair_result", [
+    ("incarnation", "pass"), ("merge", "pass"), ("merge", "moved"),
+    ("merge", "unrelated"), ("merge", "no-commit"), ("merge", "same-head"),
+    ("merge", "missing"),
+    ("generated", "pass"), ("generator-exit", "pass"), ("generator-timeout", "pass"),
+])
 async def test_conflicting_multiple_stacked_prerequisites_cannot_activate_claim(
-    handler, db, tmp_path, development_admission, monkeypatch, conflict_kind
+    handler, db, tmp_path, development_admission, monkeypatch, conflict_kind, repair_result
 ):
+    from pathlib import Path
+
     from src.integration.delivery_observer import DeliveryObserver
     from src.integration.git_truth import GitTruth
     from src.models import TaskCompletion
@@ -3050,18 +3057,33 @@ async def test_conflicting_multiple_stacked_prerequisites_cannot_activate_claim(
 
     env = development_admission
     git = env.git
+    generated = conflict_kind in {"generated", "generator-exit", "generator-timeout"}
+    if generated:
+        from tests.test_generated_artifacts import _catalogue_branches
+
+        fixture = tmp_path / "generated-inputs"
+        fixture.mkdir()
+        repo, env.base, env.head, second = _catalogue_branches(fixture)
+        git(env.source, "fetch", str(repo), env.base, env.head, second)
+        git(env.source, "push", "--force", "origin", f"{env.head}:refs/heads/prerequisite",
+            f"{second}:refs/heads/second-prerequisite")
+        await db.save_task_completion(TaskCompletion(
+            id="generated-first", task_id="prerequisite", outcome="pass", commits=[env.head],
+            completed_at=time.time(),
+        ))
     await mktask(db, "epic", status=TaskStatus.IN_PROGRESS, repo_id="repo",
                  branch_name="aq/epic")
     git(env.source, "push", "origin", f"{env.base}:refs/heads/aq/epic",
         f"{env.base}:refs/heads/aq/dependent")
-    git(env.source, "checkout", "-b", "second-prerequisite", env.base)
-    (env.source / ("work" if conflict_kind == "merge" else "second-work")).write_text(
-        "second sibling source",
-    )
-    git(env.source, "add", ".")
-    git(env.source, "commit", "-m", "conflicting second prerequisite")
-    second = git(env.source, "rev-parse", "HEAD")
-    git(env.source, "push", "origin", "second-prerequisite")
+    if not generated:
+        git(env.source, "checkout", "-b", "second-prerequisite", env.base)
+        (env.source / ("work" if conflict_kind == "merge" else "second-work")).write_text(
+            "second sibling source",
+        )
+        git(env.source, "add", ".")
+        git(env.source, "commit", "-m", "conflicting second prerequisite")
+        second = git(env.source, "rev-parse", "HEAD")
+        git(env.source, "push", "origin", "second-prerequisite")
     await mktask(db, "second-prerequisite", status=TaskStatus.COMPLETED, repo_id="repo",
                  branch_name="second-prerequisite")
     await db.save_task_completion(TaskCompletion(
@@ -3082,7 +3104,8 @@ async def test_conflicting_multiple_stacked_prerequisites_cannot_activate_claim(
             parent_ref="aq/epic", base_sha=env.base, creation_generation=1,
             reserved=True, materialized=True, created_at=time.time(),
         ))
-        for tid, branch, head in (("dependent", "aq/dependent", env.base),
+        for tid, branch, head in (("epic", "aq/epic", env.base),
+                                 ("dependent", "aq/dependent", env.base),
                                  ("prerequisite", "prerequisite", env.head),
                                  ("second-prerequisite", "second-prerequisite", second)):
             await conn.execute(task_integration_checkpoints.insert().values(
@@ -3092,6 +3115,38 @@ async def test_conflicting_multiple_stacked_prerequisites_cannot_activate_claim(
     sid, work_dir = await pool_session(db, tmp_path)
     git(tmp_path, "clone", str(env.remote), str(work_dir))
     transport = handler.orchestrator.git
+    await BranchOwnership(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/dependent"), "dependent", "worker",
+    )
+    if conflict_kind in {"generator-exit", "generator-timeout"}:
+        from src.integration import regeneration
+        from src.integration.development import GENERATED_MERGE_CONFIG
+
+        run_git = transport.arun_git_result
+        merge_generated = regeneration.merge_generated_tree
+        clean_merges = []
+
+        async def clean_merge(args, **kwargs):
+            if "merge-tree" in args:
+                # The observer is a no-checkout clone. Install the fixture's
+                # generated attribute so its driver resolves the text overlap.
+                attributes = Path(kwargs["cwd"]) / ".git/info/attributes"
+                attributes.write_text("tests/selection_catalogue.json merge=aq-generated\n")
+                result = await run_git([*GENERATED_MERGE_CONFIG, *args], **kwargs)
+                clean_merges.append(result.returncode)
+                return result
+            return await run_git(args, **kwargs)
+
+        async def failing_generator(*args, **kwargs):
+            kwargs["command"] = (
+                "python3 -c 'raise SystemExit(1)'" if conflict_kind == "generator-exit"
+                else "python3 -c 'import time; time.sleep(30)'"
+            )
+            kwargs["timeout_seconds"] = 1
+            return await merge_generated(*args, **kwargs)
+
+        monkeypatch.setattr(transport, "arun_git_result", clean_merge)
+        monkeypatch.setattr(regeneration, "merge_generated_tree", failing_generator)
     db.set_prerequisite_observer(DeliveryObserver(
         db, git=transport, truth=GitTruth(transport), data_dir=tmp_path / "prerequisites",
     ))
@@ -3112,15 +3167,155 @@ async def test_conflicting_multiple_stacked_prerequisites_cannot_activate_claim(
 
         monkeypatch.setattr(module, "observe_stacks", reopened_after_observation)
     result = await scoped(handler, sid)._cmd_task_claim({"next": True})
-    assert result["result"] == (
-        "prepare_failed" if conflict_kind == "merge" else "no_ready_work"
-    ), result
+    if conflict_kind == "generated":
+        assert result["result"] == "claimed", result
+        assert result["task"]["id"] == "dependent"
+        for head in (env.base, env.head, second):
+            git(work_dir, "merge-base", "--is-ancestor", head, "HEAD")
+        catalogue = json.loads((work_dir / "tests/selection_catalogue.json").read_text())
+        assert set(catalogue["modules"]) == {"tests/test_a.py", "tests/test_b.py", "tests/test_c.py"}
+        origin = await db.get_task_branch_origin_for_promotion("dependent", "repo")
+        assert set(origin["stack_snapshot"]["prerequisites"]) == {
+            "prerequisite", "second-prerequisite",
+        }
+        rebuilt = origin["stack_snapshot"]["regenerations"][0]
+        assert rebuilt["files"] == ["tests/selection_catalogue.json"]
+        assert rebuilt["prerequisites"] == origin["stack_snapshot"]["prerequisites"]
+        git(work_dir, "merge-base", "--is-ancestor", rebuilt["commit"], "HEAD")
+        assert (await db.get_session(sid)).claim_phase == "active"
+        assert (work_dir / ".aq" / "claim.json").exists()
+        assert await db.get_task_meta("dependent", "stack_prerequisites_conflict") is None
+        return
+    assert result["result"] == "no_ready_work", result
     assert (await db.get_task("dependent")).status is TaskStatus.READY
     assert (await db.get_session(sid)).task_id is None
     assert not (work_dir / ".aq" / "claim.json").exists()
     assert git(env.remote, "rev-parse", "refs/heads/aq/dependent") == env.base
     assert git(env.remote, "rev-parse", "refs/heads/prerequisite") == env.head
     assert git(env.remote, "rev-parse", "refs/heads/second-prerequisite") == second
+    if conflict_kind != "incarnation":
+        assert "stack_prerequisites_conflict" in result["reason"]
+        detail = await db.get_task_meta("dependent", "stack_prerequisites_conflict")
+        assert detail["files"] == (["tests/selection_catalogue.json"] if generated else ["work"])
+        assert set(detail["prerequisites"]) == {"prerequisite", "second-prerequisite"}
+        repair = await db.get_task(detail["repair_task_id"])
+        assert repair.parent_task_id == "epic" and repair.status is TaskStatus.DEFINED
+        assert repair.class_hint == "standard-medium"
+        assert repair.prefer_target == "worker"
+        for _ in range(4):
+            assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "no_ready_work"
+        assert (await db.get_task("dependent")).status is TaskStatus.READY
+        assert await db.get_task_meta("dependent", "needs_attention") == "stack_prerequisites_conflict"
+        assert await db.get_task_meta("dependent", "slot_reset_failure") is None
+        assert await db.get_task_meta("dependent", "claim_prepare_backoff_attempts") == 1
+        assert await db.get_task_meta("dependent", "claim_prepare_backoff_until") > time.time()
+        assert await db.get_task_meta("dependent", "stack_prerequisites_conflict") == detail
+        if generated:
+            assert all(code == 0 for code in clean_merges) and len(clean_merges) == 2
+            assert ("exited 1" if conflict_kind == "generator-exit" else "timed out") in detail[
+                "reason"
+            ]
+            return
+        from src.integration.hierarchy import HierarchyIntegration
+
+        def materialize(repository, branch, head):
+            git(env.source, "push", "origin", f"{head}:refs/heads/{branch}")
+            return head
+
+        async with db._engine.connect() as conn:
+            repair_origin = (await conn.execute(select(task_branch_origins).where(
+                task_branch_origins.c.task_id == repair.id,
+            ))).mappings().one()
+        await HierarchyIntegration(db, branch_materializer=materialize).materialize_origin(
+            repair_origin["id"],
+        )
+        git(env.source, "checkout", "-b", repair.branch_name, detail["starting_head"])
+        git(env.source, "merge", "--no-ff", "-m", "merge first prerequisite", env.head)
+        import subprocess
+
+        conflict = subprocess.run(["git", "merge", "--no-commit", second], cwd=env.source,
+                                  capture_output=True)
+        assert conflict.returncode == 1
+        (env.source / "work").write_text("resolved prerequisites")
+        git(env.source, "add", ".")
+        git(env.source, "commit", "-m", "resolve prerequisites")
+        resolved = git(env.source, "rev-parse", "HEAD")
+        git(env.source, "push", "origin", repair.branch_name)
+        if repair_result == "unrelated":
+            git(env.source, "checkout", "--orphan", "unrelated-repair")
+            git(env.source, "rm", "-rf", ".")
+            (env.source / "unrelated").write_text("unrelated history")
+            git(env.source, "add", ".")
+            git(env.source, "commit", "-m", "unrelated repair")
+            resolved = git(env.source, "rev-parse", "HEAD")
+            git(env.source, "push", "--force", "origin", f"{resolved}:{repair.branch_name}")
+        elif repair_result == "same-head":
+            resolved = detail["starting_head"]
+            git(env.source, "push", "--force", "origin", f"{resolved}:{repair.branch_name}")
+        await db.save_task_completion(TaskCompletion(
+            id="repair-close", task_id=repair.id, outcome="pass",
+            commits=[] if repair_result == "no-commit" else [resolved],
+        ))
+        await db.transition_task(repair.id, TaskStatus.COMPLETED, force=True)
+        if repair_result == "moved":
+            (env.source / "unreviewed").write_text("moved after close")
+            git(env.source, "add", ".")
+            git(env.source, "commit", "-m", "move after close")
+            git(env.source, "push", "origin", repair.branch_name)
+        elif repair_result == "missing":
+            git(env.source, "push", "origin", "--delete", repair.branch_name)
+        await db.set_task_meta("dependent", "claim_prepare_backoff_until", time.time() - 1)
+        await BranchOwnership(db).acquire(BranchKey(repository_id="repo", branch="aq/dependent"),
+                                          "dependent", "worker")
+        recovered = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        if repair_result != "pass":
+            assert recovered["result"] == "no_ready_work", recovered
+            replacement = await db.get_task_meta("dependent", "stack_prerequisites_conflict")
+            assert replacement["repair_task_id"] != repair.id
+            assert replacement["superseded_repair_task_id"] == repair.id
+            assert await db.get_task_meta("dependent", "claim_prepare_backoff_until") > time.time()
+            epoch = (await db.get_task("dependent")).claim_epoch
+            # Even after backoff expires, the new pending repair withholds this
+            # task. Repeated long-polls cannot consume more preparations.
+            await db.set_task_meta("dependent", "claim_prepare_backoff_until", time.time() - 1)
+            for _ in range(3):
+                assert (await scoped(handler, sid)._cmd_task_claim({"next": True, "wait": 1}))[
+                    "result"
+                ] == "no_ready_work"
+            assert (await db.get_task("dependent")).claim_epoch == epoch
+            assert await db.get_task_meta("dependent", "stack_prerequisites_conflict") == replacement
+            assert await db.get_task_meta("dependent", "slot_reset_failure") is None
+            await mktask(db, "other-ready", profile_id="worker", repo_id="repo", priority=0,
+                         branch_name="aq/other-ready")
+            git(env.source, "push", "origin", f"{env.base}:refs/heads/aq/other-ready")
+            async with db.immediate() as conn:
+                await db.set_parent("other-ready", "epic", integration_authorized=True, conn=conn)
+                await conn.execute(task_branch_origins.insert().values(
+                    id="origin-other", task_id="other-ready", repository_id="repo",
+                    branch_name="aq/other-ready", parent_task_id="epic",
+                    parent_repository_id="repo", parent_ref="aq/epic", base_sha=env.base,
+                    creation_generation=1, reserved=True, materialized=True, created_at=time.time(),
+                ))
+                await conn.execute(task_integration_checkpoints.insert().values(
+                    task_id="other-ready", repository_id="repo", branch="aq/other-ready",
+                    checkpoint_sha=env.base, updated_at=time.time(),
+                ))
+            await BranchOwnership(db).acquire(
+                BranchKey(repository_id="repo", branch="aq/other-ready"),
+                "other-ready", "worker",
+            )
+            other = await scoped(handler, sid)._cmd_task_claim({"next": True})
+            assert other["result"] == "claimed", other
+            assert other["task"]["id"] == "other-ready"
+            assert (await db.get_task("dependent")).claim_epoch == epoch
+            return
+        assert recovered["result"] == "claimed", recovered
+        assert recovered["task"]["id"] == "dependent"
+        for prerequisite in (env.head, second, resolved):
+            git(work_dir, "merge-base", "--is-ancestor", prerequisite, "HEAD")
+        assert await db.get_task_meta("dependent", "needs_attention") is None
+        assert await db.get_task_meta("dependent", "stack_prerequisites_conflict") is None
+        assert await db.get_task_meta("dependent", "claim_prepare_backoff_until") is None
 
 
 @pytest.mark.parametrize("completion_kind", [
