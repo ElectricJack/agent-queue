@@ -35,6 +35,11 @@ EXPECTED_AGENT_COMMANDS = {
     "wait_get",
     "wait_list",
     "wait_cancel",
+    # Recurring prompts derive their session owner and fence worker claims.
+    "cron_register",
+    "cron_get",
+    "cron_list",
+    "cron_cancel",
     # Collaboration: the held task joins, reads and closes; never creates.
     "collaboration_accept",
     "collaboration_get",

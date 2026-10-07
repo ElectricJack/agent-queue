@@ -484,13 +484,14 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
 
     engine, config = fixture_db
     script = ScriptDirectory.from_config(Config(str(_ALEMBIC_INI)))
-    older = script.get_revision(alembic_head_revisions()[0]).down_revision
+    # Pin the archive's schema to the migration exercised below. A later
+    # head must not stamp this pre-promotion-flow fixture as a newer schema.
+    older = script.get_revision("a00000000085").down_revision
     async with engine.begin() as conn:
         await conn.execute(text("UPDATE alembic_version SET version_num = :rev"), {"rev": older})
         await conn.execute(text("CREATE TABLE integration_batches (id text PRIMARY KEY)"))
         await conn.execute(text("INSERT INTO integration_batches VALUES ('original')"))
-        # The schema the head migration (a00000000085) creates is absent at
-        # its down revision; keep this in step when the head moves.
+        # Revision 85 adds promotion_flow; the archive predates that column.
         await conn.execute(text("CREATE TABLE projects (id text PRIMARY KEY)"))
     dump = tmp_path / "older.dump"
     assert (await invoke("db", "backup", str(dump))).exit_code == 0
@@ -533,6 +534,7 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
             "SELECT count(*) FROM information_schema.columns "
             "WHERE table_name='projects' AND column_name='promotion_flow'"
         )) == 1
+        assert await conn.scalar(text("SELECT to_regclass('public.agent_cron')")) == "agent_cron"
         assert await conn.scalar(text("SELECT id FROM tasks")) == "original"
 
 

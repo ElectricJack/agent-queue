@@ -3269,6 +3269,48 @@ Append-only (except revocation) record of an omission policy a project earned: t
 | `revoked_at` | REAL | nullable | NULL while active |
 | `revoke_reason` | TEXT | nullable | Why it was revoked |
 
+### Table: `agent_cron`
+
+Session-owned recurring prompts introduced by PostgreSQL revision `a00000000086`
+([recurrence design](design/agent-cron.md)). A registration belongs to one live
+session instance; worker registrations also bind to their task claim. Projectless
+supervisors retain NULL project scope. Session, task and pending-message references
+are soft so history survives owner turnover. This table stores prompt scheduling
+and message delivery diagnostics; it does not record code integration or retain a
+worker claim as a durable wait does.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Stable schedule id |
+| `project_id` | TEXT | nullable, FK → projects | NULL for projectless supervisors |
+| `session_id` | TEXT | NOT NULL | Registering session |
+| `session_instance_token` | TEXT | NOT NULL | Owning live session instance |
+| `owner_task_id` | TEXT | nullable | Held task for a worker registration |
+| `claim_epoch` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Worker claim fence |
+| `idempotency_key` | TEXT | NOT NULL | Unique with session id and instance token |
+| `prompt` | TEXT | NOT NULL | Prompt to deliver to the owner |
+| `recurrence` | JSONB | NOT NULL | Validated interval or restricted cron expression and timezone |
+| `state` | TEXT | NOT NULL DEFAULT 'active', CHECK: active, cancelled, expired | Schedule lifecycle |
+| `created_at` | REAL | NOT NULL | Registration time |
+| `next_fire_at` | REAL | NOT NULL | Next strictly future tick |
+| `checked_at` | REAL | NOT NULL DEFAULT 0 | Last bounded daemon scan |
+| `stopped_at` | REAL | nullable | Cancellation or owner-expiry time |
+| `tick_count` | INTEGER | NOT NULL DEFAULT 0 | Emitted prompt count |
+| `coalesced_count` | INTEGER | NOT NULL DEFAULT 0 | Missed ticks coalesced instead of replayed |
+| `pending_message_id` | TEXT | nullable | At most one pending prompt message |
+| `pending_until` | REAL | nullable | Pending prompt expiry |
+| `delivery_attempts` | INTEGER | NOT NULL DEFAULT 0, `0 <= value <= 5` | Terminal submission attempts |
+| `next_attempt_at` | REAL | NOT NULL DEFAULT 0 | Retry backoff deadline |
+| `last_delivery_at` | REAL | nullable | Last successful submission time |
+| `last_delivery_status` | TEXT | nullable | Prompt delivery diagnostic |
+| `last_error` | TEXT | nullable | Last delivery failure |
+
+`uq_agent_cron_idempotency` covers `(session_id, session_instance_token,
+idempotency_key)`. `ck_agent_cron_state` bounds lifecycle values and
+`ck_agent_cron_attempts_epoch` bounds attempts and claim epoch.
+`idx_agent_cron_scan` indexes `(state, checked_at, next_fire_at)`.
+Legacy SQLite files predate this table and have no schedules to import.
+
 ### Table: `agent_waits`
 
 One row per durable condition an agent keeps open while it stays blocked on
