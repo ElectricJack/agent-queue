@@ -3521,9 +3521,11 @@
         "cli-framework"
       ],
       "default_arm": true,
-      "digest": "sha256:818d4449f948f7155266e5fa5988997467701056a0bc01560cad345b25309057",
+      "digest": "sha256:46bd446e22bb4d6cd85b4bdd69414368bbba08ed0812474cdf9848b4c5e01774",
       "imports": [
-        "src.cli.app"
+        "src.cli.app",
+        "src.commands.contracts.knowledge",
+        "src.knowledge.models"
       ],
       "markers": [
         "parametrize"
@@ -5781,14 +5783,16 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:2671cf4995f6aa18ff3ff96c2e645b2b36fc3e0207572e6afa9652f2f4206e2d",
+      "digest": "sha256:da2123c6c70cb566a9cb41ba3f7f7ba862efc5713041cb2fb1cb899e8324cecf",
       "imports": [
         "src.doctor",
         "src.doctor.models",
-        "src.doctor.skill_checks"
+        "src.doctor.skill_checks",
+        "src.vault"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "``skills.installed_drift`` — shipped aq-* skills vs. the installed copies."
     },

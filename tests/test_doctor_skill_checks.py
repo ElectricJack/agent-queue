@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib
 import os
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +23,7 @@ from src.doctor.skill_checks import (
     _fix_installed_skill_drift,
     skill_checks,
 )
+from src.vault import ensure_default_aq_skills
 
 #: ``src.doctor`` re-exports the ``skill_checks`` *function*, which shadows the
 #: submodule of the same name on the package; import it explicitly so
@@ -114,3 +116,40 @@ async def test_no_harness_directory_is_info_not_a_warning(tmp_path, monkeypatch)
     result = await _check_installed_skill_drift(None)
     assert result.severity is Severity.INFO
     assert "no harness skill directory" in result.detail
+
+
+@pytest.mark.parametrize("optional_homes_present", [False, True])
+async def test_knowledge_skill_seeds_supported_harnesses_and_preserves_edits(
+    tmp_path, monkeypatch, optional_homes_present
+):
+    """Exercise real shipped discovery, seeding and drift repair in a fake home."""
+    expanduser = os.path.expanduser
+    monkeypatch.setattr(
+        os.path, "expanduser", lambda path: str(tmp_path) if path == "~" else expanduser(path)
+    )
+    if optional_homes_present:
+        for home in (".codex", ".gemini", "snap/gemini-cli/common/.gemini"):
+            (tmp_path / home).mkdir(parents=True)
+
+    source = Path(skill_checks_module._shipped_skills()["aq-knowledge"])
+    result = ensure_default_aq_skills(str(tmp_path))
+    for target, receipt in result.items():
+        installed = Path(receipt["root"]) / "aq-knowledge" / "SKILL.md"
+        if target == "claude" or optional_homes_present:
+            assert "aq-knowledge" in receipt["created"]
+            assert installed.read_bytes() == source.read_bytes()
+        else:
+            assert not installed.exists()
+
+    customized = Path(result["claude"]["root"]) / "aq-knowledge" / "SKILL.md"
+    custom_text = source.read_text(encoding="utf-8") + "\nOperator customization.\n"
+    customized.write_text(custom_text, encoding="utf-8")
+    second = ensure_default_aq_skills(str(tmp_path))
+    assert "aq-knowledge" in second["claude"]["skipped"]
+    assert customized.read_text(encoding="utf-8") == custom_text
+    assert (await _check_installed_skill_drift(None)).data["drifted"] == [str(customized)]
+
+    repaired = await _fix_installed_skill_drift(None)
+    assert repaired.severity is Severity.OK
+    assert customized.read_bytes() == source.read_bytes()
+    assert customized.with_name("SKILL.md.bak").read_text(encoding="utf-8") == custom_text
