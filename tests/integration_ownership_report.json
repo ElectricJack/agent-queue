@@ -8987,6 +8987,15 @@
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_set_task_status": {
       "reason": "Refuse administrative completion of a branched Git root in train modes without explicit completion provenance."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin._prepare_exact_origin_workspace_locked": {
+      "reason": "Exact managed checkout preparation under the existing branch mutation fence; consumes retained merge inputs without publication or changing the immutable filing origin."
+    },
+    "src/orchestrator/workspace_attachments.py::detach_retained_preparation": {
+      "reason": "Narrow unactivated-preparation handoff: prove exact clean HEAD durably pinned in the observer store before detach. Does not publish, reset, or waive attachment identity guards."
+    },
+    "src/database/queries/task_session_queries.py::import from src.database.tables import agents, integration_batch_members, integration_source_ci, sessions, task_dependencies, task_session_attempts, tasks": {
+      "reason": "Reads exact frozen batch members as inherited history for ordinary worker push authorization; the immutable sources remain required candidate ancestors."
     }
   },
   "shared_state": {
