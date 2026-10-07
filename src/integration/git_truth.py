@@ -514,6 +514,16 @@ async def is_delivered(
         source = record["source_oid"]
         step = "target_object"
         await provenance.exact(observed.target_oid)
+        if (request.completion_commits == () and request.completion_outcome == "pass"
+                and source_base is not None and source == source_base):
+            # Empty descriptive commits alone prove nothing. The retained
+            # generation locates its exact head; the recorded origin is its
+            # base. Only their equality and exact target ancestry prove that
+            # this passing completion added no work owed to the target.
+            step = "no_change_completion"
+            if await provenance.ancestor(source, observed.target_oid):
+                return answer(DeliveryState.NO_CHANGE, "git_no_change")
+            return answer(DeliveryState.PENDING, "no_change_base_not_delivered")
         if not record["artifact"]:
             return answer(DeliveryState.NO_ARTIFACT, "git_no_artifact")
         step = "source_ancestry"
@@ -588,7 +598,9 @@ async def epic_complete(
         proof = await is_delivered(snapshot, child, source_base=(source_bases or {}).get(child.task_id))
         if proof.state == DeliveryState.UNKNOWN:
             return None
-        if proof.state not in {DeliveryState.CONTAINED, DeliveryState.NO_ARTIFACT}:
+        if proof.state not in {
+            DeliveryState.CONTAINED, DeliveryState.NO_CHANGE, DeliveryState.NO_ARTIFACT,
+        }:
             return False
     if green_oid != snapshot.target_oid:
         return False

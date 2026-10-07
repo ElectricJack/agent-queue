@@ -12659,7 +12659,7 @@
       "line": 1263,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'failure_class'"
@@ -12668,7 +12668,7 @@
       "line": 1273,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_notes'"
@@ -12677,7 +12677,7 @@
       "line": 1277,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_session_id'"
@@ -12686,7 +12686,7 @@
       "line": 1659,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
@@ -12695,7 +12695,7 @@
       "line": 1265,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_outcome'"
@@ -12704,7 +12704,7 @@
       "line": 1267,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit'"
@@ -12713,7 +12713,7 @@
       "line": 1533,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'summary'"
@@ -12722,7 +12722,7 @@
       "line": 1261,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'outcome'"
@@ -12731,7 +12731,7 @@
       "line": 1275,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'verification'"
@@ -12740,7 +12740,7 @@
       "line": 1333,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: PENDING_COMPLETION_KEY"
@@ -12749,7 +12749,7 @@
       "line": 1271,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_branch'"
@@ -12758,7 +12758,7 @@
       "line": 1515,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
+      "owner_fingerprint": "cacbcbde98cbcdea0f1361202af6eb94911e1a1a8518624edf454abb59c4612a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit_auto'"
@@ -13943,10 +13943,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::cfcd13e9187c1de3a01142301b8203fae1e11a8a3a4ce9bf92d2a08ca1895e28": {
-      "line": 2279,
+      "line": 2287,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "4ea8ae45b7b3e24dd84602f69d012f7bc9a6a8973ed1ffd1ce2cd99629a34ecf",
+      "owner_fingerprint": "705e97be44eb8b44562030ef1df945251baa0742f7cd80b14883a3c1bb3fa234",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"

@@ -578,7 +578,7 @@ class TrainService:
     async def _git_delivered_roots_on(self, conn, view, project_id, repository):
         """Recheck generation, repository, target and the train's exact source.
 
-        A contained completion can answer a dependency without a checkpoint.
+        A contained or proven no-change completion can answer a dependency without a checkpoint.
         When a checkpoint exists, it must name that same source; a previous
         adoption cannot hide newly checkpointed work. Settlements and empty
         artifacts are not code delivery to the default branch.
@@ -590,7 +590,7 @@ class TrainService:
         verified = await view.verified_on(conn, view.evidence)
         target_ref = "refs/heads/" + repository["default_branch"].removeprefix("refs/heads/")
         sources = {task_id: proof.source_oid for task_id, proof in verified.items() if (
-            proof.state == DeliveryState.CONTAINED
+            proof.state in {DeliveryState.CONTAINED, DeliveryState.NO_CHANGE}
             and proof.request.task_status == "COMPLETED"
             and (proof.request.project_id, proof.request.repository_id, proof.request.target_ref)
             == (project_id, repository["id"], target_ref)

@@ -909,7 +909,7 @@ class DatabaseBatches:
         for child in graph.children(graph.epic_id):
             request = replace(child.request, target_ref=target.target_ref)
             proof = await snapshot.is_delivered(request, source_base=child.source_base)
-            if proof.state is DeliveryState.NO_ARTIFACT:
+            if proof.state in {DeliveryState.NO_CHANGE, DeliveryState.NO_ARTIFACT}:
                 continue
             if proof.state is not DeliveryState.CONTAINED or not is_valid_git_oid(proof.source_oid):
                 return None

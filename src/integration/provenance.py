@@ -367,7 +367,8 @@ class GitProvenance:
 
 
 async def record_worker_completion(
-    db, git, task, project, checkout, generation, *, commit="", no_code_intent=False
+    db, git, task, project, checkout, generation, *, commit="", no_code_intent=False,
+    allow_unpublished_no_change=False,
 ):
     """Verify and publish completion evidence before the task can become terminal."""
     from src.integration.hierarchy import resolve_workspace_checkpoint
@@ -376,15 +377,20 @@ async def record_worker_completion(
     repo = await db.get_repo(task.repo_id or project.integration_repository_id or "")
     if repo is None:
         raise ValueError("completion provenance has no authorized repository")
+    origin = await db.get_task_branch_origin_for_promotion(task.id, repo.id)
+    unchanged_base = None
+    if allow_unpublished_no_change:
+        unchanged_base = origin.get("base_sha") if origin else None
+        if not is_valid_git_oid(unchanged_base):
+            raise ValueError("no-change completion requires its exact recorded origin base")
     subject = {"id": task.id, "repo_id": repo.id, "branch_name": task.branch_name}
-    source = await resolve_workspace_checkpoint(db, git, subject, repo)
+    source = await resolve_workspace_checkpoint(db, git, subject, repo, unchanged_base=unchanged_base)
     if commit and commit != source:
         raise ValueError("--commit must identify the exact final source, not an earlier commit")
     store = GitProvenance(git, checkout, repository_url=repo.url)
     from src.database.tables import projects
     from src.integration.promotion_routing import promotion_origin_target
 
-    origin = await db.get_task_branch_origin_for_promotion(task.id, repo.id)
     async with db._engine.connect() as conn:
         flow = await conn.scalar(select(projects.c.promotion_flow).where(projects.c.id == project.id))
     target = promotion_origin_target(repo.default_branch, flow, origin, repo.id)
@@ -440,7 +446,9 @@ async def record_worker_completion(
                 if not await store.ancestor(item.source_oid, source):
                     raise ValueError("an empty repair cannot replace a source it does not contain")
     # A concurrent local commit or source push must not close an older snapshot.
-    if await resolve_workspace_checkpoint(db, git, subject, repo) != source:
+    if await resolve_workspace_checkpoint(
+        db, git, subject, repo, unchanged_base=unchanged_base,
+    ) != source or await db.get_task_branch_origin_for_promotion(task.id, repo.id) != origin:
         raise ValueError("final source changed while recording completion provenance")
     return source
 
