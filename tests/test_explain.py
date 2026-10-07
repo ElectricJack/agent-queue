@@ -205,6 +205,7 @@ async def test_pool_wait_explains_capacity_spill(
     task = await db.get_task("spill")
     assert task.profile_id == "fast-low-codex"
     assert await db.list_task_reroutes(task_id="spill") == []
+    handler.orchestrator._measure_pools.assert_awaited_once_with(for_display=True)
 
 
 @pytest.mark.parametrize("inactive", ["observe", "reroute", "spill", "playbook", "swarm"])

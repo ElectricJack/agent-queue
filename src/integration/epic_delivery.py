@@ -708,6 +708,8 @@ def _source_phrase(canonical: CanonicalDelivery) -> str:
 
 
 def _unknown_reason(canonical: CanonicalDelivery, facts: EpicFacts) -> str:
+    if canonical.reason == "snapshot_unavailable":
+        return "Delivery evidence not loaded yet; a background delivery observation will refresh it"
     target = _target_name(canonical)
     template = _UNPROVEN_REASONS.get(canonical.reason)
     if template is not None:

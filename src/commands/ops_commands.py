@@ -378,7 +378,7 @@ class OpsCommandsMixin:
         from src.sessions.input_prompts import find_awaiting_input_sessions
 
         view = (args.get("project_id") or "").strip() or None
-        measurement = await self.orchestrator._measure_pools()
+        measurement = await self.orchestrator._measure_pools(for_display=True)
         now = time.time()
         sessions_by_profile: dict[str, list] = {}
         pool_sessions = measurement.pool_sessions
@@ -476,7 +476,7 @@ class OpsCommandsMixin:
                 harness = self.orchestrator.harness_registry.get("codex")
                 if harness is not None and _is_codex_cli(harness):
                     class_config = self.orchestrator.session_spec_builder._resolve_class_config(
-                        profile, harness, None
+                        profile, harness, None, for_display=True,
                     )
                     service_tier = codex_service_tier_for(profile, class_config)
 
