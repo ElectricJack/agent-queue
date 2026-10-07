@@ -84,14 +84,18 @@ Selection gives an existing batch priority: it refreshes only that batch's
 stacked members, checks supersession, and returns its frozen inputs without
 scanning the pending frontier. Publication still rechecks ordinary eligibility
 and exact candidate checks. Previously observed frontier blockers remain visible
-with `cached_frontier` and `observed_at`; they are diagnostics until the batch
-settles, not fresh admission evidence. New frontier selection enumerates routing
-once, excludes delivered work before applying the member limit, and observes PR
-admission in groups of at most four concurrent reads.
+with `cached_frontier` and `observed_at`, and their descriptions label them as
+carried over and not rechecked while the batch is open. New frontier selection
+enumerates routing once, excludes delivered work before applying the member limit,
+and observes PR admission serially so a root scan does not burst concurrent GitHub requests.
 
-Selection has a separate 60-second budget, including `seal-now` previews. On
-exhaustion it reports `selection_timeout` without freezing partial membership;
-the next visit retries. Selection logs report phase durations and task counts,
+Selection reads have a cumulative 60-second budget, including `seal-now` previews.
+Stack and conflicting-epic refreshes, admission timing writes and freezing run
+outside that budget. If a visit is cancelled during a refresh, it waits for the
+refresh to finish recording any pushed source before releasing the visit.
+On exhaustion selection reports `selection_timeout` with the read phase that
+expired, without freezing partial membership; the next visit retries.
+Selection logs report phase durations and task counts,
 separating enumeration, routing, project delivery, stack refresh, member delivery
 and PR admission. Validated completion provenance is cached by repository, store,
 completion identity and the marker OID captured in the fetched snapshot. The

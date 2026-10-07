@@ -18,7 +18,7 @@ import math
 import re
 import time
 from collections.abc import Awaitable, Callable, Iterable
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, replace
 from typing import Any
@@ -93,12 +93,32 @@ TRAIN_HOLDER = "service:integration-train"
 RETAINED_CANDIDATE_PREFIX = "refs/heads/aq/train-candidate/"
 MEMBER_LIMIT = 200
 SELECTION_TIMEOUT_SECONDS = 60.0
-PR_ADMISSION_CONCURRENCY = 4
 _SELECTION_PROFILE: ContextVar[dict | None] = ContextVar("train_selection_profile", default=None)
 #: A promotion lane is rebuilt on every visit; its subject trust and App client
 #: are kept per batch this long after last use, so a held request does not
 #: refetch S's manifest each time. S is immutable; the key carries the policy.
 PROMOTION_RESOLUTION_TTL_SECONDS = 900.0
+
+
+class _SelectionTimeout(Exception):
+    """The cumulative read budget expired, with no membership frozen."""
+
+
+async def _finish_on_cancel(operation):
+    """Join a mutation even if its visit is cancelled; never orphan a pushed head."""
+    writing = asyncio.create_task(operation)
+    try:
+        return await asyncio.shield(writing)
+    except asyncio.CancelledError:
+        # Shield repeatedly: shutdown can cancel a visit that is already
+        # finishing a write after the visit deadline cancelled it once.
+        while not writing.done():
+            try:
+                await asyncio.shield(writing)
+            except asyncio.CancelledError:
+                continue
+        writing.result()
+        raise
 
 
 @contextmanager
@@ -459,14 +479,32 @@ class DatabaseBatches:
     ) -> BatchSelection:
         with _selection_profile(target) as profile:
             try:
-                async with asyncio.timeout(self.selection_timeout_seconds):
-                    return await self._select_batch(target, snapshot, service, seal_now=seal_now)
-            except TimeoutError:
+                return await self._select_batch(target, snapshot, service, seal_now=seal_now)
+            except _SelectionTimeout:
                 return BatchSelection(blockers=(self._selection_timeout(target, profile),))
+
+    @asynccontextmanager
+    async def _selection_reads(self, phase):
+        """Charge reads to one visit budget; mutations run outside this scope."""
+        profile = _SELECTION_PROFILE.get()
+        remaining = self.selection_timeout_seconds - profile.get("read_seconds", 0.0)
+        started = time.monotonic()
+        deadline = asyncio.timeout(max(0, remaining))
+        try:
+            async with deadline:
+                yield
+        except TimeoutError:
+            if not deadline.expired():
+                raise
+            profile["timeout_phase"] = phase
+            raise _SelectionTimeout from None
+        finally:
+            profile["read_seconds"] = profile.get("read_seconds", 0.0) + time.monotonic() - started
 
     def _selection_timeout(self, target, profile):
         return {"code": "selection_timeout", "ref": target.target_ref,
-                "detail": "batch selection exceeded its budget; retry on the next visit",
+                "detail": "batch selection reads exceeded their budget during "
+                          f"{profile.get('timeout_phase', 'unknown')}; retry on the next visit",
                 "timeout_seconds": self.selection_timeout_seconds, "selection": profile}
 
     async def _refresh_stacks(self, target, snapshot, service, candidates):
@@ -482,7 +520,8 @@ class DatabaseBatches:
                         task_branch_origins.c.stack_snapshot.is_not(None)))).scalars().all()
             _selection_count("stacked_members", len(stacked_ids))
             for task_id in stacked_ids:
-                outcome = await stacks.refresh(task_id, service.gitops, snapshot=snapshot)
+                outcome = await _finish_on_cancel(
+                    stacks.refresh(task_id, service.gitops, snapshot=snapshot))
                 if outcome in {"refreshed", "changed", "repair_filed"}:
                     return {"code": "stack_" + outcome, "task_id": task_id,
                         "ref": task_id, "detail": "Prerequisite stack changed; take a fresh Git view"}
@@ -524,17 +563,21 @@ class DatabaseBatches:
             # Preserve prior diagnostics without making unrelated pending work
             # part of an already frozen batch's build/publication visit.
             observed_at, previous = self._frontier_blockers.get(target.key, (None, ()))
-            blockers.extend({**b, "cached_frontier": True, "observed_at": observed_at}
+            blockers.extend({**b, "cached_frontier": True, "observed_at": observed_at,
+                             "detail": f"Carried over from frontier observation at {observed_at}: "
+                                       f"{b.get('detail', b['code'])}; not rechecked while "
+                                       "this batch is open"}
                             for b in previous)
             return BatchSelection(current, members, tuple(blockers), existing=True)
         pending = None
         if not snapshot.error and snapshot.target_oid:
-            candidates = await self._candidate_ids(target, snapshot)
+            async with self._selection_reads("candidate_frontier"):
+                candidates = await self._candidate_ids(target, snapshot)
             changed = await self._refresh_stacks(target, snapshot, service, candidates)
             if changed:
                 return BatchSelection(blockers=(changed,))
             pending = await self.pending(target, snapshot, blockers=blockers, candidate_ids=candidates)
-            await self._refresh_conflicting_epics(target, snapshot, blockers)
+            await _finish_on_cancel(self._refresh_conflicting_epics(target, snapshot, blockers))
             self._frontier_blockers[target.key] = (self.clock(), tuple(blockers))
         if pending is None:
             if target.kind == "root" and not snapshot.error and snapshot.target_oid and not blockers:
@@ -727,10 +770,10 @@ class DatabaseBatches:
     ):
         with _selection_profile(target) as profile:
             try:
-                async with asyncio.timeout(self.selection_timeout_seconds):
+                async with self._selection_reads("pending_admission"):
                     return await self._pending(target, snapshot, blockers=blockers,
                                                gate_pr=gate_pr, candidate_ids=candidate_ids)
-            except TimeoutError:
+            except _SelectionTimeout:
                 if blockers is not None:
                     blockers.append(self._selection_timeout(target, profile))
                 return None
@@ -878,26 +921,13 @@ class DatabaseBatches:
         return tuple(members.values()), {key: requests[key] for key in members}, dependencies
 
     async def _admit_prs(self, target, members, blockers, *, snapshot=None, epics=()):
-        """Overlap bounded independent reads; cancellation leaves no observers running."""
-        admission_slots = asyncio.Semaphore(PR_ADMISSION_CONCURRENCY)
-
-        async def admit(member):
-            async with admission_slots:
-                return await self.pr_gate(target, member) if self.pr_gate else {
-                    "code": "unknown", "ref": member.task_id, "task_id": member.task_id,
-                    "detail": "root PR admission observer is unavailable",
-                }
-
-        pending = [asyncio.create_task(admit(member)) for member in members.values()]
-        _selection_count("pr_candidates", len(pending))
-        try:
-            refusals = await asyncio.gather(*pending)
-        finally:
-            for task in pending:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-        for task_id, refusal in zip(list(members), refusals, strict=True):
+        """Read GitHub serially; rate-limit errors propagate to the shared pause."""
+        _selection_count("pr_candidates", len(members))
+        for task_id, member in list(members.items()):
+            refusal = await self.pr_gate(target, member) if self.pr_gate else {
+                "code": "unknown", "ref": task_id, "task_id": task_id,
+                "detail": "root PR admission observer is unavailable",
+            }
             if refusal:
                 del members[task_id]
                 if blockers is not None:

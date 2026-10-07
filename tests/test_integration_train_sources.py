@@ -564,6 +564,10 @@ async def test_existing_root_batch_skips_frontier_and_pr_reads(world, monkeypatc
     if intent == "paused":
         batch = await store.set_intent(batch.id, "paused")
     batches = DatabaseBatches(world.db, pr_gate=AsyncMock(side_effect=AssertionError("PR read")))
+    batches._frontier_blockers[MAIN.key] = (123, ({
+        "code": "awaiting_pr", "ref": "unrelated", "task_id": "unrelated",
+        "detail": "unrelated task needs a PR",
+    },))
     monkeypatch.setattr(batches, "_candidate_ids", AsyncMock(side_effect=AssertionError("frontier")))
     monkeypatch.setattr(batches, "pending", AsyncMock(side_effect=AssertionError("pending")))
     refresh = AsyncMock(return_value=None)
@@ -574,6 +578,10 @@ async def test_existing_root_batch_skips_frontier_and_pr_reads(world, monkeypatc
     assert selected.existing and selected.batch.id == "frozen-batch"
     assert selected.batch.intent == intent
     assert [m.task_id for m in selected.members] == ["frozen"]
+    [carried] = selected.blockers
+    assert carried["cached_frontier"] and carried["observed_at"] == 123
+    assert carried["detail"].startswith("Carried over from frontier observation at 123:")
+    assert "not rechecked while this batch is open" in carried["detail"]
     refresh.assert_awaited_once_with(MAIN, observed, service, ["frozen"])
 
 
@@ -593,7 +601,10 @@ async def test_root_selection_enumerates_once_and_routes_before_git_reads(world,
     assert delivered.await_args.args[2] == ["root"]
 
 
-async def test_selection_budget_cancels_pr_reads_without_freezing_partial_members(world, monkeypatch):
+@pytest.mark.parametrize("phase", ["candidate_frontier", "pending_admission"])
+async def test_selection_budget_cancels_pr_reads_without_freezing_partial_members(
+    world, monkeypatch, phase,
+):
     await completed(world, "a")
     train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
     batches = train.batches
@@ -627,19 +638,30 @@ async def test_selection_budget_cancels_pr_reads_without_freezing_partial_member
     async def stalled_selection(*args, **kwargs):
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(batches, "_select_batch", stalled_selection)
+    if phase == "candidate_frontier":
+        monkeypatch.setattr(batches, "_candidate_ids", stalled_selection)
+    else:
+        monkeypatch.setattr(batches, "_candidate_ids", AsyncMock(return_value=["a"]))
+        monkeypatch.setattr(batches, "_pending", stalled_selection)
     result = await batches.open_batch(MAIN, observed, lane_service, seal_now=True)
     assert result.batch is None and result.blockers[0]["code"] == "selection_timeout"
     assert result.blockers[0]["timeout_seconds"] == 0.01
     assert "elapsed_seconds" in result.blockers[0]["selection"]
+    assert result.blockers[0]["selection"]["timeout_phase"] == phase
+    assert phase in result.blockers[0]["detail"]
     assert freeze.await_count == 0
     async with world.db._engine.connect() as conn:
         assert not (await conn.execute(select(integration_batches))).first()
+    await train.tick()
+    await train.drain()
+    status = await IntegrationStatusService(
+        world.db, git_first="active", train=train,
+    ).control_status("p")
+    assert any(blocker["code"] == "selection_timeout" for blocker in status["blockers"])
 
 
-async def test_pr_admission_overlaps_bounded_reads_and_preserves_refusals(world):
-    # No elapsed-time budget: synchronization proves overlap and the exact
-    # concurrency bound even on a loaded shared machine.
+async def test_pr_admission_is_serial_and_preserves_refusals(world):
+    # Synchronization proves serial reads independently of machine latency.
     entered, release = asyncio.Event(), asyncio.Event()
     active, maximum = 0, 0
 
@@ -647,8 +669,7 @@ async def test_pr_admission_overlaps_bounded_reads_and_preserves_refusals(world)
         nonlocal active, maximum
         active += 1
         maximum = max(maximum, active)
-        if active == 4:
-            entered.set()
+        entered.set()
         try:
             await release.wait()
             if member.task_id == "0":
@@ -662,11 +683,11 @@ async def test_pr_admission_overlaps_bounded_reads_and_preserves_refusals(world)
     admission = asyncio.create_task(batches._admit_prs(MAIN, members, blockers))
     try:
         await asyncio.wait_for(entered.wait(), 10)
-        assert active == maximum == 4
+        assert active == maximum == 1
     finally:
         release.set()
         await admission
-    assert maximum == 4 and active == 0
+    assert maximum == 1 and active == 0
     assert list(members) == [str(i) for i in range(1, 8)]
     assert [b["code"] for b in blockers] == ["awaiting_pr"]
 

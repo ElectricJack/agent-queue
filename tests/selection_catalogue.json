@@ -570,6 +570,7 @@
     "integration-trains": {
       "description": "Hierarchical integration trains: durable integration state, the reconciliation service and schedules, settling and sealing, candidate construction, the outbox, integration mode policy, attestations, CI and cleanup.",
       "modules": [
+        "tests/perf/test_train_selection.py",
         "tests/test_attestation_check_run_id.py",
         "tests/test_hosted_attestation.py",
         "tests/test_integration_accepted_repair.py",
@@ -1431,7 +1432,7 @@
       ]
     }
   },
-  "digest": "sha256:24e7a052a6a5db7505431e98046e0a9889d1eb75d6b22b14723c21f750871f3a",
+  "digest": "sha256:fbaeab5a7b9ec6e7673323114f9e9b2c532f26d803387b3cad3a90d5cf60f0a5",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -1655,6 +1656,21 @@
         "skipif"
       ],
       "summary": "Layout perf on PostgreSQL (spec §9). Skipped without POSTGRES_TEST_DSN."
+    },
+    "tests/perf/test_train_selection.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.integration.git_truth",
+        "src.models"
+      ],
+      "markers": [
+        "perf"
+      ],
+      "summary": "Production-shaped root selection over real Git and disposable PostgreSQL."
     },
     "tests/task_graph/layout/test_active_expansion.py": {
       "areas": [
@@ -8685,6 +8701,7 @@
         "src.git.github_contracts",
         "src.integration.batches",
         "src.integration.gitops",
+        "src.integration.provenance",
         "src.integration.stacked_branches",
         "src.integration.train",
         "src.integration.train_controls",
