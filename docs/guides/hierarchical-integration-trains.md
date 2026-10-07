@@ -216,8 +216,15 @@ default-branch SHA; a still-computing mergeability is a short `awaiting_pr_check
 retry. For an epic root the train's next visit starts the same attested refresh as
 `refresh-epic --apply`, once per (epic head, default head) pair, and the blocker's
 `refresh` names its batch. The refreshed head is held for its own review and its
-own exact-head PR checks. For a leaf root nothing is started: merge the default
-branch into the task branch, push it and close the task again. Push-event runs
+own exact-head PR checks. The blocker describes whether the refresh started,
+is running, has settled, or is pending behind another batch. Once an older
+refresh batch settles, the next root visit reconsiders the current head pair;
+an already settled refresh of that exact pair is never started again.
+An unexpected refresh error produces `refresh_unavailable` for that epic only,
+with the exception class and a retry deadline. Retries start after 60 seconds
+and double to a maximum of 600 seconds. Unrelated leaf roots remain eligible
+for their own PR admission checks. For a leaf root nothing is started: merge the
+default branch into the task branch, push it and close the task again. Push-event runs
 never count as PR checks.
 
 For an existing historical subject, `engine-transfer` and
