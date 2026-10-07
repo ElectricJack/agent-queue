@@ -506,6 +506,54 @@ class PromoteCommandsMixin:
         except (GitError, GitHubAccessError, OSError, ValueError) as exc:
             return _unavailable(exc)
 
+    async def _cmd_integration_promotion_policy_input(self, args):
+        from src.commands.contracts.promote import PromotionPolicyInputArgs
+
+        request = PromotionPolicyInputArgs.model_validate(args)
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind not in {PrincipalKind.LOCAL, PrincipalKind.SERVICE, PrincipalKind.PLAYBOOK}:
+            return PromotionRefusal("unauthorized", "Promotion policy input is daemon-owned.").response()
+        try:
+            project, repository, _, flow = await self._promotion_inputs(request.project_id, read=True)
+            step = _find_step(flow, request.step_id)
+            _, ops, repo, _ = await self._promotion_runtime(project, repository, step)
+            async with self.db._engine.connect() as conn:
+                hotfix = await _hotfix_source(self.db, conn, ops, repo, project.id,
+                    repository.id, step, request) if request.from_task else None
+                source = (hotfix or {}).get("source_sha") or await ops.remote(
+                    repo, "refs/heads/" + step["source"])
+                if not source:
+                    raise PromotionRefusal("unavailable", "Step source cannot be observed.")
+                await _fetch_commit(ops, repo, source)
+                debt = False
+                try:
+                    await _guard_backmerges(conn, ops, repo, repository.id,
+                                           "refs/heads/" + step["target"], source)
+                except PromotionRefusal as exc:
+                    if exc.outcome != "backmerge_pending":
+                        raise
+                    debt = True
+                active = (await conn.execute(select(integration_batches).where(
+                    integration_batches.c.project_id == project.id,
+                    integration_batches.c.repository_id == repository.id,
+                    integration_batches.c.target_ref == "refs/heads/" + step["target"],
+                    integration_batches.c.trigger == "promotion",
+                    integration_batches.c.intent != "aborted",
+                    integration_batches.c.lifecycle.not_in(("promoted", "failed", "aborted")),
+                    func.coalesce(integration_batches.c.policy_snapshot[PROMOTION_CONTEXT]
+                                  ["kind"].as_string(), "promotion") != "backmerge",
+                ).order_by(integration_batches.c.created_at))).mappings().first()
+            current = (active["policy_snapshot"] or {}).get(PROMOTION_CONTEXT, {}) if active else {}
+            return {"success": True, "outcome": "policy_input", "project_id": project.id,
+                    "policy": {"step": step, "source_sha": source, "backmerge_pending": debt,
+                               "active_request_id": active["request_id"] if active else None,
+                               "active_batch_id": active["id"] if active else None,
+                               "newer_source": bool(active and current.get("source_sha") != source)}}
+        except PromotionRefusal as exc:
+            return exc.response()
+        except (GitError, GitHubAccessError, OSError, ValueError) as exc:
+            return _unavailable(exc)
+
     async def _cmd_promote_request(self, args):
         return await self._request_promotion(args)
 
@@ -515,6 +563,9 @@ class PromoteCommandsMixin:
         from src.integration.train_sources import BackmergeAdmission
 
         request = BackmergeSourceArgs.model_validate(args)
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind not in {PrincipalKind.LOCAL, PrincipalKind.SERVICE, PrincipalKind.PLAYBOOK}:
+            return PromotionRefusal("unauthorized", "Backmerge authorship is a daemon mechanism.").response()
         try:
             project, repository, raw, flow = await self._promotion_inputs(
                 request.project_id, command="integration_backmerge_source",
@@ -574,8 +625,6 @@ class PromoteCommandsMixin:
                 else:
                     async def validate_source(conn):
                         await _check_flow(conn, project.id, raw, repository.id, lock=True)
-                        if await ops.remote(repo, origin) != source:
-                            raise PromotionRefusal("promotion_flow_changed", "Origin moved; observe again.")
 
                     result = await admission.author(
                         project.id, repository.id, origin, target, source, client,
@@ -655,7 +704,7 @@ class PromoteCommandsMixin:
                 version, notes_sha = ((None, None) if backmerge else
                     await _source_inputs(ops, repo, step, source, request))
                 suffix = version or source[:12]
-                request_id = (f"backmerge:{repository.id}:{step['id']}:{source}" if backmerge else
+                request_id = (f"backmerge:{repository.id}:{step['id']}:{source[:12]}" if backmerge else
                               f"promotion:{repository.id}:{step['id']}:{suffix}")
                 existing = (
                     (
@@ -714,9 +763,14 @@ class PromoteCommandsMixin:
                     )
                 await check_source_green(client, trust, required, source)
                 previous = await previous_tag(ops, repo, step) if step_has_version(step) else None
-                _increasing_version(step, version, previous)
+                if not backmerge:
+                    _increasing_version(step, version, previous)
+                if hotfix and step["versioning"]["kind"] == "semver_tag":
+                    target_version = semver(await source_version(ops, repo, step["versioning"], base))
+                    if semver(version) != (*target_version[:2], target_version[2] + 1):
+                        raise PromotionRefusal("hotfix_patch_required", "Hotfix must increment the target PATCH version once.")
                 notes_input, authored_notes = None, None
-                if step["notes"]["kind"] != "none":
+                if not backmerge and step["notes"]["kind"] != "none":
                     notes_input = await assemble_notes_input(
                         conn, ops, repo, project_id=project.id, repository_id=repository.id,
                         step=step, head=source, previous=previous, target_tip=base,
@@ -764,7 +818,8 @@ class PromoteCommandsMixin:
                         raise PromotionRefusal("unavailable", "Tag inventory is unavailable.")
                     if observed.state is RemoteRefState.PRESENT:
                         raise PromotionRefusal("tag_exists", f"Tag {tag} already exists.")
-                body = step_pr_body(step, source, request_id, notes_input, authored_notes)
+                body = step_pr_body(step, source, request_id, notes_input, authored_notes,
+                                    origin_ref=(backmerge or hotfix or {}).get("origin_ref"))
                 digest = hashlib.sha256(f"{project.id}:{request_id}".encode()).hexdigest()
                 batch = Batch(
                     "promotion-" + digest, project.id, repository.id, target_ref, created_at=now
@@ -830,6 +885,11 @@ class PromoteCommandsMixin:
                 await BatchStore(self.db).freeze(
                     batch, (member,), trees={member.task_id: tree}, promotion=meta, conn=conn
                 )
+                from src.integration.promotion_steps import promotion_policy_event
+
+                await promotion_policy_event(conn, project_id=project.id, step_id=step["id"],
+                    kind="intent_due", identity=batch.id, now=now, batch_id=batch.id, source_sha=source)
+
                 await conn.execute(
                     update(integration_batches)
                     .where(
@@ -1130,7 +1190,10 @@ class PromoteCommandsMixin:
             async with self.db._engine.connect() as conn:
                 from src.integration.promotion_steps import backmerge_ledger
 
-                debts = await backmerge_ledger(conn, repository.id)
+                try:
+                    debts = await backmerge_ledger(conn, repository.id)
+                except ValueError as exc:
+                    raise PromotionRefusal("backmerge_ledger_invalid", str(exc)) from exc
                 query = select(integration_batches).where(
                     integration_batches.c.project_id == project.id,
                     integration_batches.c.repository_id == repository.id,
@@ -1233,13 +1296,15 @@ class PromoteCommandsMixin:
                 try:
                     _lane, ops, repo, _client = await self._promotion_runtime(project, repository, flow[0])
                     for debt in debts:
-                        tip = await ops.remote(repo, debt["target_ref"])
+                        cached = await ops.git.arun_git_result(
+                            ["rev-parse", "--verify", "refs/remotes/origin/" + debt["target_ref"].removeprefix("refs/heads/")],
+                            cwd=str(repo.store),
+                        )
+                        tip = cached.stdout.strip() if not cached.returncode else None
                         state = "unknown"
                         if tip:
-                            await _fetch_commit(ops, repo, tip)
-                            await _fetch_commit(ops, repo, debt["source_sha"])
                             state = "contained" if await ops.is_ancestor(repo, debt["source_sha"], tip) else "pending"
-                        backmerges.append({**debt, "state": state, "evidence_source": "git"})
+                        backmerges.append({**debt, "state": state, "evidence_source": "cache"})
                 except (PromotionRefusal, GitError, GitHubAccessError, OSError, ValueError):
                     backmerges = [{**debt, "state": "unknown"} for debt in debts]
             return {
@@ -1378,17 +1443,14 @@ async def _source_inputs(ops, repo, step, source, request):
 async def _guard_backmerges(conn, ops, repo, repository_id, target_ref, source):
     from src.integration.promotion_steps import backmerge_ledger
 
-    tip = None
-    for entry in await backmerge_ledger(conn, repository_id):
+    try:
+        ledger = await backmerge_ledger(conn, repository_id)
+    except ValueError as exc:
+        raise PromotionRefusal("backmerge_ledger_invalid", str(exc)) from exc
+    for entry in ledger:
         if entry["target_ref"] != target_ref:
             continue
         await _fetch_commit(ops, repo, entry["source_sha"])
-        if tip is None:
-            tip = await ops.remote(repo, target_ref)
-            if tip:
-                await _fetch_commit(ops, repo, tip)
-        if tip and await ops.is_ancestor(repo, entry["source_sha"], tip):
-            continue
         if not await ops.is_ancestor(repo, entry["source_sha"], source):
             raise PromotionRefusal(
                 "backmerge_pending", "Source does not contain an outstanding backmerge."
@@ -1407,13 +1469,22 @@ async def _hotfix_source(db, conn, ops, repo, project_id, repository_id, step, r
             tasks.c.repo_id == repository_id, tasks.c.status == "COMPLETED",
             task_metadata.c.key == "promotion_hotfix",
             task_branch_origins.c.repository_id == repository_id,
-            task_branch_origins.c.retired_at.is_(None)))).mappings().one_or_none()
+            task_branch_origins.c.retired_at.is_(None)))).mappings().all()
+    if len(row) != 1:
+        raise PromotionRefusal("promotion_source_not_on_chain", "Hotfix needs one live origin.")
+    row = row[0]
+    try:
+        hotfix_meta = json.loads(row["hotfix"])
+    except (ValueError, TypeError):
+        hotfix_meta = {}
     target = "refs/heads/" + step["target"]
-    if not row or row["parent_ref"] != target or json.loads(row["hotfix"])["step_id"] != step["id"]:
+    if not isinstance(hotfix_meta, dict) or row["parent_ref"] != target or hotfix_meta.get("step_id") != step["id"]:
         raise PromotionRefusal("promotion_source_not_on_chain", "Task is not a completed hotfix for this step.")
     requests = await load_delivery_requests(db, [row["id"]], repository_id=repository_id,
                                            target_ref=target, conn=conn, reduced=True)
-    recorded = requests[row["id"]]
+    recorded = requests.get(row["id"])
+    if recorded is None:
+        raise PromotionRefusal("promotion_source_not_on_chain", "Hotfix completion record is missing.")
     identity = CompletionIdentity(project_id, repository_id, row["id"],
                                   recorded.completion_id or recorded.legacy_generation)
     retained = await ops.git.als_remote_ref(str(repo.store), identity.branch,

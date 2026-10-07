@@ -315,8 +315,8 @@ def draft_notes(notes_input, *, kind, version):
     raise ValueError("Only configured notes formats can be drafted")
 
 
-def step_pr_body(step, source, request_id, notes_input, authored_notes=None):
-    prefix = f"Promote `{step['source']}` to `{step['target']}` at `{source}`.\n\n"
+def step_pr_body(step, source, request_id, notes_input, authored_notes=None, *, origin_ref=None):
+    prefix = f"Promote `{origin_ref or step['source']}` to `{step['target']}` at `{source}`.\n\n"
     suffix = f"\nAQ-Promotion-Request: {request_id}\n"
     if notes_input is None:
         body = prefix + suffix

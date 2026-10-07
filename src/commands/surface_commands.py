@@ -217,7 +217,9 @@ class SurfaceCommandsMixin:
         if any(str(key).startswith("manual_pause") for key in (args.get("meta") or {})):
             return {"error": "manual_pause is reserved; use pause_task/resume_task."}
 
-        if {"notes_input", "promotion_prepare"}.intersection(args.get("meta") or {}):
+        if {"notes_input", "promotion_prepare", "promotion_hotfix", "backmerge",
+            "backmerge_result", "promotion_intent", "promotion_result",
+            "promotion_publish_intent"}.intersection(args.get("meta") or {}):
             return {"error": "Promotion preparation metadata is immutable and daemon-owned."}
 
         if any(str(key).startswith("supervisor_recovery") for key in (args.get("meta") or {})):

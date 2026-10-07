@@ -53,6 +53,8 @@ class MultipleIntentGitHub(IntentGitHub):
 @pytest.mark.parametrize("mode", ["train", "development"])
 async def test_hotfix_origin_and_exact_task_head_promote_to_step_target(promote_env, mode, tmp_path):
     e = promote_env
+    e.base = commit(e.repo.store, {"pyproject.toml": '[project]\nversion = "0.1.0"\n'}, base=e.base)
+    git(e.repo.store, "push", "origin", f"{e.base}:main")
     # Keep the fixture's version file identical on dev, so this drill tests
     # hotfix delivery rather than the separately covered conflict/repair path.
     e.source = commit(e.repo.store, {"pyproject.toml": '[project]\nversion = "0.1.1"\n'},
@@ -89,6 +91,7 @@ async def test_hotfix_origin_and_exact_task_head_promote_to_step_target(promote_
     await GitProvenance(e.ops.git, str(e.repo.store),
                         repository_url="https://github.com/test/repo.git").write_completion(CompletedSource(
         CompletionIdentity("p", "r", tid, generation), hotfix))
+    e.github.runs[hotfix] = "success"
     wrong = await request(e, from_task=tid, source_sha=e.source)
     assert wrong["outcome"] == "promotion_source_not_on_chain"
     opened = await request(e, from_task=tid)
@@ -293,6 +296,7 @@ async def test_intermediate_backmerge_is_ff_only_and_contains_no_tag(promote_env
     e = promote_env
     e.github = MultipleIntentGitHub(e)
     e.human.app = e.github
+    e.github.runs[e.source] = "success"
     git(e.repo.store, "push", "origin", f"{e.source}:refs/heads/production")
     divergent = commit(e.repo.store, {"main-only.txt": "main\n"}, base=e.base)
     git(e.repo.store, "push", "origin", f"{divergent}:main")
@@ -310,6 +314,7 @@ async def test_intermediate_backmerge_is_ff_only_and_contains_no_tag(promote_env
     git(e.repo.store, "merge", "--no-ff", "-m", "heal target", divergent)
     healed = git(e.repo.store, "rev-parse", "HEAD")
     git(e.repo.store, "push", "origin", f"{healed}:dev")
+    e.github.runs[healed] = "success"
     # The ordinary request must be admitted while the backmerge is held.
     ordinary = await request(e)
     assert ordinary["success"] and ordinary["outcome"] == "requested", ordinary
@@ -356,10 +361,12 @@ async def test_backmerge_mechanism_observes_step_target_and_honors_disabled_flow
     assert result["success"], result
     [debt] = result["backmerges"]
     assert debt["target_ref"] == "refs/heads/dev" and debt["source_sha"] == hotfix
+    git(e.repo.store, "fetch", "origin", "dev")
     status = await e.handler._cmd_promote_status({"project_id": "p"})
     assert status["backmerges"][0]["state"] == "pending"
     git(e.repo.store, "checkout", "--detach", e.source)
     git(e.repo.store, "merge", "--no-ff", "-m", "manual backmerge", hotfix)
     git(e.repo.store, "push", "origin", "HEAD:dev")
+    git(e.repo.store, "fetch", "origin", "dev")
     status = await e.handler._cmd_promote_status({"project_id": "p"})
     assert status["backmerges"][0]["state"] == "contained"

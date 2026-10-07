@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/promote.py`](../../../src/commands/contracts/promote.py) |
-| Contract fingerprint | `sha256:9cce5020e800693078f0e81671d7ba5f5dcdbc14ae5ce9eabd2fe44e92efa33e` |
+| Contract fingerprint | `sha256:6701bc830f7599a920f8b0e1e77f706e292c27e0001cc5e3471085788ba12b4c` |
 
 ## Parameters
 
@@ -27,6 +27,7 @@
 | `source_sha` | `string \| null` | no | `null` | Exact commit to pin; defaults to the source branch tip. |
 | `version` | `string \| null` | no | `null` | Version at the pinned source; required for custom tags. |
 | `notes_reviewed` | `boolean` | no | `false` | Acknowledge reading the notes at the pinned source. |
+| `from_task` | `string \| null` | no | `null` | Completed hotfix task to promote. |
 
 ## Result
 
@@ -48,8 +49,10 @@
 | `notes_input` | `object \| null` | — |
 | `draft` | `string \| null` | — |
 | `notes` | `string \| null` | — |
+| `policy` | `object \| null` | — |
+| `backmerges` | `object[]` | — |
 
-Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id`, `intent`, `pr_url`, `promotion`, `review`, `flow`, `promotions`, `evidence_source`, `retry_at`, `version`, `notes_input`, `draft`, `notes`.
+Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id`, `intent`, `pr_url`, `promotion`, `review`, `flow`, `promotions`, `evidence_source`, `retry_at`, `version`, `notes_input`, `draft`, `notes`, `policy`, `backmerges`.
 
 ## Outcomes
 
@@ -57,7 +60,9 @@ Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id
 |---|---|---|
 | `already_requested` | success | — |
 | `approval_not_required` | failure | — |
+| `backmerge_ledger_invalid` | failure | — |
 | `backmerge_pending` | failure | — |
+| `hotfix_patch_required` | failure | — |
 | `not_found` | failure | — |
 | `notes_not_reviewed` | failure | — |
 | `notes_range_invalid` | failure | — |

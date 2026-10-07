@@ -1225,6 +1225,12 @@ _CANONICAL_PAYLOADS.update(
 # (a) Valid payloads pass validation silently
 # ═══════════════════════════════════════════════════════════════════════════
 
+_CANONICAL_PAYLOADS.update({
+    event: {"project_id": "my-app", "step_id": "release"}
+    for event in ("promotion.source_settled", "promotion.request_due",
+                  "promotion.hotfix_completed", "promotion.intent_due", "promotion.delivered")
+})
+
 
 class TestValidPayloadPassesSilently:
     """(a) An event with all required fields passes validation silently."""

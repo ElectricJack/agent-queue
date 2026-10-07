@@ -56,9 +56,12 @@ async def backmerge_ledger(conn, repository_id):
     """Recorded debts; only Git containment can satisfy these entries."""
     values = (await conn.execute(select(task_metadata.c.value)
         .join(tasks, tasks.c.id == task_metadata.c.task_id)
-        .where(tasks.c.repo_id == repository_id, tasks.c.status == "COMPLETED",
-               task_metadata.c.key == "backmerge"))).scalars().all()
-    entries = [json.loads(value) for value in values]
+        .where(tasks.c.repo_id == repository_id, tasks.c.task_type == "backmerge",
+               tasks.c.status.not_in(("FAILED", "CANCELLED")), task_metadata.c.key == "backmerge"))).scalars().all()
+    try:
+        entries = [json.loads(value) for value in values]
+    except (ValueError, TypeError) as exc:
+        raise PromotionIntentInvalid("Malformed daemon backmerge ledger JSON.") from exc
     # Completion history survives archival, unlike live task metadata.
     archived = select(archived_tasks.c.id).where(
         archived_tasks.c.repo_id == repository_id, archived_tasks.c.task_type == "backmerge",
@@ -67,7 +70,10 @@ async def backmerge_ledger(conn, repository_id):
         task_completion_records.c.task_id.in_(archived),
         task_completion_records.c.id.startswith("backmerge:"),
     ))).scalars().all()
-    entries.extend(json.loads(value)["backmerge"] for value in records)
+    try:
+        entries.extend(json.loads(value)["backmerge"] for value in records)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise PromotionIntentInvalid("Malformed archived daemon backmerge ledger JSON.") from exc
     rows = (await conn.execute(select(integration_batches.c.policy_snapshot).where(
         integration_batches.c.repository_id == repository_id,
         integration_batches.c.trigger == "promotion",
@@ -76,7 +82,14 @@ async def backmerge_ledger(conn, repository_id):
     ))).scalars().all()
     entries.extend(meta for row in rows
                    if (meta := row.get(PROMOTION_CONTEXT, {})).get("kind") == "backmerge")
-    return entries
+    unique = {}
+    for entry in entries:
+        if (not isinstance(entry, dict) or not is_valid_git_oid(entry.get("source_sha"))
+                or not all(isinstance(entry.get(key), str) and entry[key].startswith("refs/heads/")
+                           for key in ("target_ref", "origin_ref"))):
+            raise PromotionIntentInvalid("Malformed daemon backmerge ledger metadata.")
+        unique[(entry["source_sha"], entry["target_ref"])] = entry
+    return list(unique.values())
 
 
 DEFAULT_ATTESTATION = "Agent Queue Integration Attestation"
@@ -1708,6 +1721,16 @@ class PromotionVisit(BatchService):
                                                    "error": str(exc)})
         except (GitError, OSError, ValueError) as exc:
             return BatchObservation("unknown", detail={"reason": str(exc)})
+
+
+async def promotion_policy_event(conn, *, project_id, step_id, kind, identity, now, **facts):
+    """Durable notification; inactive bundles leave the project without an automatic author."""
+    from src.integration.outbox import enqueue_integration_event
+
+    key = f"promotion-policy:{kind}:{identity}:{step_id}"
+    await enqueue_integration_event(conn, event_id=key, dedup_key=key, project_id=project_id,
+        event_type="promotion." + kind,
+        payload={"project_id": project_id, "step_id": step_id, **facts}, available_at=now)
 
 
 async def settle_promotion(db, batch, observation, *, clock=time.time, conn=None):

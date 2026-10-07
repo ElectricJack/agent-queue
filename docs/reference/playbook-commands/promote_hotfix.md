@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/promote.py`](../../../src/commands/contracts/promote.py) |
-| Contract fingerprint | `sha256:5bf6108dc428118450abcd568eba9c242db3a3dc13ae2532c3f7817d605de5be` |
+| Contract fingerprint | `sha256:6bc11a058db48b5d2d8bfe4933aa940f5c0678a41344b799d27a43b0f07e3e6c` |
 
 ## Parameters
 
@@ -45,19 +45,32 @@
 | `promotions` | `object[]` | — |
 | `evidence_source` | `string \| null` | — |
 | `retry_at` | `number \| null` | — |
+| `version` | `string \| null` | — |
+| `notes_input` | `object \| null` | — |
+| `draft` | `string \| null` | — |
+| `notes` | `string \| null` | — |
+| `policy` | `object \| null` | — |
 | `backmerges` | `object[]` | — |
 
-Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id`, `intent`, `pr_url`, `promotion`, `review`, `flow`, `promotions`, `evidence_source`, `retry_at`, `backmerges`.
+Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id`, `intent`, `pr_url`, `promotion`, `review`, `flow`, `promotions`, `evidence_source`, `retry_at`, `version`, `notes_input`, `draft`, `notes`, `policy`, `backmerges`.
 
 ## Outcomes
 
 | Outcome | Classification | Meaning |
 |---|---|---|
 | `approval_not_required` | failure | — |
+| `backmerge_ledger_invalid` | failure | — |
 | `backmerge_pending` | failure | — |
 | `hotfix_filed` | success | — |
+| `hotfix_patch_required` | failure | — |
 | `not_found` | failure | — |
 | `notes_not_reviewed` | failure | — |
+| `notes_range_invalid` | failure | — |
+| `notes_range_too_large` | failure | — |
+| `notes_source_missing` | failure | — |
+| `notes_stale` | failure | — |
+| `prepare_in_progress` | failure | — |
+| `promotion_body_too_large` | failure | — |
 | `promotion_flow_changed` | failure | — |
 | `promotion_flow_empty` | failure | — |
 | `promotion_flow_invalid` | failure | — |
@@ -71,12 +84,18 @@ Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id
 | `promotion_requester_identity_missing` | failure | — |
 | `promotion_review_invalid` | failure | — |
 | `promotion_source_not_on_chain` | failure | — |
+| `promotion_source_pending` | failure | — |
+| `promotion_source_red` | failure | — |
+| `promotion_source_unavailable` | failure | — |
+| `promotion_source_untrusted` | failure | — |
+| `promotion_train_required` | failure | — |
 | `rate_limited` | failure | — |
 | `step_not_found` | failure | — |
 | `step_not_versioned` | failure | — |
 | `tag_exists` | failure | — |
 | `unavailable` | failure | — |
 | `version_mismatch` | failure | — |
+| `version_not_increasing` | failure | — |
 
 ## Declared effects
 

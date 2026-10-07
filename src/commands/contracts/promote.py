@@ -74,6 +74,10 @@ class PromoteHotfixArgs(PromoteProjectArgs):
     version: str | None = None
 
 
+class PromotionPolicyInputArgs(PromoteRequestArgs):
+    pass
+
+
 class BackmergeSourceArgs(PromoteProjectArgs):
     step_id: str = Field(min_length=1)
 
@@ -100,10 +104,12 @@ class PromoteValue(CommandValue):
     notes_input: dict[str, Any] | None = None
     draft: str | None = None
     notes: str | None = None
+    policy: dict[str, Any] | None = None
     backmerges: list[dict[str, Any]] = Field(default_factory=list)
 
 
 REFUSALS = (
+    "backmerge_ledger_invalid", "hotfix_patch_required",
     "not_found",
     "unavailable",
     "rate_limited",
@@ -146,6 +152,7 @@ def register_promote_contracts(registry):
     from src.commands.contracts.integration import _hierarchy_adapter, _operational_contract
 
     for name, args_model, successes, read in (
+        ("integration_promotion_policy_input", PromotionPolicyInputArgs, ("policy_input",), True),
         ("promote_prepare", PromotePrepareArgs, ("prepared",), False),
         ("integration_promotion_notes_input", PromotionNotesInputArgs, ("notes_input",), True),
         ("promote_request", PromoteRequestArgs, ("requested", "already_requested"), False),
@@ -166,6 +173,7 @@ def register_promote_contracts(registry):
             result_model=PromoteValue,
         )
         summaries = {
+            "integration_promotion_policy_input": "Read pinned source and outstanding promotion facts for reviewed policy.",
             "promote_prepare": "File ordinary release preparation on the repository default branch.",
             "integration_promotion_notes_input": "Assemble immutable promotion notes from full Git history.",
             "promote_hotfix": "File a hotfix based on a promotion target, through ordinary task routing.",

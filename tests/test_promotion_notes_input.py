@@ -544,7 +544,10 @@ async def test_outstanding_hotfix_refuses_before_notes_range(promote_env, comman
         await conn.execute(update(tasks).where(tasks.c.id == "pending-backmerge").values(status="DEFINED"))
         await conn.execute(insert(task_metadata).values(
             task_id="pending-backmerge", key="backmerge",
-            value=json.dumps({"source_sha": hotfix, "target_ref": "refs/heads/main"}),
+            # Include the daemon's originating branch identity while preserving
+            # the DEFINED outstanding-debt regression from the E2 review.
+            value=json.dumps({"source_sha": hotfix, "target_ref": "refs/heads/main",
+                              "origin_ref": "refs/heads/main"}),
         ))
     args = {"project_id": "p", "step_id": "release"}
     if command in {"prepare", "prepare_older_version"}:

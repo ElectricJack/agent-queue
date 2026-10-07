@@ -84,6 +84,8 @@ SHIPPED = {
     "github-issue-triage": "src/prompts/project_playbooks/agent-queue/github-issue-triage.md",
     "parent-integration": "src/prompts/integration_playbooks/parent-integration.md",
     "root-train": "src/prompts/integration_playbooks/root-train.md",
+    "promotion-request": "src/prompts/integration_playbooks/promotion-request.md",
+    "promotion-continuous": "src/prompts/integration_playbooks/promotion-continuous.md",
 }
 SOURCES = SHIPPED
 
@@ -314,6 +316,8 @@ def _load(rel_path: str) -> PlaybookSource:
 
 
 def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
+    if playbook_id in {"promotion-request", "promotion-continuous"}:
+        return _promotion_policy_body(source)
     if playbook_id == "object-loop":
         return _object_loop_body(source)
     if playbook_id == "supervisor-hourly-report":
@@ -536,6 +540,84 @@ def _github_issue_triage_body(source: PlaybookSource) -> dict[str, Any]:
         {"project_id": event("project_id"), "review_id": event("review_id"),
          "revision": event("revision")},
         ("closed", "ignored"))
+    return {"rules": rules, "steps": steps}
+
+
+def _promotion_policy_body(source):
+    from src.commands.contracts import CONTRACTS
+
+    continuous = source.frontmatter["id"] == "promotion-continuous"
+    rules, steps = [], {}
+    def event(path):
+        return {"type": "event_ref", "path": path}
+    def lit(value):
+        return {"type": "literal", "value": value}
+    def bound(path):
+        return {"type": "binding_ref", "binding": "input", "path": "policy." + path}
+    def truth(path):
+        return {"type": "exists", "value": bound(path), "mode": "truthy"}
+    for rule, trigger in (("advance-source", "promotion.source_settled"),
+                          ("explicit-request", "promotion.request_due"),
+                          ("hotfix-completed", "promotion.hotfix_completed"),
+                          ("visit-intent", "promotion.intent_due"),
+                          ("backmerge-delivered", "promotion.delivered")):
+        ref = _source_ref_for_heading(source, "## Rule: " + rule)
+        def sid(name):
+            return rule + "--" + name
+        def step(name, kind, **fields):
+            steps[sid(name)] = {"type": kind, "rule": rule, "title": name,
+                                "source": ref, **fields}
+        def cmd(name, command, inputs, success, *, save=None, outcomes=None):
+            contract = CONTRACTS.get(command).contract.execution
+            transitions = {outcome.name: sid("notify") for outcome in contract.outcomes}
+            transitions.update({outcome.name: sid(success) for outcome in contract.outcomes
+                                if outcome.classification.value == "success"})
+            transitions.update({"runtime_error": sid("failed")})
+            transitions.update({key: sid(value) for key, value in (outcomes or {}).items()})
+            step(name, "command", command=command, inputs=inputs, transitions=transitions,
+                 **({"save_result_as": save} if save else {}))
+        for name, outcome in (("done", "completed"), ("failed", "failed")):
+            steps[sid(name)] = _terminal(rule, outcome, _source_ref_for_heading(source, "## Failure handling"))
+        notify_inputs = {"project_id": event("project_id"), "to_kind": lit("user"),
+                         "to_id": lit("user"), "from_id": lit(source.frontmatter["id"]),
+                         "from_kind": lit("system"),
+                         "body": lit("Promotion needs operator attention. Inspect aq promote status; use prepare, approve or cancel after resolving the named hold.")}
+        cmd("notify", "message_send", notify_inputs, "done")
+        # Refused notification must end; it never loops back into itself.
+        steps[sid("notify")]["transitions"] = {key: (sid("done") if value == sid("done") else sid("failed"))
+                                                for key, value in steps[sid("notify")]["transitions"].items()}
+        entry = "read"
+        if rule == "visit-intent":
+            entry = "publish"
+            cmd("publish", "integration_promotion_publish", {"batch_id": event("batch_id")}, "done",
+                outcomes={"held": "notify", "unknown": "notify"})
+        elif rule == "backmerge-delivered":
+            entry = "backmerge"
+            cmd("backmerge", "integration_backmerge_source",
+                {"project_id": event("project_id"), "step_id": event("step_id")}, "done")
+        elif rule == "advance-source" and not continuous:
+            entry = "done"
+        else:
+            identity = {"project_id": event("project_id"), "step_id": event("step_id")}
+            if rule == "hotfix-completed":
+                identity["from_task"] = event("from_task")
+            cmd("read", "integration_promotion_policy_input", identity, "choose", save="input")
+            cases = [{"when": truth("backmerge_pending"), "goto": sid("notify")}]
+            if continuous and rule == "advance-source":
+                cases.append({"when": truth("newer_source"), "goto": sid("cancel")})
+                cmd("cancel", "promote_cancel", {"project_id": event("project_id"),
+                    "request_id": bound("active_request_id")}, "request")
+            cases.append({"when": truth("active_request_id"), "goto": sid("done")})
+            step("choose", "decision", cases=cases, default=sid("request"))
+            inputs = {**identity, "source_sha": bound("source_sha")}
+            if rule != "advance-source":
+                inputs["notes_reviewed"] = event("notes_reviewed")
+            cmd("request", "promote_request", inputs, "done")
+        if rule == "advance-source" and not continuous:
+            steps.pop(sid("notify"))
+            steps.pop(sid("failed"))
+        rules.append({"id": rule, "name": rule, "source": ref,
+                      "trigger": {"event_type": trigger}, "entry_step": sid(entry)})
     return {"rules": rules, "steps": steps}
 
 

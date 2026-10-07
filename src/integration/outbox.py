@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 # Reviewed inventory C.10: these notifications have no shipped playbook
 # consumer. Always offer them to operator-installed consumers before sinking.
 UNSUBSCRIBED_EVENT_TYPES = frozenset({
+    "promotion.source_settled", "promotion.request_due", "promotion.hotfix_completed",
+    "promotion.intent_due", "promotion.delivered",
     "integration.root_delivered",
     "integration.human_blocked",
     "integration.cleanup_pending",

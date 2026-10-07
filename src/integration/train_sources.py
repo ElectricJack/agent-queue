@@ -453,22 +453,34 @@ class BackmergeAdmission:
                     await conn.execute(insert(task_metadata).values(task_id=old_id,
                         key="backmerge_result", value=json.dumps({"reason": "superseded", "by": tid}))
                         .on_conflict_do_nothing(index_elements=["task_id", "key"]))
-            remote = await self.gitops.remote(repo, "refs/heads/" + branch)
             await BranchOwnership(self.db).acquire(
                 BranchKey(repository_id=repository_id, branch="refs/heads/" + branch),
                 tid, "worker", conn=conn,
             )
-            if remote is None:
-                await self.gitops.push(repo, "refs/heads/" + branch, source, "")
-            elif remote != source:
-                raise ValueError("backmerge source ref changed")
-            await GitProvenance(self.gitops.git, str(repo.store),
-                repository_url=f"https://github.com/{repo.binding.full_name}.git").write_completion(
-                    CompletedSource(CompletionIdentity(project_id, repository_id, tid, generation), source))
-            url = await client.create_pull_request(title=f"Back-merge {origin_ref}@{source[:12]} into {target_ref}",
-                body=f"Back-merge `{source}` through this branch's train gate.\n\nAQ-Backmerge: {key}\n",
-                head=branch, base=target_ref.removeprefix("refs/heads/"))
-            GitHubAccess.validate_pr_url(repo.binding, url)
+        # Ref creation, completion retention and the PR are recoverable by their
+        # deterministic identities. No provider request holds a DB transaction.
+        remote = await self.gitops.remote(repo, "refs/heads/" + branch)
+        if remote is None:
+            await self.gitops.push(repo, "refs/heads/" + branch, source, "")
+        elif remote != source:
+            raise ValueError("backmerge source ref changed")
+        await GitProvenance(self.gitops.git, str(repo.store),
+            repository_url=f"https://github.com/{repo.binding.full_name}.git").write_completion(
+                CompletedSource(CompletionIdentity(project_id, repository_id, tid, generation), source))
+        url = await client.create_pull_request(title=f"Back-merge {origin_ref}@{source[:12]} into {target_ref}",
+            body=f"Back-merge `{source}` through this branch's train gate.\n\nAQ-Backmerge: {key}\n",
+            head=branch, base=target_ref.removeprefix("refs/heads/"))
+        GitHubAccess.validate_pr_url(repo.binding, url)
+        if await self.gitops.remote(repo, origin_ref) != source:
+            raise ValueError("backmerge originating head changed during authorship")
+        async with self.db.immediate() as conn:
+            await conn.execute(select(func.pg_advisory_xact_lock(
+                func.hashtext("aq-backmerge:" + repository_id))))
+            existing = (await conn.execute(select(tasks.c.pr_url, task_metadata.c.value)
+                .join(task_metadata, task_metadata.c.task_id == tasks.c.id)
+                .where(tasks.c.id == tid, task_metadata.c.key == "backmerge"))).first()
+            if existing and json.loads(existing.value).get("kind") == "source":
+                return {"task_id": tid, "pr_url": existing.pr_url, **json.loads(existing.value)}
             if validate_on:
                 await validate_on(conn)
             now = self.clock()
@@ -1194,6 +1206,22 @@ class DatabaseBatches:
                         tested_candidate_sha=observation.candidate_sha,
                         updated_at=self.clock())
             )
+            from src.integration.promotion_steps import promotion_policy_event
+
+            flow = await conn.scalar(select(projects.c.promotion_flow).where(
+                projects.c.id == batch.project_id))
+            for step in flow or []:
+                if "refs/heads/" + step["source"] == batch.target_ref:
+                    await promotion_policy_event(conn, project_id=batch.project_id, step_id=step["id"],
+                        kind="source_settled", identity=batch.id, now=self.clock(),
+                        source_sha=observation.target_sha)
+            if trigger == "promotion":
+                row = await conn.scalar(select(integration_batches.c.policy_snapshot).where(
+                    integration_batches.c.id == batch.id))
+                step = row["promotion_step"]
+                await promotion_policy_event(conn, project_id=batch.project_id, step_id=step["id"],
+                    kind="delivered", identity=batch.id, now=self.clock(), batch_id=batch.id,
+                    source_sha=observation.target_sha)
         if self.cleanup is not None:
             # External identity resolution is outside the settlement transaction;
             # maintenance recovers a failure between commit and materialization.

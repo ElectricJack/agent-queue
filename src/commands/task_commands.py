@@ -4045,6 +4045,8 @@ class TaskCommandsMixin:
             updates["priority"] = args["priority"]
         if "task_type" in args:
             raw_tt = args["task_type"]
+            if raw_tt in {"promotion", "backmerge"} or task.task_type in {TaskType.PROMOTION, TaskType.BACKMERGE}:
+                return {"success": False, "error": "Promotion and backmerge task types are daemon-owned."}
             if raw_tt is None:
                 updates["task_type"] = None  # allow clearing task_type
             elif raw_tt in TASK_TYPE_VALUES:
@@ -6001,6 +6003,8 @@ class TaskCommandsMixin:
         dedup_key = args.get("dedup_key")
         if not dedup_key:
             return {"success": False, "error": "dedup_key is required"}
+        if args.get("task_type") in {"promotion", "backmerge"}:
+            return {"success": False, "error": "Promotion and backmerge task types are daemon-owned."}
         title = args.get("title")
         if not title:
             return {"success": False, "error": "title is required"}

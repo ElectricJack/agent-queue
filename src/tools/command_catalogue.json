@@ -11175,6 +11175,103 @@
         "type": "object"
       }
     },
+    "integration_promotion_policy_input": {
+      "name": "integration_promotion_policy_input",
+      "description": "Read pinned source and outstanding promotion facts for reviewed policy.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "description": "Configured promotion step id.",
+            "minLength": 1,
+            "title": "Step Id",
+            "type": "string"
+          },
+          "source_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Exact commit to pin; defaults to the source branch tip.",
+            "title": "Source Sha"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Version at the pinned source; required for custom tags.",
+            "title": "Version"
+          },
+          "notes_reviewed": {
+            "default": false,
+            "description": "Acknowledge reading the notes at the pinned source.",
+            "title": "Notes Reviewed",
+            "type": "boolean"
+          },
+          "from_task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Completed hotfix task to promote.",
+            "title": "From Task"
+          }
+        },
+        "required": [
+          "project_id",
+          "step_id"
+        ],
+        "title": "PromotionPolicyInputArgs",
+        "type": "object"
+      }
+    },
     "integration_promotion_publish": {
       "name": "integration_promotion_publish",
       "description": "Authenticated hierarchical integration operational control.",

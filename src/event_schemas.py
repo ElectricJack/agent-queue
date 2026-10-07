@@ -2013,6 +2013,19 @@ layer (Phase 0.2.2) to check payloads at emit time.
 """
 
 
+for _promotion_event in ("promotion.source_settled", "promotion.request_due", "promotion.hotfix_completed",
+                         "promotion.intent_due", "promotion.delivered"):
+    EVENT_SCHEMAS[_promotion_event] = {
+        "required": ["project_id", "step_id"],
+        "optional": ["batch_id", "source_sha", "from_task", "notes_reviewed", "event_id"],
+        "types": {"project_id": str, "step_id": str, "batch_id": str, "source_sha": str,
+                  "from_task": str, "notes_reviewed": bool},
+        "fields": {key: {"type": "boolean" if key == "notes_reviewed" else "string",
+                         "description": "promotion " + key}
+                   for key in ("project_id", "step_id", "batch_id", "source_sha", "from_task", "notes_reviewed")},
+    }
+
+
 def get_schema(event_type: str) -> EventSchema | None:
     """Return the schema for *event_type*, or ``None`` if unregistered.
 
