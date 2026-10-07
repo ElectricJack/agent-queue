@@ -579,7 +579,7 @@ def _supervisor(project_id=None, session_id="supervisor"):
     from src.profiles.capabilities import CapabilityPolicy
 
     policy = CapabilityPolicy.from_namespaces(
-        aq_commands=["promote_request", "promote_cancel", "promote_status", "promote_list"],
+        aq_commands=["promote_prepare", "promote_request", "promote_cancel", "promote_status", "promote_list"],
         harness_tools=[],
         plugin_tools=[],
     )

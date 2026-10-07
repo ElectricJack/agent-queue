@@ -27,17 +27,26 @@ from src.database.tables import (
 from src.git.github_contracts import GitHubAccessError, rate_limit_cause
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.integration.batches import Batch, BatchMember, BatchStore
+from src.integration.promotion_notes import (
+    PREPARE_CONTEXT,
+    NotesRefusal,
+    assemble_notes_input,
+    authored_notes_section,
+    draft_notes,
+    notes_metadata,
+    previous_tag,
+    semver,
+    source_version,
+    step_has_version,
+    step_pr_body,
+)
 from src.integration.promotion_steps import (
     PROMOTION_CONTEXT,
     PROMOTION_RESULT,
     FlowSchema,
-    promotion_ref,
-    check_source_green,
     PromotionSourceRefusal,
-)
-from src.integration.promotion_notes import (
-    PREPARE_CONTEXT, NotesRefusal, assemble_notes_input, draft_notes, notes_metadata,
-    previous_tag, semver, source_version, step_pr_body,
+    check_source_green,
+    promotion_ref,
 )
 
 
@@ -316,6 +325,9 @@ class PromoteCommandsMixin:
         try:
             project, repository, _, flow = await self._promotion_inputs(request.project_id, read=True)
             step = _find_step(flow, request.step_id)
+            if step["notes"]["kind"] == "none":
+                return {"success": True, "outcome": "notes_input", "project_id": project.id,
+                        "notes_input": None}
             _, ops, repo, _ = await self._promotion_runtime(project, repository, step)
             head = request.source_sha or await ops.remote(
                 repo, "refs/heads/" + repository.default_branch,
@@ -324,6 +336,8 @@ class PromoteCommandsMixin:
                 raise PromotionRefusal("unavailable", "Default branch is unavailable.")
             previous = await previous_tag(ops, repo, step)
             async with self.db._engine.connect() as conn:
+                await _guard_backmerges(conn, ops, repo, repository.id,
+                                       "refs/heads/" + step["target"], head)
                 value = await assemble_notes_input(
                     conn, ops, repo, project_id=project.id, repository_id=repository.id,
                     step=step, head=head, previous=previous,
@@ -365,7 +379,7 @@ class PromoteCommandsMixin:
                     major, minor, patch = semver(current)
                     version = f"{major}.{minor + 1}.0" if request.bump == "minor" \
                         else f"{major}.{minor}.{patch + 1}"
-                previous = await previous_tag(ops, repo, step)
+                previous = await previous_tag(ops, repo, step) if step_has_version(step) else None
                 _increasing_version(step, version, previous)
                 # One version source per repository: concurrent steps must not file
                 # independent workers that race to bump the same version file.
@@ -385,21 +399,24 @@ class PromoteCommandsMixin:
                         tasks.c.id == request.from_task, tasks.c.project_id == project.id,
                     )):
                         raise PromotionRefusal("not_found", "Originating task is outside the project.")
-                notes_input = await assemble_notes_input(
-                    conn, ops, repo, project_id=project.id, repository_id=repository.id,
-                    step=step, head=head, previous=previous,
-                )
-                draft = None if step["notes"]["kind"] == "none" else draft_notes(
-                    notes_input, kind=step["notes"]["kind"], version=version,
-                )
+                notes_input, draft = None, None
+                if step["notes"]["kind"] != "none":
+                    target = await ops.remote(repo, "refs/heads/" + step["target"])
+                    await _guard_backmerges(conn, ops, repo, repository.id,
+                                           "refs/heads/" + step["target"], head)
+                    notes_input = await assemble_notes_input(
+                        conn, ops, repo, project_id=project.id, repository_id=repository.id,
+                        step=step, head=head, previous=previous, target_tip=target,
+                    )
+                    draft = draft_notes(notes_input, kind=step["notes"]["kind"], version=version)
                 task = Task(
                     id="", project_id=project.id, repo_id=repository.id,
                     title=f"Prepare {step['id']} {version}", task_type=TaskType.CHORE,
                     description=(f"Prepare version {version} on {repository.default_branch}. "
                                  f"Bump {step['versioning']['source']}; keep mirrored versions equal, "
-                                 "draft the configured notes from metadata.notes_input "
-                                 "(aq task show <own id> --json), and regenerate "
-                                 "artifacts affected by the bump. Read only your own task. "
+                                 + ("draft the configured notes from metadata.notes_input "
+                                    "(aq task show <own id> --json), and " if draft is not None else "")
+                                 + "regenerate artifacts affected by the bump. Read only your own task. "
                                  "Commit and publish through the ordinary PR-gated train.\n\n"
                                  + (f"Notes path: {step['notes']['path'].format(version=version)}\n"
                                     + (draft or "") if draft is not None else "")),
@@ -555,25 +572,24 @@ class PromoteCommandsMixin:
                 base = await ops.remote(repo, target_ref)
                 if base:
                     await _fetch_commit(ops, repo, base)
+                await _guard_backmerges(conn, ops, repo, repository.id, target_ref, source)
                 if not base or not await ops.is_ancestor(repo, base, source):
                     raise PromotionRefusal(
                         "promotion_not_fast_forward", "Target is not an ancestor of the source."
                     )
                 await check_source_green(client, trust, required, source)
-                previous = await previous_tag(ops, repo, step)
+                previous = await previous_tag(ops, repo, step) if step_has_version(step) else None
                 _increasing_version(step, version, previous)
-                notes_input = await assemble_notes_input(
-                    conn, ops, repo, project_id=project.id, repository_id=repository.id,
-                    step=step, head=source, previous=previous,
-                )
-                authored_notes = None
+                notes_input, authored_notes = None, None
                 if step["notes"]["kind"] != "none":
+                    notes_input = await assemble_notes_input(
+                        conn, ops, repo, project_id=project.id, repository_id=repository.id,
+                        step=step, head=source, previous=previous, target_tip=base,
+                    )
                     path = step["notes"]["path"].format(version=version)
                     pinned = await ops.git.arun_git_result(
                         ["--no-replace-objects", "show", source + ":" + path], cwd=str(repo.store),
                     )
-                    from src.integration.promotion_notes import authored_notes_section
-
                     authored_notes = authored_notes_section(pinned.stdout, step["notes"]["kind"], version)
                     metadata = notes_metadata(authored_notes, step["notes"]["kind"], version)
                     if metadata.get("source_digest") != notes_input["source_digest"]:
@@ -608,7 +624,7 @@ class PromoteCommandsMixin:
                         raise PromotionRefusal("unavailable", "Tag inventory is unavailable.")
                     if observed.state is RemoteRefState.PRESENT:
                         raise PromotionRefusal("tag_exists", f"Tag {tag} already exists.")
-                await _guard_backmerges(conn, ops, repo, repository.id, target_ref, source)
+                body = step_pr_body(step, source, request_id, notes_input, authored_notes)
                 digest = hashlib.sha256(f"{project.id}:{request_id}".encode()).hexdigest()
                 batch = Batch(
                     "promotion-" + digest, project.id, repository.id, target_ref, created_at=now
@@ -629,7 +645,7 @@ class PromoteCommandsMixin:
                     )
                 pr_url = await client.create_pull_request(
                     title=f"Promote {step['id']} {suffix}",
-                    body=step_pr_body(step, source, request_id, notes_input, authored_notes),
+                    body=body,
                     head=ref.removeprefix("refs/heads/"),
                     base=step["target"],
                 )
@@ -1179,9 +1195,9 @@ async def _source_inputs(ops, repo, step, source, request):
             raise PromotionRefusal(
                 "version_mismatch", "Pinned source must contain a semver release version."
             )
-    elif versioning["kind"] == "none" and version:
+    elif not step_has_version(step) and version:
         raise PromotionRefusal("step_not_versioned", "Unversioned step cannot take --version.")
-    elif versioning["kind"] == "custom" and not version:
+    elif versioning["kind"] == "custom" and step_has_version(step) and not version:
         raise PromotionRefusal("version_mismatch", "Custom versioned step requires --version.")
     notes_sha = None
     if step["notes"]["kind"] != "none":
@@ -1194,7 +1210,8 @@ async def _source_inputs(ops, repo, step, source, request):
         result = await ops.git.arun_git_result(["--no-replace-objects", "show", source + ":" + path], cwd=str(repo.store))
         if result.returncode:
             raise PromotionRefusal("notes_not_reviewed", "Pinned notes cannot be read.")
-        notes_sha = hashlib.sha256(result.stdout.encode()).hexdigest()
+        section = authored_notes_section(result.stdout, step["notes"]["kind"], version)
+        notes_sha = hashlib.sha256(section.encode()).hexdigest()
     return version, notes_sha
 
 

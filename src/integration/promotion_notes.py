@@ -10,11 +10,19 @@ import yaml
 from sqlalchemy import select
 
 from src.database.tables import (
-    archived_tasks, events, task_branch_origins, task_completion_records, task_labels,
-    task_results, tasks,
+    archived_tasks,
+    events,
+    task_branch_origins,
+    task_completion_records,
+    task_labels,
+    task_results,
+    tasks,
 )
 
 PREPARE_CONTEXT = "promotion_prepare"
+MAX_NOTES_COMMITS = 2000
+MAX_PR_BODY_BYTES = 65_536
+NOTES_TRUNCATION_MARKER = "\n\n[Release notes truncated to fit the promotion PR body limit.]\n"
 _SOURCE = re.compile(r"^AQ-Source: ([^\s@]+)@([0-9a-f]{40})$", re.MULTILINE)
 _REVERT = re.compile(r"This reverts commit ([0-9a-f]{40})\.")
 _SEMVER = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
@@ -56,7 +64,7 @@ async def source_version(ops, repo, versioning, sha):
 
 async def previous_tag(ops, repo, step):
     """Use the remote inventory, never stale local tags, for this step's boundary."""
-    if step["versioning"]["kind"] == "none":
+    if not step_has_version(step):
         return None
     pattern = re.escape(step["versioning"]["tag_format"])
     for field, capture in {
@@ -170,18 +178,27 @@ async def _source_labels(conn, row):
 
 
 async def assemble_notes_input(conn, ops, repo, *, project_id, repository_id, step, head,
-                               previous=None):
+                               previous=None, target_tip=None):
     """Walk all parents, preserving a pinned range and first topological task identity."""
     await ensure_commit(ops, repo, head)
-    bound = previous["sha"] if previous else step["notes"].get("bootstrap_sha")
-    if bound:
-        await ensure_commit(ops, repo, bound)
-        if not await ops.is_ancestor(repo, bound, head):
-            raise NotesRefusal("notes_range_invalid", "Notes boundary is outside source history.")
-    range_args = [head, "^" + bound] if bound else [head]
-    commits = (await ops.run(repo, "rev-list", "--topo-order", *range_args)).splitlines()
-    # One Git read for the full history, including nested train merge commits.
-    raw = await ops.run(repo, "log", "--topo-order", "--format=%H%x00%P%x00%B%x00", *range_args)
+    previous = previous if step_has_version(step) else None
+    bound = previous["sha"] if previous else target_tip or await ops.remote(
+        repo, "refs/heads/" + step["target"],
+    )
+    if not bound:
+        raise NotesRefusal("notes_range_invalid", "Notes target branch is unavailable.")
+    await ensure_commit(ops, repo, bound)
+    if not await ops.is_ancestor(repo, bound, head):
+        raise NotesRefusal("notes_range_invalid", "Notes boundary is outside source history.")
+    range_args = [head, "^" + bound]
+    commits = (await ops.run(repo, "rev-list", "--topo-order",
+                            f"--max-count={MAX_NOTES_COMMITS + 1}", *range_args)).splitlines()
+    if len(commits) > MAX_NOTES_COMMITS:
+        raise NotesRefusal("notes_range_too_large",
+                           f"Notes range exceeds {MAX_NOTES_COMMITS} commits.")
+    # Preserve every parent within the bounded range, including epic child merges.
+    raw = await ops.run(repo, "log", "--topo-order", f"--max-count={MAX_NOTES_COMMITS}",
+                        "--format=%H%x00%P%x00%B%x00", *range_args)
     fields = raw.split("\0")
     messages = {fields[i].strip(): fields[i + 2]
                 for i in range(0, len(fields) - 2, 3)}
@@ -301,10 +318,31 @@ def draft_notes(notes_input, *, kind, version):
 
 
 def step_pr_body(step, source, request_id, notes_input, authored_notes=None):
+    prefix = f"Promote `{step['source']}` to `{step['target']}` at `{source}`.\n\n"
+    suffix = f"\nAQ-Promotion-Request: {request_id}\n"
+    if notes_input is None:
+        body = prefix + suffix
+        if len(body.encode()) > MAX_PR_BODY_BYTES:
+            raise NotesRefusal("promotion_body_too_large", "Required promotion body exceeds the limit.")
+        return body
     release = authored_notes if authored_notes is not None else render_release_notes(notes_input)
-    return (f"Promote `{step['source']}` to `{step['target']}` at `{source}`.\n\n"
-            "## Release notes\n\n" + release + "\n\n## Operator notes\n\n"
-            + render_operator_notes(notes_input) + f"\nAQ-Promotion-Request: {request_id}\n")
+    prefix += "## Release notes\n\n"
+    suffix = "\n\n## Operator notes\n\n" + render_operator_notes(notes_input) + suffix
+    available = MAX_PR_BODY_BYTES - len((prefix + suffix).encode())
+    encoded = release.encode()
+    if len(encoded) > available:
+        available -= len(NOTES_TRUNCATION_MARKER.encode())
+        if available < 0:
+            raise NotesRefusal("promotion_body_too_large", "Required promotion body exceeds the limit.")
+        release = encoded[:available].decode("utf-8", errors="ignore") + NOTES_TRUNCATION_MARKER
+    return prefix + release + suffix
+
+
+def step_has_version(step):
+    versioning = step["versioning"]
+    return versioning["kind"] == "semver_tag" or (
+        versioning["kind"] == "custom" and "{version}" in versioning["tag_format"]
+    )
 
 
 def authored_notes_section(body, kind, version):
