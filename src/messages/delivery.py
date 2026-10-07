@@ -496,6 +496,9 @@ def _render_nudge(batch: list[Message]) -> str:
     it shows only its last rows.  Unconfirmable, it sat unsubmitted and every
     later nudge to the worker deferred behind it (2026-10-01).
     """
+    if batch[0].body_kind == "schedule_prompt":
+        schedule_id = batch[0].id.split(":")[1]
+        return f"Handle `aq cron show {shlex.quote(schedule_id)} --consume --json`."
     if batch[0].body_kind == "wait_result":
         # The durable message identity is also the wait pointer. Worker
         # grants include wait_get; no generic message command is needed.
