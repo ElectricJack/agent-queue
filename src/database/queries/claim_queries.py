@@ -382,6 +382,7 @@ CLAIM_PREPARATION_METADATA_KEYS = (
     # ladder it throttles.
     "branch_fenced",
     "stack_prerequisites_conflict",
+    "stack_preparation_changed",
 )
 
 #: Matches exactly what PostgreSQL's ``double precision`` input accepts here:

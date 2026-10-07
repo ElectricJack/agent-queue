@@ -143,6 +143,7 @@ def test_project_policy_defaults_and_override():
 
 async def test_single_stack_starts_at_completed_source_without_epic_delivery(stack):
     assert stack.overlay["base_sha"] == stack.first
+    assert stack.overlay["stack_snapshot"]["base_sha"] == stack.first
     assert git(stack.origin.clone, "rev-parse", "origin/aq/epic") == stack.base
     assert await stack.service.current("child")
     async with stack.db._engine.connect() as conn:
@@ -305,9 +306,20 @@ async def test_prepare_conflict_files_once_and_requires_published_resolution(sta
     overlay = await stack.service.prepare("child")
     for head in (stack.child, stack.first, second, resolved):
         git(overlay["stack_store"], "merge-base", "--is-ancestor", head, overlay["base_sha"])
-    assert "hold" not in overlay["stack_snapshot"]
+    # Preparation keeps the repair reservation until the final writer handoff.
+    assert overlay["stack_snapshot"]["preparation_conflict"] == detail
+    from src.integration.stacked_branches import verify_preparation
+
+    await verify_preparation({
+        **overlay, "preparation_view": overlay.view,
+        "preparation_proofs": overlay.proofs, "preparation_repair": overlay.repair,
+    }, finalize=True)
+    adopted = await stack_record(stack)
+    assert "hold" not in adopted and "preparation_conflict" not in adopted
     assert not (await db.get_task("child")).is_blocked
-    assert await stack.service.prepare("child") == overlay
+    repeated = await stack.service.prepare("child")
+    assert repeated["base_sha"] == overlay["base_sha"]
+    assert repeated["stack_snapshot"] == adopted
     assert await merge_heads(stack.gitops.git, origin.clone, resolved,
                              [stack.first, second], stamp=0) == resolved
 

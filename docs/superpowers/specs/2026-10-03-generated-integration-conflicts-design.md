@@ -66,6 +66,27 @@ also applies the normal preparation backoff, including races with a new repair
 epoch/completion, so other ready work remains claimable without consuming the
 slot-reset failure budget.
 
+Task `keen-orbit-59` extends preparation to the second boundary: the existing
+child versus its exact parent or prerequisite overlay. Construct the merge in
+the observer store before attaching a worker. Retain clean local child commits
+as well as the published child, and pin every frozen input. Generated-only
+overlaps use the canonical regenerator there; source conflicts reserve one
+ordinary repair with the original child, parent and overlay OIDs and paths.
+The repair checkout fetches those retained objects and starts at its reserved
+origin without automatically merging its conflicting parent. Admission proves
+the repair's exact passing published tip descends from every frozen input,
+then merges any newly proven parent/prerequisite before activating the child.
+
+The lower Git preparation boundary aborts an unsuccessful merge and emits a
+named conflict only after verifying the original HEAD and a clean index. Both
+pool and push preparation route that diagnostic through the same reservation.
+A final proof check prevents activation when the parent, child, prerequisite
+identity or repair ref moved during preparation. An unactivated pool checkout
+may detach with a clean exact HEAD pinned in the retained observer store;
+unsaved work, missing retention, unrelated branches or stale attachment identity
+withhold release. Normal writer handoff still requires published work. These
+waits preserve review feedback, filing origin, fences and recovery budgets.
+
 Verification includes two branches regenerating a real selection catalogue
 from different test modules, canonical combined output, preserved source
 files and merge parents, replay, generated-only main rebuild, source/mixed

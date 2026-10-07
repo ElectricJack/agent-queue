@@ -6780,13 +6780,14 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:b42c429f2b76f893a6f43c37ef581e952e4b4b7b3acf1b9a90151da178cb9298",
+      "digest": "sha256:f72ec62a5d3362d4a389d3b09efe0395c418325d25b3dbaac8953d738b1b687a",
       "imports": [
         "src.event_bus",
         "src.git.github_contracts",
         "src.git.manager",
         "src.models",
-        "src.orchestrator.git_ops"
+        "src.orchestrator.git_ops",
+        "src.orchestrator.workspace_attachments"
       ],
       "markers": [
         "asyncio",
