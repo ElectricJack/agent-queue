@@ -336,17 +336,18 @@ def _catalogue_payload(catalogue: Catalogue, *, digest: str) -> dict[str, Any]:
             a.id: {"description": a.description, "modules": list(a.modules)}
             for a in catalogue.areas.values()
         },
-        "modules": {
-            m.path: {
-                "areas": list(m.areas),
-                "imports": list(m.imports),
-                "markers": list(m.markers),
-                "summary": m.summary,
-                "default_arm": m.default_arm,
-            }
-            for m in catalogue.modules.values()
-        },
+        "modules": {m.path: _module_payload(m) for m in catalogue.modules.values()},
         "digest": digest,
+    }
+
+
+def _module_payload(info: ModuleInfo) -> dict[str, Any]:
+    return {
+        "areas": list(info.areas),
+        "imports": list(info.imports),
+        "markers": list(info.markers),
+        "summary": info.summary,
+        "default_arm": info.default_arm,
     }
 
 
@@ -502,6 +503,61 @@ def validate_catalogue(rootdir: Path, catalogue: Catalogue) -> list[str]:
     if render_catalogue(rebuilt) != render_catalogue(catalogue):
         problems.append(f"{CATALOGUE_PATH}: drifted from regeneration; {REGENERATE_HINT}")
     return problems
+
+
+def stale_named_modules(rootdir: Path, rels: Iterable[str]) -> list[str]:
+    """One problem per module in *rels* whose committed catalogue entry is stale.
+
+    The per-module slice of :func:`validate_catalogue`, cheap enough to run
+    on every pytest start (``tests/conftest.py``): it reads the committed
+    JSON and the areas file, and parses only the named modules.  A missing,
+    unparsable or other-generator catalogue, or an unloadable areas file,
+    answers ``[]``: the ratchet tests report those whole-file faults.
+    """
+    rels = list(rels)
+    if not rels:
+        return []
+    rootdir = rootdir.resolve()
+    try:
+        data = json.loads((rootdir / CATALOGUE_PATH).read_text(encoding="utf-8"))
+        specs = load_areas(rootdir / AREAS_PATH)
+    except (OSError, ValueError):
+        return []
+    committed = data.get("modules") if isinstance(data, dict) else None
+    if not isinstance(committed, dict) or (
+        data.get("schema_version"),
+        data.get("generator_version"),
+    ) != (CATALOGUE_SCHEMA_VERSION, GENERATOR_VERSION):
+        return []
+    problems: list[str] = []
+    for rel in rels:
+        areas = tuple(sorted({a.id for a in specs if _any_match(a.match, rel)}))
+        entry = committed.get(rel)
+        if not areas:
+            problems.append(
+                f"{rel}: matches no area in {AREAS_PATH}; add it to an area's `match` globs"
+            )
+        elif not isinstance(entry, dict):
+            owners = ", ".join(repr(a) for a in areas)
+            area_word = "area" if len(areas) == 1 else "areas"
+            problems.append(f"{rel}: not in {CATALOGUE_PATH} ({area_word} {owners} matches it)")
+        else:
+            fresh = _module_payload(_module_info(rootdir, rel, areas))
+            drifted = sorted(key for key, value in fresh.items() if entry.get(key) != value)
+            if drifted:
+                problems.append(f"{rel}: catalogue entry is stale ({', '.join(drifted)})")
+    return problems
+
+
+def stale_named_modules_message(problems: Sequence[str]) -> str:
+    """The pytest usage error for :func:`stale_named_modules` problems."""
+    lines = "\n".join(f"  - {problem}" for problem in problems)
+    return (
+        f"{CATALOGUE_PATH} is stale for test modules named on this command line:\n{lines}\n"
+        f"Fix {AREAS_PATH} if a module matches no area, then {REGENERATE_HINT} and commit "
+        f"the catalogue with the test change: CI's tests/test_generated_artifacts.py fails "
+        f"on a stale one."
+    )
 
 
 # --------------------------------------------------------------------------

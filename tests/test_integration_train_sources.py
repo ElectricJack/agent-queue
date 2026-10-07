@@ -1024,6 +1024,44 @@ async def test_promoted_train_cleanup_honors_retention_and_live_epic_target(worl
     assert git(world.origin.url, "rev-parse", "refs/heads/aq/epic") == head
 
 
+async def test_epic_refresh_cleanup_never_schedules_its_own_epic_target(world, tmp_path):
+    """A refresh's only member is the epic itself, frozen at the default head.
+
+    Its branch is the batch target and its PR is not this delivery, so cleanup
+    retires only the private candidate refs and settles complete, not conflict.
+    """
+    from src.database.tables import integration_cleanup_items
+
+    db, origin = world.db, world.origin
+    epic = await completed(world, "epic", done=False, pr=False)
+    await db.update_task("epic", pr_url="https://github.com/test/repo/pull/7")
+    git(origin.clone, "checkout", "-q", "-B", "main", "origin/main")
+    default = commit(origin.clone, {"default.txt": "default moved\n"})
+    git(origin.clone, "push", "-q", "origin", "main")
+    target = "refs/heads/aq/epic"
+    batch = await freeze_cleanup_batch(world, "train-epic-refresh-" + "0" * 64,
+                                       {"epic": default}, target=target)
+    git(origin.clone, "checkout", "-q", "-B", "aq/epic", "origin/aq/epic")
+    git(origin.clone, "merge", "-q", "--no-ff", "-m", "refresh epic", default)
+    git(origin.clone, "push", "-q", "origin", "aq/epic")
+    refreshed = git(origin.clone, "rev-parse", "HEAD")
+    forge = TrainCleanupForge([(7, epic)])
+    cleanup = train_cleanup(world, tmp_path, forge=forge)
+    await publish_cleanup_candidate(world, batch, refreshed, cleanup=cleanup)
+    async with db._engine.connect() as conn:
+        items = (await conn.execute(select(
+            integration_cleanup_items.c.kind, integration_cleanup_items.c.target_ref,
+        ).where(integration_cleanup_items.c.batch_id == batch.id))).all()
+    assert sorted(tuple(row) for row in items) == sorted([
+        ("local_ref", RETAINED_CANDIDATE_PREFIX + batch.id),
+        ("remote_ref", candidate_ref(batch.id)),
+    ])
+    assert {r.outcome for r in await cleanup.advance(batch.id)} == {"complete"}
+    assert (await db.get_integration_batch(batch.id))["cleanup_state"] == "complete"
+    assert git(origin.url, "rev-parse", target) == refreshed
+    assert forge.comments == []
+
+
 async def test_promoted_train_cleanup_protects_open_subject_target(world, tmp_path):
     from src.database.tables import integration_subjects, playbook_artifacts
     from src.integration.subjects import (
@@ -2197,7 +2235,8 @@ async def hosted_train(world, *, retained_store=None, clock=time.time, settling=
     async def binding(repo_row):
         return GitHubRepositoryBinding(123, HostedGitHub.full_name)
 
-    async def store(repo_row):
+    async def store(repo_row, *, fetch=True):
+        assert not fetch
         return retained_store or origin.clone
 
     attestation = IntegrationAttestationService(
@@ -3088,7 +3127,8 @@ async def development_train(world, tmp_path, monkeypatch, validation: str, *, mo
     retained = RetainedRepository(repository_id="r", store=origin.clone, binding=None,
                                   default_branch="main")
 
-    async def development_repository(primitives, repo_row, binding, settings):
+    async def development_repository(primitives, repo_row, binding, settings, *, fetch=True):
+        assert not fetch
         return retained
 
     async def binding(repo_row):
