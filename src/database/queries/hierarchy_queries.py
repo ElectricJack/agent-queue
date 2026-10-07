@@ -10,6 +10,7 @@ transaction.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -60,6 +61,8 @@ from src.database.tables import (
 )
 from src.models import AgentState, DepType, Task, TaskStatus
 from src.task_names import MAX_STRUCTURAL_DEPTH, child_task_id
+
+logger = logging.getLogger(__name__)
 
 # Container statuses that withhold their children (work-graph §3.1) are
 # enforced by BlockedStateMixin's satisfaction table
@@ -2020,7 +2023,14 @@ class HierarchyQueryMixin:
                 for child_id in required.get(cid, ())
             ):
                 continue
-            res = await self._settle_stale_container(conn, cid, depth=depth)
+            # One refused container must not stall the sweep for every other
+            # container: settle each inside its own savepoint.
+            try:
+                async with conn.begin_nested():
+                    res = await self._settle_stale_container(conn, cid, depth=depth)
+            except HierarchyError as exc:
+                logger.warning("Stale container %s not settled: %s", cid, exc)
+                continue
             if res is not None:
                 await self._merge_settlement(conn, cid, res, result)
         return result
@@ -2072,6 +2082,44 @@ class HierarchyQueryMixin:
                     return None
             except (TypeError, ValueError, AttributeError):
                 pass
+        # A managed parent completes only through verified integration. The
+        # one exception the stale leg admits is a train project whose legacy
+        # collection episode was cancelled: that episode owns nothing, and the
+        # git-first train never runs its collector. Re-check it under the row
+        # lock and complete with the integration token; refuse anything else.
+        completion_token = None
+        episode = (
+            await conn.execute(
+                select(task_integration_checkpoints.c.episode_id).where(
+                    task_integration_checkpoints.c.task_id == cid,
+                    task_integration_checkpoints.c.episode_id.is_not(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if episode is not None:
+            mode = (
+                await conn.execute(
+                    select(projects.c.hierarchical_integration_mode)
+                    .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
+                    .where(tasks.c.id == cid)
+                )
+            ).scalar_one_or_none()
+            live = (
+                await conn.execute(
+                    select(integration_repair_operations.c.id)
+                    .where(
+                        integration_repair_operations.c.parent_task_id == cid,
+                        integration_repair_operations.c.episode_id == episode,
+                        integration_repair_operations.c.state != "cancelled",
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if mode != "train" or live is not None:
+                return None
+            from src.database.queries.task_queries import _INTEGRATION_COMPLETION_TOKEN
+
+            completion_token = _INTEGRATION_COMPLETION_TOKEN
         await conn.execute(
             delete(task_metadata).where(
                 task_metadata.c.task_id == cid,
@@ -2084,6 +2132,7 @@ class HierarchyQueryMixin:
             TaskStatus.COMPLETED,
             context=STALE_CONTAINER_CONTEXT,
             force=True,
+            _integration_completion_token=completion_token,
             _manual_pause_control=True,
             _settle_depth=depth,
             resume_after=None,
