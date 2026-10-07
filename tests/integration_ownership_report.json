@@ -9318,6 +9318,9 @@
     },
     "src/commands/promote_commands.py::import from src.git.github_contracts import GitHubAccessError, rate_limit_cause": {
       "reason": "Promotion commands preserve integration GitHub error categories and rate-limit retry timing across wrapped failures."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._settle_stale_container": {
+      "reason": "Stale container settlement completes a train container whose legacy collection episode was cancelled through the integration completion guard, re-checked under the row lock; it never completes a live episode's parent."
     }
   },
   "shared_state": {
