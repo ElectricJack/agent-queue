@@ -14,6 +14,7 @@ import logging
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 
 from src.git.manager import GitError, GitManager, is_valid_git_oid
@@ -109,6 +110,7 @@ class GitTruth:
         self.cache_limit = cache_limit
         self.retry_delay, self.max_retry_delay, self.clock = retry_delay, max_retry_delay, clock
         self._cache: OrderedDict[tuple[str, str, str, str], _PairFacts] = OrderedDict()
+        self._completions: OrderedDict[tuple, dict] = OrderedDict()
         self._failures: dict[tuple[str, str], tuple[float, float, str]] = {}
         self.share_fetches = share_fetches
         self._fetches: dict[tuple[str, str, str, str], _SharedFetch] = {}
@@ -174,6 +176,32 @@ class GitTruth:
             self._cache.popitem(last=False)
         return facts
 
+    async def _completion(self, observed: DeliverySnapshot, identity: CompletionIdentity):
+        """Reuse validated immutable objects, never the answer for a mutable ref.
+
+        Every call derives the marker from this fetch's pinned refs. Scope the
+        cache to the store as well as the repository: a different checkout may
+        lack objects, even when an earlier checkout validated the same record.
+        Failed or absent observations are never retained across snapshots.
+        """
+        marker = next((observed.source_heads[prefix + identity.branch]
+                       for prefix in ("refs/remotes/origin/", "refs/heads/")
+                       if prefix + identity.branch in observed.source_heads), None)
+        if marker is None:
+            return None
+        key = (observed.store, observed.repository_id, observed.repository_url, identity, marker)
+        if key in self._completions:
+            self._completions.move_to_end(key)
+            return deepcopy(self._completions[key])
+        record = await GitProvenance(
+            observed.git, observed.store, repository_url=observed.repository_url,
+        ).read_completion(identity, refs=observed.source_heads)
+        if record is not None:
+            self._completions[key] = deepcopy(record)
+            while len(self._completions) > self.cache_limit:
+                self._completions.popitem(last=False)
+        return record
+
 
 @dataclass(frozen=True)
 class GitTruthSnapshot:
@@ -204,6 +232,9 @@ class GitTruthSnapshot:
         self, request: DeliveryRequest, *, source_base: str | None = None
     ) -> GitDeliveryEvidence:
         return await is_delivered(self, request, source_base=source_base)
+
+    async def read_completion(self, identity: CompletionIdentity):
+        return await self.truth._completion(self.observation, identity)
 
     async def evaluate_many(self, requests):
         return {request.task_id: await self.is_delivered(request) for request in requests}
@@ -494,7 +525,7 @@ async def is_delivered(
         provenance = GitProvenance(observed.git, observed.store,
                                    repository_url=observed.repository_url)
         step = "completion_provenance"
-        record = await provenance.read_completion(identity, refs=observed.source_heads)
+        record = await snapshot.read_completion(identity)
         if record is None:
             return answer(DeliveryState.UNKNOWN, MISSING_PROVENANCE)
         step = "source_identity"

@@ -552,6 +552,125 @@ async def test_delivered_work_does_not_consume_the_pending_member_limit(world):
     assert [m.task_id for m in members] == ["owed"]
 
 
+@pytest.mark.parametrize("intent", ["open", "paused"])
+@pytest.mark.parametrize("seal_now", [False, True])
+async def test_existing_root_batch_skips_frontier_and_pr_reads(world, monkeypatch, intent, seal_now):
+    source = await completed(world, "frozen")
+    await completed(world, "unrelated")
+    store = BatchStore(world.db)
+    batch = await store.freeze(Batch("frozen-batch", "p", "r", MAIN.target_ref),
+        (BatchMember("frozen", source, git(world.origin.clone, "rev-parse", f"{source}^")),),
+        trees={"frozen": tree(world, source)})
+    if intent == "paused":
+        batch = await store.set_intent(batch.id, "paused")
+    batches = DatabaseBatches(world.db, pr_gate=AsyncMock(side_effect=AssertionError("PR read")))
+    monkeypatch.setattr(batches, "_candidate_ids", AsyncMock(side_effect=AssertionError("frontier")))
+    monkeypatch.setattr(batches, "pending", AsyncMock(side_effect=AssertionError("pending")))
+    refresh = AsyncMock(return_value=None)
+    monkeypatch.setattr(batches, "_refresh_stacks", refresh)
+    observed = await snapshot(world)
+    service = SimpleNamespace(store=store)
+    selected = await batches.open_batch(MAIN, observed, service, seal_now=seal_now)
+    assert selected.existing and selected.batch.id == "frozen-batch"
+    assert selected.batch.intent == intent
+    assert [m.task_id for m in selected.members] == ["frozen"]
+    refresh.assert_awaited_once_with(MAIN, observed, service, ["frozen"])
+
+
+async def test_root_selection_enumerates_once_and_routes_before_git_reads(world, monkeypatch):
+    await completed(world, "root")
+    await world.db.create_task(Task(id="epic", project_id="p", title="epic", description="",
+                                   branch_name="aq/epic", status=TaskStatus.IN_PROGRESS))
+    await completed(world, "unrelated-child", parent="epic")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    batches = train.batches
+    candidates = AsyncMock(wraps=batches._candidate_ids)
+    delivered = AsyncMock(wraps=batches.delivered)
+    monkeypatch.setattr(batches, "_candidate_ids", candidates)
+    monkeypatch.setattr(batches, "delivered", delivered)
+    visit = await train.visit(MAIN)
+    assert visit.batch_id and candidates.await_count == 1
+    assert delivered.await_args.args[2] == ["root"]
+
+
+async def test_selection_budget_cancels_pr_reads_without_freezing_partial_members(world, monkeypatch):
+    await completed(world, "a")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    batches = train.batches
+    entered, finished = asyncio.Event(), asyncio.Event()
+
+    async def stalled_pr(*args):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(batches, "pr_gate", stalled_pr)
+    lane_service = (await train.lane_for(MAIN)).service
+    freeze = AsyncMock(wraps=lane_service.freeze)
+    monkeypatch.setattr(lane_service, "freeze", freeze)
+    # Warm local Git facts first; the test controls the budget at the stalled
+    # observer, independently of the machine's subprocess or database latency.
+    observed = await snapshot(world)
+    await batches.pending(MAIN, observed, gate_pr=False)
+    selection = asyncio.create_task(batches.open_batch(MAIN, observed, lane_service, seal_now=True))
+    await asyncio.wait_for(entered.wait(), 10)
+    selection.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await selection
+    assert finished.is_set() and freeze.await_count == 0
+    # Budget expiry follows the same cancellation path and returns a named
+    # diagnostic, including the phase timings, rather than partial membership.
+    batches.selection_timeout_seconds = 0.01
+
+    async def stalled_selection(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(batches, "_select_batch", stalled_selection)
+    result = await batches.open_batch(MAIN, observed, lane_service, seal_now=True)
+    assert result.batch is None and result.blockers[0]["code"] == "selection_timeout"
+    assert result.blockers[0]["timeout_seconds"] == 0.01
+    assert "elapsed_seconds" in result.blockers[0]["selection"]
+    assert freeze.await_count == 0
+    async with world.db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_batches))).first()
+
+
+async def test_pr_admission_overlaps_bounded_reads_and_preserves_refusals(world):
+    # No elapsed-time budget: synchronization proves overlap and the exact
+    # concurrency bound even on a loaded shared machine.
+    entered, release = asyncio.Event(), asyncio.Event()
+    active, maximum = 0, 0
+
+    async def gate(target, member):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        if active == 4:
+            entered.set()
+        try:
+            await release.wait()
+            if member.task_id == "0":
+                return {"code": "awaiting_pr", "task_id": "0", "ref": "0"}
+        finally:
+            active -= 1
+
+    members = {str(i): BatchMember(str(i), "a" * 40, "b" * 40) for i in range(8)}
+    blockers = []
+    batches = DatabaseBatches(world.db, pr_gate=gate)
+    admission = asyncio.create_task(batches._admit_prs(MAIN, members, blockers))
+    try:
+        await asyncio.wait_for(entered.wait(), 10)
+        assert active == maximum == 4
+    finally:
+        release.set()
+        await admission
+    assert maximum == 4 and active == 0
+    assert list(members) == [str(i) for i in range(1, 8)]
+    assert [b["code"] for b in blockers] == ["awaiting_pr"]
+
+
 async def test_visit_timeout_cause_is_visible_in_status_without_a_batch(world):
     import asyncio
 

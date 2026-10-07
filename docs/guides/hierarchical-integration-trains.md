@@ -80,6 +80,24 @@ currently eligible members immediately. It leaves building, checks, reviews
 and publication to the train. If a batch already owns the target, the command
 reports `existing_batch` with that batch's identity rather than `sealed`.
 
+Selection gives an existing batch priority: it refreshes only that batch's
+stacked members, checks supersession, and returns its frozen inputs without
+scanning the pending frontier. Publication still rechecks ordinary eligibility
+and exact candidate checks. Previously observed frontier blockers remain visible
+with `cached_frontier` and `observed_at`; they are diagnostics until the batch
+settles, not fresh admission evidence. New frontier selection enumerates routing
+once, excludes delivered work before applying the member limit, and observes PR
+admission in groups of at most four concurrent reads.
+
+Selection has a separate 60-second budget, including `seal-now` previews. On
+exhaustion it reports `selection_timeout` without freezing partial membership;
+the next visit retries. Selection logs report phase durations and task counts,
+separating enumeration, routing, project delivery, stack refresh, member delivery
+and PR admission. Validated completion provenance is cached by repository, store,
+completion identity and the marker OID captured in the fetched snapshot. The
+bounded cache retains only immutable Git records; missing or changed refs and
+mutable task, authorization and publication inputs are rechecked.
+
 For a misbehaving batch, first use `aq integration pause-batch BATCH_ID --apply`.
 It preserves the frozen inputs and blocks candidate and target publication.
 `aq integration resume-batch BATCH_ID --apply` restores open intent.

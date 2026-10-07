@@ -18,6 +18,8 @@ import math
 import re
 import time
 from collections.abc import Awaitable, Callable, Iterable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, replace
 from typing import Any
 
@@ -90,10 +92,49 @@ TRAIN_HOLDER = "service:integration-train"
 # detached validation clone sees it. Never pushed.
 RETAINED_CANDIDATE_PREFIX = "refs/heads/aq/train-candidate/"
 MEMBER_LIMIT = 200
+SELECTION_TIMEOUT_SECONDS = 60.0
+PR_ADMISSION_CONCURRENCY = 4
+_SELECTION_PROFILE: ContextVar[dict | None] = ContextVar("train_selection_profile", default=None)
 #: A promotion lane is rebuilt on every visit; its subject trust and App client
 #: are kept per batch this long after last use, so a held request does not
 #: refetch S's manifest each time. S is immutable; the key carries the policy.
 PROMOTION_RESOLUTION_TTL_SECONDS = 900.0
+
+
+@contextmanager
+def _selection_phase(name):
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        profile = _SELECTION_PROFILE.get()
+        if profile is not None:
+            phases = profile["phases_seconds"]
+            phases[name] = phases.get(name, 0.0) + time.monotonic() - started
+
+
+def _selection_count(name, count):
+    profile = _SELECTION_PROFILE.get()
+    if profile is not None:
+        profile["counts"][name] = count
+
+
+@contextmanager
+def _selection_profile(target):
+    existing = _SELECTION_PROFILE.get()
+    if existing is not None:
+        yield existing
+        return
+    profile = {"phases_seconds": {}, "counts": {}}
+    token = _SELECTION_PROFILE.set(profile)
+    started = time.monotonic()
+    try:
+        yield profile
+    finally:
+        profile["elapsed_seconds"] = time.monotonic() - started
+        _SELECTION_PROFILE.reset(token)
+        logging.getLogger(__name__ + ".timing").info(
+            "integration train selection timing for %s: %s", target.key, profile)
 
 
 def _push_branch_allowed(push: dict, ref: str) -> bool | None:
@@ -243,10 +284,10 @@ async def project_delivered(db, ids, *, project_id, repository_id, target_ref, s
         if task_id in delivered or request.task_status != "COMPLETED":
             continue
         try:
-            record = await provenance.read_completion(CompletionIdentity(
+            record = await snapshot.read_completion(CompletionIdentity(
                 project_id, repository_id, task_id,
                 request.completion_id or request.legacy_generation,
-            ), refs=observed.source_heads)
+            ))
             if record is None:
                 continue
             source = record["source_oid"]
@@ -349,36 +390,57 @@ class DatabaseBatches:
     """The open batch of a target, frozen from exact undelivered completions."""
 
     def __init__(self, db, *, limit: int = MEMBER_LIMIT, clock: Callable[[], float] = time.time,
-                 pr_gate: Callable | None = None, cleanup=None):
+                 pr_gate: Callable | None = None, cleanup=None,
+                 selection_timeout_seconds: float = SELECTION_TIMEOUT_SECONDS):
+        if selection_timeout_seconds <= 0:
+            raise ValueError("selection timeout must be positive")
         self.db, self.limit, self.clock = db, limit, clock
         self.pr_gate = pr_gate
         self.cleanup = cleanup
+        self.selection_timeout_seconds = selection_timeout_seconds
         self._refresh_snapshots = {}
+        self._frontier_blockers = {}
 
     async def open_batch(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, service: BatchService, *,
         seal_now: bool = False,
     ) -> BatchSelection:
+        with _selection_profile(target) as profile:
+            try:
+                async with asyncio.timeout(self.selection_timeout_seconds):
+                    return await self._select_batch(target, snapshot, service, seal_now=seal_now)
+            except TimeoutError:
+                return BatchSelection(blockers=(self._selection_timeout(target, profile),))
+
+    def _selection_timeout(self, target, profile):
+        return {"code": "selection_timeout", "ref": target.target_ref,
+                "detail": "batch selection exceeded its budget; retry on the next visit",
+                "timeout_seconds": self.selection_timeout_seconds, "selection": profile}
+
+    async def _refresh_stacks(self, target, snapshot, service, candidates):
+        from src.integration.stacked_branches import StackedBranches
+
+        stacks = StackedBranches(self.db, clock=self.clock)
+        with _selection_phase("stack_refresh"):
+            async with self.db._engine.connect() as conn:
+                stacked_ids = (await conn.execute(select(task_branch_origins.c.task_id).where(
+                        task_branch_origins.c.task_id.in_(candidates),
+                        task_branch_origins.c.repository_id == target.repository_id,
+                        task_branch_origins.c.retired_at.is_(None),
+                        task_branch_origins.c.stack_snapshot.is_not(None)))).scalars().all()
+            _selection_count("stacked_members", len(stacked_ids))
+            for task_id in stacked_ids:
+                outcome = await stacks.refresh(task_id, service.gitops, snapshot=snapshot)
+                if outcome in {"refreshed", "changed", "repair_filed"}:
+                    return {"code": "stack_" + outcome, "task_id": task_id,
+                        "ref": task_id, "detail": "Prerequisite stack changed; take a fresh Git view"}
+        return None
+
+    async def _select_batch(self, target, snapshot, service, *, seal_now):
         await service.store.reconcile_aborted(target=target)
         # One fetched observation per serialized visit. Eligibility is called
         # again inside publication locks and must only read these local facts.
         self._refresh_snapshots[target.key] = snapshot
-        from src.integration.stacked_branches import StackedBranches
-
-        stacks = StackedBranches(self.db, clock=self.clock)
-        candidates = (await self._candidate_ids(target, snapshot)
-                      if not snapshot.error and snapshot.target_oid else [])
-        async with self.db._engine.connect() as conn:
-            stacked_ids = (await conn.execute(select(task_branch_origins.c.task_id).where(
-                    task_branch_origins.c.task_id.in_(candidates),
-                    task_branch_origins.c.repository_id == target.repository_id,
-                    task_branch_origins.c.retired_at.is_(None),
-                    task_branch_origins.c.stack_snapshot.is_not(None)))).scalars().all()
-        for task_id in stacked_ids:
-            outcome = await stacks.refresh(task_id, service.gitops, snapshot=snapshot)
-            if outcome in {"refreshed", "changed", "repair_filed"}:
-                return BatchSelection(blockers=({"code": "stack_" + outcome, "task_id": task_id,
-                    "ref": task_id, "detail": "Prerequisite stack changed; take a fresh Git view"},))
         # One live batch owns a target: a replaced stale batch must not block the freeze.
         blockers = list(await self.supersede_refreshed(target, service))
         if blockers:
@@ -386,14 +448,16 @@ class DatabaseBatches:
             # Do not try to freeze a replacement without a release instruction.
             return BatchSelection(blockers=tuple(blockers))
         current = await self.current(target)
-        pending = None
-        if not snapshot.error and snapshot.target_oid:
-            pending = await self.pending(target, snapshot, blockers=blockers,
-                                         gate_pr=current is None)
         if current is not None:
             if target.kind == "root":
                 await self._clear_admissions(target)
             members = await service.store.members(current.id)
+            _selection_count("frozen_members", len(members))
+            if not snapshot.error and snapshot.target_oid:
+                changed = await self._refresh_stacks(
+                    target, snapshot, service, [m.task_id for m in members])
+                if changed:
+                    return BatchSelection(blockers=(changed,))
             # Old frozen inputs also stay out of duplicate epic publication.
             if target.kind == "epic" and not (current.epic_sync or current.epic_refresh):
                 delivered = await self.delivered(target, snapshot, [m.task_id for m in members])
@@ -405,7 +469,20 @@ class DatabaseBatches:
                         "task_ids": sorted(delivered),
                     })
                     return BatchSelection(blockers=tuple(blockers))
+            # Preserve prior diagnostics without making unrelated pending work
+            # part of an already frozen batch's build/publication visit.
+            observed_at, previous = self._frontier_blockers.get(target.key, (None, ()))
+            blockers.extend({**b, "cached_frontier": True, "observed_at": observed_at}
+                            for b in previous)
             return BatchSelection(current, members, tuple(blockers), existing=True)
+        pending = None
+        if not snapshot.error and snapshot.target_oid:
+            candidates = await self._candidate_ids(target, snapshot)
+            changed = await self._refresh_stacks(target, snapshot, service, candidates)
+            if changed:
+                return BatchSelection(blockers=(changed,))
+            pending = await self.pending(target, snapshot, blockers=blockers, candidate_ids=candidates)
+            self._frontier_blockers[target.key] = (self.clock(), tuple(blockers))
         if pending is None:
             if target.kind == "root" and not snapshot.error and snapshot.target_oid and not blockers:
                 await self._clear_admissions(target)
@@ -568,15 +645,21 @@ class DatabaseBatches:
         if target.kind == "promotion":
             # A promotion freezes its request, never a frontier of completions.
             return []
+        with _selection_phase("enumeration"):
+            async with self.db._engine.connect() as conn:
+                ids = await _pending_tasks(conn, target.project_id, target.repository_id, limit=None)
+            _selection_count("completed_origins", len(ids))
+        with _selection_phase("routing"):
+            async with self.db._engine.connect() as conn:
+                routed = await delivery_targets(conn, ids, reduced=True)
+                ids = [task_id for task_id in ids if task_id in routed and
+                       (routed[task_id].repository_id, routed[task_id].target_ref) ==
+                       (target.repository_id, target.target_ref)]
+            _selection_count("routed_candidates", len(ids))
+        with _selection_phase("project_delivery"):
+            delivered_to_project = await self.delivered(target, snapshot, ids)
+            ids = [task_id for task_id in ids if task_id not in delivered_to_project]
         async with self.db._engine.connect() as conn:
-            ids = await _pending_tasks(conn, target.project_id, target.repository_id, limit=None)
-        delivered_to_project = await self.delivered(target, snapshot, ids)
-        ids = [task_id for task_id in ids if task_id not in delivered_to_project]
-        async with self.db._engine.connect() as conn:
-            routed = await delivery_targets(conn, ids, reduced=True)
-            ids = [task_id for task_id in ids if task_id in routed and
-                   (routed[task_id].repository_id, routed[task_id].target_ref) ==
-                   (target.repository_id, target.target_ref)]
             if len(ids) > self.limit:
                 ids = list((await conn.execute(select(tasks.c.id).where(tasks.c.id.in_(ids))
                            .order_by(tasks.c.updated_at.desc(), tasks.c.id)
@@ -587,11 +670,25 @@ class DatabaseBatches:
         self, target: TrainTarget, snapshot: GitTruthSnapshot, *,
         blockers: list[dict[str, Any]] | None = None,
         gate_pr: bool = True,
+        candidate_ids: list[str] | None = None,
     ):
+        with _selection_profile(target) as profile:
+            try:
+                async with asyncio.timeout(self.selection_timeout_seconds):
+                    return await self._pending(target, snapshot, blockers=blockers,
+                                               gate_pr=gate_pr, candidate_ids=candidate_ids)
+            except TimeoutError:
+                if blockers is not None:
+                    blockers.append(self._selection_timeout(target, profile))
+                return None
+
+    async def _pending(self, target, snapshot, *, blockers, gate_pr, candidate_ids):
         """Exact pending inputs; report unknown delivery that prevents batching."""
         if target.kind == "promotion":
             return None
-        ids = await self._candidate_ids(target, snapshot)
+        ids = (await self._candidate_ids(target, snapshot)
+               if candidate_ids is None else candidate_ids)
+        _selection_count("member_candidates", len(ids))
         async with self.db._engine.connect() as conn:
             if not ids:
                 return None
@@ -643,7 +740,8 @@ class DatabaseBatches:
                 continue
             if request is None or not is_valid_git_oid(base or ""):
                 continue
-            evidence = await snapshot.is_delivered(request, source_base=base)
+            with _selection_phase("member_delivery"):
+                evidence = await snapshot.is_delivered(request, source_base=base)
             if evidence.satisfied:
                 delivered.add(task_id)
                 continue
@@ -691,16 +789,10 @@ class DatabaseBatches:
                     or not await stacks.source_contains_stack(task_id, source, snapshot)):
                 continue
             member = BatchMember(task_id, source, base)
-            if gate_pr and target.kind == "root":
-                refusal = (await self.pr_gate(target, member) if self.pr_gate else {
-                    "code": "unknown", "ref": task_id, "task_id": task_id,
-                    "detail": "root PR admission observer is unavailable",
-                })
-                if refusal:
-                    if blockers is not None:
-                        blockers.append(refusal)
-                    continue
             members[task_id] = member
+        if gate_pr and target.kind == "root":
+            with _selection_phase("pr_admission"):
+                await self._admit_prs(target, members, blockers)
         # A member never lands ahead of undelivered work it depends on that
         # this batch does not carry; it waits for a later batch instead.
         # Include prerequisites outside the member window: reopened, aborted and
@@ -731,6 +823,32 @@ class DatabaseBatches:
         dependencies = {task_id: edges.get(task_id, set()) & members.keys()
                         for task_id in members}
         return tuple(members.values()), {key: requests[key] for key in members}, dependencies
+
+    async def _admit_prs(self, target, members, blockers):
+        """Overlap bounded independent reads; cancellation leaves no observers running."""
+        admission_slots = asyncio.Semaphore(PR_ADMISSION_CONCURRENCY)
+
+        async def admit(member):
+            async with admission_slots:
+                return await self.pr_gate(target, member) if self.pr_gate else {
+                    "code": "unknown", "ref": member.task_id, "task_id": member.task_id,
+                    "detail": "root PR admission observer is unavailable",
+                }
+
+        pending = [asyncio.create_task(admit(member)) for member in members.values()]
+        _selection_count("pr_candidates", len(pending))
+        try:
+            refusals = await asyncio.gather(*pending)
+        finally:
+            for task in pending:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        for task_id, refusal in zip(list(members), refusals, strict=True):
+            if refusal:
+                del members[task_id]
+                if blockers is not None:
+                    blockers.append(refusal)
 
     async def delivered(self, target, snapshot, ids):
         async with self.db._engine.connect() as conn:
