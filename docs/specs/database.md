@@ -2097,6 +2097,16 @@ Exact source CI observation and durable repair lineage. Source identity is the
 composite primary key; policy generation fences admission. Logical task IDs retain
 history after archive and refuse hard deletion through the integration guard.
 
+Discarding a task's completion (including reopen with feedback) atomically
+retires its source-CI repairs, including previous attempts and repairs of those
+repairs. Open and completed repairs become terminal failures with no retry,
+their branch origins retire, and a comment plus `source_ci_retirement` metadata
+names the source head and reopen context. Retained lineage remains audit history.
+The train checks that every repair ancestor still has the bound current completion
+head before admission and publication; otherwise it reports
+`source_ci_repair_superseded`. A repair of the current head remains deliverable,
+including when that source has already delivered.
+
 Only `red` files a repair. `cancelled` — every non-success required check
 cancelled, nothing pending, no required check failed — is infrastructure: the
 observation waits, re-requests the cancelled check suites of that exact head

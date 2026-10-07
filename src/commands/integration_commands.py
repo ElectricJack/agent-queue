@@ -518,6 +518,7 @@ class IntegrationCommandsMixin:
         })
         if not created.get("success"):
             return created
+        retired = []
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, source["project_id"])
             current = (await conn.execute(select(integration_source_ci).where(*conditions)
@@ -531,6 +532,22 @@ class IntegrationCommandsMixin:
                                 "attempt": current["repair_attempt"]})
             await conn.execute(update(integration_source_ci).where(*conditions).values(
                 repair_task_id=created["task_id"], repair_attempt=attempt, repair_history=history))
+            # Filing releases the hierarchy lock. A reopen during that gap
+            # must also retire the newly linked delegate, never leave an
+            # orphan writer able to complete the rejected source.
+            if await producer._pull_request_source_on(conn, observation.task_id) != source:
+                from src.integration.source_delivery import retire_reopened_source_repairs_on
+
+                retired = await retire_reopened_source_repairs_on(
+                    self.db, conn, observation.task_id, context="source_changed_during_repair_filing",
+                    source_head=source["head"],
+                )
+        for transition in retired:
+            await self.db.log_blocked_flips(transition.flipped)
+            await self.db._notify_settled(transition.settled)
+            await self.db._notify_ready(transition.ready)
+        if retired:
+            return _failure("source_ci_repair_superseded", "source reopened during repair filing")
         return {
                 "success": True, "outcome": "repair_created",
                 "repair_task_id": created["task_id"],

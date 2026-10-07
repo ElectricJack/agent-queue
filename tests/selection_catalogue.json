@@ -9259,7 +9259,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:6b77e5171043e9f09d674253cd6aa48cb38267ab96644d653c332c948a08bc90",
+      "digest": "sha256:6d0e0065f1f61368f5c629ce5ecc892ec67cc0a8b4d5e9aade996e89efe97a18",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -9267,6 +9267,7 @@
         "src.commands.task_commands",
         "src.database",
         "src.database.queries.hierarchy_queries",
+        "src.database.queries.task_queries",
         "src.database.tables",
         "src.doctor.integration_checks",
         "src.doctor.models",

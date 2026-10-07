@@ -810,6 +810,46 @@ async def _source_ci_handler(case, tmp_path):
     return handler, source
 
 
+async def test_reopen_during_source_ci_repair_filing_retires_the_new_delegate(case, tmp_path):
+    _, observation = await _red_observation(case)
+    handler, source = await _source_ci_handler(case, tmp_path)
+    ensure = handler._cmd_ensure_task.side_effect
+
+    async def reopen_then_file(args):
+        await case["db"].transition_task(
+            "e1", TaskStatus.READY, context="reopen_with_feedback", force=True,
+        )
+        return await ensure(args)
+
+    handler._cmd_ensure_task.side_effect = reopen_then_file
+    result = await handler._cmd_observe_integration_source_ci(observation)
+    assert result["outcome"] == "source_ci_repair_superseded"
+    repair_id = handler.filed[0]
+    assert (await case["db"].get_task(repair_id)).status is TaskStatus.FAILED
+    retirement = await case["db"].get_task_meta(repair_id, "source_ci_retirement")
+    assert retirement["source_head"] == source["head"]
+
+
+async def test_source_ci_repair_requires_current_verified_parent_completion(case, tmp_path):
+    from src.integration.source_delivery import superseded_source_repairs_on
+
+    _, observation = await _red_observation(case)
+    handler, _ = await _source_ci_handler(case, tmp_path)
+    created = await handler._cmd_observe_integration_source_ci(observation)
+    repair_id = created["repair_task_id"]
+    async with case["db"].immediate() as conn:
+        assert await superseded_source_repairs_on(
+            case["db"], conn, [repair_id], repository_id="repo",
+        ) == {}
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "e1",
+        ).values(generation=2))
+        blocked = await superseded_source_repairs_on(
+            case["db"], conn, [repair_id], repository_id="repo",
+        )
+    assert blocked[repair_id]["code"] == "source_ci_repair_superseded"
+
+
 def _cancelled_checks(source, required, *, annotated: bool, suite_id: int = 37367217284):
     """Cancelled checks of one workflow run, as GitHub reports them.
 
