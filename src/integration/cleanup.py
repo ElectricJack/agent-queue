@@ -1028,6 +1028,11 @@ class IntegrationCleanupService:
                 if ref is None:
                     return CleanupMaterializationResult(outcome="invariant_error",
                                                         batch_id=batch["id"])
+                if ref == batch["target_ref"]:
+                    # An epic refresh freezes the epic itself at the default
+                    # head: its branch is this batch's target and its PR is not
+                    # this delivery, so neither is a source to retire.
+                    continue
                 pr_url = member["pr_url"] or (task["pr_url"] if task else None)
                 retention = member["source_ref_retention"] or cleanup.successful_source_refs
                 if retention == "delete":
