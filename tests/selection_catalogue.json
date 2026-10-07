@@ -569,6 +569,7 @@
         "tests/test_parent_ci_publication.py",
         "tests/test_promote_commands.py",
         "tests/test_promotion_flow.py",
+        "tests/test_promotion_rulesets.py",
         "tests/test_promotion_steps.py",
         "tests/test_repair_checkout_refs.py"
       ]
@@ -8070,12 +8071,26 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:7da831e0f0e5efb2fefe9925c5f7f3a7dad5812c85d0f8e0112be7689ba08042",
+      "digest": "sha256:d4700926406309700a72f52d578349ca907a35e1fdd72c1850811a3d1b7c9863",
       "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
         "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.cutover",
+        "src.integration.delivery_observer",
         "src.integration.outbox",
+        "src.integration.provenance",
+        "src.integration.records",
+        "src.integration.removal_guard",
         "src.integration.service",
-        "src.integration.shadow"
+        "src.integration.shadow",
+        "src.integration.train",
+        "src.integration.train_sources",
+        "src.integration.trust_manifest",
+        "src.models"
       ],
       "markers": [
         "parametrize"
@@ -13401,6 +13416,31 @@
       ],
       "summary": "Dev-branch releases §3.1/§3.11: pure validation and its command surfaces."
     },
+    "tests/test_promotion_rulesets.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "digest": "sha256:d0c3a6cb1b71d14781c55b2a4b2221017c75171d43eb8c90526495e8e913faa7",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.cli.app",
+        "src.commands.contracts",
+        "src.commands.contracts.models",
+        "src.commands.principal",
+        "src.commands.promote_commands",
+        "src.git.github_contracts",
+        "src.integration.app_mode",
+        "src.integration.promotion_steps",
+        "src.integration.protection",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Promotion protection and workflow configuration (revision 3 §3.8 / fidelity B11)."
+    },
     "tests/test_promotion_steps.py": {
       "areas": [
         "integration-promotion"
@@ -15531,7 +15571,7 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:9c2ccf70901848632fbc612a6186c7696f58ca451a2bd469c9ac3168482f1da8",
+      "digest": "sha256:dcc30f841d6a08bc7f53ed14d995a617635492b2f3701fbac82ba984fdd7a990",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -15541,7 +15581,8 @@
         "src.orchestrator"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "``set_default_branch`` publishes a new default branch under the exact-OID push contract."
     },

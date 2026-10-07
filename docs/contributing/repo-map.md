@@ -5,11 +5,9 @@ explains each area.
 
 ## Why this page exists
 
-The repository has about 3,700 tracked files. Roughly 800 of them are tests,
-another 1,400 are generated API-client code that nobody edits, and 400 are
-prose. What is left — the ~790 modules that actually ship in the running system
-— is spread across `src/`, `dashboard/` and `migrations/`. This page is the
-index that turns "I want to change how tasks get claimed" into a directory.
+This page maps behavior to the package that owns it. The coverage manifest
+records file counts for its source revision; use the generator below for
+current counts.
 
 For a module-by-module catalog rather than a directory-level map, use the
 [module catalog](../reference/modules/README.md); every tracked path in the
@@ -87,9 +85,7 @@ which is machine-checked and never guessed.
 
 ## Train fidelity and release modules
 
-This B13 skeleton records the modules introduced or retained by fidelity Epics
-A–E, checked against captured `origin/main` `ce7aca55f` on 2026-10-07. E5
-(`vivid-stone-39.5`) updates these rows in place as pending work is delivered.
+These are the modules introduced or retained by the train and release changes.
 The [policy entry](../specs/design/promotion-flow.md) maps fidelity §§2.2 and 4
 to the guides; this table is orientation, not a second module ownership manifest.
 
@@ -100,11 +96,11 @@ to the guides; this table is orientation, not a second module ownership manifest
 | B: deploy and recovery | [install/deploy.py](../../src/install/deploy.py), [install/update.py](../../src/install/update.py), [database/backup.py](../../src/database/backup.py), [database/additive_migrations.py](../../src/database/additive_migrations.py), [CLI db](../../src/cli/db.py) | Annotated-tag selection, deployment record, additive-migration tooling and custom-archive backup/restore; shipped. |
 | C: legacy removal | [parent_runtime.py](../../src/integration/parent_runtime.py), [promotion.py](../../src/integration/promotion.py), [root_adapters.py](../../src/integration/root_adapters.py), [subjects.py](../../src/integration/subjects.py) | Still present as legacy compatibility code. **pending vivid-stone-39.5:** reconcile the later C1–C2 deletion tasks and observation-window evidence before removing these rows; this docs task performs no deletion. |
 | D: flow and promotion lane | [promotion_steps.py](../../src/integration/promotion_steps.py), [promotion_routing.py](../../src/integration/promotion_routing.py), [commands/promote_commands.py](../../src/commands/promote_commands.py), [CLI promote](../../src/cli/promote.py) | Schema, activation helpers, promotion target, pinned-PR lane and request/approve/cancel/status/list; shipped. Generated [schema](../reference/promotion-flow-schema.json) is regenerated, never edited. |
-| E1: remote configuration | [CLI promote_rulesets](../../src/cli/promote_rulesets.py), [promotion_steps.py](../../src/integration/promotion_steps.py), [protection.py](../../src/integration/protection.py), [.github/workflows/](../../.github/workflows/) | **pending vivid-stone-39.1:** ruleset output, chain/tag protection, remote diagnostics and workflow triggers; present on the working epic base, absent from captured main. |
-| E2: prepare and notes | Existing promotion commands/lane; final module paths unresolved | **pending vivid-stone-39.2:** prepare filing, notes input and both formats, stronger request-time checks. E5 links final modules after delivery. |
-| E3: hotfix and back-merge | Existing [promotion routing](../../src/integration/promotion_routing.py); new admission/module paths unresolved | **pending vivid-stone-39.3:** hotfix filing, `BackmergeAdmission`, default sources and intermediate intents. Existing routing alone does not prove the mechanism shipped. |
-| E4: policy bundles | [reviewed playbooks](../../src/prompts/reviewed_playbooks/), [fixture bundles](../../tests/fixtures/playbooks/v2/) | **pending vivid-stone-39.4:** `promotion-request` and `promotion-continuous`, reviewed artifacts and step-type binding. |
-| E5: documentation | [Promotion flows](../guides/promotion-flow.md), [releases](../guides/releases.md), [factory policy](../concepts/factory-policy.md), this map | E5a drafts final files; **pending vivid-stone-39.5:** reconcile pending markers and live rollout evidence. |
+| E1: remote configuration | [CLI promote_rulesets](../../src/cli/promote_rulesets.py), [promotion_steps.py](../../src/integration/promotion_steps.py), [protection.py](../../src/integration/protection.py), [.github/workflows/](../../.github/workflows/) | Ruleset output, chain/tag protection, remote diagnostics and workflow requirements. |
+| E2: prepare and notes | [promotion_notes.py](../../src/integration/promotion_notes.py), [promote_commands.py](../../src/commands/promote_commands.py) | Prepare filing, immutable notes input, both notes formats and exact-source request checks. |
+| E3: hotfix and back-merge | [promotion routing](../../src/integration/promotion_routing.py), [promotion_steps.py](../../src/integration/promotion_steps.py), [promote_commands.py](../../src/commands/promote_commands.py) | Hotfix filing, `BackmergeAdmission`, default sources, intermediate intents and cached back-merge ledger. |
+| E4: policy bundles | [reviewed playbooks](../../src/prompts/reviewed_playbooks/), [fixture bundles](../../tests/fixtures/playbooks/v2/) | `promotion-request` and `promotion-continuous`, reviewed artifacts and step-type binding; inactive until activated per project. |
+| E5: documentation | [Promotion flows](../guides/promotion-flow.md), [releases](../guides/releases.md), [factory policy](../concepts/factory-policy.md), this map | Mechanism and operator guidance; live rollout evidence belongs to the project cutover record. |
 
 `epic_pr.py` was moved to `root_pull_requests.py`; `parent_completion.py` and
 `delivered_parent_adoption.py` were already removed. Fidelity restores their
@@ -153,7 +149,7 @@ frontend and the CLI, each with its own one-line `CLAUDE.md` shim.
 | `/.aq/` | Per-checkout agent state: worktree slots, claim files, hook settings. Gitignored, generated by the session runtime, never shared. |
 | `node_modules/`, `dashboard/dist/`, `packages/aq-ts-client/src/` | Build inputs and outputs. Gitignored. |
 | `.pytest_cache/`, `.ruff_cache/`, `__pycache__/` | Tool caches. |
-| `docs/specs/`, `docs/superpowers/`, `docs/reports/`, `docs/reviews/`, `docs/analysis/`, `docs/plans/` | Preserved historical material — the audit trail of how AQ got here. Read as background, with the date it describes, never as instructions. |
+| `docs/specs/`, `docs/superpowers/`, `docs/reports/`, `docs/reviews/`, `docs/analysis/`, `docs/plans/` | Active design specs remain normative. Dated plans, superseded specs and reports preserve historical decisions; check each document’s status and scope. |
 
 ## Finding the code for a behaviour
 

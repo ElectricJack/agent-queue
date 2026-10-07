@@ -3,13 +3,9 @@
 A release publishes a tested promotion commit under an immutable annotated tag;
 deployment selects that tag, while database restore is a separate recovery action.
 
-> **Draft baseline.** E5a (`vivid-stone-39.6`), checked against `origin/main`
-> at `ce7aca55f` on 2026-10-07. B6 deploy selection, B7 additive-migration
-> tooling and B8 database backup/restore are shipped. Preparation and complete
-> notes verification are **pending vivid-stone-39.2**; hotfix/back-merge is
-> **pending vivid-stone-39.3**; post-publication policy is
-> **pending vivid-stone-39.4**. E5 (`vivid-stone-39.5`) finalizes these sections
-> in place. This page does not authorize the project's live cutover.
+> Release preparation, hotfix back-merges, deploy selection and backup/restore
+> are implemented. Activate the flow and its reviewed bundles for each project
+> before using the automated procedure. Live rollout is an operator action.
 
 ## Why it exists
 
@@ -25,7 +21,7 @@ This page covers the operator's checkout deployment and recovery path.
 - **Annotated tag:** a tag object with a message and identity, whose peeled
   commit is S; a lightweight tag is only a ref and is refused by release selection.
 - **Prepare task:** an ordinary task that bumps a version and writes its notes;
-  its automatic filing is **pending vivid-stone-39.2**.
+  `aq promote prepare` files it on the default branch.
 - **Deployment record:** `~/.agent-queue/deploy.json`, recording the selected
   tag/branch, exact commit, prior commit and installation time.
 - **Restore:** replacement of the configured PostgreSQL database from a backup.
@@ -46,17 +42,17 @@ Its `--ref` option selects an annotated release tag or an explicit unreleased
 branch; `--check` reports a plan without applying it. The operator procedure
 below assumes a source checkout installation outside any worker slot, a clean
 checkout, reachable PostgreSQL, and a versioned promotion already delivered.
-These are procedure templates, not release operations executed for this draft.
+Replace the example project, step, commit and version with the intended release.
 
 ### Prepare the version and notes
 
-**pending vivid-stone-39.2:** intended `aq promote prepare --step release
-(--bump minor|patch | --version V)` files an ordinary task on the repository
-default branch. The task bumps the configured version source, drafts the notes,
-regenerates affected files and lands through the normal train. The final CLI
-flags must be reconciled against E2 before using this procedure.
+`aq promote prepare --project demo --step release --bump patch` files an
+ordinary task on the repository default branch. Use `--bump minor` or
+`--version V` instead; exactly one selection is required. The task bumps the
+configured version source, drafts the notes, regenerates affected files and
+lands through the normal train.
 
-**pending vivid-stone-39.2:** the daemon's
+The daemon's
 `integration_promotion_notes_input` assembles immutable task metadata over
 `previous step tag..default head`. For a first release, `notes.bootstrap_sha`
 is the lower bound; `null` means full history. Traversal includes every newly
@@ -65,7 +61,7 @@ deduplicates `AQ-Source: task@sha` identities. It includes archived task
 summaries and migration files, marks reverted sources, and excludes already
 released hotfix sources plus promotion/back-merge bookkeeping.
 
-**pending vivid-stone-39.2:** notes have Added, Fixed, Upgrade, Breaking and
+Notes have Added, Fixed, Upgrade, Breaking and
 Changed sections, with migration-bearing work in Upgrade and unmatched commits
 in Changed. `file_template` stores per-version Markdown, for example
 `src/releases/notes/{version}.md`, with `sources` and `source_digest` in
@@ -73,14 +69,12 @@ frontmatter. `changelog_heading` uses a `## [V]` heading in one changelog and
 stores the digest in an HTML comment. Workers read their own task's notes input;
 they do not need cross-task read grants.
 
-Current D3 requests already read the version and notes bytes at pinned S and
-require `--notes-reviewed` for nonempty notes. **pending vivid-stone-39.2:**
-request admission also recomputes the source digest, refuses `notes_stale`,
+Requests read the version and notes bytes at pinned S and
+require `--notes-reviewed` for nonempty notes. Request admission also recomputes the source digest, refuses `notes_stale`,
 requires V to exceed this step's previous release, and verifies additive
 migrations in the release range. The standalone
 [scripts/check_additive_migrations.py](../../scripts/check_additive_migrations.py)
-already exists; its presence alone does not prove those request-time checks
-are wired. Intended behavior comes from the dev-branch releases revision 3
+is used by request admission. The contract comes from the dev-branch releases revision 3
 spec §§3.4–3.5, amended by the fidelity spec's PR gate.
 
 ### Request and prove the tag
@@ -145,8 +139,7 @@ the database; it does not run Alembic downgrades. Additive migrations and the
 schema-ahead guard make compatible old code possible, but compatibility must
 be verified for the actual release range. The shipped
 [rollback drill](../../scripts/rollback_drill.py) exercises a disposable
-database; it is not permission to downgrade the live schema. Stronger
-release-request enforcement is **pending vivid-stone-39.2**. Sources:
+database; it is not permission to downgrade the live schema. Release requests enforce the additive migration check over their actual range. Sources:
 [src/database/additive_migrations.py](../../src/database/additive_migrations.py)
 and [migration guard](../../src/database/migration_guard.py).
 
@@ -186,7 +179,7 @@ backup. Each result needs its own evidence.
 
 The train writes promotion refs and tags. The local operator owns deployment,
 restart and database replacement. The notes worker writes its ordinary task
-branch (**pending vivid-stone-39.2** for automatic preparation). The database
+branch. The database
 records tasks and cached evidence; Git proves what code reached each branch.
 
 ## Common failures and recovery
@@ -199,7 +192,7 @@ records tasks and cached evidence; Git proves what code reached each branch.
 | `schema behind code; ask the operator to upgrade` | Operator checks `aq db current` and upgrades outside a slot. |
 | `restore_data_loss_unaccepted` | Review the printed bound; only the operator repeats the exact dump timestamp. |
 | Restore refuses live sessions or unknown revisions | End the sessions or select a compatible archive/checkout; `--force` does not waive these checks. |
-| `notes_stale` (**pending vivid-stone-39.2**) | Refresh notes input on the default branch, let it land, then request a new S. |
+| `notes_stale` | Refresh notes input on the default branch, let it land, then request a new S. |
 
 ## Related pages
 

@@ -3,13 +3,8 @@
 A promotion flow moves one tested commit through an ordered branch chain,
 using a pull request for each promotion and the integration train to publish it.
 
-> **Draft baseline.** E5a (`vivid-stone-39.6`), checked against `origin/main`
-> at `ce7aca55f` on 2026-10-07. D1–D3 (`grand-lantern-78.1`–`.3`) are shipped.
-> **pending vivid-stone-39.1:** E1 rulesets and remote validation are present
-> on this epic's branch, but were not on the captured main revision.
-> **pending vivid-stone-39.5:** E5 finalizes this page in place after the remaining
-> release mechanisms land. A pending marker describes intended behavior, not an
-> available command or a completed rollout.
+> The mechanisms below are implemented. Each project activates its own flow and
+> reviewed policy bundles; shipping these files does not switch a live project.
 
 ## Why it exists
 
@@ -98,8 +93,8 @@ omit `--file` to check the stored flow. Neither activates it.
 | `gate.approval` | `operator` by default, `requester`, or `none` for continuous steps. Optional `operator_logins` narrows eligible human repository administrators. |
 | `gate.request_ttl` | Defaults to `7d`; status reports stale requests. Expiry is not permission to publish. |
 | `versioning` | `none`, `semver_tag`, or `custom`. Version sources include `pyproject`, `package.json`, and `file:<path>:<regex>`. Tag placeholders are `{version}`, `{sha12}`, `{utc_date}`, `{step}`. Tag families cannot overlap each other or reserved manifest globs. |
-| `notes` | `none`, `file_template`, or `changelog_heading`; nonempty notes require a path and version placeholder. Full preparation and digest checks are **pending vivid-stone-39.2**. |
-| `after` | Schema includes `backmerge`, `github_release`, `deploy_hook`. Back-merge execution is **pending vivid-stone-39.3**; reviewed policy driving post-publication actions is **pending vivid-stone-39.4**. |
+| `notes` | `none`, `file_template`, or `changelog_heading`; nonempty notes require a path and version placeholder. Preparation records immutable source input; requests verify its digest at S. |
+| `after` | Schema includes `backmerge`, `github_release`, `deploy_hook`. Back-merge work uses a daemon-owned source or promotion intent. Post-publication policy must be explicitly activated. |
 
 Continuous steps cannot require a version bump: `semver_tag` and a custom
 format containing `{version}` are refused. A custom tag using `{sha12}` is
@@ -141,7 +136,6 @@ writes resumes the missing write, while a conflicting tag holds for an operator.
 
 ### Rulesets and workflow triggers
 
-**pending vivid-stone-39.1:** E1 adds
 `aq promote rulesets --project demo [--file flow.yaml]` to print branch/tag
 ruleset JSON and workflow requirements for a repository administrator to apply.
 The command makes no GitHub configuration writes. It derives every chain branch,
@@ -149,14 +143,13 @@ uses a distinct App attestation on each promotion target, and emits a tag
 creation rule with the App as its only bypass actor plus an update/deletion
 rule with no bypass actors. Never give the App a bypass of branch checks.
 
-**pending vivid-stone-39.1:** `aq promote validate --project demo --remote`
-reads chain protection, tag rulesets and workflows. Main already accepts the
-flag; E1 supplies its full layer-four diagnostics. Remote warnings do not turn
+`aq promote validate --project demo --remote`
+reads chain protection, tag rulesets and workflows. It reports layer-four diagnostics. Remote warnings do not turn
 schema validity into a failed result: inspect `warnings`, `protection` and
 `workflow_triggers`. Hidden bypass actors or unreadable workflows are
 unverifiable, not evidence of correct protection.
 
-**pending vivid-stone-39.1:** required test workflows cover `pull_request` to
+required test workflows cover `pull_request` to
 the default and every chain target, including `ready_for_review`, and pushes to
 `aq/promote/**` as well as the train's candidate refs. Branch-attestation
 workflows cover the whole chain. Apply trigger changes before flipping the
@@ -168,10 +161,11 @@ does not update the workflow at pinned S. Sources:
 
 ### Hotfixes and policy automation
 
-**pending vivid-stone-39.3:** the intended `aq promote hotfix --step <id>`
+`aq promote hotfix --project demo --step release --title "Fix description"`
 files work based on that step's target, with delivery routed to the target rather
-than ordinary default-branch admission. Its fix, patch version and notes are
-promoted through a pinned PR. With `after.backmerge`, each lower branch receives
+than ordinary default-branch admission. After the task completes, `aq promote request --project demo --step release
+--from-task TASK --version V --notes-reviewed` requests its pinned PR. A semantic
+version hotfix must increment the target PATCH version exactly once. With `after.backmerge`, each lower branch receives
 the published commit: a new ordinary source batch on the default, and
 fast-forward intents on intermediate targets. Existing frozen membership stays
 unchanged; divergence holds as `backmerge_not_fast_forward`, and a request
@@ -209,14 +203,14 @@ deployment and restore retain their operator restrictions.
 | `promotion_not_fast_forward` | Inspect target/source ancestry; cancel and request a source that contains the target. |
 | PR gate waiting or unknown | Inspect the exact pinned PR head, required checks and reviewer identity; retry observation after a provider outage. |
 | `promotion_tag_conflict` | Inspect both tag-object OID and peeled commit; preserve the immutable tag and resolve with the operator. |
-| Remote warnings (**pending vivid-stone-39.1**) | Have the repository administrator reconcile rulesets and triggers, then repeat `validate --remote`. |
+| Remote warnings | Have the repository administrator reconcile rulesets and triggers, then repeat `validate --remote`. |
 
 ## Related pages
 
 - [Releases](releases.md) — preparation, versioned tags, deploy and restore.
 - [Train runbook](git-first-train-runbook.md#supervisor-controls) — batch controls.
 - [Promotion policy design entry](../specs/design/promotion-flow.md) — fidelity
-  crosswalk and the draft completion checklist.
+  crosswalk and activation boundaries.
 
 ## Source and tests
 
