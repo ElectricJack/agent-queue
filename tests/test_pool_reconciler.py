@@ -54,6 +54,11 @@ async def git_first_frontier(orch, db, tmp_path):
     base = git(origin.clone, "rev-parse", "HEAD")
     git(origin.clone, "push", "origin", "main:aq/epic")
     source = origin.work("first")
+    # Claim preparation imports the observed stack base into the assigned
+    # checkout. These Git-backed frontier tests need actual clone slots even
+    # though reset_slot_for_task remains a spy for its argument assertions.
+    for workspace in await db.list_workspaces(PROJECT_ID):
+        git(tmp_path, "clone", "--quiet", origin.url, workspace.workspace_path)
     transport = LocalGit(tmp_path / "origin.git")
     orch.git = transport
     await db.update_profile("worker", default_class="standard-medium")
@@ -428,9 +433,9 @@ async def test_git_first_claim_refetches_after_cached_advisory_target_rewinds(
     result = await handler._cmd_task_claim({"next": True})
     assert result["result"] == "claimed", result
     assert result["task"]["id"] == "second"
-    # Admission refetches once, then workspace preparation independently proves
-    # the current parent tip before preserving the child's existing branch.
-    assert fetch.await_count == 5
+    # Admission refetches once; workspace preparation separately observes the
+    # current parent tip and retained prerequisite stack before activation.
+    assert fetch.await_count == 6
     delivery_head.assert_awaited_once_with("second")
     prepare.assert_awaited_once()
     assert prepare.await_args.args[1].id == "second"
