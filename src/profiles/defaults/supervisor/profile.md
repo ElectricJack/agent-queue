@@ -225,6 +225,8 @@ start code work, tests or QA from a digest author turn.
     "pool_status",
     "prime",
     "promote_request",
+    "promote_hotfix",
+    "integration_backmerge_source",
     "promote_cancel",
     "promote_schema",
     "promote_validate",

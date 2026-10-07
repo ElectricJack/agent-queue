@@ -561,6 +561,7 @@
         "tests/test_integration_train_promotion.py",
         "tests/test_parent_ci_publication.py",
         "tests/test_promote_commands.py",
+        "tests/test_promotion_backmerge.py",
         "tests/test_promotion_flow.py",
         "tests/test_promotion_rulesets.py",
         "tests/test_promotion_steps.py",
@@ -1430,7 +1431,7 @@
       ]
     }
   },
-  "digest": "sha256:06aa715a3a2dae8f9a9aec10093cfc73a41a21673dd5999049fb8d5f0a26f245",
+  "digest": "sha256:76197b8e9acb617ab940291df26ee1c6af15a13afd616ba64fd0dd3912d50b47",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -12639,6 +12640,30 @@
         "parametrize"
       ],
       "summary": "PR intent commands over real PostgreSQL and Git, with isolated GitHub transports."
+    },
+    "tests/test_promotion_backmerge.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.commands.promote_commands",
+        "src.config",
+        "src.database.queries.task_queries",
+        "src.database.tables",
+        "src.integration.batches",
+        "src.integration.hierarchy",
+        "src.integration.promotion_steps",
+        "src.integration.provenance",
+        "src.integration.train",
+        "src.integration.train_sources",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Hotfix and backmerge gates with real PostgreSQL, retained refs and Git DAGs."
     },
     "tests/test_promotion_flow.py": {
       "areas": [

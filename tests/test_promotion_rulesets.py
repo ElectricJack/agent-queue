@@ -302,9 +302,10 @@ async def test_read_failures_are_unverifiable_not_missing_and_audit_rename_is_su
                     "aq/promote/*",
                 ]
             },
-            ["aq/promote/**"],
+            ["aq/backmerge/**", "aq/promote/**"],
         ),
         ({"branches": ["**", "!aq/promote/**", "aq/promote/**"]}, []),
+        ({"branches": ["**", "!aq/backmerge/**"]}, ["aq/backmerge/**"]),
     ],
 )
 async def test_workflow_negative_filters_and_nested_push_refs(filters, missing):

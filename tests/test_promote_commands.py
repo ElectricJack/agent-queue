@@ -436,7 +436,7 @@ def test_intent_contracts_have_typed_arguments_and_read_only_cache_commands():
     from src.commands.contracts import CONTRACTS
     from src.commands.contracts.models import SideEffectClass
 
-    for name in ("request", "approve", "cancel", "status", "list"):
+    for name in ("request", "hotfix", "approve", "cancel", "status", "list"):
         registration = CONTRACTS.get("promote_" + name)
         assert registration is not None
         contract = registration.contract.execution
@@ -462,6 +462,16 @@ def test_intent_contracts_have_typed_arguments_and_read_only_cache_commands():
                 "version": "0.2.0",
                 "notes_reviewed": True,
             },
+        ),
+        (
+            "request", ["--step", "release", "--from-task", "fix"],
+            {"step_id": "release", "from_task": "fix", "source_sha": None,
+             "version": None, "notes_reviewed": False},
+        ),
+        (
+            "hotfix", ["--step", "release", "--title", "Fix release", "--version", "0.2.1"],
+            {"step_id": "release", "title": "Fix release", "version": "0.2.1",
+             "description": None, "from_task": None},
         ),
         ("approve", ["promotion:r:release:0.2.0"], {"request_id": "promotion:r:release:0.2.0"}),
         ("cancel", ["promotion:r:release:0.2.0"], {"request_id": "promotion:r:release:0.2.0"}),
@@ -706,13 +716,17 @@ async def test_flow_edit_during_provider_calls_rolls_request_back(promote_env):
         assert await conn.scalar(select(integration_batches.c.id)) is None
 
 
-async def test_worker_without_request_capability_cannot_open_intent(promote_env):
+@pytest.mark.parametrize("command", ["promote_request", "promote_hotfix", "integration_backmerge_source"])
+async def test_worker_without_request_capability_cannot_open_intent(promote_env, command):
     e = promote_env
     worker = ExecutionPrincipal(
         kind=PrincipalKind.SESSION, policy=DENY_ALL, session_id="worker", project_id="p"
     )
     with principal_context(worker):
-        assert (await request(e))["outcome"] == "unauthorized"
+        args = {"project_id": "p", "step_id": "release"}
+        if command == "promote_hotfix":
+            args["title"] = "Unauthorized fix"
+        assert (await getattr(e.handler, "_cmd_" + command)(args))["outcome"] == "unauthorized"
     assert e.github.created == 0
 
 

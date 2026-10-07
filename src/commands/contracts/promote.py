@@ -32,6 +32,7 @@ class PromoteRequestArgs(PromoteProjectArgs):
     notes_reviewed: bool = Field(
         default=False, description="Acknowledge reading the notes at the pinned source."
     )
+    from_task: str | None = Field(default=None, description="Completed hotfix task to promote.")
 
     @field_validator("source_sha")
     @classmethod
@@ -45,6 +46,18 @@ class PromoteIntentArgs(PromoteProjectArgs):
     request_id: str = Field(
         min_length=1, description="Promotion request identity returned by request."
     )
+
+
+class PromoteHotfixArgs(PromoteProjectArgs):
+    step_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    description: str | None = None
+    from_task: str | None = None
+    version: str | None = None
+
+
+class BackmergeSourceArgs(PromoteProjectArgs):
+    step_id: str = Field(min_length=1)
 
 
 class PromoteReadArgs(PromoteProjectArgs):
@@ -65,6 +78,7 @@ class PromoteValue(CommandValue):
     promotions: list[dict[str, Any]] = Field(default_factory=list)
     evidence_source: str | None = None
     retry_at: float | None = None
+    backmerges: list[dict[str, Any]] = Field(default_factory=list)
 
 
 REFUSALS = (
@@ -99,6 +113,8 @@ def register_promote_contracts(registry):
 
     for name, args_model, successes, read in (
         ("promote_request", PromoteRequestArgs, ("requested", "already_requested"), False),
+        ("promote_hotfix", PromoteHotfixArgs, ("hotfix_filed",), False),
+        ("integration_backmerge_source", BackmergeSourceArgs, ("backmerges_authored",), False),
         ("promote_approve", PromoteIntentArgs, ("approved", "already_approved"), False),
         ("promote_cancel", PromoteIntentArgs, ("cancelled", "already_cancelled"), False),
         ("promote_status", PromoteReadArgs, ("status",), True),
@@ -114,6 +130,8 @@ def register_promote_contracts(registry):
             result_model=PromoteValue,
         )
         summaries = {
+            "promote_hotfix": "File a hotfix based on a promotion target, through ordinary task routing.",
+            "integration_backmerge_source": "Author gated back-merge sources and fast-forward intents down the chain.",
             "promote_request": "Open an idempotent promotion intent and a PR pinned to its source commit.",
             "promote_approve": "Post a pinned GitHub approval using the authenticated human gh login.",
             "promote_cancel": "Close an unpublished promotion PR and abort its intent.",

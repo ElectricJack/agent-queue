@@ -10465,6 +10465,56 @@
         "type": "object"
       }
     },
+    "integration_backmerge_source": {
+      "name": "integration_backmerge_source",
+      "description": "Author gated back-merge sources and fast-forward intents down the chain.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "minLength": 1,
+            "title": "Step Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "step_id"
+        ],
+        "title": "BackmergeSourceArgs",
+        "type": "object"
+      }
+    },
     "integration_build_candidate": {
       "name": "integration_build_candidate",
       "description": "Build exact root candidate",
@@ -14224,6 +14274,98 @@
         "type": "object"
       }
     },
+    "promote_hotfix": {
+      "name": "promote_hotfix",
+      "description": "File a hotfix based on a promotion target, through ordinary task routing.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "minLength": 1,
+            "title": "Step Id",
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "from_task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "From Task"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Version"
+          }
+        },
+        "required": [
+          "project_id",
+          "step_id",
+          "title"
+        ],
+        "title": "PromoteHotfixArgs",
+        "type": "object"
+      }
+    },
     "promote_list": {
       "name": "promote_list",
       "description": "List promotion history using the local evidence cache.",
@@ -14363,6 +14505,19 @@
             "description": "Acknowledge reading the notes at the pinned source.",
             "title": "Notes Reviewed",
             "type": "boolean"
+          },
+          "from_task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Completed hotfix task to promote.",
+            "title": "From Task"
           }
         },
         "required": [

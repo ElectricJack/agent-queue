@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 528,
+    "leaf_commands": 530,
     "registration": {
-      "generated": 349,
-      "handwritten": 179
+      "generated": 350,
+      "handwritten": 180
     },
     "ownership": {
-      "core": 489,
+      "core": 491,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 527
+      "supported": 529
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 349,
-      "registration": 165
+      "dispatch": 350,
+      "registration": 166
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 468
+      "untested": 470
     }
   },
   "commands": [
@@ -9931,6 +9931,42 @@
       }
     },
     {
+      "path": "aq promote hotfix",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.promote.promote_hotfix",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project",
+          "--step",
+          "--title"
+        ],
+        "optional": [
+          "--description",
+          "--from-task",
+          "--version",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq promote list",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -9989,6 +10025,7 @@
           "--from",
           "--version",
           "--notes-reviewed",
+          "--from-task",
           "--json",
           "--brief",
           "--save-output",
@@ -13750,6 +13787,46 @@
         ],
         "structured": [],
         "nullable": []
+      }
+    },
+    {
+      "path": "aq system integration-backmerge-source",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_backmerge_source",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--step-id"
+        ],
+        "optional": [
+          "--task-id",
+          "--session-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--task-id",
+          "--session-id"
+        ]
       }
     },
     {

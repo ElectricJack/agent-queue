@@ -2321,7 +2321,10 @@ class TaskCommandsMixin:
         project = await self.db.get_project(project_id)
         if project is None:
             return {"error": f"Project '{project_id}' not found"}
-        hierarchy_enabled = project.hierarchical_integration_mode in {"hierarchy", "train"}
+        hierarchy_enabled = project.hierarchical_integration_mode in {"hierarchy", "train"} or (
+            project.hierarchical_integration_mode == "development"
+            and bool(args.get("_integration_root_ref"))
+        )
         if hierarchy_enabled and not project.integration_repository_id:
             return {"error": "hierarchical integration requires a designated repository"}
         deliverables, deliverables_error = normalize_deliverables(args.get("deliverables"))
@@ -2342,6 +2345,8 @@ class TaskCommandsMixin:
         # Resolve optional task_type from string to enum.
         raw_task_type = args.get("task_type")
         task_type: TaskType | None = None
+        if raw_task_type in {"promotion", "backmerge"}:
+            return {"success": False, "error": "Promotion and backmerge tasks are daemon-authored."}
         if raw_task_type:
             if raw_task_type in TASK_TYPE_VALUES:
                 task_type = TaskType(raw_task_type)
@@ -2806,6 +2811,7 @@ class TaskCommandsMixin:
                             edges=edges,
                             labels=labels,
                             routing_policy=routing_policy,
+                            target_ref=args.get("_integration_root_ref"),
                         )
                     # Every other creation path runs the internal post-create
                     # writer in its own transaction; a hierarchy/train filing

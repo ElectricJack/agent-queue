@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/promote.py`](../../../src/commands/contracts/promote.py) |
-| Contract fingerprint | `sha256:d07a4e82c183d481c87f19819eaf3c120ed7d35ff0cc4f0628fc0ab9679f0f6a` |
+| Contract fingerprint | `sha256:07b40aed7eab8aa9242aff6c6a64ac7d5ac5790d65582e1875ca5695f8857715` |
 
 ## Parameters
 
@@ -41,8 +41,9 @@
 | `promotions` | `object[]` | — |
 | `evidence_source` | `string \| null` | — |
 | `retry_at` | `number \| null` | — |
+| `backmerges` | `object[]` | — |
 
-Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id`, `intent`, `pr_url`, `promotion`, `review`, `flow`, `promotions`, `evidence_source`, `retry_at`.
+Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id`, `intent`, `pr_url`, `promotion`, `review`, `flow`, `promotions`, `evidence_source`, `retry_at`, `backmerges`.
 
 ## Outcomes
 
