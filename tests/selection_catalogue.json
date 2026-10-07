@@ -1420,7 +1420,7 @@
       ]
     }
   },
-  "digest": "sha256:54514dfa0e514564df4851c6ce92bf7f1cb37bcc0d36b022482ba47c327c36fb",
+  "digest": "sha256:1786c8f65358c318fb59d74f0080b8da59e3905f13ec832220d82080cf9c6e4e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7688,6 +7688,7 @@
         "src.integration.gitops",
         "src.integration.models",
         "src.integration.ownership",
+        "src.integration.source_ancestry",
         "src.integration.source_trailer",
         "src.integration.subjects"
       ],
