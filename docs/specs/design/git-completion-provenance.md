@@ -307,3 +307,19 @@ events, marks live branchless tasks a manifest named with an unrecorded source
 rather than organizational), and records a `development.legacy_retirement`
 summary per project naming those tasks, archived tasks of the same shape and
 malformed rows.
+
+## Local train quiesce
+
+`integration_quiesce` is a separate local-operator-only control for an unfrozen
+reconciler root in admission. It requires the explicit project integration
+generation, root subject id/version and every reservation id/fence to release.
+It refuses frozen sources, live writers, claims, workspaces, active operations,
+unresolved remote mutations, another live subject, or a changed sweep request.
+Task reservations require an explicitly PAUSED or finished task in that project;
+collector reservations require a completed or cancelled operation in the project.
+Attached or foreign ownership is refused. Preview writes nothing. Apply disables
+that project's train schedule, clears its idle request/catchup, closes the root
+with a journal action and releases the explicitly selected detached reservations
+with fresh fences and an operator audit event. Tasks, refs and retained work stay
+intact. It changes no integration mode and does not authorize completion; the
+normal generation-fenced configuration control still governs the later cutover.

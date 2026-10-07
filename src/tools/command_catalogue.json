@@ -11148,6 +11148,84 @@
         "type": "object"
       }
     },
+    "integration_quiesce": {
+      "name": "integration_quiesce",
+      "description": "Local operator closes an unfrozen root and releases explicitly fenced idle reservations.",
+      "input_schema": {
+        "$defs": {
+          "IntegrationQuiesceOwner": {
+            "additionalProperties": false,
+            "properties": {
+              "owner_row_id": {
+                "minLength": 1,
+                "title": "Owner Row Id",
+                "type": "string"
+              },
+              "fence_token": {
+                "minimum": 0,
+                "title": "Fence Token",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "owner_row_id",
+              "fence_token"
+            ],
+            "title": "IntegrationQuiesceOwner",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "expected_generation": {
+            "minimum": 0,
+            "title": "Expected Generation",
+            "type": "integer"
+          },
+          "subject_id": {
+            "minLength": 1,
+            "title": "Subject Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "minimum": 0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "owners": {
+            "items": {
+              "$ref": "#/$defs/IntegrationQuiesceOwner"
+            },
+            "title": "Owners",
+            "type": "array"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id",
+          "expected_generation",
+          "subject_id",
+          "expected_version",
+          "reason"
+        ],
+        "title": "IntegrationQuiesceArgs",
+        "type": "object"
+      }
+    },
     "integration_rebind_detached_repair": {
       "name": "integration_rebind_detached_repair",
       "description": "Authenticated hierarchical integration operational control.",

@@ -38,6 +38,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_record_noop",
         "integration_record_root_noop",
         "integration_record_delivered",
+        "integration_quiesce",
         "integration_parent_verify",
         "integration_complete_parent",
         "delivery_promote",
@@ -955,6 +956,39 @@ class IntegrationRecordNoopValue(CommandValue):
     revision: int | None = None
     reviewed_head_sha: str | None = None
     reviewed_tree_sha: str | None = None
+
+
+class IntegrationQuiesceOwner(CommandArgs):
+    owner_row_id: str = Field(min_length=1)
+    fence_token: StrictInt = Field(ge=0)
+
+
+class IntegrationQuiesceArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    expected_generation: StrictInt = Field(ge=0)
+    subject_id: str = Field(min_length=1)
+    expected_version: StrictInt = Field(ge=0)
+    owners: list[IntegrationQuiesceOwner] = Field(default_factory=list)
+    reason: str = Field(min_length=1)
+    dry_run: bool = True
+
+    @model_validator(mode="after")
+    def explicit_control(self):
+        if not self.reason.strip():
+            raise ValueError("reason must be nonblank")
+        ids = [owner.owner_row_id for owner in self.owners]
+        if len(set(ids)) != len(ids):
+            raise ValueError("owner rows must be unique")
+        return self
+
+
+class IntegrationQuiesceValue(CommandValue):
+    project_id: str | None = None
+    subject_id: str | None = None
+    subject_version: int | None = None
+    request_id: str | None = None
+    owner_row_ids: list[str] = Field(default_factory=list)
+    dry_run: bool = True
 
 
 class IntegrationRecordDeliveredArgs(CommandArgs):
@@ -3008,6 +3042,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     outside the allowlist.
     """
     for name, args_model, applied, value_model in (
+        ("integration_quiesce", IntegrationQuiesceArgs, "quiesced", IntegrationQuiesceValue),
         ("integration_record_delivered", IntegrationRecordDeliveredArgs, "recorded",
          IntegrationRecordDeliveredValue),
         ("integration_record_root_noop", IntegrationRecordRootNoopArgs, "recorded",
@@ -3050,11 +3085,31 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
                 ),
             })
 
+        if name == "integration_quiesce":
+            applying = ClausePredicate(arg_equals=("dry_run", False))
+            contract = contract.model_copy(update={
+                "execution": contract.execution.model_copy(update={"effects": (
+                    ReadClause(subject=EffectSubject.INTEGRATION_OPERATION),
+                    UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION, when=applying),
+                    UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP, when=applying),
+                )}),
+                "presentation": CommandPresentation(
+                    title="Quiesce idle train admission",
+                    summary="Local operator closes an unfrozen root and releases explicitly fenced idle reservations.",
+                ),
+            })
         if name == "integration_record_delivered":
-            contract = contract.model_copy(update={"presentation": CommandPresentation(
-                title="Record exact externally delivered completion",
-                summary="Local operator verifies exact source on the designated default and records shipped work.",
-            )})
+            contract = contract.model_copy(update={
+                "execution": contract.execution.model_copy(update={"effects": (
+                    *contract.execution.effects,
+                    UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP,
+                                 when=ClausePredicate(arg_equals=("dry_run", False))),
+                )}),
+                "presentation": CommandPresentation(
+                    title="Record exact externally delivered completion",
+                    summary="Local operator verifies exact source on the designated default and records shipped work.",
+                ),
+            })
 
         async def train_control(args, ctx, command=name, outcomes=outcomes, value_model=value_model):
             return await _hierarchy_adapter(
