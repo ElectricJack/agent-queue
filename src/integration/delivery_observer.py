@@ -18,7 +18,8 @@ The division of labour follows that module's contract:
   the fetch (:meth:`DeliveryView.fresh`).  Anything unverified is unknown, and
   unknown fails closed: it never settles, archives or deletes.
 
-Nothing here is persisted.  A view lives for one request.
+Nothing here is persisted. A view lives for one request; the truth cache may
+reuse immutable Git proofs for identical completion inputs and pinned OIDs.
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ from src.database.tables import (
     task_branch_origins,
     tasks,
 )
+from src.git.manager import GitError, RemoteRefState
 from src.integration.delivery_truth import (
     DeliveryEvidence,
     DeliveryRequest,
@@ -269,10 +271,26 @@ class DeliveryView:
         A snapshot that failed already answered unknown for all of its tasks,
         so it has no target to go stale and does not spoil its peers.
         """
+        groups = {}
         for snapshot in self.snapshots:
-            if snapshot.error is None and not await snapshot.is_fresh():
-                return False
-        return True
+            if snapshot.error is None:
+                key = snapshot.git, snapshot.store, snapshot.repository_url
+                groups.setdefault(key, []).append(snapshot)
+        fresh = True
+        for (git, store, url), snapshots in groups.items():
+            branches = sorted({s.target_ref.removeprefix("refs/heads/") for s in snapshots})
+            try:
+                refs = (await git.als_remote_refs(store, branches)
+                        if await git.aget_remote_url(store) == url else {})
+            except (GitError, OSError):
+                refs = {}
+            for snapshot in snapshots:
+                ref = refs.get(snapshot.target_ref.removeprefix("refs/heads/"))
+                current = bool(ref and ref.state is RemoteRefState.PRESENT
+                               and ref.oid == snapshot.target_oid)
+                snapshot._freshness[snapshot.target_ref] = current
+                fresh &= current
+        return fresh
 
     async def verified_on(self, conn, task_ids: Iterable[str]) -> dict[str, DeliveryEvidence]:
         """Evidence whose identity and target still hold on *conn*.
@@ -347,7 +365,7 @@ class PrerequisiteView:
         return self.siblings.snapshots + self.default.snapshots
 
     async def fresh(self):
-        return await self.siblings.fresh() and await self.default.fresh()
+        return await DeliveryView(snapshots=self.snapshots).fresh()
 
     async def verified_on(self, conn, ids):
         return await self.siblings.verified_on(conn, ids)
@@ -495,8 +513,9 @@ class DeliveryObserver:
 
     Each repository gets an observer clone beside, never inside, the
     publisher's retained checkout. The reduced observer fetches once per
-    repository and shares its refs across targets; a read-only surface may reuse a snapshot within
-    :data:`READ_MAX_AGE`, and no evaluated answer outlives its request.
+    repository and shares its refs across targets. A read-only surface may reuse
+    a snapshot within :data:`READ_MAX_AGE`. Reduced diagnostics consume only
+    existing OID-bound proofs; guarded writers still fetch and recheck inputs.
     """
 
     #: Attempts to take a view whose targets did not move while it was evaluated.
@@ -585,7 +604,7 @@ class DeliveryObserver:
         if self.truth is not None:
             from src.integration.git_truth import GitTruthSnapshot
 
-            return GitTruthSnapshot(self.truth, snapshot)
+            return GitTruthSnapshot(self.truth, snapshot, cached_only=cached_only)
         return snapshot
 
     async def _evaluate(self, target: DeliveryTarget, task_ids: set[str], max_age: float = 0.0,
@@ -607,7 +626,7 @@ class DeliveryObserver:
                     ).where(task_branch_origins.c.task_id.in_(task_ids),
                             task_branch_origins.c.repository_id == target.repository_id,
                             task_branch_origins.c.retired_at.is_(None)))).all())
-                truth = GitTruthSnapshot(self.truth, snapshot)
+                truth = GitTruthSnapshot(self.truth, snapshot, cached_only=cached_only)
                 evaluated = {tid: await truth.is_delivered(request, source_base=bases.get(tid))
                              for tid, request in requests.items()}
             else:
@@ -660,10 +679,11 @@ class DeliveryObserver:
         return PrerequisiteView(
             await self.observe(siblings, max_age=max_age, cached_only=cached_only),
             default,
-            await self._parent_containment(rows, default),
+            await self._parent_containment(rows, default, cached_only=cached_only),
         )
 
-    async def _parent_containment(self, rows, default) -> dict[str, dict[str, bool]]:
+    async def _parent_containment(self, rows, default, *, cached_only=False
+                                ) -> dict[str, dict[str, bool]]:
         """Whether each cross-parent prerequisite is already in the dependent's epic.
 
         A child whose epic branch already contains every cross-epic
@@ -695,7 +715,8 @@ class DeliveryObserver:
                 continue
             parent_ref = "refs/heads/" + branch.removeprefix("refs/heads/")
             try:
-                observed = GitTruthSnapshot(self.truth, snapshot).for_target(parent_ref)
+                observed = GitTruthSnapshot(self.truth, snapshot,
+                                            cached_only=cached_only).for_target(parent_ref)
                 contained = await observed.is_delivered(
                     replace(proof.request, target_ref=parent_ref),
                     source_base=getattr(proof, "source_base", None),

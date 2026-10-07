@@ -243,10 +243,10 @@ async def project_delivered(db, ids, *, project_id, repository_id, target_ref, s
         if task_id in delivered or request.task_status != "COMPLETED":
             continue
         try:
-            record = await provenance.read_completion(CompletionIdentity(
+            record = await snapshot.read_completion(CompletionIdentity(
                 project_id, repository_id, task_id,
                 request.completion_id or request.legacy_generation,
-            ), refs=observed.source_heads)
+            ))
             if record is None:
                 continue
             source = record["source_oid"]

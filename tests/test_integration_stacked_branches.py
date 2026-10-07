@@ -731,6 +731,18 @@ async def test_stack_view_revalidates_incarnation_and_remote(stack):
     assert not await view.fresh()
 
 
+async def test_stack_withholds_prerequisite_when_local_object_validation_fails(stack, monkeypatch):
+    observer = stack.service.observer
+    view = await observe_stacks(observer, "p", task_id="child")
+    assert set(view.proofs) == {"first"}
+    observer.truth._objects.clear()
+    run = AsyncMock(side_effect=OSError("observer store is unreadable"))
+    monkeypatch.setattr(observer.git, "arun_git_result", run)
+    unavailable = await observe_stacks(observer, "p", task_id="child", snapshot=view.snapshot)
+    assert unavailable.proofs == {}
+    run.assert_awaited()
+
+
 async def test_batch_orders_prerequisite_before_dependent_and_checks_stale_stack(stack):
     target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
     batches = DatabaseBatches(stack.db)
