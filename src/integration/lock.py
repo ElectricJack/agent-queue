@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import math
 import time
 import uuid
@@ -21,13 +22,14 @@ from dataclasses import dataclass
 from sqlalchemy import func, insert, select, update
 
 from src.database.tables import integration_branch_owners as owners
-from src.database.tables import sessions, tasks
+from src.database.tables import sessions, task_metadata, tasks
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitError, GitManager, RemoteRefState
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnershipError, StaleFence
 
 DEFAULT_TTL_SECONDS = 480.0
+RENEWAL_MARGIN_SECONDS = DEFAULT_TTL_SECONDS / 3
 CRITICAL_SECTION_SECONDS = 30.0
 
 
@@ -226,13 +228,16 @@ class BranchLock:
             row = await self.lock_on(owned, fence.target)
             if not managed(row) or row["holder"] != fence.owner_id or row["fence"] != fence.token:
                 raise StaleFence("ref lease holder or fence is stale")
+            if row["expires_at"] is None:
+                raise StaleFence("ref lease expired")
             if (
-                row["expires_at"] is not None
-                and row["expires_at"] <= self.clock()
+                row["expires_at"] <= self.clock()
                 and (not allow_expired or session_id is None or row.get("session_id") != session_id)
             ):
                 raise StaleFence("ref lease expired")
-            expiry = max(row["expires_at"] or self.clock(), self.clock() + ttl_seconds)
+            expiry = max(row["expires_at"], self.clock() + ttl_seconds)
+            if expiry == row["expires_at"]:
+                return expiry
             await owned.execute(
                 update(owners)
                 .where(owners.c.id == row["id"])
@@ -346,7 +351,8 @@ async def renew_session_leases_on(db, conn, session_id: str, observed_at: float)
     if (
         session is None
         or not session["task_id"]
-        or session["state"] not in {"starting", "running", "draining"}
+        or session["state"] not in {"starting", "running"}
+        or session["desired_state"] != "running"
     ):
         return
     task = (
@@ -360,6 +366,13 @@ async def renew_session_leases_on(db, conn, session_id: str, observed_at: float)
         or (session["lifecycle"] == "pool" and session["last_claim_epoch"] != task["claim_epoch"])
         or task["status"] not in {"ASSIGNED", "IN_PROGRESS"}
     ):
+        return
+    rungs = await conn.scalar(
+        select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task["id"], task_metadata.c.key == "stall_nudges"
+        )
+    )
+    if int(json.loads(rungs) if rungs is not None else 0) > 1:
         return
     lock = BranchLock(db)
     for row in await session_leases_on(conn, session_id, task_id=task["id"]):
@@ -377,13 +390,28 @@ async def renew_session_leases_on(db, conn, session_id: str, observed_at: float)
             pass
 
 
-async def renew_session_leases_on_liveness(db, conn, session_id: str, observed_at: float) -> None:
-    """Renew leases for a live session based on process liveness, without updating last_activity.
+async def renew_session_leases_on_liveness(
+    db, conn, session_id: str, observed_at: float, *, renew_until: float
+) -> None:
+    """Give a current live claim bounded runway without inventing activity.
 
-    This is called when the reconciler observes the process is alive but there
-    has been no transcript/pane activity. It uses the current time as the
-    observed_at timestamp to grant a full TTL from now.
+    Read expiry before taking locks: ordinary ticks with ample runway do not
+    lock the session or write the lease. Recheck claim and stop intent under
+    the session lock before renewing a near-expiry or expired lease.
     """
+    lock = BranchLock(db)
+    now = lock.clock()
+    ttl = min(observed_at + DEFAULT_TTL_SECONDS, renew_until) - now
+    if ttl <= 0:
+        return
+    candidates = [
+        row for row in await session_leases_on(conn, session_id)
+        if row["expires_at"] is not None
+        and row["expires_at"] <= now + RENEWAL_MARGIN_SECONDS
+        and row["expires_at"] < min(observed_at + DEFAULT_TTL_SECONDS, renew_until)
+    ]
+    if not candidates:
+        return
     session = (
         (await conn.execute(select(sessions).where(sessions.c.id == session_id).with_for_update()))
         .mappings()
@@ -392,7 +420,8 @@ async def renew_session_leases_on_liveness(db, conn, session_id: str, observed_a
     if (
         session is None
         or not session["task_id"]
-        or session["state"] not in {"starting", "running", "draining"}
+        or session["state"] not in {"starting", "running"}
+        or session["desired_state"] != "running"
     ):
         return
     task = (
@@ -407,17 +436,27 @@ async def renew_session_leases_on_liveness(db, conn, session_id: str, observed_a
         or task["status"] not in {"ASSIGNED", "IN_PROGRESS"}
     ):
         return
-    lock = BranchLock(db)
-    for row in await session_leases_on(conn, session_id, task_id=task["id"]):
+    rungs = await conn.scalar(
+        select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task["id"], task_metadata.c.key == "stall_nudges"
+        )
+    )
+    if int(json.loads(rungs) if rungs is not None else 0) > 1:
+        return
+    for row in candidates:
+        if row["holder"] != task["id"]:
+            continue
         fence = Fence(
             target=BranchKey(repository_id=row["repository_id"], branch=row["ref"]),
             owner_id=row["holder"],
             token=row["fence"],
         )
         try:
-            ttl = observed_at + DEFAULT_TTL_SECONDS - lock.clock()
+            ttl = min(observed_at + DEFAULT_TTL_SECONDS, renew_until) - lock.clock()
             if ttl > 0:
-                await lock.renew(fence, ttl_seconds=ttl, conn=conn, session_id=session_id, allow_expired=True)
+                await lock.renew(
+                    fence, ttl_seconds=ttl, conn=conn, session_id=session_id, allow_expired=True
+                )
         except StaleFence:
             pass
 

@@ -1022,10 +1022,7 @@ class SessionReconciler:
             if alive:
                 if row.task_id:
                     try:
-                        async with self.db.immediate() as conn:
-                            from src.integration.lock import renew_session_leases_on_liveness
-
-                            await renew_session_leases_on_liveness(self.db, conn, row.id, now)
+                        await self._renew_live_session_leases(row, now)
                     except Exception:
                         logger.debug("liveness lease renewal failed for %s", row.id, exc_info=True)
                 continue
@@ -1062,6 +1059,38 @@ class SessionReconciler:
                 opencode=self._runs_opencode(row),
             )
             await self._apply_verdict(provider, row, task, verdict, now)
+
+    async def _renew_live_session_leases(self, row: SessionRecord, now: float) -> None:
+        """Process existence grants only the first stall interval and backoff.
+
+        HOLD/REPORT do not spend rungs, so the activity-based deadline is
+        also necessary. A durable wait has its own finite deadline; question
+        waits and drain intent do not grant process-only authority.
+        """
+        if row.state not in {"starting", "running"} or row.desired_state != "running":
+            return
+        if await self._waiting_for_question(row, now):
+            return
+        from src.integration.lock import DEFAULT_TTL_SECONDS, renew_session_leases_on_liveness
+
+        waiting, resumed = await self._wait_lease(row, now)
+        if waiting:
+            task = await self.db.get_task(row.task_id)
+            wait = await self.db.blocking_wait_for(row, task.claim_epoch, now) if task else None
+            if wait is None:
+                return
+            renew_until = wait["deadline_at"]
+        else:
+            last = max(row.last_activity or row.started_at or 0.0, resumed)
+            renew_until = (
+                last
+                + max(DEFAULT_TTL_SECONDS, float(self.sessions_config.lease_ttl_seconds))
+                + float(self.sessions_config.stall_backoff_seconds)
+            )
+        async with self.db.immediate() as conn:
+            await renew_session_leases_on_liveness(
+                self.db, conn, row.id, now, renew_until=renew_until
+            )
 
     async def _claim_starting_reconciliation(self, row: SessionRecord, now: float) -> bool:
         """Fence an enabled stale STARTING row, or defer a concurrent launch."""
@@ -2042,14 +2071,11 @@ class SessionReconciler:
                         and fresh.claim_phase == row.claim_phase
                     ):
                         task = await self.db.get_task(row.task_id)
-                        if (
-                            task is not None
-                            and task.status is TaskStatus.IN_PROGRESS
-                            and await self._exit_usage_limit_screen(
+                        if task is not None and task.status is TaskStatus.IN_PROGRESS:
+                            if await self._exit_usage_limit_screen(
                                 provider, row, task, now, screen=screen
-                            )
-                        ):
-                            continue
+                            ):
+                                continue
             last = max(row.last_activity or row.started_at or 0.0, resumed)
             wedged: OpenCodeActivity | None = None
             if now - last <= ttl:

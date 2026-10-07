@@ -13,15 +13,18 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import update
 
 from src.config import AppConfig, DatabaseConfig
 from src.database import Database
-from src.database.tables import task_branch_origins
-from src.integration.lock import BranchLock
+from src.database.tables import task_branch_origins, tasks
+from src.integration.lock import DEFAULT_TTL_SECONDS, RENEWAL_MARGIN_SECONDS, BranchLock
 from src.integration.models import BranchKey, Fence
-from src.integration.ownership import BranchOwnership
+from src.integration.ownership import BranchOwnership, StaleFence
 from src.models import (
     Agent,
     AgentState,
@@ -1728,45 +1731,173 @@ class TestStallLadder:
         await reconciler.tick(now=NOW)
         assert provider.sent_nudges == []
 
-    async def test_expired_lease_renewed_on_process_liveness(self, db, provider, reconciler, config):
-        """A lease expired due to silent long tool call is renewed when process is alive.
 
-        Simulates a worker running pytest --splits 8 --group 6 | tail -100 for
-        >8 minutes with no output. The lease expires (DEFAULT_TTL_SECONDS=480),
-        but the process is still alive. The reconciler's _step_exits should
-        renew the lease based on process liveness.
-        """
-        # Use a short TTL for the test
-        config.sessions.lease_ttl_seconds = 10
-        await _task(db)
-        row = await _session(
-            db, provider, started_at=NOW - 5000, last_activity=NOW - 20
+class TestLiveRefLeases:
+    @pytest.fixture
+    async def lease(self, db, provider, tmp_path, monkeypatch):
+        """One clock for acquisition, attachment, renewal and tick observations."""
+        clock = SimpleNamespace(now=NOW)
+        lock = BranchLock(db, clock=lambda: clock.now)
+        monkeypatch.setattr("src.integration.lock.BranchLock", lambda db, **kw: lock)
+        row = await _claimed_pool_session(
+            db, provider, tmp_path, started_at=NOW, last_activity=NOW
         )
-        # Create a ref lease for the session/task
+        provider.sessions[row.name].activity = NOW
         target = BranchKey(repository_id="repo", branch="aq/test")
-        lock = BranchLock(db)
-        fence = await lock.acquire(target, "t1", ttl_seconds=config.sessions.lease_ttl_seconds)
-        ownership = BranchOwnership(db)
-        await ownership.attach(fence, row.id, "ws1")
+        fence = await lock.acquire(target, "t1")
+        await BranchOwnership(db, clock=lambda: clock.now).attach(fence, row.id, "ws1")
+        return SimpleNamespace(clock=clock, lock=lock, row=row, target=target, fence=fence)
 
-        # Advance time past the lease TTL (lease expired)
-        expired_at = NOW + config.sessions.lease_ttl_seconds + 1
-        # Keep process alive (don't call script_death)
-        provider.script_ready(row.name)
+    async def test_silent_ten_minute_tool_call_revives_expired_lease(
+        self, lease, db, provider, reconciler, config
+    ):
+        initial = await lease.lock.get(lease.target)
+        assert initial.expires_at == NOW + DEFAULT_TTL_SECONDS
+        lease.clock.now = NOW + 600
+        assert initial.expires_at < lease.clock.now
+        with pytest.raises(StaleFence, match="expired"):
+            await lease.lock.renew(lease.fence)
+        assert await provider.process_alive(reconciler._handle(lease.row))
 
-        # Run reconciler tick at expired_at - this calls _step_exits which
-        # should renew the lease based on process liveness
-        await reconciler.tick(now=expired_at)
+        await reconciler.tick(now=lease.clock.now)
 
-        # Verify the lease was renewed (expires_at should be in the future)
-        renewed = await lock.get(target)
-        assert renewed is not None
-        assert renewed.holder == "t1"
-        assert renewed.fence == fence.token
-        assert renewed.expires_at > expired_at
+        renewed = await lease.lock.get(lease.target)
+        assert renewed.holder == "t1" and renewed.fence == lease.fence.token
+        assert renewed.expires_at == (
+            NOW + config.sessions.lease_ttl_seconds + config.sessions.stall_backoff_seconds
+        )
+        assert renewed.expires_at > lease.clock.now
+        # Ordinary fenced publication requires unexpired authority, not revival permission.
+        async with lease.lock.exclusion(lease.fence):
+            pass
+        assert (await db.get_session(lease.row.id)).last_activity == NOW
 
-        # Verify the lease can still be used (not stale)
-        await lock.renew(fence, session_id=row.id, allow_expired=True)
+    async def test_ordinary_ticks_do_not_lock_or_write_ample_runway(
+        self, lease, reconciler, monkeypatch
+    ):
+        renew = AsyncMock(wraps=lease.lock.renew)
+        lock_on = AsyncMock(wraps=lease.lock.lock_on)
+        monkeypatch.setattr(lease.lock, "renew", renew)
+        monkeypatch.setattr(lease.lock, "lock_on", lock_on)
+        for seconds in (0, 30, DEFAULT_TTL_SECONDS - RENEWAL_MARGIN_SECONDS - 1):
+            lease.clock.now = NOW + seconds
+            await reconciler._step_exits([lease.row], lease.clock.now)
+        renew.assert_not_awaited()
+        lock_on.assert_not_awaited()
+
+        lease.clock.now += 1
+        await reconciler._step_exits([lease.row], lease.clock.now)
+        renew.assert_awaited_once()
+        lock_on.assert_awaited_once()
+        # Once authority reaches the silence deadline, even near-expiry
+        # ticks cannot extend it and must not keep locking/writing it.
+        lease.clock.now = NOW + 700
+        await reconciler._step_exits([lease.row], lease.clock.now)
+        renew.assert_awaited_once()
+        lock_on.assert_awaited_once()
+        lease.clock.now += 1
+        await reconciler._step_exits([lease.row], lease.clock.now)
+        renew.assert_awaited_once()
+        lock_on.assert_awaited_once()
+
+    @pytest.mark.parametrize("change", [{"state": "draining"}, {"desired_state": "stopped"}])
+    @pytest.mark.parametrize("seconds", [450, 600])
+    async def test_drain_does_not_renew_or_revive(
+        self, lease, db, reconciler, seconds, change
+    ):
+        before = await lease.lock.get(lease.target)
+        await db.update_session(lease.row.id, **change)
+        # Use the stale running snapshot too: the locked row must reject stop intent.
+        lease.clock.now = NOW + seconds
+        await reconciler._step_exits([lease.row], lease.clock.now)
+        await db.touch_session_activity(lease.row.id, lease.clock.now)
+        assert await lease.lock.get(lease.target) == before
+
+    @pytest.mark.parametrize("rungs", [2, 3])
+    @pytest.mark.parametrize("seconds", [450, 600])
+    async def test_later_stall_rungs_do_not_renew_or_revive(
+        self, lease, db, reconciler, rungs, seconds
+    ):
+        before = await lease.lock.get(lease.target)
+        await db.set_task_meta("t1", META_STALL_NUDGES, str(rungs))
+        lease.clock.now = NOW + seconds
+        await reconciler._step_exits([lease.row], lease.clock.now)
+        await db.touch_session_activity(lease.row.id, lease.clock.now)
+        assert await lease.lock.get(lease.target) == before
+
+    @pytest.mark.parametrize("reason", [NudgeReason.DRAFT, NudgeReason.UNREADABLE])
+    async def test_hold_and_report_have_finite_authority(
+        self, lease, db, provider, reconciler, config, bus, monkeypatch, reason
+    ):
+        provider.script_composer_refusal(lease.row.name, str(reason), kind=reason)
+        monkeypatch.setattr(
+            "src.sessions.reconciler.harness_progress", AsyncMock(return_value=("unknown", None))
+        )
+        deadline = NOW + config.sessions.lease_ttl_seconds + config.sessions.stall_backoff_seconds
+        for seconds in (600, 700, 800, 3600):
+            lease.clock.now = NOW + seconds
+            await reconciler.tick(now=lease.clock.now)
+            assert (await lease.lock.get(lease.target)).expires_at <= deadline
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) is None
+        assert (await db.get_session(lease.row.id)).state == "running"
+        with pytest.raises(StaleFence, match="expired"):
+            async with lease.lock.exclusion(lease.fence):
+                pass
+        if reason is NudgeReason.UNREADABLE:
+            assert bus.payload("task.stalled")["evidence"] == "unverified"
+
+    async def test_question_wait_does_not_grant_process_only_authority(
+        self, lease, reconciler
+    ):
+        before = await lease.lock.get(lease.target)
+        reconciler.orchestrator = SimpleNamespace(
+            agent_questions=SimpleNamespace(is_waiting=AsyncMock(return_value=True))
+        )
+        lease.clock.now = NOW + 600
+        await reconciler._step_exits([lease.row], lease.clock.now)
+        assert await lease.lock.get(lease.target) == before
+
+    async def test_durable_wait_renews_only_until_its_explicit_deadline(
+        self, lease, db, reconciler
+    ):
+        await db.create_task(Task(id="producer", project_id="p1", title="Producer", description=""))
+        await db.register_agent_wait(
+            identity=dict(
+                session_id=lease.row.id, instance_token=lease.row.instance_token,
+                project_id="p1", claim_epoch=lease.row.last_claim_epoch, elevated=False,
+            ),
+            kind="task", match={"task_id": "producer"}, deadline_at=NOW + 1200,
+            idempotency_key="ref-lease-wait", now=NOW,
+        )
+        for seconds, expiry in ((600, 1080), (1000, 1200), (1201, 1200)):
+            lease.clock.now = NOW + seconds
+            await reconciler._step_exits([lease.row], lease.clock.now)
+            assert (await lease.lock.get(lease.target)).expires_at == NOW + expiry
+        with pytest.raises(StaleFence, match="expired"):
+            async with lease.lock.exclusion(lease.fence):
+                pass
+
+    @pytest.mark.parametrize("displaced", ["claim", "assignment", "task_status", "takeover"])
+    async def test_displaced_claim_cannot_revive(self, lease, db, reconciler, displaced):
+        lease.clock.now = NOW + 600
+        if displaced == "claim":
+            await db.update_session(lease.row.id, last_claim_epoch=lease.row.last_claim_epoch + 1)
+        elif displaced == "assignment":
+            async with db.immediate() as conn:
+                await conn.execute(update(tasks).where(tasks.c.id == "t1").values(
+                    assigned_agent_id=None
+                ))
+        elif displaced == "task_status":
+            await db.transition_task("t1", TaskStatus.PAUSED)
+        else:
+            successor = await lease.lock.acquire(lease.target, "successor")
+            assert successor.token == lease.fence.token + 1
+        before = await lease.lock.get(lease.target)
+        await reconciler._step_exits([lease.row], lease.clock.now)
+        assert await lease.lock.get(lease.target) == before
+        with pytest.raises(StaleFence):
+            async with lease.lock.exclusion(lease.fence):
+                pass
 
 # ---------------------------------------------------------------------------
 # Stall ladder: an unreadable composer is not a human

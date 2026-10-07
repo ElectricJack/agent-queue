@@ -8333,6 +8333,9 @@
     },
     "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._episode_completion_token": {
       "reason": "Reads a container's collection episode checkpoint and repair operation under the caller's lock to admit only a cancelled train episode to guarded completion; refuses a live episode."
+    },
+    "src/sessions/reconciler.py::SessionReconciler._renew_live_session_leases": {
+      "reason": "Reconciler adapter for bounded process-liveness renewal of existing ref leases; no new storage or replay authority."
     }
   },
   "exclusions": {

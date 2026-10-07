@@ -9404,6 +9404,9 @@
         109,
         114
       ]
+    },
+    "src/sessions/reconciler.py::SessionReconciler._renew_live_session_leases": {
+      "reason": "Reconciler adapter for bounded process-liveness renewal of existing ref leases; no new storage or replay authority."
     }
   },
   "shared_state": {
