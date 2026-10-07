@@ -30,6 +30,7 @@ from src.database.tables import (
     integration_check_evidence,
     integration_legacy_deliveries,
     integration_review_evidence,
+    integration_source_ci,
     projects,
     repos,
     task_branch_origins,
@@ -147,6 +148,77 @@ async def _pending_tasks(conn, project_id: str, repository_id: str, *, limit: in
         .order_by(tasks.c.updated_at.desc(), tasks.c.id).limit(limit)
     )
     return list(newest.scalars().all())
+
+
+def _origin_heads(observed, origins) -> dict[str, str | None]:
+    """Each live origin's fetched branch head, from the visit's pinned refs."""
+    heads = {}
+    for origin in origins:
+        head = observed.source_heads.get(
+            "refs/remotes/origin/" + origin["branch_name"].removeprefix("refs/heads/")
+        ) if origin["branch_name"] else None
+        heads[origin["task_id"]] = head if is_valid_git_oid(head or "") else None
+    return heads
+
+
+def _stack_snapshot_digest(observed, origins, delivered) -> str:
+    """One digest of everything a containment answer depends on.
+
+    Cached answers are keyed by it, so a reused answer is only ever the answer
+    the same base, target head, ref snapshot, live origins and delivered set
+    would give again.
+    """
+    digest = hashlib.sha256()
+    for ref, oid in sorted(observed.source_heads.items()):
+        digest.update(f"{ref}={oid}\n".encode())
+    for origin in sorted(origins, key=lambda row: row["task_id"]):
+        digest.update(
+            f"{origin['task_id']}={origin['branch_name']}={origin['base_sha']}\n".encode()
+        )
+    digest.update(("delivered=" + ",".join(sorted(delivered))).encode())
+    return digest.hexdigest()
+
+
+def _reaches(edges, start, goal) -> bool:
+    """Whether declared prerequisites already order *start* after *goal*."""
+    remaining, seen = [start], {start}
+    while remaining:
+        current = remaining.pop()
+        if current == goal:
+            return True
+        for need in edges.get(current, ()):
+            if need not in seen:
+                seen.add(need)
+                remaining.append(need)
+    return False
+
+
+async def _source_ci_prerequisites_on(conn, ids, bases, *, repository_id) -> dict[str, set[str]]:
+    """Repair delegates whose recorded base is their bound source's exact head.
+
+    A source-CI repair must merge the exact red source head above its own base,
+    so its origin records that head as the base: a stack the daemon itself
+    declared. Reporting it as an undeclared stack would refuse a repair of a
+    source that cannot go green until the repair lands, which is the deadlock
+    the delivery order below exists to prevent. Only a binding whose recorded
+    base is that exact head counts, and only for this repository.
+    """
+    candidates = {task_id for task_id in ids if task_id in bases}
+    if not candidates:
+        return {}
+    rows = (await conn.execute(select(
+        integration_source_ci.c.repair_task_id, integration_source_ci.c.task_id,
+        integration_source_ci.c.source_head,
+    ).where(
+        integration_source_ci.c.repository_id == repository_id,
+        integration_source_ci.c.repair_task_id.in_(candidates),
+        integration_source_ci.c.repair_task_id.is_not(None),
+    ))).all()
+    bindings: dict[str, set[str]] = {}
+    for repair_id, source_id, source_head in rows:
+        if source_id != repair_id and bases.get(repair_id or "") == source_head:
+            bindings.setdefault(repair_id, set()).add(source_id)
+    return bindings
 
 
 async def _epic_branches_on(conn, ids):
@@ -308,8 +380,15 @@ class DatabaseTargets:
 class DatabaseBatches:
     """The open batch of a target, frozen from exact undelivered completions."""
 
+    #: Bound the stacked-base containment cache. Its key pins the exact ref
+    #: snapshot, target and live origins, so an entry is only ever a re-read of
+    #: the same answer; the bound keeps a long-lived process from growing with
+    #: the repository's whole branch history.
+    STACK_CACHE_LIMIT = 256
+
     def __init__(self, db, *, limit: int = MEMBER_LIMIT, clock: Callable[[], float] = time.time):
         self.db, self.limit, self.clock = db, limit, clock
+        self._stack_scan: dict[tuple[str, str, str], tuple[frozenset[str], frozenset[str]]] = {}
 
     async def open_batch(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, service: BatchService
@@ -420,6 +499,9 @@ class DatabaseBatches:
                        task_dependencies.c.dep_type == "blocks")
             )).all():
                 edges.setdefault(task_id, set()).add(needs)
+            repair_bindings = await _source_ci_prerequisites_on(
+                conn, ids, bases, repository_id=target.repository_id,
+            )
         # A declared prerequisite can be reached through another prerequisite.
         # Keep that ordering when the intervening task is already delivered.
         direct_edges = edges
@@ -432,6 +514,15 @@ class DatabaseBatches:
                     needs.add(need)
                     remaining.extend(direct_edges.get(need, ()))
             edges[task_id] = needs
+        # A daemon-written source-CI repair binding is a declared stack too, so
+        # the repair lands with its source in one batch instead of waiting for a
+        # source that cannot go green without the repair. An edge contradicting
+        # the declared order is left alone: the guard then names the real
+        # blocker instead of a cycle freezing nothing.
+        for repair_id, sources in repair_bindings.items():
+            for source_id in sorted(sources):
+                if not _reaches(edges, source_id, repair_id):
+                    edges.setdefault(repair_id, set()).add(source_id)
         requests = await load_delivery_requests(
             self.db, ids, repository_id=target.repository_id, target_ref=target.target_ref,
             reduced=True,
@@ -506,7 +597,8 @@ class DatabaseBatches:
         A merge of ``base..source`` retains source ancestry even when the target
         never received the base's tree changes. A later target sync can therefore
         delete those changes from their owning branch. Only an explicit blocks
-        prerequisite authorizes a base from another task's unpublished history.
+        prerequisite -- or the daemon's own source-CI repair binding, which is
+        one -- authorizes a base from another task's unpublished history.
         Use the visit's pinned OIDs, including branches still being worked on.
         """
         observed = snapshot.observation
@@ -539,30 +631,32 @@ class DatabaseBatches:
         for member in members.values():
             if member.base_sha in bases and bases[member.base_sha] is None:
                 block(member, "stack_ancestry_unknown", "source base ancestry is unavailable")
-        for origin in origins:
-            branch = origin["branch_name"]
-            head = observed.source_heads.get(
-                "refs/remotes/origin/" + branch.removeprefix("refs/heads/")
-            ) if branch else None
-            if not is_valid_git_oid(head or "") or head == origin["base_sha"]:
+        heads = _origin_heads(observed, origins)
+        # One containment query per off-target base answers for every origin at
+        # once, so an unrelated live branch costs this visit no git call and an
+        # unreadable one cannot withhold a member that never needed it.
+        published = {}
+        for base in sorted(bases):
+            if bases[base] is not None:
+                published[base] = await self._base_publishers(
+                    observed, origins, heads, base, delivered,
+                )
+        for member in members.values():
+            if member.base_sha not in bases or bases[member.base_sha] is None:
                 continue
-            result = await observed.git.arun_git_result([
-                "--no-replace-objects", "rev-list", head, "^" + origin["base_sha"],
-                "^" + snapshot.target_oid,
-            ], cwd=observed.store)
-            if result.returncode:
-                for member in members.values():
-                    if member.base_sha in bases and member.task_id != origin["task_id"]:
-                        block(member, "stack_ancestry_unknown",
-                              "foreign task history is unavailable",
-                              prerequisite_task_id=origin["task_id"], prerequisite_head_sha=head)
+            scan = published.get(member.base_sha)
+            if scan is None:
+                block(member, "stack_ancestry_unknown",
+                      "foreign task history is unavailable for this source base")
                 continue
-            foreign = set(result.stdout.split()) & bases.keys()
-            for member in members.values():
-                if member.base_sha not in foreign or member.task_id == origin["task_id"]:
-                    continue
-                prerequisite = origin["task_id"]
-                if prerequisite in edges.get(member.task_id, set()):
+            holding, publishers = scan[0] - {member.task_id}, scan[1] - {member.task_id}
+            if not publishers:
+                continue
+            # A declared prerequisite holding the base publishes it, so a
+            # sibling which merely merged that branch is not the task to name.
+            declared = sorted(holding & edges.get(member.task_id, set()))
+            if declared:
+                for prerequisite in declared:
                     available = prerequisite in members
                     if member.task_id in (frozen_ids or ()):
                         available = available and prerequisite in frozen_ids
@@ -570,13 +664,64 @@ class DatabaseBatches:
                         block(member, "stack_prerequisite_pending",
                               f"stack prerequisite {prerequisite} is neither delivered "
                               "nor available in this batch",
-                              prerequisite_task_id=prerequisite, prerequisite_head_sha=head)
-                    continue
-                block(member, "undeclared_stack_base",
-                      f"source base includes unpublished work from task {origin['task_id']}; "
-                      "declare a blocks prerequisite or rebuild from the delivery target",
-                      prerequisite_task_id=origin["task_id"], prerequisite_head_sha=head)
+                              prerequisite_task_id=prerequisite,
+                              prerequisite_head_sha=heads.get(prerequisite))
+                continue
+            prerequisite = min(publishers)
+            block(member, "undeclared_stack_base",
+                  f"source base includes unpublished work from task {prerequisite}; "
+                  "declare a blocks prerequisite or rebuild from the delivery target",
+                  prerequisite_task_id=prerequisite,
+                  prerequisite_head_sha=heads.get(prerequisite),
+                  prerequisite_task_ids=sorted(publishers))
         return unsafe
+
+    async def _base_publishers(self, observed, origins, heads, base, delivered):
+        """Live task branches that hold this off-target base, and those that publish it.
+
+        ``holding`` is every live branch whose fetched head contains the base;
+        ``publishers`` drops the ones whose own fork point already had it,
+        because such a base is not their unpublished work. Retired, unmaterialized
+        and delivered origins never take part: their content already reached a
+        target, so they can neither hold a base this visit must refuse nor cost
+        it a probe. ``None`` means the ancestry this base needs was unreadable,
+        and withholds only the members that share that base.
+        """
+        live = tuple(origins)
+        key = (base, observed.target_oid or "", _stack_snapshot_digest(observed, live, delivered))
+        cached = self._stack_scan.get(key)
+        if cached is not None:
+            return cached
+        result = await observed.git.arun_git_result([
+            "--no-replace-objects", "for-each-ref", "--format=%(refname)",
+            "--contains", base, "refs/remotes/origin/",
+        ], cwd=observed.store, env={"LC_ALL": "C"})
+        if result.returncode:
+            return None
+        containing = set(result.stdout.split())
+        holding = {
+            origin["task_id"] for origin in live
+            if heads.get(origin["task_id"]) and origin["task_id"] not in delivered
+            and "refs/remotes/origin/" + origin["branch_name"].removeprefix(
+                "refs/heads/") in containing
+        }
+        publishers = set()
+        for origin in live:
+            if origin["task_id"] not in holding:
+                continue
+            publishes = await observed.git.ais_ancestor(
+                observed.store, base, origin["base_sha"], strict=True,
+            )
+            if publishes is None:
+                return None
+            if publishes:
+                continue
+            publishers.add(origin["task_id"])
+        answer = (frozenset(holding), frozenset(publishers))
+        if len(self._stack_scan) >= self.STACK_CACHE_LIMIT:
+            self._stack_scan.clear()
+        self._stack_scan[key] = answer
+        return answer
 
     async def delivered(self, target, snapshot, ids):
         async with self.db._engine.connect() as conn:
