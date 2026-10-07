@@ -1995,16 +1995,26 @@ class HierarchyQueryMixin:
         )
         hits = [r[0] for r in (await conn.execute(stmt)).fetchall()]
         for cid in hits:
+            settleable, completion_token = await self._episode_completion_token(conn, cid)
+            if not settleable:
+                continue
             # _apply_transition seeds the container's own parent back into
             # this method at depth + 1, so grandparents are handled by
-            # recursion; merge everything it settled and flipped.
-            res = await self._apply_transition(
-                conn,
-                cid,
-                TaskStatus.COMPLETED,
-                context="subtasks_completed",
-                _settle_depth=depth,
-            )
+            # recursion; merge everything it settled and flipped. A refusal
+            # skips this container rather than failing the caller's write.
+            try:
+                async with conn.begin_nested():
+                    res = await self._apply_transition(
+                        conn,
+                        cid,
+                        TaskStatus.COMPLETED,
+                        context="subtasks_completed",
+                        _settle_depth=depth,
+                        _integration_completion_token=completion_token,
+                    )
+            except HierarchyError as exc:
+                logger.warning("Container %s not settled: %s", cid, exc)
+                continue
             await self._merge_settlement(conn, cid, res, result)
         stale = (
             select(tasks.c.id)
@@ -2053,6 +2063,52 @@ class HierarchyQueryMixin:
         result.flipped |= res.flipped
         result.ready.extend(res.ready)
 
+    async def _episode_completion_token(self, conn, cid: str):
+        """Whether *cid* may settle, and the completion token it needs.
+
+        A managed parent completes only through verified integration. The one
+        exception settlement admits is a train project whose legacy collection
+        episode was cancelled: that episode owns nothing, and the git-first
+        train never runs its collector. Re-checked on the caller's (locked)
+        connection; anything else with an episode is refused.
+        """
+        episode = (
+            await conn.execute(
+                select(task_integration_checkpoints.c.episode_id).where(
+                    task_integration_checkpoints.c.task_id == cid,
+                    task_integration_checkpoints.c.episode_id.is_not(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if episode is None:
+            return True, None
+        mode = (
+            await conn.execute(
+                select(projects.c.hierarchical_integration_mode)
+                .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
+                .where(tasks.c.id == cid)
+            )
+        ).scalar_one_or_none()
+        if mode != "train":
+            # Hierarchy keeps its own collector; only it completes the parent.
+            return True, None
+        live = (
+            await conn.execute(
+                select(integration_repair_operations.c.id)
+                .where(
+                    integration_repair_operations.c.parent_task_id == cid,
+                    integration_repair_operations.c.episode_id == episode,
+                    integration_repair_operations.c.state != "cancelled",
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if live is not None:
+            return False, None
+        from src.database.queries.task_queries import _INTEGRATION_COMPLETION_TOKEN
+
+        return True, _INTEGRATION_COMPLETION_TOKEN
+
     async def _settle_stale_container(
         self, conn, cid: str, *, depth: int
     ) -> TransitionResult | None:
@@ -2082,44 +2138,9 @@ class HierarchyQueryMixin:
                     return None
             except (TypeError, ValueError, AttributeError):
                 pass
-        # A managed parent completes only through verified integration. The
-        # one exception the stale leg admits is a train project whose legacy
-        # collection episode was cancelled: that episode owns nothing, and the
-        # git-first train never runs its collector. Re-check it under the row
-        # lock and complete with the integration token; refuse anything else.
-        completion_token = None
-        episode = (
-            await conn.execute(
-                select(task_integration_checkpoints.c.episode_id).where(
-                    task_integration_checkpoints.c.task_id == cid,
-                    task_integration_checkpoints.c.episode_id.is_not(None),
-                )
-            )
-        ).scalar_one_or_none()
-        if episode is not None:
-            mode = (
-                await conn.execute(
-                    select(projects.c.hierarchical_integration_mode)
-                    .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
-                    .where(tasks.c.id == cid)
-                )
-            ).scalar_one_or_none()
-            live = (
-                await conn.execute(
-                    select(integration_repair_operations.c.id)
-                    .where(
-                        integration_repair_operations.c.parent_task_id == cid,
-                        integration_repair_operations.c.episode_id == episode,
-                        integration_repair_operations.c.state != "cancelled",
-                    )
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            if mode != "train" or live is not None:
-                return None
-            from src.database.queries.task_queries import _INTEGRATION_COMPLETION_TOKEN
-
-            completion_token = _INTEGRATION_COMPLETION_TOKEN
+        settleable, completion_token = await self._episode_completion_token(conn, cid)
+        if not settleable:
+            return None
         await conn.execute(
             delete(task_metadata).where(
                 task_metadata.c.task_id == cid,
