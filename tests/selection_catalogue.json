@@ -1429,7 +1429,7 @@
       ]
     }
   },
-  "digest": "sha256:45a721d2a3108e24a8b6d5fef79a458e2f400d24f1cda54f6574928718b82dfa",
+  "digest": "sha256:cfa1c0cc1b124a858bacdfa1ba39fd350a4a967b02bc862b8231541cb4efb172",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7642,6 +7642,7 @@
         "src.integration.cutover",
         "src.integration.outbox",
         "src.integration.records",
+        "src.integration.removal_guard",
         "src.integration.service",
         "src.integration.shadow",
         "src.integration.train",

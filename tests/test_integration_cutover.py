@@ -417,6 +417,42 @@ async def test_promotion_cutover_reverse_restores_exact_prior_binding_and_scoped
     assert reversed_["plan"]["workflow_branches"] == changed["plan"]["workflow_branches"]
 
 
+async def test_cutover_and_reverse_preserve_train_archive_delivery_authorization(cutover_world):
+    from src.database.tables import task_delivery_receipts
+    from src.integration.removal_guard import (
+        assert_integration_permits_removal,
+        undelivered_removal_holders,
+    )
+
+    db, service, _port = cutover_world
+    # Without the root receipt matching the current default, this collected
+    # child makes the archive guard return collected_not_promoted.
+    async with db.immediate() as conn:
+        await conn.execute(insert(task_delivery_receipts).values(
+            id="collected-child", domain_key="collected-child", source_task_id="child",
+            target_task_id="epic", repository_id="repo", target_branch="aq/epic/epic",
+            disposition="code", created_at=0))
+
+    async def assert_archive_authorized(default):
+        async with db._engine.connect() as conn:
+            branch, holders = await undelivered_removal_holders(
+                conn, root_id="epic", ids=["epic", "child"], project_id="p", mode="train")
+            assert (branch, holders) == (default, [])
+            await assert_integration_permits_removal(
+                db, conn, root_id="epic", ids=["epic", "child"], project_id="p",
+                mode="train", mutation="archive")
+
+    await assert_archive_authorized("main")
+    changed = await service.run("p", FLOW, dry_run=False, expected_generation=7,
+                                operator_id="operator")
+    assert changed["outcome"] == "configured"
+    await assert_archive_authorized("dev")
+    reversed_ = await service.run("p", None, reverse=True, dry_run=False,
+                                  expected_generation=8, operator_id="operator")
+    assert reversed_["outcome"] == "configured"
+    await assert_archive_authorized("main")
+
+
 @pytest.mark.parametrize("failure", ["push", "generation", "workflow"])
 async def test_promotion_cutover_failed_preconditions_change_no_configuration(cutover_world, failure):
     from src.git.manager import GitError
