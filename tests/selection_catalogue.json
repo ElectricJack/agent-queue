@@ -5138,7 +5138,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:3a66ba3ee5e0a100ce1e8c34ccc4544cd69db9729a517063e6edd7fb35dcba44",
+      "digest": "sha256:103525f49d949b84f60f89771b2cce26da828dbd8ae7d136c50943d552285de1",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -5150,7 +5150,9 @@
         "src.sessions.provider",
         "src.sessions.spec"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "P3 end-to-end delivery integration test — supervisor-agent §5/§7/§8."
     },
     "tests/test_delivery_precondition_refusals.py": {
