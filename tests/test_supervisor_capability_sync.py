@@ -598,3 +598,33 @@ def test_existing_supervisor_gains_object_evidence_reads(data_dir):
     assert set(grants) <= set(_aq_commands(vault))
     assert Path(result.backup_path).read_text(encoding="utf-8") == stale
     assert sync_profile_capabilities(data_dir, "supervisor").status == STATUS_CURRENT
+
+
+@pytest.mark.parametrize("profile_id", ["worker-claude", "worker-codex"])
+@pytest.mark.parametrize("opt_out", [False, True])
+def test_existing_custom_worker_receives_routine_grants_without_replacing_operator_rules(
+    tmp_path, profile_id, opt_out,
+):
+    data_dir = str(tmp_path)
+    shipped = Path(shipped_profile_path(profile_id)).read_text()
+    grants = {"git_pull", "dry_run_playbook", "task_children", "task_progress", "get_git_status"}
+    stale = shipped
+    for grant in grants:
+        assert f'    "{grant}",' in shipped
+        stale = stale.replace(f'    "{grant}",\n', "")
+    stale = stale.replace('"aq_commands": [', '"aq_commands": ["operator_custom_command",', 1)
+    stale += "\n## Operator Notes\nRetain these words.\n"
+    if opt_out:
+        stale = stale.replace("---\n", "---\ncapability_sync: false\n", 1)
+    vault = Path(data_dir) / "vault" / "agent-types" / profile_id / "profile.md"
+    _write(vault, stale)
+    result = sync_profile_capabilities(data_dir, profile_id)
+    assert result.status == (STATUS_DISABLED if opt_out else STATUS_SYNCED)
+    refreshed = vault.read_text()
+    assert "Retain these words." in refreshed
+    assert "operator_custom_command" in refreshed
+    if opt_out:
+        assert refreshed == stale
+    else:
+        assert grants <= {name for names in parse_profile(refreshed).capabilities.values() for name in names}
+        assert sync_profile_capabilities(data_dir, profile_id).status == STATUS_CURRENT
