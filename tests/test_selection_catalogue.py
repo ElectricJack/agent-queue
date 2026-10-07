@@ -272,6 +272,156 @@ def test_the_generator_script_writes_and_checks(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# The named-module guard (tests/conftest.py refuses a stale entry up front)
+
+_ALPHA_AREAS = (
+    'version: 1\nareas:\n  - id: alpha\n    description: "A."\n    match: ["tests/test_a*.py"]\n'
+)
+
+
+def _catalogued_project(tmp_path: Path) -> Path:
+    root = _project(tmp_path, {"tests/test_a.py": '"""Alpha."""\nimport pytest\n'})
+    (root / cat.AREAS_PATH).write_text(_ALPHA_AREAS)
+    _write_catalogue(root, cat.load_areas(root / cat.AREAS_PATH))
+    return root
+
+
+def test_named_test_modules_takes_files_and_node_ids_under_testpaths(tmp_path):
+    root = _project(
+        tmp_path,
+        {
+            "tests/test_a.py": "",
+            "tests/sub/test_b.py": "",
+            "tests/sub/c_test.py": "",
+            "tests/helper.py": "",
+            "tests/.hidden/test_d.py": "",
+            "tests/node_modules/test_e.py": "",
+            "scripts/test_f.py": "",
+        },
+    )
+    args = [
+        "tests/test_a.py::test_x[1-2]",
+        str(root / "tests/sub/test_b.py"),
+        "./tests/sub/c_test.py::Class::test_y",
+        "tests/",
+        "tests/sub",
+        "tests/helper.py",
+        "tests/test_missing.py",
+        "tests/.hidden/test_d.py",
+        "tests/node_modules/test_e.py",
+        "scripts/test_f.py",
+    ]
+    assert discovery.named_test_modules(root, root, args) == [
+        "tests/sub/c_test.py",
+        "tests/sub/test_b.py",
+        "tests/test_a.py",
+    ]
+    assert discovery.named_test_modules(root, root / "tests", ["test_a.py", "sub"]) == [
+        "tests/test_a.py"
+    ]
+
+
+def test_stale_named_modules_is_quiet_for_current_entries(tmp_path):
+    root = _catalogued_project(tmp_path)
+    assert cat.stale_named_modules(root, ["tests/test_a.py"]) == []
+    assert cat.stale_named_modules(root, []) == []
+
+
+def test_stale_named_modules_names_an_uncatalogued_module_and_the_area_it_matches(tmp_path):
+    root = _catalogued_project(tmp_path)
+    (root / "tests/test_another.py").write_text("")
+    assert cat.stale_named_modules(root, ["tests/test_a.py", "tests/test_another.py"]) == [
+        f"tests/test_another.py: not in {cat.CATALOGUE_PATH} (area 'alpha' matches it)"
+    ]
+
+
+def test_stale_named_modules_names_a_module_no_area_matches(tmp_path):
+    root = _catalogued_project(tmp_path)
+    (root / "tests/test_b.py").write_text("")
+    assert cat.stale_named_modules(root, ["tests/test_b.py"]) == [
+        f"tests/test_b.py: matches no area in {cat.AREAS_PATH}; add it to an area's `match` globs"
+    ]
+
+
+def test_stale_named_modules_names_each_drifted_field(tmp_path):
+    root = _catalogued_project(tmp_path)
+    (root / "tests/test_a.py").write_text(
+        '"""Alpha, edited."""\nimport pytest\nfrom src.pkg import thing\n\n'
+        "@pytest.mark.slow\ndef test_x():\n    pass\n"
+    )
+    assert cat.stale_named_modules(root, ["tests/test_a.py"]) == [
+        "tests/test_a.py: catalogue entry is stale (imports, markers, summary)"
+    ]
+
+
+def test_stale_named_modules_sees_an_area_change(tmp_path):
+    root = _catalogued_project(tmp_path)
+    (root / cat.AREAS_PATH).write_text(
+        _ALPHA_AREAS + '  - id: beta\n    description: "B."\n    match: ["tests/*.py"]\n'
+    )
+    assert cat.stale_named_modules(root, ["tests/test_a.py"]) == [
+        "tests/test_a.py: catalogue entry is stale (areas)"
+    ]
+
+
+@pytest.mark.parametrize(
+    "path,text",
+    [
+        (cat.CATALOGUE_PATH, None),
+        (cat.CATALOGUE_PATH, "{not json"),
+        (cat.CATALOGUE_PATH, '{"modules": []}'),
+        (cat.CATALOGUE_PATH, '{"schema_version": 0, "generator_version": 0, "modules": {}}'),
+        (cat.AREAS_PATH, None),
+        (cat.AREAS_PATH, "version: 1\nareas: []\n"),
+    ],
+)
+def test_stale_named_modules_leaves_whole_file_faults_to_the_ratchet(tmp_path, path, text):
+    root = _catalogued_project(tmp_path)
+    (root / "tests/test_b.py").write_text("")
+    if text is None:
+        (root / path).unlink()
+    else:
+        (root / path).write_text(text)
+    assert cat.stale_named_modules(root, ["tests/test_b.py"]) == []
+
+
+def test_stale_named_modules_message_says_what_to_run_and_commit():
+    message = cat.stale_named_modules_message(["tests/test_b.py: drifted"])
+    assert "  - tests/test_b.py: drifted" in message
+    assert "python scripts/generate-selection-catalogue.py" in message
+    assert cat.CATALOGUE_PATH in message and cat.AREAS_PATH in message
+    assert "tests/test_generated_artifacts.py" in message
+
+
+def test_conftest_refuses_a_named_module_with_a_stale_entry(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tests.conftest import _refuse_stale_selection_catalogue
+
+    monkeypatch.delenv("CI", raising=False)
+    root = _catalogued_project(tmp_path)
+    (root / "tests/test_another.py").write_text("")
+
+    def config(*args: str, **extra) -> SimpleNamespace:
+        return SimpleNamespace(
+            rootpath=root,
+            invocation_params=SimpleNamespace(dir=root),
+            args=list(args),
+            option=SimpleNamespace(pyargs=extra.pop("pyargs", False)),
+            **extra,
+        )
+
+    with pytest.raises(pytest.UsageError, match="tests/test_another.py: not in"):
+        _refuse_stale_selection_catalogue(config("tests/test_another.py::test_x"))
+    _refuse_stale_selection_catalogue(config("tests/"))
+    _refuse_stale_selection_catalogue(config("tests/test_a.py"))
+    _refuse_stale_selection_catalogue(config("tests/test_another.py", workerinput={}))
+    _refuse_stale_selection_catalogue(config("tests/test_another.py", pyargs=True))
+    monkeypatch.setenv("CI", "true")
+    _refuse_stale_selection_catalogue(config("tests/test_another.py"))
+
+
+# --------------------------------------------------------------------------
 # Rules and policy
 
 
