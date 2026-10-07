@@ -142,7 +142,8 @@ class StackView:
         if self.cached_only and missing:
             return False
         try:
-            if await snapshot.git.aget_remote_url(snapshot.store) != snapshot.repository_url:
+            if (not self.cached_only and
+                    await snapshot.git.aget_remote_url(snapshot.store) != snapshot.repository_url):
                 return False
             observed = await snapshot.git.als_remote_refs(snapshot.store, missing) if missing else {}
         except (GitError, OSError):
@@ -261,7 +262,8 @@ async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snaps
             from src.integration.git_truth import GitTruthSnapshot
 
             parent_ref = "refs/heads/" + parent.removeprefix("refs/heads/")
-            delivered = GitTruthSnapshot(observer.truth, view.snapshot).for_target(parent_ref)
+            delivered = GitTruthSnapshot(observer.truth, view.snapshot,
+                                         cached_only=cached_only).for_target(parent_ref)
             requests = await load_delivery_requests(
                 observer.db,
                 (row["task_id"],),
@@ -279,8 +281,16 @@ async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snaps
                 parent_ref.removeprefix("refs/heads/"),
                 delivered.target_oid,
             )
-        exact = await observer.git.arev_parse(view.snapshot.store, head + "^{commit}")
-        if exact == head:
+        if observer.truth is not None:
+            try:
+                exact = await observer.truth.exact(view.snapshot, head, cached_only=cached_only)
+            except (GitError, OSError, ValueError):
+                exact = False
+        elif cached_only:
+            exact = False
+        else:
+            exact = await observer.git.arev_parse(view.snapshot.store, head + "^{commit}") == head
+        if exact:
             view.proofs[row["task_id"]] = proof
     return view
 

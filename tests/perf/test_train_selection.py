@@ -74,7 +74,8 @@ async def test_cold_root_selection_after_main_move(world, monkeypatch, caplog, p
         str(origin.clone), project_id="p", repository_id="r", repository_url=origin.url,
         target_ref=MAIN.target_ref,
     )
-    assert observed.target_oid != base and not truth._completions and not truth._cache
+    assert observed.target_oid != base
+    assert not any((truth._completions, truth._proofs, truth._objects, truth._cache))
     async with db._engine.connect() as conn:
         assert await conn.scalar(select(func.count()).select_from(tasks)) == 5000
     assert sum(ref.startswith("refs/remotes/origin/aq/")

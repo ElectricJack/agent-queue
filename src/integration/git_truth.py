@@ -113,7 +113,11 @@ class GitTruth:
         self.cache_limit = cache_limit
         self.retry_delay, self.max_retry_delay, self.clock = retry_delay, max_retry_delay, clock
         self._cache: OrderedDict[tuple[str, str, str, str], _PairFacts] = OrderedDict()
+        # Validated immutable records and whole proofs must be cached too:
+        # caching ancestry alone still launches eight processes per warm task.
         self._completions: OrderedDict[tuple, dict] = OrderedDict()
+        self._proofs: OrderedDict[tuple, GitDeliveryEvidence] = OrderedDict()
+        self._objects: OrderedDict[tuple, str] = OrderedDict()
         self._failures: dict[tuple[str, str], tuple[float, float, str]] = {}
         self.share_fetches = share_fetches
         self._fetches: dict[tuple[str, str, str, str], _SharedFetch] = {}
@@ -189,31 +193,48 @@ class GitTruth:
             self._cache.popitem(last=False)
         return facts
 
-    async def _completion(self, observed: DeliverySnapshot, identity: CompletionIdentity):
-        """Reuse validated immutable objects, never the answer for a mutable ref.
+    def _remember(self, cache, key, value):
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > self.cache_limit:
+            cache.popitem(last=False)
+        return value
 
-        Every call derives the marker from this fetch's pinned refs. Scope the
-        cache to the store as well as the repository: a different checkout may
-        lack objects, even when an earlier checkout validated the same record.
-        Failed or absent observations are never retained across snapshots.
+    def _record_key(self, snapshot: DeliverySnapshot, identity: CompletionIdentity) -> tuple:
+        return (snapshot.store, snapshot.repository_id, snapshot.repository_url, identity, tuple(
+            snapshot.source_heads.get(prefix + identity.branch)
+            for prefix in ("refs/remotes/origin/", "refs/heads/")
+        ))
+
+    async def _completion(self, snapshot: DeliverySnapshot, identity: CompletionIdentity):
+        """Validate once per pinned metadata OID and exact completion identity.
+
+        Ref absence and failed validation are never cached. Retargets, new
+        generations, repositories and stores cannot consume an earlier record.
         """
-        marker = next((observed.source_heads[prefix + identity.branch]
-                       for prefix in ("refs/remotes/origin/", "refs/heads/")
-                       if prefix + identity.branch in observed.source_heads), None)
-        if marker is None:
-            return None
-        key = (observed.store, observed.repository_id, observed.repository_url, identity, marker)
+        key = self._record_key(snapshot, identity)
         if key in self._completions:
             self._completions.move_to_end(key)
             return deepcopy(self._completions[key])
-        record = await GitProvenance(
-            observed.git, observed.store, repository_url=observed.repository_url,
-        ).read_completion(identity, refs=observed.source_heads)
+        record = await GitProvenance(self.git, snapshot.store,
+                                    repository_url=snapshot.repository_url).read_completion(
+            identity, refs=snapshot.source_heads,
+        )
         if record is not None:
-            self._completions[key] = deepcopy(record)
-            while len(self._completions) > self.cache_limit:
-                self._completions.popitem(last=False)
+            self._remember(self._completions, key, deepcopy(record))
         return record
+
+    async def exact(self, snapshot: DeliverySnapshot, oid: str, *, cached_only=False) -> bool:
+        key = snapshot.store, snapshot.repository_id, snapshot.repository_url, oid
+        if key not in self._objects:
+            if cached_only:
+                return False
+            await GitProvenance(self.git, snapshot.store,
+                                repository_url=snapshot.repository_url).exact(oid)
+            self._remember(self._objects, key, oid)
+        else:
+            self._objects.move_to_end(key)
+        return True
 
 
 @dataclass(frozen=True)
@@ -221,6 +242,8 @@ class GitTruthSnapshot:
     truth: GitTruth
     observation: DeliverySnapshot
     retry_at: float | None = None
+    #: Diagnostics can consume only proofs populated by a background reader.
+    cached_only: bool = False
 
     @property
     def target_oid(self) -> str | None:
@@ -507,19 +530,25 @@ async def is_delivered(
 ) -> GitDeliveryEvidence:
     """Ancestry, exact reachable AQ-Source, whole-source patch, then full tree.
 
-    Resolve the current ordinary completion from pinned Git provenance on every
-    call. Branch names, reported heads, settlements and receipts never locate
-    an artifact or satisfy delivery here. Missing input or failed Git is unknown.
+    Bind the current ordinary completion to pinned Git provenance on every call;
+    validation is reusable only for its exact immutable metadata OIDs. Full
+    proofs additionally bind every request field, source base and target OID.
+    Branch names, reported heads, settlements and receipts never locate an
+    artifact or satisfy delivery here. Missing input or failed Git is unknown.
     """
     observed = snapshot.observation
     source = None
+    proof_key = None
 
     def answer(
         state: DeliveryState, reason: str, *, error_detail: str | None = None,
     ) -> GitDeliveryEvidence:
-        return GitDeliveryEvidence(
+        evidence = GitDeliveryEvidence(
             request, state, observed.target_oid, source, reason, source_base, error_detail,
         )
+        if proof_key is not None and state is not DeliveryState.UNKNOWN:
+            snapshot.truth._remember(snapshot.truth._proofs, proof_key, evidence)
+        return evidence
 
     if (request.project_id, request.repository_id, request.target_ref) != (
         observed.project_id, observed.repository_id, observed.target_ref,
@@ -535,6 +564,13 @@ async def is_delivered(
             request.project_id, request.repository_id, request.task_id,
             request.completion_id or request.legacy_generation,
         )
+        proof_key = (snapshot.truth._record_key(observed, identity),
+                     observed.target_oid, request, source_base)
+        if proof_key in snapshot.truth._proofs:
+            snapshot.truth._proofs.move_to_end(proof_key)
+            return snapshot.truth._proofs[proof_key]
+        if snapshot.cached_only:
+            return answer(DeliveryState.UNKNOWN, "proof_unavailable")
         provenance = GitProvenance(observed.git, observed.store,
                                    repository_url=observed.repository_url)
         step = "completion_provenance"
@@ -544,7 +580,7 @@ async def is_delivered(
         step = "source_identity"
         source = record["source_oid"]
         step = "target_object"
-        await provenance.exact(observed.target_oid)
+        await snapshot.truth.exact(observed, observed.target_oid)
         if not record["artifact"]:
             return answer(DeliveryState.NO_ARTIFACT, "git_no_artifact")
         step = "source_ancestry"
