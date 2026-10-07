@@ -13206,13 +13206,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/integration/cutover.py::_Activation.write_on::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
-      "line": 596,
+      "line": 633,
       "owner": "_Activation.write_on",
       "call": "insert",
-      "owner_fingerprint": "579a342a6d879ca499401a528e3a6610d9a56f17cd574757bb8114bad00d8790",
+      "owner_fingerprint": "c3ccc7c5852011775fa7aee1078e67fdcae8f90f64ae6b8e0dee267bd7532878",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Local-operator configuration cutover audit records prior defaults, flow, remote settings and exact data-fix IDs for an explicit inverse. It stores no commit OIDs, frozen membership or executable ref continuation; Git remains publication and delivery authority."
+      "reason": "Local-operator configuration cutover audit records prior defaults, flow, remote settings, cutover time, unchanged origin IDs and exact original receipt targets for an explicit inverse. It stores no commit OIDs, frozen membership or executable ref continuation; Git remains publication and delivery authority."
     },
     "src/integration/delegate_release.py::release_delegates_on::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 343,
