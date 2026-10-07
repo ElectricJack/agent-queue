@@ -4315,7 +4315,8 @@ async def test_hybrid_root_requires_hosted_candidate_checks_and_app_attestation_
     from src.integration.checks import HybridChecks, LocalChecks
 
     head = await completed(world, "leaf")
-    train, github, _ = await hosted_train(world)
+    now = [time.time()]
+    train, github, _ = await hosted_train(world, clock=lambda: now[0])
     base = git(world.origin.url, "rev-parse", "main")
     await local_ci_policy(world, source="hybrid", overrides=(
         {} if require_hosted else {"hosted_attestation": {"root": False}}))
@@ -4326,6 +4327,7 @@ async def test_hybrid_root_requires_hosted_candidate_checks_and_app_attestation_
     assert unreviewed.detail["blockers"][0]["code"] == "pr_review_missing"
     assert await job_rows(world.db) == []
     approve_pr(github, head)
+    now[0] += 61  # the PR gate keeps a refusal until its retry is due
     testing = await train.visit(MAIN)
     assert testing.state == "testing", testing
     [job] = await job_rows(world.db)

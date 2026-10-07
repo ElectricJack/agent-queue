@@ -565,6 +565,9 @@ class DatabaseBatches:
 
     async def _candidate_ids(self, target: TrainTarget, snapshot: GitTruthSnapshot):
         """Only undelivered completions routed to this target's member window."""
+        if target.kind == "promotion":
+            # A promotion freezes its request, never a frontier of completions.
+            return []
         async with self.db._engine.connect() as conn:
             ids = await _pending_tasks(conn, target.project_id, target.repository_id, limit=None)
         delivered_to_project = await self.delivered(target, snapshot, ids)
@@ -1243,7 +1246,7 @@ class DaemonLanes:
         self.truth = GitTruth(orchestrator.git)
         self.store = BatchStore(self.db, clock=clock)
         self.publish = LeasedPublish(self.db, self.git, clock=clock)
-        if self.batches.pr_gate is None:
+        if self.batches is not None and self.batches.pr_gate is None:
             from src.integration.github_review_poll import RootPullRequestGate
 
             async def repository(target):
@@ -1600,12 +1603,12 @@ class DaemonLanes:
         local = ci is not None and ci.source_for("promotion") == "local"
 
         async def resolve_local(batch, sha, meta):
-            # The step still selects its checks from the source tree's own
-            # manifest; this box runs them, and no App proof is published.
+            # S's manifest must still name this repository and App identity, but
+            # the check set is the one the request froze from committed trust,
+            # never S's own manifest (attestation I3). This box runs them, and
+            # no App proof is published.
             manifest = await self._retained_manifest(retained, sha, binding=binding, policy=policy)
-            required = step_required_checks(manifest, meta["step"])
-            if required.version != meta["checks_version"]:
-                raise PromotionIntentInvalid("promotion check version differs from request")
+            required = frozen_required_checks(meta)
             missing = sorted(set(required.names) - set(ci.commands))
             if missing:
                 raise PromotionIntentInvalid("ci_command_missing:" + ",".join(missing))

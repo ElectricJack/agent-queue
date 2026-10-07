@@ -164,9 +164,9 @@ class RootPullRequestGate:
         except ReviewerPermissionUnavailable as exc:
             return defer("pr_review_permission_unavailable", reason=str(exc))
         except (GitError, GitHubError, GitHubAccessError, OSError, ValueError, KeyError, TypeError) as exc:
-            from src.integration.train import _rate_limit
+            from src.git.github_contracts import rate_limit_cause
 
-            if _rate_limit(exc) is not None:
+            if rate_limit_cause(exc) is not None:
                 raise
             return defer("unknown", reason=str(exc))
 
