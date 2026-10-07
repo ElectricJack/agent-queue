@@ -750,7 +750,7 @@ class DatabaseBatches:
         return IntegrationTrainPolicy.model_validate({} if raw is None else raw)
 
     async def _candidate_ids(self, target: TrainTarget, snapshot: GitTruthSnapshot, *,
-                             include_ids: set[str] | None = None):
+                             include_ids: set[str] | None = None, blockers=None):
         """Only undelivered completions routed to this target's member window."""
         if target.kind == "promotion":
             # A promotion freezes its request, never a frontier of completions.
@@ -787,7 +787,7 @@ class DatabaseBatches:
         """Exact pending inputs; report unknown delivery that prevents batching."""
         if target.kind == "promotion":
             return None
-        ids = await self._candidate_ids(target, snapshot, include_ids=include_ids)
+        ids = await self._candidate_ids(target, snapshot, include_ids=include_ids, blockers=blockers)
         async with self.db._engine.connect() as conn:
             if not ids:
                 return None
@@ -853,6 +853,7 @@ class DatabaseBatches:
             self.db, ids, repository_id=target.repository_id, target_ref=target.target_ref,
             reduced=True,
         )
+        delivered_to_project = await self.delivered(target, snapshot, ids)
         members: dict[str, BatchMember] = {}
         delivered: set[str] = set()
         from src.integration.stacked_branches import StackedBranches
