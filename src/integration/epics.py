@@ -279,7 +279,9 @@ class EpicReadinessEvaluator:
             proof = await target.is_delivered(replace(child.request, target_ref=node.branch_ref),
                                               source_base=child.source_base)
             sources.append(proof)
-            if proof.state not in {DeliveryState.CONTAINED, DeliveryState.NO_ARTIFACT}:
+            if proof.state not in {
+                DeliveryState.CONTAINED, DeliveryState.NO_CHANGE, DeliveryState.NO_ARTIFACT,
+            }:
                 blockers.append((child.task_id, proof.reason))
                 unknown |= proof.state == DeliveryState.UNKNOWN
             if nested and nested[-1].task_id == child.task_id and nested[-1].ready:
@@ -403,7 +405,9 @@ class EpicReadinessEvaluator:
             return {"success": False, "outcome": "unknown", "reason": proof.reason}
         if not await target.observation.is_fresh():
             return {"success": False, "outcome": "changed"}
-        if proof.state in {DeliveryState.CONTAINED, DeliveryState.NO_ARTIFACT}:
+        if proof.state in {
+            DeliveryState.CONTAINED, DeliveryState.NO_CHANGE, DeliveryState.NO_ARTIFACT,
+        }:
             return {"success": True, "outcome": "delivered"}
         if proof.source_oid != readiness.head_sha:
             return {"success": False, "outcome": "changed"}

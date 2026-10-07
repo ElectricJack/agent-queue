@@ -70,9 +70,13 @@ exactly pushed final task source, publishes the provenance ref, verifies that
 exact remote OID, and rechecks the source before terminal transition. It refuses
 an explicit `--commit` naming an older or abbreviated commit. A publication error
 or changed source retains the task/session/workspace for retry. Already pushed
-history is never amended. Code-free outcomes retain existing validation: a
-proven empty, explicitly code-free Git source has `artifact:false`; branchless,
-non-Git and vault-only outcomes keep their existing completion behavior.
+history is never amended. A final head equal to the recorded origin base records
+an empty completion commit list while retaining that exact head. A proven empty,
+explicitly code-free Git source has `artifact:false`. Explicit vault-only outcomes
+also retain their clean owned source slot at its exact recorded origin base,
+without requiring a published task branch. Missing base, changed source or failed
+provenance publication refuses close with the claim and workspace retained.
+Branchless and non-Git outcomes keep their existing completion behavior.
 
 This close contract applies to Git-using passing completions in every train mode:
 `train`, `hierarchy` and `development`. Under `integration.git_first: active`, an
@@ -81,6 +85,23 @@ reports `blocked` and projects the delivery reason, including
 `missing_git_provenance`, with its task and target in integration status. Legacy
 generations still require explicit provenance migration; branch observation is
 never substituted for immutable completion evidence.
+
+The git-first evaluator reports an explicit `no_change` state for a passing
+completion whose recorded commit list is empty, whose immutable retained Git
+source equals its recorded branch-origin base, and whose base is an ancestor of
+the fetched target. This proves the completion added no work owed to that
+target; `COMPLETED` alone never proves it. The completion outcome and commit
+list, exact source generation, recorded base and target OID are all part of
+the observation and guarded recheck. A missing completion or provenance record,
+missing base, or different head and base remains unknown with a named blocker.
+A base absent from the target remains pending. A completion that lists commits
+still requires the existing exact whole-source delivery proof.
+
+Cross-epic prerequisites use this same `no_change` answer against the default
+branch in scheduler readiness, pool demand, explain and claim activation. Root
+train admission treats it as satisfied, so it creates neither a batch member nor
+a `missing_git_provenance` blocker. Epic collection also treats such children as
+satisfied without attempting to merge an artifact they did not produce.
 
 Failed required Git delivery probes remain `unknown`. The blocker detail and daemon log
 name the failing proof step, exception class and a bounded safe message; raw

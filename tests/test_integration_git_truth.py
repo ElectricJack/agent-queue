@@ -414,6 +414,51 @@ async def test_explicit_retained_no_artifact_is_distinct_from_missing_source(rep
     assert (await (await repo.snapshot()).is_delivered(request)).state == DeliveryState.NO_ARTIFACT
 
 
+async def test_passing_empty_completion_at_its_contained_base_is_no_change(repository):
+    repo = repository
+    request = replace(await repo.retain(repo.base), completion_outcome="pass", completion_commits=())
+    # The proof binds the retained generation, even after its branch moves and
+    # the default branch advances beyond the recorded base.
+    await repo.commit("later-source-work")
+    await repo.run("checkout", "main")
+    await repo.commit("later-default-work")
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    proof = await snapshot.is_delivered(request, source_base=repo.base)
+    assert (proof.state, proof.reason, proof.source_oid) == (
+        DeliveryState.NO_CHANGE, "git_no_change", repo.base,
+    )
+    assert proof.satisfied
+    assert await snapshot.usable(proof, request, current_source_base=repo.base)
+    assert not await snapshot.usable(proof, replace(request, completion_outcome="fail"),
+                                     current_source_base=repo.base)
+    assert await epic_complete(snapshot, [request], green_oid=snapshot.target_oid,
+                               source_bases={"task": repo.base})
+
+
+@pytest.mark.parametrize("scenario", ["missing", "failed", "changed", "missing_base", "off_default"])
+async def test_empty_completion_requires_unambiguous_head_base_and_pass(repository, scenario):
+    repo = repository
+    source = repo.base
+    if scenario in {"changed", "off_default"}:
+        source = await repo.commit("undelivered")
+    request = replace(await repo.retain(source), completion_outcome="pass", completion_commits=())
+    base = source if scenario == "off_default" else repo.base
+    if scenario == "missing":
+        request = replace(request, completion_id="unretained")
+    elif scenario == "failed":
+        request = replace(request, completion_outcome="fail")
+    elif scenario == "missing_base":
+        base = None
+    proof = await (await repo.snapshot()).is_delivered(request, source_base=base)
+    assert not proof.satisfied
+    assert (proof.state, proof.reason) == (
+        (DeliveryState.PENDING, "no_change_base_not_delivered") if scenario == "off_default" else
+        (DeliveryState.UNKNOWN, "missing_git_provenance") if scenario == "missing" else
+        (DeliveryState.UNKNOWN, "ambiguous_no_change_completion")
+    )
+
+
 @pytest.mark.parametrize("operation,step,exception", [
     ("read_completion", "completion_provenance", KeyError("private provenance content")),
     ("ancestor", "source_ancestry", GitError("fatal: bad object private content")),

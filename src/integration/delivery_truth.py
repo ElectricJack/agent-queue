@@ -50,6 +50,7 @@ SETTLEMENT_KEY = "development_delivery_settlement"
 
 class DeliveryState(StrEnum):
     CONTAINED = "contained"
+    NO_CHANGE = "no_change"
     NO_ARTIFACT = "no_artifact"
     PENDING = "pending"
     SETTLED = "settled"
@@ -119,6 +120,9 @@ class DeliveryRequest:
     requires_parent_completion: bool = False
     parent_completion: VerifiedParentCompletion | None = None
     parent_adoption: AdoptedParentCompletion | None = None
+    #: The current immutable close's account; None is missing, () is explicitly empty.
+    completion_outcome: str | None = None
+    completion_commits: tuple[str, ...] | None = None
     #: The recorded settlement (:data:`SETTLEMENT_KEY`), whatever it fences;
     #: :meth:`settles` decides whether it answers this request.
     settled_repository_id: str | None = None
@@ -147,6 +151,8 @@ class DeliveryRequest:
             reported_source=completion.commits[-1] if completion and completion.commits else None,
             has_recorded_source=bool(completion and completion.commits),
             task_status=task["status"], claim_epoch=task.get("claim_epoch", 0),
+            completion_outcome=completion.outcome if completion else None,
+            completion_commits=tuple(completion.commits) if completion else None,
         )
 
 
@@ -161,7 +167,8 @@ class DeliveryEvidence:
     @property
     def satisfied(self):
         return self.state in {
-            DeliveryState.CONTAINED, DeliveryState.NO_ARTIFACT, DeliveryState.SETTLED,
+            DeliveryState.CONTAINED, DeliveryState.NO_CHANGE,
+            DeliveryState.NO_ARTIFACT, DeliveryState.SETTLED,
         }
 
 
@@ -411,7 +418,7 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
                 # generation for this newly completed incarnation.
                 request = replace(
                     request, completion_id=current_id, completed_at=None,
-                    reported_source=None,
+                    reported_source=None, completion_outcome=None, completion_commits=None,
                 )
             elif request.completion_id is None and request.task_status == "COMPLETED":
                 # Legacy closes sometimes have no descriptive completion row.

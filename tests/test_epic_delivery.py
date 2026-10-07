@@ -434,7 +434,8 @@ def test_a_canonically_adopted_epic_is_delivered_where_no_receipt_exists():
     assert delivered["links"] == []
 
 
-def test_operator_equivalence_is_named_rather_than_absorbed():
+@pytest.mark.parametrize("leaf_state", ["contained", "no_change"])
+def test_operator_equivalence_is_named_rather_than_absorbed(leaf_state):
     equivalent = _classify(replace(_complete(), canonical=replace(
         ADOPTED, acceptance="operator_equivalent",
     )))
@@ -442,7 +443,8 @@ def test_operator_equivalence_is_named_rather_than_absorbed():
     assert equivalent["reason"].endswith("(operator accepted this source as equivalent)")
 
     leaf = CanonicalDelivery(
-        state="contained", reason="git_completion", source="a" * 40,
+        state=leaf_state, reason="git_no_change" if leaf_state == "no_change" else "git_completion",
+        source="a" * 40,
         target_ref="refs/heads/main", target_oid="c" * 40,
         completion_id="close-epic-2", since=NOW - 5,
     )

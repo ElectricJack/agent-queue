@@ -1606,6 +1606,57 @@ async def test_cross_epic_completed_policy_is_explicit_legacy_admission(world):
                 if "prerequisite" in item["code"]]
 
 
+async def test_no_change_root_releases_cross_epic_child_and_has_no_train_blocker(world):
+    from src.integration.delivery_truth import DeliveryState, load_delivery_requests
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+    from src.integration.scheduler import TrainService
+    from src.integration.source_delivery import prove_source_delivered
+    from src.models import TaskCompletion
+
+    db, origin = world.db, world.origin
+    base = git(origin.url, "rev-parse", "main")
+    await completed(world, "epic", done=False)
+    git(origin.clone, "push", "origin", f"{base}:refs/heads/aq/no-change")
+    await completed(world, "no-change", done=False, head=base, source_base=base)
+    await db.save_task_completion(TaskCompletion(
+        id="close-no-change", task_id="no-change", outcome="pass", commits=[],
+        completed_at=time.time(),
+    ))
+    await GitProvenance(world.truth.git, str(origin.clone), repository_url=origin.url
+                        ).write_completion(CompletedSource(
+        CompletionIdentity("p", "r", "no-change", "close-no-change"), base,
+    ))
+    await db.transition_task("no-change", TaskStatus.COMPLETED)
+    await completed(world, "child", parent="epic", needs=("no-change",), done=False)
+    await db.transition_task("child", TaskStatus.READY)
+
+    requests = await load_delivery_requests(db, ["no-change"], repository_id="r",
+                                             target_ref=MAIN.target_ref, reduced=True)
+    proof = await (await snapshot(world)).is_delivered(requests["no-change"], source_base=base)
+    assert proof.state is DeliveryState.NO_CHANGE and proof.satisfied
+    assert await db.is_hierarchy_task_runnable("child")
+    assert not [item for item in await db.claim_frontier_exclusions("child")
+                if "prerequisite" in item["code"]]
+    observer = db._delivery_observer
+    view = await observer.observe(["no-change"])
+    async with db._engine.connect() as conn:
+        from src.database.tables import repos
+        repository = (await conn.execute(select(repos).where(repos.c.id == "r"))).mappings().one()
+        assert await TrainService(db)._git_delivered_roots_on(conn, view, "p", repository) == {"no-change"}
+    repair_proof = await prove_source_delivered(db, observer, task_id="no-change", source={
+        "project_id": "p", "repository_id": "r", "head": base, "base": base,
+        "generation": 0,
+    })
+    assert repair_proof.state == "delivered"
+    blockers = []
+    assert await DatabaseBatches(db).pending(MAIN, await snapshot(world), blockers=blockers) is None
+    assert blockers == []
+    train, _, _ = lane(world, LocalGit(Path(origin.url)))
+    assert (await train.visit(MAIN)).state == "idle"
+    status = await IntegrationStatusService(db, git_first="active", train=train).control_status("p")
+    assert not [item for item in status["blockers"] if item.get("task_id") == "no-change"]
+
+
 async def test_epic_refresh_preview_apply_attestation_lease_and_origin(world):
     from src.integration.stacked_branches import EpicRefresh
 

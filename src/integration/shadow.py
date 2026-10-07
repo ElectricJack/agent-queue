@@ -115,7 +115,9 @@ class GitFirstDiagnostics:
             proposed = (
                 None
                 if proof is None or proof.state is DeliveryState.UNKNOWN
-                else proof.state in {DeliveryState.CONTAINED, DeliveryState.NO_ARTIFACT}
+                else proof.state in {
+                    DeliveryState.CONTAINED, DeliveryState.NO_CHANGE, DeliveryState.NO_ARTIFACT,
+                }
             )
             self.record(
                 subject,

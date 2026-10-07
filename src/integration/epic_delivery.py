@@ -127,7 +127,7 @@ class CanonicalDelivery:
     (:meth:`~src.integration.delivery_observer.DeliveryView.verified_on`), so
     it never describes a generation the epic no longer has. ``state`` is a
     :class:`~src.integration.delivery_truth.DeliveryState` value as text:
-    ``contained``, ``pending``, ``settled``, ``no_artifact`` or ``unknown``.
+    ``contained``, ``no_change``, ``pending``, ``settled``, ``no_artifact`` or ``unknown``.
 
     ``acceptance`` is wording, never the proof: git already established
     containment, and it names a recorded operator adoption only when that
@@ -629,14 +629,16 @@ def _target_name(canonical: CanonicalDelivery) -> str:
 def _canonical_delivered(facts: EpicFacts, *, result) -> dict | None:
     """Git's own delivered answer, or ``None`` when it has none.
 
-    ``contained`` and ``settled`` are the two canonical states that mean this
-    epic's current work does not owe its target anything. Both name the exact
+    ``contained``, ``no_change`` and ``settled`` are canonical states that mean this
+    epic's current work does not owe its target anything. Each names the exact
     identity they speak for — the verified parent completion's generation and
     source, or the leaf completion's retained source — and a recorded operator
     acceptance of a non-ancestor source is named, never silently absorbed.
     """
     canonical = facts.canonical
-    if canonical is None or canonical.changed or canonical.state not in {"contained", "settled"}:
+    if canonical is None or canonical.changed or canonical.state not in {
+        "contained", "no_change", "settled",
+    }:
         return None
     target = _target_name(canonical)
     if canonical.state == "settled":
