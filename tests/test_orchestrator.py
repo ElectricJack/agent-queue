@@ -236,6 +236,8 @@ async def test_orchestrator_owns_single_integration_service_loop(orch):
     assert orch.integration_attestation_service is not None
     assert not hasattr(orch, "integration_control_service")
     assert orch.branch_materialization_service is not None
+    # shadow keeps the parent runtime, so containers may still be bootstrapped.
+    assert orch.branch_materialization_service.legacy_container_collection is True
     assert service._subject_runtime is not None
     assert orch.config.integration.reconciler_active is True
     assert len(service._subject_runtime.loops) == 1
@@ -274,6 +276,9 @@ async def test_git_first_active_runs_the_train_instead_of_subject_runtimes(tmp_p
         assert service._subject_runtime is None
         assert orch.parent_subject_runtime is None
         assert orch.development_subject_runtime is None
+        # No parent runtime means no legacy collection episode either
+        # (grand-lantern-78, 2026-10-07).
+        assert orch.branch_materialization_service.legacy_container_collection is False
         assert service._task is not None
     finally:
         await _drain_running_tasks(orch)

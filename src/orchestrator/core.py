@@ -1916,7 +1916,12 @@ class Orchestrator(
         # deleting a task.  Its work is recorded on the retired origin row, so
         # it survives a restart and needs no other authority.
         self.branch_materialization_service = BranchMaterializationService(
-            self.db, hierarchy_service_factory=self._branch_materialization_hierarchy
+            self.db,
+            hierarchy_service_factory=self._branch_materialization_hierarchy,
+            # git_first: active hands every target to the train, which collects
+            # a container's children into its own branch; the legacy collector
+            # that owns a collection episode is not built at all.
+            legacy_container_collection=self.config.integration.git_first != "active",
         )
         self.branch_discard_service = BranchDiscardService(
             self.db,

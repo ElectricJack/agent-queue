@@ -43,6 +43,51 @@ async def family(db, n=2):
     return kids
 
 
+async def collecting_parent(
+    db, *, mode: str, state: str | None, status: TaskStatus, child: TaskStatus | None = None
+) -> list[str]:
+    """A container the legacy bootstrap left collecting, with a done child.
+
+    ``HierarchyIntegration.bootstrap_container_collection`` checkpoints an
+    untouched released container at its pinned origin, reserves a collection
+    episode on it and PAUSES it, handing the branch to a ``collector``
+    reservation.  ``state`` is the parent operation that reservation opened;
+    ``None`` reserves the episode with no operation at all.  ``child`` leaves
+    the child as filed, for a test that wants the last completion to be the
+    event that settles the container.
+    """
+    from src.database.tables import (
+        integration_parent_episodes,
+        integration_repair_operations,
+        repos,
+    )
+
+    kids = await family(db, n=1)
+    async with db.immediate() as conn:
+        await conn.execute(insert(repos).values(
+            id="repo", project_id=PROJECT_ID, url="https://example/repo.git",
+            default_branch="main", checkout_base_path="/checkout", source_type="clone"))
+    await db.update_project(
+        PROJECT_ID, hierarchical_integration_mode=mode, integration_repository_id="repo")
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_parent_episodes).values(
+            id="ep-1", parent_task_id="p", repository_id="repo", generation=1,
+            pre_collection_checkpoint_sha="a" * 40, created_at=1.0))
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id="p", repository_id="repo", branch="aq/p", generation=1,
+            checkpoint_sha="a" * 40, state="awaiting_children", version=0,
+            updated_at=1.0, episode_id="ep-1"))
+        if state is not None:
+            await conn.execute(insert(integration_repair_operations).values(
+                id="op-1", target_kind="parent", parent_task_id="p", episode_id="ep-1",
+                state=state, policy_snapshot={}, artifact_snapshot={},
+                required_check_version="v", created_at=1.0, updated_at=1.0))
+        await conn.execute(update(tasks).where(tasks.c.id == "p").values(status=status.value))
+        await conn.execute(update(tasks).where(tasks.c.id == kids[0]).values(
+            status=(child or TaskStatus.COMPLETED).value))
+    return kids
+
+
 class TestSettlement:
     async def test_last_child_completion_completes_container_in_same_call(self, db):
         kids = await family(db)
@@ -210,6 +255,80 @@ class TestSettlement:
         await db.transition_task(kids[0], TaskStatus.COMPLETED)  # must not raise
 
         assert (await db.get_task("p")).status == TaskStatus.COMPLETED
+
+
+class TestCancelledTrainEpisode:
+    """A cancelled collection episode owns nothing in ``train``.
+
+    Under ``integration.git_first: active`` the parent runtime is never built,
+    so orphan reconciliation cancels the operation
+    ``bootstrap_container_collection`` reserved and the container sits PAUSED
+    behind an episode no collector can advance — and, because
+    ``EpicCompletions.settle`` requires COMPLETED, no root batch ever admits
+    the epic (grand-lantern-78, quick-current-13, 2026-10-07).
+    """
+
+    async def test_paused_container_with_cancelled_episode_is_a_stale_candidate(self, db):
+        await collecting_parent(
+            db, mode="train", state="cancelled", status=TaskStatus.PAUSED)
+
+        assert "p" in await db.stale_container_candidates()
+
+    async def test_paused_container_with_cancelled_episode_completes_on_the_stale_leg(
+        self, db
+    ):
+        """The incident itself: the sweep lands the COMPLETED the train waits for.
+
+        Nothing proves delivery here — ``stale_delivery_children`` scopes to
+        ``development`` projects, and a train container's children are collected
+        into its own branch — so the stale leg settles it on the graph facts
+        alone, exactly as the backstop sweep does every interval.
+        """
+        await collecting_parent(
+            db, mode="train", state="cancelled", status=TaskStatus.PAUSED)
+
+        async with db._engine.begin() as conn:
+            result = await db.settle_containers({"p"}, conn=conn)
+
+        assert (await db.get_task("p")).status == TaskStatus.COMPLETED
+        assert "p" in result.settled
+
+    async def test_in_progress_container_with_cancelled_episode_settles_on_last_child(
+        self, db
+    ):
+        kids = await collecting_parent(
+            db, mode="train", state="cancelled", status=TaskStatus.IN_PROGRESS,
+            child=TaskStatus.READY)
+        assert "p" not in await db.settle_candidates(), "an open child still holds it"
+
+        await db.transition_task(kids[0], TaskStatus.COMPLETED)
+
+        assert (await db.get_task("p")).status == TaskStatus.COMPLETED
+
+    async def test_episode_without_any_operation_settles_in_train(self, db):
+        """Nothing opened an operation, so nothing owns the aggregate either."""
+        await collecting_parent(db, mode="train", state=None, status=TaskStatus.IN_PROGRESS)
+
+        assert "p" in await db.settle_candidates()
+
+    @pytest.mark.parametrize(
+        "state", ["active", "escalated", "human_required", "completed"])
+    async def test_live_episode_still_owns_completion_in_train(self, db, state):
+        await collecting_parent(db, mode="train", state=state, status=TaskStatus.PAUSED)
+
+        assert "p" not in await db.stale_container_candidates()
+
+    async def test_cancelled_episode_still_owns_completion_in_hierarchy(self, db):
+        """``hierarchy`` runs the collector that completes the episode.
+
+        There a cancelled collection is reopened in place
+        (``CancelledCollectionRecovery``), so the exclusion is unchanged: the
+        exemption is the train's missing engine, not a weaker rule.
+        """
+        await collecting_parent(
+            db, mode="hierarchy", state="cancelled", status=TaskStatus.PAUSED)
+
+        assert "p" not in await db.stale_container_candidates()
 
 
 @pytest.fixture

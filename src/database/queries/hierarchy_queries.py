@@ -218,6 +218,85 @@ def childless_held_open_container():
     )
 
 
+def collection_episode_owns_completion():
+    """``EXISTS`` clause: a collection episode still owns this container's completion.
+
+    A released code-bearing container bootstraps a legacy collection episode
+    (``BranchMaterializationService``'s container pass), and that episode — not
+    the child statuses — owns the aggregate a parent runtime collects and
+    verifies, so §7 refuses to settle the container while one is open, and
+    :meth:`TaskQueryMixin._apply_transition` refuses to complete it without the
+    integration completion token.
+
+    In ``train`` the episode only owns the completion while its repair
+    operation is still live.  ``integration.git_first: active`` never builds the
+    parent runtime at all, so that collector can never run, and orphan
+    reconciliation cancels the very operation the bootstrap reserved
+    (``settle_orphaned_parent_operations(legacy_engine_gone=True)``): the
+    container stays PAUSED with an episode nothing can advance, and because
+    ``EpicCompletions.settle`` requires COMPLETED, no root batch ever admits the
+    epic (grand-lantern-78, quick-current-13, 2026-10-07).  A cancelled
+    episode — and an episode no operation was ever opened for — owns nothing,
+    so the container settles and completes like any other.
+
+    ``hierarchy`` keeps the older rule.  There the legacy collector *is* the
+    engine that completes the episode, and
+    :class:`~src.integration.cancelled_collection_recovery.CancelledCollectionRecovery`
+    reopens a cancelled collection in place — a cancellation there is an
+    operator's business, never a container stranded by a missing engine.
+    """
+    episode = task_integration_checkpoints.alias("settlement_episode")
+    operation = integration_repair_operations.alias("settlement_operation")
+    return exists(
+        select(literal(1))
+        .select_from(
+            episode.join(
+                operation,
+                and_(
+                    operation.c.parent_task_id == tasks.c.id,
+                    operation.c.episode_id == episode.c.episode_id,
+                ),
+                # One operation per (parent, episode) is a unique index, so this
+                # yields at most one row; a train episode nobody opened an
+                # operation for leaves ``state`` NULL and owns nothing.
+                isouter=True,
+            )
+        )
+        .where(
+            episode.c.task_id == tasks.c.id,
+            episode.c.episode_id.is_not(None),
+            or_(
+                projects.c.hierarchical_integration_mode != "train",
+                operation.c.state != "cancelled",
+            ),
+        )
+    )
+
+
+async def collection_episode_owns_completion_on(conn, task_id: str) -> bool:
+    """:func:`collection_episode_owns_completion` as a row read for one task.
+
+    The completion guard in
+    :meth:`~src.database.queries.task_queries.TaskQueryMixin._apply_transition`
+    asks about one row rather than a correlated set, and must answer exactly
+    what §7 answers — the two are one rule, not two.
+    """
+    return (
+        await conn.execute(
+            select(task_integration_checkpoints.c.task_id)
+            .select_from(
+                task_integration_checkpoints.join(
+                    tasks, tasks.c.id == task_integration_checkpoints.c.task_id
+                ).join(projects, projects.c.id == tasks.c.project_id)
+            )
+            .where(
+                task_integration_checkpoints.c.task_id == task_id,
+                collection_episode_owns_completion(),
+            )
+        )
+    ).first() is not None
+
+
 def _settlement_clauses() -> list:
     """The §7 conditions both settlement legs share, correlated to ``tasks``.
 
@@ -247,12 +326,7 @@ def _settlement_clauses() -> list:
         ~childless_held_open_container(),
         or_(
             ~projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
-            ~exists(
-                select(literal(1)).where(
-                    task_integration_checkpoints.c.task_id == tasks.c.id,
-                    task_integration_checkpoints.c.episode_id.is_not(None),
-                )
-            ),
+            ~collection_episode_owns_completion(),
         ),
     ]
 
@@ -1895,8 +1969,11 @@ class HierarchyQueryMixin:
                     )
                     .where(
                         task_integration_checkpoints.c.task_id == parent_id,
-                        task_integration_checkpoints.c.episode_id.is_not(None),
                         projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+                        # The projection exists to hand a *live* episode to the
+                        # parent runtime; one nothing can advance is settled
+                        # below instead, so it is not projected either.
+                        collection_episode_owns_completion(),
                     )
                 )
             ).first()

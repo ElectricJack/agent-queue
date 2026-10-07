@@ -367,6 +367,37 @@ Containers are marked explicitly: `task_metadata.container = true`, set on a tas
 
 **Hierarchical child ids:** children created under a parent (supervisor graphs, plan subtasks, `--parent`) get `<parent_id>.1`, `<parent_id>.1.2` — ordinal per parent via `next_child_ordinal`, depth ≤ 3 — while root ids stay adjective-noun slugs. Ids never change after assignment. A name is never minted while anything still keys it: a live or archived task, or the integration identity a deleted task leaves behind (a `task_integration_checkpoints` row, a `task_branch_origins` row, live or retired, or an `integration_branch_owners` row it owns) — a new task minted onto that name would inherit the predecessor's checkpoint and branch fence (`_task_identity_exists` in `src/task_names.py`). The id itself now carries structure a human can read in Discord, a branch name (`aq/swift-falcon.2`), or a log line, and sorting groups a family together everywhere.
 
+### A cancelled collection episode never pins a container (2026-10-07)
+
+§7's episode exclusion is **one rule with three readers**, and all three now
+answer from `collection_episode_owns_completion()` /
+`collection_episode_owns_completion_on()`: the settlement predicate
+(`_settlement_clauses`, and so both `settle_containers` legs and the backstop
+sweeps), the readiness projection `settle_containers` fires before them, and the
+completion guard `_apply_transition` raises `integration_completion_required`
+from. In `hierarchy` a container's collection episode owns its completion while
+it carries one, because the legacy collector is the engine that completes it and
+`CancelledCollectionRecovery` reopens a cancelled collection in place.
+
+In `train` the episode owns the completion only while its repair operation is
+still live. `integration.git_first: active` never builds the parent runtime, so
+`bootstrap_container_collection`'s reserved operation is cancelled by
+`settle_orphaned_parent_operations(legacy_engine_gone=True)` and nothing can
+advance the episode — yet the exclusion still refused to settle the container,
+and because `EpicCompletions.settle` requires COMPLETED, no root batch ever
+admitted the epic (`grand-lantern-78`, `quick-current-13`). A cancelled
+episode, and an episode no operation was ever opened for, owns nothing: the
+container settles, projects nothing and completes like any other. (The three
+readers have to agree — the settlement predicate alone selects a container the
+completion guard then refuses, which turns a stuck container into a failed
+child close.)
+
+The episode is never created in the first place under `git_first`: the branch
+materialization drain's container pass is the legacy collector's entry point, so
+`BranchMaterializationService(legacy_container_collection=…)` is off when
+`integration.git_first == active` (the daemon wires it from that config). Cutting
+a reserved branch is unaffected; only the bootstrap is skipped.
+
 ### Operator removal (2026-10-06)
 
 `remove_task` (`aq task remove TASK --reason "..."`, dashboard **Remove**) is

@@ -1533,22 +1533,22 @@ class TaskQueryMixin:
                         "managed parent requires guarded verifier wake",
                     )
             if new_status == TaskStatus.COMPLETED:
-                managed_parent = (
-                    await conn.execute(
-                        select(task_integration_checkpoints.c.task_id).where(
-                            task_integration_checkpoints.c.task_id == task_id,
-                            task_integration_checkpoints.c.episode_id.is_not(None),
-                        )
-                    )
-                ).scalar_one_or_none()
+                from src.database.queries.hierarchy_queries import (
+                    HierarchyError,
+                    collection_episode_owns_completion_on,
+                )
+
+                # The same rule §7 settles by: an episode whose collection
+                # operation is cancelled (or was never opened) owns nothing in
+                # ``train``, so such a container completes as an ordinary one
+                # instead of being refused here after §7 had selected it
+                # (grand-lantern-78, 2026-10-07).
                 if (
-                    managed_parent is not None
+                    await collection_episode_owns_completion_on(conn, task_id)
                     and _operator_adoption_token is not _OPERATOR_ADOPTION_TOKEN
                     and _integration_completion_token is not _INTEGRATION_COMPLETION_TOKEN
                     and not await in_development_mode()
                 ):
-                    from src.database.queries.hierarchy_queries import HierarchyError
-
                     raise HierarchyError(
                         "integration_completion_required",
                         "managed parent requires verified integration completion",
