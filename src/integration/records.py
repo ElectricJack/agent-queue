@@ -1119,12 +1119,18 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
         async with self.db._engine.connect() as conn:
             route = (
                 await conn.execute(
-                    select(tasks.c.parent_task_id, projects.c.hierarchical_integration_mode)
+                    select(tasks.c.parent_task_id, tasks.c.pr_url,
+                           projects.c.hierarchical_integration_mode)
                     .join(projects, projects.c.id == tasks.c.project_id)
                     .where(tasks.c.id == task_id)
                 )
             ).one_or_none()
         if route is None or route.parent_task_id is not None or route.hierarchical_integration_mode != "train":
+            return result
+        # Completion is already durable and its PR was recorded. Admission
+        # owns subsequent GitHub liveness checks; a retry must remain idempotent
+        # even while GitHub is unavailable or the PR has since closed.
+        if result["outcome"] == "already_completed" and route.pr_url:
             return result
 
         from src.integration.root_pull_requests import EpicPullRequestService

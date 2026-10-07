@@ -862,6 +862,7 @@ doc_review_revisions = Table(
     # The submitted markdown with any leading frontmatter stripped.
     Column("content", Text, nullable=False),
     Column("content_sha256", Text, nullable=False),
+    Column("spec_kind", Text, nullable=True),
     Column("submitted_by", Text, nullable=False),  # principal label
     Column("submitted_task_id", Text, nullable=True),
     Column("changes_note", Text, nullable=True),
@@ -876,6 +877,10 @@ doc_review_revisions = Table(
     # approval stores in the artifact store.  NULL for every other review.
     Column("playbook", JSON, nullable=True),
     Column("playbook_artifact", Text, nullable=True),
+    CheckConstraint(
+        "spec_kind IS NULL OR spec_kind IN ('design', 'implementation')",
+        name="ck_doc_review_revisions_spec_kind",
+    ),
 )
 
 # Image evidence belongs to the submitted review revision, not the source task.
@@ -3045,6 +3050,11 @@ task_branch_origins = Table(
     Column("parent_repository_id", Text, nullable=True),
     Column("parent_ref", Text, nullable=True),
     Column("base_sha", Text, nullable=False),
+    # The filing base stays immutable. Record the refreshed parent/default
+    # heads used at worker start separately from that provenance.
+    Column("base_refresh", JSONB, nullable=True),
+    # Exact prerequisite heads used by a child, separate from its filing origin.
+    Column("stack_snapshot", JSONB, nullable=True),
     Column("creation_generation", Integer, nullable=False),
     Column("reserved", Boolean, nullable=False, server_default=false()),
     Column("materialized", Boolean, nullable=False, server_default=false()),
@@ -3468,6 +3478,9 @@ integration_batches = Table(
     Column("ci_evidence_id", Text, nullable=True),
     Column("final_main_sha", Text, nullable=True),
     Column("human_abort_reason", Text, nullable=True),
+    # Only authorized eject or daemon supersede writes this release instruction.
+    # It outlives task metadata and never changes the frozen source manifest.
+    Column("ejection_record", JSONB(none_as_null=True), nullable=True),
     Column("policy_snapshot", JSON, nullable=False),
     Column("artifact_snapshot", JSON, nullable=False),
     Column("cleanup_state", Text, nullable=False),

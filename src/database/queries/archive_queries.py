@@ -206,7 +206,7 @@ class ArchiveQueryMixin:
     async def _archive_task_on(
         self, task_id, *, conn, abandon_undelivered=False, abandon_reason=None,
         abandoned_by="operator", delivery=None, obsolete_integration_delegate=False,
-        archive_reason=None,
+        archive_reason=None, defer_projection=False,
     ):
         from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES, HierarchyError
 
@@ -354,6 +354,11 @@ class ArchiveQueryMixin:
             task = await self._get_task_conn(tid, conn=conn)
             if task is not None:
                 await self._archive_one(task, conn=conn)
+        if defer_projection:
+            # The change-set caller retains the old dependents/parent and
+            # performs their projection and stale-claim release as one pass.
+            from src.database.queries.task_queries import TransitionResult
+            return set(), [], TransitionResult()
         flipped = await self.recompute_blocked(affected, conn=conn) if affected else set()
         # Archiving a blocker unblocks its dependents exactly as
         # completing it would, so the same ``task.ready`` audit row and

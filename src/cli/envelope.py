@@ -99,6 +99,7 @@ BRIEF_PROJECTIONS: dict[str, tuple[str, ...]] = {
         "blocker_digest",
         "warnings",
         "promotion_flow",
+        "ci_source",
         "state",
         "stage",
         "count",
@@ -182,6 +183,19 @@ def _project_item(item: Any, fields: tuple[str, ...], entity: str) -> Any:
             projected["operator_decisions"] = item["operator_decisions"]
         if entity == "integration" and "github" in item:
             projected["github"] = item["github"]
+        if entity == "integration":
+            for field in ("intent", "dry_run", "task_id", "replacement_batch_id"):
+                if field in item:
+                    projected[field] = item[field]
+            if "batches" in item:
+                projected["batches"] = [
+                    {key: batch[key] for key in ("id", "intent", "target_ref", "member_disposition")
+                     if key in batch}
+                    for batch in item["batches"]
+                ]
+            for name in ("epics", "task_id", "ahead", "behind", "target_sha", "default_sha"):
+                if name in item:
+                    projected[name] = item[name]
     return projected
 
 

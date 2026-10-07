@@ -8,9 +8,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from dataclasses import replace
 
-from src.database.tables import integration_batches
+from sqlalchemy import func, select
+
+from src.database.tables import escalations, integration_batches, messages, tasks
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError
 from src.integration.batches import Batch, BatchMember, BatchObservation, candidate_ref
@@ -30,6 +32,7 @@ from src.integration.train import (
     candidate_head,
     conflict_brief,
     exact_gate,
+    sync_default_branch_brief,
 )
 from tests import test_integration_gitops
 from tests.test_integration_gitops import commit, git
@@ -149,9 +152,15 @@ class Repair:
     def __init__(self):
         self.calls = []
 
+    async def settle_green(self, batch_id, head_sha):
+        pass
+
     async def allocate(self, batch_id, **kwargs):
         self.calls.append((batch_id, kwargs))
         return {"outcome": "filed", "task_id": f"repair-{batch_id}", "attempts": 1}
+
+    async def recover_reservation(self, batch_id, **kwargs):
+        return {"outcome": "none"}
 
 
 ROOT = TrainTarget("p", "r", "refs/heads/main")
@@ -366,6 +375,222 @@ async def test_red_candidate_files_one_ordinary_repair_on_the_candidate_ref(db):
     assert task.branch_name == candidate_ref("batch-db").removeprefix("refs/heads/")
     assert task.branch_name != "main"
     assert (await store.get("batch-db")).repair_attempt_count == 1
+
+
+async def complete_ordinary_repair(db, repairs, task_id, ref):
+    from src.integration.models import BranchKey
+    from src.models import TaskStatus
+
+    await db.update_task(task_id, status=TaskStatus.COMPLETED)
+    lease = await repairs.locks.get(BranchKey(repository_id="r", branch=ref))
+    await repairs.locks.release(lease.grant())
+
+
+@pytest.mark.parametrize("recovery", ["checks", "contained", "allocation", "advisory"])
+async def test_repair_escalation_debug_then_one_supervisor_incident_and_green_recovery(db, recovery):
+    """Spec §6.7: allocations escalate; repeated reds/restarts never spend attempts."""
+    from src.integration.batches import BatchStore
+    from src.integration.models import RepairPolicy
+    from src.integration.repair import OrdinaryRepairService
+    from src.models import TaskType
+
+    store, repairs = BatchStore(db), OrdinaryRepairService(db)
+    frozen = await store.freeze(batch("batch-escalation"), MEMBERS, trees={"t-1": PARTIAL})
+    policy = RepairPolicy(primary_attempts=1, debug_attempts=1, primary_seconds=30,
+                          debug_seconds=60, debug_intelligence_class="deep-high",
+                          debug_profile_id="ignored-legacy-profile", on_exhausted="human")
+    checks = Checks(*(ChecksState.RED,) * 5, ChecksState.GREEN)
+    current = replace(lane(Service(*("testing",) * 6, "delivered"), checks),
+                      repair_policy=policy)
+    t = train(Targets(ROOT), Batches({ROOT.key: (frozen, MEMBERS)}), {ROOT.key: current}, repairs)
+    first = await t.visit(ROOT)
+    task = await db.get_task(first.repair["task_id"])
+    assert task.task_type == TaskType.BUGFIX and task.profile_id is None
+    assert task.class_hint is None
+    assert (await repairs.input(task.id))["budget_seconds"] == 30
+    # An in-flight primary is found even though the counter reached its limit.
+    assert (await t.visit(ROOT)).repair["task_id"] == task.id
+    await complete_ordinary_repair(db, repairs, task.id, candidate_ref(frozen.id))
+    second = await t.visit(ROOT)
+    task = await db.get_task(second.repair["task_id"])
+    assert task.task_type == TaskType.BUGFIX and task.profile_id is None
+    assert task.class_hint == "deep-high"
+    assert (await repairs.input(task.id))["stage"] == "debug"
+    assert (await repairs.input(task.id))["budget_seconds"] == 60
+    assert "work budget: 60 seconds" in task.description
+    await complete_ordinary_repair(db, repairs, task.id, candidate_ref(frozen.id))
+    third = await t.visit(ROOT)
+    assert (third.state, third.repair["outcome"]) == ("blocked", "human_required")
+    assert third.repair["attempt_count"] == 2
+    blocker = AsyncMock(return_value={"reason": "repair_completion_unconfirmed"})
+    concurrent = await asyncio.gather(*(repairs.allocate(
+        frozen.id, target_ref=candidate_ref(frozen.id), head_sha=CANDIDATE, policy=policy,
+        completion_blocker=blocker,
+    ) for _ in range(4)))
+    assert all(row["escalation_id"] == third.repair["escalation_id"] for row in concurrent)
+    blocker.assert_not_awaited()  # A proof blocker cannot hide the exhausted budget.
+    # The allocator is stateless: a daemon restart finds the same incident/notice.
+    t.repair = OrdinaryRepairService(db)
+    repeated = await t.visit(ROOT)
+    assert repeated.repair["escalation_id"] == third.repair["escalation_id"]
+    incident = await db.get_escalation(third.repair["escalation_id"])
+    assert incident["source_identity"] == frozen.id and incident["state"] == "needs_human"
+    assert incident["supervisor_owner"] == "supervisor-p"
+    assert incident["choices"] == ["eject", "abort-batch"]
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(tasks)) == 2
+        assert await conn.scalar(select(func.count()).select_from(escalations)) == 1
+        assert await conn.scalar(select(func.count()).select_from(messages).where(
+            messages.c.body_kind == "integration_repair_exhausted",
+        )) == 1
+    if recovery == "allocation":
+        green = await t.repair.allocate(
+            frozen.id, target_ref=candidate_ref(frozen.id), head_sha=CANDIDATE,
+            green_sha=CANDIDATE, policy=policy,
+        )
+        assert (green["outcome"], green["attempt_count"]) == ("green", 2)
+    else:
+        if recovery == "contained":
+            # Cleanup can remove the candidate ref after Git proves delivery.
+            current.service.visit = AsyncMock(return_value=BatchObservation(
+                "delivered", target_sha=TARGET_SHA,
+            ))
+        elif recovery == "advisory":
+            checks.states = [ChecksState.RED]
+            current.checks.advisory = True
+        assert (await t.visit(ROOT)).state == "delivered"
+    cleared = await db.get_escalation(incident["id"])
+    assert cleared["state"] == "resolved"
+    assert cleared["terminal_evidence"] == {
+        "batch_id": frozen.id, "candidate_sha": TARGET_SHA if recovery == "contained" else CANDIDATE,
+    }
+    assert (await store.get(frozen.id)).repair_attempt_count == 2
+
+
+@pytest.mark.parametrize("green_after", [1, 2])
+async def test_green_repair_bypasses_primary_and_debug_limits(db, green_after):
+    from src.integration.batches import BatchStore
+    from src.integration.models import RepairPolicy
+    from src.integration.repair import OrdinaryRepairService
+
+    store, repairs = BatchStore(db), OrdinaryRepairService(db)
+    frozen = await store.freeze(batch("batch-green"), MEMBERS, trees={"t-1": PARTIAL})
+    policy = RepairPolicy(primary_attempts=1, debug_attempts=1, debug_intelligence_class="deep-high")
+    current = replace(lane(Service(*("testing",) * (green_after + 1), "delivered"),
+                           Checks(*(ChecksState.RED,) * green_after, ChecksState.GREEN)),
+                      repair_policy=policy)
+    t = train(Targets(ROOT), Batches({ROOT.key: (frozen, MEMBERS)}), {ROOT.key: current}, repairs)
+    for _ in range(green_after):
+        visit = await t.visit(ROOT)
+        await complete_ordinary_repair(db, repairs, visit.repair["task_id"], candidate_ref(frozen.id))
+    assert (await t.visit(ROOT)).state == "delivered"
+    assert (await store.get(frozen.id)).repair_attempt_count == green_after
+    assert await db.list_escalations(project_id="p") == []
+
+
+async def test_exhausted_continue_keeps_filing_ordinary_debug_repairs(db):
+    from src.integration.batches import BatchStore
+    from src.integration.models import RepairPolicy
+    from src.integration.repair import OrdinaryRepairService
+
+    store, repairs = BatchStore(db), OrdinaryRepairService(db)
+    frozen = await store.freeze(batch("batch-continue"), MEMBERS, trees={"t-1": PARTIAL})
+    policy = RepairPolicy(primary_attempts=1, debug_attempts=1, debug_intelligence_class="deep-high",
+                          on_exhausted="continue")
+    current = replace(lane(Service(*("testing",) * 4), Checks(*(ChecksState.RED,) * 4)),
+                      repair_policy=policy)
+    t = train(Targets(ROOT), Batches({ROOT.key: (frozen, MEMBERS)}), {ROOT.key: current}, repairs)
+    for attempt in range(1, 5):
+        visit = await t.visit(ROOT)
+        assert visit.repair["outcome"] == "filed" and visit.repair["attempt_count"] == attempt
+        task = await db.get_task(visit.repair["task_id"])
+        assert task.class_hint == (None if attempt == 1 else "deep-high")
+        await complete_ordinary_repair(db, repairs, task.id, candidate_ref(frozen.id))
+    assert (await store.get(frozen.id)).repair_attempt_count == 4
+    assert await db.list_escalations(project_id="p") == []
+
+
+@pytest.mark.parametrize("scope", ["member", "batch"])
+async def test_conflict_repair_brief_honors_policy_scope(scope):
+    from src.integration.models import RepairPolicy
+
+    repair = Repair()
+    current = replace(lane(Conflicting(CONFLICT, candidate=PARTIAL)), repair_policy=RepairPolicy(
+        debug_intelligence_class="deep-high", conflict_scope=scope,
+    ))
+    t = train(Targets(ROOT), Batches({ROOT.key: (batch(), CONFLICTING_MEMBERS)}),
+              {ROOT.key: current}, repair)
+    await t.visit(ROOT)
+    brief = repair.calls[0][1]["brief"]
+    assert f"Conflict scope: {scope}." in brief
+    assert ("conflicting member's changes" if scope == "member" else "whole frozen batch") in brief
+    assert "Still to merge onto the starting head, in this order:" in brief
+    assert "t-2" in brief and "t-3" in brief
+
+
+@pytest.mark.parametrize("scope", ["member", "batch"])
+def test_default_branch_sync_conflict_brief_honors_policy_scope(scope):
+    brief = sync_default_branch_brief(
+        {"ref": "refs/heads/main", "sha": TARGET_SHA, "checks": ["unit"],
+         "conflicting_files": ["src/example.py"]},
+        CONFLICTING_MEMBERS, starting_sha=PARTIAL, conflict_scope=scope,
+    )
+    assert f"Conflict scope: {scope}." in brief
+    assert "src/example.py" in brief
+    assert "t-1" in brief and "t-2" in brief and "t-3" in brief
+
+@pytest.mark.parametrize("state", ["testing", "unknown"])
+@pytest.mark.parametrize("lost", ["released", "expired"])
+async def test_train_restores_ready_repair_without_waiting_for_red_checks(db, state, lost):
+    from src.database.queries.claim_queries import _frontier_where
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+    from src.database.tables import tasks
+    from src.integration.batches import BatchStore
+    from src.integration.lock import BranchLock
+    from src.integration.models import BranchKey
+    from src.integration.repair import OrdinaryRepairService
+    from src.models import TaskStatus
+
+    store, now = BatchStore(db), [100.0]
+    await store.freeze(batch("batch-retry"), MEMBERS, trees={"t-1": "d" * 40})
+    locks = BranchLock(db, clock=lambda: now[0])
+    repair = OrdinaryRepairService(db, locks=locks, clock=lambda: now[0])
+    ref = candidate_ref("batch-retry")
+    target = BranchKey(repository_id="r", branch=ref)
+    filed = await repair.allocate("batch-retry", target_ref=ref, head_sha=CANDIDATE,
+                                  authorize=AsyncMock(return_value=True), ttl_seconds=10)
+    task_id = filed["task_id"]
+    original = await repair.input(task_id)
+    await db.update_task(task_id, status=TaskStatus.READY)
+    old = (await locks.get(target)).grant()
+    if lost == "released":
+        await locks.release(old)
+        async with db._engine.connect() as conn:
+            assert await conn.scalar(select(tasks.c.id).where(
+                tasks.c.id == task_id, _frontier_where("p", ProjectIntegrationMode(True, "r")),
+            )) is None
+    else:
+        now[0] += 10
+    frozen = await store.get("batch-retry")
+    t = train(Targets(ROOT), Batches({ROOT.key: (frozen, MEMBERS)}),
+              {ROOT.key: lane(Service(state), Checks(ChecksState.PENDING))}, repair)
+
+    visit = await t.visit(ROOT)
+
+    assert visit.state == state
+    lease = await locks.get(target)
+    assert (lease.holder, lease.fence) == (task_id, old.token + 1)
+    assert await repair.input(task_id) == original
+    assert (await store.get("batch-retry")).repair_attempt_count == 1
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.id).where(
+            tasks.c.id == task_id, _frontier_where("p", ProjectIntegrationMode(True, "r")),
+        )) == task_id
+    # A repeated visit keeps the same task/fence rather than allocating again.
+    t = train(Targets(ROOT), Batches({ROOT.key: (frozen, MEMBERS)}),
+              {ROOT.key: lane(Service(state), Checks(ChecksState.PENDING))}, repair)
+    await t.visit(ROOT)
+    assert await locks.get(target) == lease
 
 
 async def test_filed_conflict_repair_task_carries_the_plain_english_brief(db):
@@ -763,6 +988,82 @@ async def test_rate_limited_visit_defers_the_target_with_backoff(caplog):
     assert "\n" not in message
 
 
+class Holding(Service):
+    """A promotion lane that names what each visit waits for."""
+
+    def __init__(self, *reasons):
+        super().__init__()
+        self.reasons = list(reasons)
+
+    async def visit(self, batch, members, snapshot):
+        self.calls += 1
+        return BatchObservation("held", SOURCE, TARGET_SHA,
+                                detail={"reason": self.reasons.pop(0)})
+
+
+PROMOTION = TrainTarget("p", "r", "refs/heads/main", "promotion",
+                        step={"id": "release", "target": "main", "gate": {"approval": "operator"}})
+
+
+async def test_named_promotion_hold_defers_its_target_until_woken():
+    """grand-lantern-78.4: a request waiting on a person is not re-polled every tick."""
+    clock = [100.0]
+    approval, vetoed = "promotion_operator_approval_missing", "promotion_pr_changes_requested"
+    service = Holding(approval, approval, vetoed, vetoed)
+
+    async def lane_for(target):
+        return lane(service)
+
+    t = IntegrationTrain(targets=Targets(PROMOTION),
+                         batches=Batches({PROMOTION.key: (batch(), MEMBERS)}),
+                         lane_for=lane_for, repair=Repair(), clock=lambda: clock[0])
+    label = "p/r/refs/heads/main"
+
+    assert (await t.tick())["started"] == [label]
+    await t.drain()
+    [row] = t.status()
+    assert (row["state"], row["detail"]["reason"]) == ("held", approval)
+    assert row["detail"]["retry_at"] == row["deferred_until"] == 130.0
+
+    clock[0] = 129.0
+    assert await t.tick() == {"started": [], "running": [], "skipped": [], "deferred": [label]}
+    assert service.calls == 1
+
+    clock[0] = 130.0
+    assert (await t.tick())["started"] == [label]
+    await t.drain()
+    # The same refusal again doubles the wait.
+    assert t.status()[0]["detail"]["retry_at"] == 130.0 + 60.0
+
+    clock[0] = 190.0
+    assert (await t.tick())["started"] == [label]
+    await t.drain()
+    # A different refusal starts the wait over.
+    assert t.status()[0]["detail"]["retry_at"] == 190.0 + 30.0
+
+    # A promote command wakes only its own target, at once.
+    assert t.wake("p", "r", "refs/heads/release") == 0
+    assert t.wake("p", "r", "refs/heads/main") == 1
+    assert (await t.tick())["started"] == [label]
+    await t.drain()
+    assert service.calls == 4
+
+
+async def test_only_a_named_promotion_hold_defers_its_target():
+    root = train(Targets(ROOT), Batches({ROOT.key: (batch(), MEMBERS)}),
+                 {ROOT.key: lane(Holding("promotion_operator_approval_missing"))})
+    unnamed = train(Targets(PROMOTION), Batches({PROMOTION.key: (batch(), MEMBERS)}),
+                    {PROMOTION.key: lane(Service("held", "held"))})
+    for t, target, visits in ((root, ROOT, 1), (unnamed, PROMOTION, 2)):
+        for _ in range(visits):
+            assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
+            await t.drain()
+        [row] = t.status()
+        assert row["state"] == "held" and "deferred_until" not in row
+        assert "retry_at" not in (row["detail"] or {})
+    assert root.wake("p") == 0
+
+
 async def test_rate_limited_visit_honours_a_later_github_retry_time():
     clock = [100.0]
 
@@ -919,6 +1220,43 @@ async def test_visit_timeout_frees_the_target_for_the_next_tick():
     }
     assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
     await t.stop()
+
+
+async def test_requested_visit_shares_running_lane_and_respects_rate_limit_pause():
+    gate, entered = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def limited():
+        calls.append(True)
+        entered.set()
+        await gate.wait()
+        raise _rate_limited()
+
+    t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service(), fetch=limited)})
+    await t.tick()
+    await entered.wait()
+    requested = asyncio.create_task(t.request_visit(ROOT))
+    await asyncio.sleep(0)
+    assert calls == [True]
+    gate.set()
+    visit = await requested
+    assert visit.detail["reason"] == "rate_limited"
+    assert await t.request_visit(ROOT) is None
+    assert calls == [True]
+
+
+async def test_requested_visit_uses_timeout_and_never_returns_stale_tick_result():
+    t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service())})
+    assert (await t.request_visit(ROOT)).state == "idle"
+    async with t._tick_lock:
+        assert await t.request_visit(ROOT) is None
+
+    async def hang():
+        await asyncio.Event().wait()
+
+    t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service(), fetch=hang)},
+              visit_timeout_seconds=0.01)
+    assert (await t.request_visit(ROOT)).detail["reason"] == "visit_timeout"
 
 
 async def test_restart_resumes_from_git_without_any_notification():

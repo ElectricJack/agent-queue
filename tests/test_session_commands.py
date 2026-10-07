@@ -1357,8 +1357,9 @@ class TestEndToEndOnFakeProvider:
         from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
         from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
         from src.integration.train import TrainTarget
-        from src.integration.train_sources import DatabaseBatches, LeasedPublish, _never_trusted
+        from src.integration.train_sources import LeasedPublish, _never_trusted
         from tests.test_integration_gitops import LocalGit
+        from tests.test_integration_train_sources import fixture_batches
 
         wd, git, base = await self._setup_development_git(db, real_orch, tmp_path)
         real_orch.config.integration.git_first = "active"
@@ -1386,7 +1387,7 @@ class TestEndToEndOnFakeProvider:
             wd, project_id="p1", repository_id="repo", repository_url=repo.url,
             target_ref="refs/heads/main",
         )
-        members, requests, dependencies = await DatabaseBatches(db).pending(
+        members, requests, dependencies = await fixture_batches(db).pending(
             TrainTarget("p1", "repo", "refs/heads/main"), snapshot,
         )
         assert [(m.task_id, m.source_sha, m.source_base_sha) for m in members] == [
@@ -1415,7 +1416,7 @@ class TestEndToEndOnFakeProvider:
         async def gate(_batch, _sha, _tree):
             return False
 
-        batches = DatabaseBatches(db)
+        batches = fixture_batches(db)
         service = BatchService(
             BatchStore(db), GitOperations(
                 db, git=transport, repository=repository,

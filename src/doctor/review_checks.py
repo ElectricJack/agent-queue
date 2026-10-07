@@ -74,9 +74,11 @@ def _vault_root(ctx: DoctorContext) -> Path:
     return Path(root)
 
 
-def _frontmatter_for(review: dict, playbook: dict | None = None) -> dict:
+def _frontmatter_for(
+    review: dict, playbook: dict | None = None, spec_kind: str | None = None,
+) -> dict:
     """The frontmatter the service would write if it were to rewrite the file."""
-    return frontmatter_for(review, playbook)
+    return frontmatter_for(review, playbook, spec_kind)
 
 
 def _vault_file_state(root: Path, review: dict, current_sha256: str) -> str:
@@ -210,7 +212,9 @@ async def _fix(ctx: DoctorContext) -> CheckResult:
         try:
             write_atomic(
                 root / review["vault_path"],
-                render(_frontmatter_for(review, current.get("playbook")), current["content"]),
+                render(_frontmatter_for(
+                    review, current.get("playbook"), current.get("spec_kind"),
+                ), current["content"]),
             )
             rewritten.append(rid)
         except OSError:

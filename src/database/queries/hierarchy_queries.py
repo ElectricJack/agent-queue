@@ -10,6 +10,7 @@ transaction.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ from sqlalchemy import (
     func,
     insert,
     literal,
+    literal_column,
     or_,
     select,
     true,
@@ -59,6 +61,8 @@ from src.database.tables import (
 )
 from src.models import AgentState, DepType, Task, TaskStatus
 from src.task_names import MAX_STRUCTURAL_DEPTH, child_task_id
+
+logger = logging.getLogger(__name__)
 
 # Container statuses that withhold their children (work-graph §3.1) are
 # enforced by BlockedStateMixin's satisfaction table
@@ -251,6 +255,21 @@ def _settlement_clauses() -> list:
                 select(literal(1)).where(
                     task_integration_checkpoints.c.task_id == tasks.c.id,
                     task_integration_checkpoints.c.episode_id.is_not(None),
+                    # In a train project the git-first train never runs the
+                    # legacy collector, and orphan settlement cancels its
+                    # operation; a cancelled episode owns nothing, so the
+                    # container settles here (grand-lantern-78, 2026-10-07).
+                    or_(
+                        projects.c.hierarchical_integration_mode != "train",
+                        exists(
+                            select(literal(1)).where(
+                                integration_repair_operations.c.parent_task_id == tasks.c.id,
+                                integration_repair_operations.c.episode_id
+                                == task_integration_checkpoints.c.episode_id,
+                                integration_repair_operations.c.state != "cancelled",
+                            )
+                        ),
+                    ),
                 )
             ),
         ),
@@ -342,6 +361,10 @@ class ProjectIntegrationMode:
     integration_repository_id: str | None
     # None preserves legacy admission; a supplied set is one revalidated Git view.
     delivered_prerequisite_ids: frozenset[str] | None = None
+    cross_epic_prerequisites: str = "default_branch"
+    default_prerequisite_ids: frozenset[str] = frozenset()
+    stacked: bool = False
+    stackable_prerequisite_ids: frozenset[str] = frozenset()
 
     @classmethod
     def of(cls, project) -> ProjectIntegrationMode | None:
@@ -352,10 +375,16 @@ class ProjectIntegrationMode:
         """
         if project is None:
             return None
+        from src.integration.stacked_branches import stacked_policy
+
         return cls(
+            stacked=stacked_policy(project),
             hierarchical=getattr(project, "hierarchical_integration_mode", None)
             in HIERARCHY_MODES,
             integration_repository_id=getattr(project, "integration_repository_id", None),
+            cross_epic_prerequisites=(
+                getattr(project, "hierarchical_integration_policy", None) or {}
+            ).get("cross_epic_prerequisites", "default_branch"),
         )
 
 
@@ -587,6 +616,8 @@ def delivered_same_parent_prerequisites_when_hierarchical(
     )
     if mode is not None and mode.delivered_prerequisite_ids is not None:
         delivered = prerequisite.c.id.in_(mode.delivered_prerequisite_ids)
+    if mode is not None and mode.stacked:
+        delivered = or_(delivered, prerequisite.c.id.in_(mode.stackable_prerequisite_ids))
     prerequisite_is_undelivered = exists(
         select(literal(1))
         .select_from(
@@ -646,17 +677,67 @@ def delivered_same_parent_prerequisites_when_hierarchical(
 LIVE_SESSION_STATES = ("starting", "running", "draining")
 
 
-def delivered_prerequisites_for_projects(modes=None):
+def delivered_prerequisites_for_projects(modes=None, *, cross_parent=True):
     """Use each project's Git view, retaining legacy admission for other projects."""
-    legacy = delivered_same_parent_prerequisites_when_hierarchical()
+    def predicate(mode=None):
+        siblings = delivered_same_parent_prerequisites_when_hierarchical(mode)
+        return siblings & cross_parent_prerequisites_on_default(mode) if cross_parent else siblings
+
+    legacy = predicate()
     if not modes:
         return legacy
     return case(
-        {pid: delivered_same_parent_prerequisites_when_hierarchical(mode)
-         for pid, mode in modes.items()},
+        {pid: predicate(mode) for pid, mode in modes.items()},
         value=tasks.c.project_id,
         else_=legacy,
     )
+
+
+def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = None):
+    """Cross-parent blocks edges require exact Git delivery, never a receipt.
+
+    With no observation, a completed cross-parent source is withheld. The
+    explicit ``completed`` policy retains the legacy graph-only admission.
+    """
+    if mode is not None and (not mode.hierarchical
+                             or mode.cross_epic_prerequisites == "completed"):
+        return true()
+    edge = task_dependencies.alias("cross_prerequisite_edge")
+    source = tasks.alias("cross_prerequisite_source")
+    # Fixed SQL constants do not consume the frontier's parameter budget.
+    # The observed source ids use one array bind, however large the frontier.
+    ids = mode.default_prerequisite_ids if mode else ()
+    unproven = ~(source.c.id == any_(literal(list(ids), type_=ARRAY(Text)))) if ids else true()
+    cross_edge = select(literal_column("1")).select_from(
+        edge.join(source, source.c.id == edge.c.depends_on_task_id),
+    ).correlate(tasks).where(
+        edge.c.task_id == tasks.c.id, edge.c.dep_type == literal_column("'blocks'"),
+        source.c.parent_task_id.is_distinct_from(tasks.c.parent_task_id)
+        | source.c.parent_task_id.is_(None),
+        source.c.status == literal_column("'COMPLETED'"),
+    )
+    missing = exists(cross_edge.where(unproven))
+    if mode is None:
+        enabled = exists(select(literal_column("1")).where(
+            projects.c.id == tasks.c.project_id,
+            projects.c.hierarchical_integration_mode.in_(HIERARCHY_MODES),
+            func.coalesce(projects.c.hierarchical_integration_policy[
+                "cross_epic_prerequisites"].as_string(), "default_branch") != "completed",
+        ))
+    parent = tasks.alias("refresh_pending_parent")
+    pending = exists(cross_edge) & exists(select(literal_column("1")).select_from(
+        integration_batches.join(parent, parent.c.id == tasks.c.parent_task_id),
+    ).correlate(tasks).where(
+        integration_batches.c.project_id == tasks.c.project_id,
+        integration_batches.c.repository_id == parent.c.repo_id,
+        integration_batches.c.intent != literal_column("'aborted'"),
+        integration_batches.c.lifecycle != literal_column("'promoted'"),
+        integration_batches.c.target_ref == (literal_column("'refs/heads/'", type_=Text) + func.replace(
+            parent.c.branch_name, literal_column("'refs/heads/'"), literal_column("''"))),
+    ))
+    if mode is None:
+        return ~(enabled & (missing | pending))
+    return ~missing & ~pending
 
 
 class HierarchyError(Exception):
@@ -1482,6 +1563,7 @@ class HierarchyQueryMixin:
         integration_authorized: bool = False,
         completed_parent_for_repair: bool = False,
         reject_live_parent: bool = False,
+        defer_projection: bool = False,
     ) -> TransitionResult:
         """Move *task_id* under *parent_id* (``None`` = root).  Spec §5.
 
@@ -1498,6 +1580,9 @@ class HierarchyQueryMixin:
         ``reject_live_parent`` protects a reparent destination from acquiring
         children while another worker holds it. Creation paths leave it off:
         workers deliberately creating subtasks must retain their ownership.
+
+        ``defer_projection`` is for a task change set: the caller must
+        recompute the final graph and settle both parents before committing.
         """
         task_row = (
             await conn.execute(
@@ -1641,6 +1726,8 @@ class HierarchyQueryMixin:
             .values(parent_task_id=parent_id, updated_at=time.time())
         )
         affected |= await self._collect_affected({task_id}, conn)
+        if defer_projection:
+            return TransitionResult()
         flipped = await self.recompute_blocked(affected, conn=conn)
         settle_result = await self.settle_containers(
             {p for p in (old_parent, parent_id) if p}, conn=conn
@@ -1908,16 +1995,26 @@ class HierarchyQueryMixin:
         )
         hits = [r[0] for r in (await conn.execute(stmt)).fetchall()]
         for cid in hits:
+            settleable, completion_token = await self._episode_completion_token(conn, cid)
+            if not settleable:
+                continue
             # _apply_transition seeds the container's own parent back into
             # this method at depth + 1, so grandparents are handled by
-            # recursion; merge everything it settled and flipped.
-            res = await self._apply_transition(
-                conn,
-                cid,
-                TaskStatus.COMPLETED,
-                context="subtasks_completed",
-                _settle_depth=depth,
-            )
+            # recursion; merge everything it settled and flipped. A refusal
+            # skips this container rather than failing the caller's write.
+            try:
+                async with conn.begin_nested():
+                    res = await self._apply_transition(
+                        conn,
+                        cid,
+                        TaskStatus.COMPLETED,
+                        context="subtasks_completed",
+                        _settle_depth=depth,
+                        _integration_completion_token=completion_token,
+                    )
+            except HierarchyError as exc:
+                logger.warning("Container %s not settled: %s", cid, exc)
+                continue
             await self._merge_settlement(conn, cid, res, result)
         stale = (
             select(tasks.c.id)
@@ -1936,7 +2033,14 @@ class HierarchyQueryMixin:
                 for child_id in required.get(cid, ())
             ):
                 continue
-            res = await self._settle_stale_container(conn, cid, depth=depth)
+            # One refused container must not stall the sweep for every other
+            # container: settle each inside its own savepoint.
+            try:
+                async with conn.begin_nested():
+                    res = await self._settle_stale_container(conn, cid, depth=depth)
+            except HierarchyError as exc:
+                logger.warning("Stale container %s not settled: %s", cid, exc)
+                continue
             if res is not None:
                 await self._merge_settlement(conn, cid, res, result)
         return result
@@ -1958,6 +2062,52 @@ class HierarchyQueryMixin:
                 result.settled.append(sid)
         result.flipped |= res.flipped
         result.ready.extend(res.ready)
+
+    async def _episode_completion_token(self, conn, cid: str):
+        """Whether *cid* may settle, and the completion token it needs.
+
+        A managed parent completes only through verified integration. The one
+        exception settlement admits is a train project whose legacy collection
+        episode was cancelled: that episode owns nothing, and the git-first
+        train never runs its collector. Re-checked on the caller's (locked)
+        connection; anything else with an episode is refused.
+        """
+        episode = (
+            await conn.execute(
+                select(task_integration_checkpoints.c.episode_id).where(
+                    task_integration_checkpoints.c.task_id == cid,
+                    task_integration_checkpoints.c.episode_id.is_not(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if episode is None:
+            return True, None
+        mode = (
+            await conn.execute(
+                select(projects.c.hierarchical_integration_mode)
+                .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
+                .where(tasks.c.id == cid)
+            )
+        ).scalar_one_or_none()
+        if mode != "train":
+            # Hierarchy keeps its own collector; only it completes the parent.
+            return True, None
+        live = (
+            await conn.execute(
+                select(integration_repair_operations.c.id)
+                .where(
+                    integration_repair_operations.c.parent_task_id == cid,
+                    integration_repair_operations.c.episode_id == episode,
+                    integration_repair_operations.c.state != "cancelled",
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if live is not None:
+            return False, None
+        from src.database.queries.task_queries import _INTEGRATION_COMPLETION_TOKEN
+
+        return True, _INTEGRATION_COMPLETION_TOKEN
 
     async def _settle_stale_container(
         self, conn, cid: str, *, depth: int
@@ -1988,6 +2138,9 @@ class HierarchyQueryMixin:
                     return None
             except (TypeError, ValueError, AttributeError):
                 pass
+        settleable, completion_token = await self._episode_completion_token(conn, cid)
+        if not settleable:
+            return None
         await conn.execute(
             delete(task_metadata).where(
                 task_metadata.c.task_id == cid,
@@ -2000,6 +2153,7 @@ class HierarchyQueryMixin:
             TaskStatus.COMPLETED,
             context=STALE_CONTAINER_CONTEXT,
             force=True,
+            _integration_completion_token=completion_token,
             _manual_pause_control=True,
             _settle_depth=depth,
             resume_after=None,

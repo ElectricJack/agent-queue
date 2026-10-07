@@ -19,7 +19,16 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from src.api.auth import LOCAL_SCOPE, request_operator_viewer
+from src.api.auth import (
+    LOCAL_SCOPE,
+    request_operator_viewer,
+    request_remote_dashboard_viewer,
+)
+from src.api.host_shell import (
+    HOST_SHELL_NO_BEARER,
+    HOST_SHELL_VIEWER_REQUIRED,
+    audit_host_shell,
+)
 from src.models import TaskStatus
 from src.sessions.host_shell import HostShellManager, is_host_shell_name
 from src.sessions.terminal_pty import TerminalAttachError
@@ -156,18 +165,28 @@ class TerminalStreamService:
         cfg = getattr(self.config, "host_shell", None)
         return bool(cfg is not None and cfg.enabled is True)
 
+    def host_shell_allow_remote(self) -> bool:
+        cfg = getattr(self.config, "host_shell", None)
+        return bool(cfg is not None and getattr(cfg, "allow_remote", False) is True)
+
+    def host_shell_viewer(self, request) -> bool:
+        """The local operator, or a remote dashboard viewer under ``allow_remote``."""
+        if request_operator_viewer(request):
+            return True
+        return self.host_shell_allow_remote() and request_remote_dashboard_viewer(request)
+
     async def _authorize(self, ws, token, *, host_shell: bool = False):
         if host_shell:
-            # A host shell is remote code execution by design: only the local
-            # operator (no bearer token at all, so never a worker or a
-            # supervisor) on loopback or through the dashboard edge's
-            # operator verdict.
+            # A host shell is remote code execution by design: never a bearer
+            # token (a worker or a supervisor); the local operator on loopback
+            # or through the dashboard edge's operator verdict; and, with
+            # ``allow_remote``, a viewer the edge proxied from another machine.
             if not self.host_shell_enabled():
                 raise TerminalStreamError("Host shells are disabled", 4403)
             if token is not None:
-                raise TerminalStreamError("Host shells are for the local operator only", 4403)
-            if not request_operator_viewer(ws):
-                raise TerminalStreamError("Host shells are for the local operator only", 4403)
+                raise TerminalStreamError(HOST_SHELL_NO_BEARER, 4403)
+            if not self.host_shell_viewer(ws):
+                raise TerminalStreamError(HOST_SHELL_VIEWER_REQUIRED, 4403)
         scope = LOCAL_SCOPE
         if token is not None:
             if self.token_store is None:
@@ -254,6 +273,7 @@ class TerminalStreamService:
         current = asyncio.current_task()
         registered = False
         host_shell = is_host_shell_name(session_id)
+        audited = False
         try:
             self._check_origin(ws)
             token = self._credentials(ws)
@@ -273,6 +293,12 @@ class TerminalStreamService:
             row, generation = await self._session(session_id)
             await ws.accept(subprotocol=_PROTOCOL if _PROTOCOL in ws.scope.get("subprotocols", []) else None)
             accepted = True
+            if host_shell:
+                # Audit the accepted connection even if the attach backend fails.
+                audited = True
+                await audit_host_shell(
+                    self, ws, "input_connected" if input_only else "attached", session_id,
+                )
             provider = self.orchestrator.session_providers.create(row.provider)
             if input_only:
                 client = await self.attach_input(provider, row)
@@ -412,6 +438,10 @@ class TerminalStreamService:
                     await client.close()
             if registered:
                 self._handlers.discard(current)
+            if audited:
+                await audit_host_shell(
+                    self, ws, "input_disconnected" if input_only else "detached", session_id,
+                )
 
 
 def build_terminal_router(orchestrator, config, *, token_store=None, **kwargs) -> APIRouter:

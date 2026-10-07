@@ -25,6 +25,7 @@ from src.integration.ci import (
     AttestationPayload,
     AttestedCheck,
     AttestedWorkflowRun,
+    PromotionAttestationPayload,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -128,7 +129,8 @@ def _check_run(check: AttestedCheck, **overrides) -> dict:
 class FakeGitHub:
     """The two GitHub endpoints the verifier reads, with Link-header pagination."""
 
-    def __init__(self, *, page_size: int = 100) -> None:
+    def __init__(self, *, page_size: int = 100, name=ATTESTATION_CHECK_NAME) -> None:
+        self.name = name
         self.attestations: list[dict] = []
         self.check_runs: dict[int, dict] = {}
         self.requests: list[str] = []
@@ -145,7 +147,7 @@ class FakeGitHub:
         query = parse_qs(parts.query)
         listing = f"/repos/{REPOSITORY}/commits/{SHA}/check-runs"
         if parts.path == listing:
-            assert query["check_name"] == [ATTESTATION_CHECK_NAME]
+            assert query["check_name"] == [self.name]
             assert query["filter"] == ["all"]
             page = int(query.get("page", ["1"])[0])
             start = (page - 1) * self.page_size
@@ -197,6 +199,64 @@ def _valid() -> FakeGitHub:
     github = FakeGitHub()
     _publish(github, _payload())
     return github
+
+
+def _promotion_payload(step="release", **overrides):
+    lower = _payload()
+    fields = {
+        "schema": "aq.promotion-attestation.v1",
+        "repository": {
+            "canonical_repository_id": "agent-queue2", "repository_id": REPOSITORY_ID,
+            "full_name": REPOSITORY, "ci_producer_app_id": CI_APP_ID,
+            "attestation_app_id": APP_ID,
+        },
+        "step": step, "target_ref": "refs/heads/main",
+        "attestation_name": f"Agent Queue Promotion Attestation ({step})",
+        "version": "1.2.3", "request_id": f"promotion:agent-queue2:{step}:1.2.3",
+        "batch_id": "promotion-batch", "source_sha": SHA, "base_sha": OTHER_SHA,
+        "checks_version": VERSION, "checks": lower.checks, "workflow_runs": lower.workflow_runs,
+    }
+    fields.update(overrides)
+    return PromotionAttestationPayload(**fields)
+
+
+def test_promotion_payload_roundtrips_independently_of_integration_payload():
+    payload = _promotion_payload()
+    assert PromotionAttestationPayload.from_canonical_bytes(payload.canonical_bytes()) == payload
+    assert payload.external_id.startswith("aq-promotion-attestation-v1:")
+    with pytest.raises(ValueError):
+        AttestationPayload.from_canonical_bytes(payload.canonical_bytes())
+
+
+@pytest.mark.parametrize("proof", ["promotion", "integration", "other-step"])
+def test_step_verifier_accepts_only_this_steps_promotion_proof(proof):
+    payload = _promotion_payload("staging" if proof == "other-step" else "release")
+    name = "Agent Queue Promotion Attestation (release)"
+    github = FakeGitHub(name=name)
+    _publish(github, _payload() if proof == "integration" else payload, name=name)
+    verdict = hosted.verify(_env(ATTESTATION_NAME=name, STEP="release", TARGET_REF="refs/heads/main"),
+                            github)
+    assert verdict.configured and verdict.attested is (proof == "promotion"), verdict
+
+
+@pytest.mark.parametrize("env", [
+    {"STEP": "staging"}, {"TARGET_REF": "refs/heads/staging"}, {"CHECK_VERSION": "rotated"},
+])
+def test_promotion_verifier_binds_target_step_and_check_version(env):
+    payload = _promotion_payload()
+    github = FakeGitHub(name=payload.attestation_name)
+    _publish(github, payload, name=payload.attestation_name)
+    configured = _env(ATTESTATION_NAME=payload.attestation_name, STEP="release",
+                      TARGET_REF="refs/heads/main")
+    configured.update(env)
+    verdict = hosted.verify(configured, github)
+    assert verdict.configured and not verdict.attested
+
+
+def test_promotion_proof_does_not_authorize_default_integration_verifier():
+    github = FakeGitHub()
+    _publish(github, _promotion_payload())
+    assert not hosted.verify(_env(), github).attested
 
 
 def _refused(github: FakeGitHub, env: dict[str, str] | None = None) -> str:

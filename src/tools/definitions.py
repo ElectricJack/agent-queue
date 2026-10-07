@@ -3759,8 +3759,12 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "update_and_restart",
         "description": (
-            "Pull the latest source from git and restart the daemon. "
-            "Use wait_for_tasks=true to let running tasks finish before restarting. "
+            "Update and restart the daemon. Without deploy.tag_glob, pull the upstream "
+            "and restart even when already current. With a release selector, run shared "
+            "preflight and launch the operator updater; returns pid, log, selector and commit, "
+            "or up_to_date without restarting. Read the log for the final outcome. "
+            "Use wait_for_tasks=true to let running tasks finish before restarting; "
+            "scheduling resumes if the updater exits without restarting. "
             "Excluded from MCP by default for safety."
         ),
         "input_schema": {
@@ -6415,14 +6419,16 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "task_batch_propose",
         "description": (
-            "Propose a batch of tasks and their dependency edges as one "
+            "Propose a transactional change set of creates, edits, edge changes and comments as one "
             "reviewable graph, without creating anything live. Tasks are "
             "identified by caller-chosen ``tempId``s that edges reference; "
             "edges may also point at existing task ids. The proposal is "
             "rejected up front if the shape is wrong, if it references tasks "
             "that do not exist, or if it would introduce a dependency cycle "
             "against the project's current graph. Returns a proposal_id for "
-            "task_batch_update / _commit / _discard."
+            "task_batch_update / _commit / _discard. A live spec-ingest role "
+            "holding the matching approved vault path may commit immediately; "
+            "those batches require epics with children and leaf dependency edges."
         ),
         "input_schema": {
             "type": "object",
@@ -6439,9 +6445,62 @@ _ALL_TOOL_DEFINITIONS = [
                         "the commit creates."
                     ),
                 },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Validate and return the diff without storing a proposal.",
+                },
+                "edits": {
+                    "type": "array",
+                    "description": "Existing task edits and controls. Live control changes are refused.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "description": {"type": "string"},
+                            "priority": {"type": "integer"},
+                            "intelligence_class": {"type": ["string", "null"]},
+                            "task_type": {"type": ["string", "null"]},
+                            "parent_id": {"type": ["string", "null"]},
+                            "action": {
+                                "type": "string", "enum": ["pause", "resume", "block", "archive"],
+                            },
+                            "reason": {"type": "string"},
+                            "status": {
+                                "type": "string",
+                                "description": "A valid state transition; use action for pause/resume/archive.",
+                            },
+                        },
+                        "required": ["task_id"],
+                    },
+                },
+                "remove_edges": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "from": {"type": "string"}, "to": {"type": "string"},
+                            "dep_type": {"type": "string"},
+                        },
+                        "required": ["from", "to"],
+                    },
+                    "description": "Typed edges to remove: from, to, dep_type (default blocks).",
+                },
+                "comments": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {"type": "string"}, "body": {"type": "string"},
+                            "kind": {"type": "string", "enum": ["note", "progress"]},
+                        },
+                        "required": ["task_id", "body"],
+                    },
+                    "description": "Append comments to existing ids or tempIds. Author comes from the caller.",
+                },
                 "tasks": {
                     "type": "array",
-                    "description": "The tasks to create. Must be non-empty.",
+                    "description": "Tasks to create with temporary ids; optional for edit-only change sets.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -6452,6 +6511,11 @@ _ALL_TOOL_DEFINITIONS = [
                                     "that edges reference."
                                 ),
                             },
+                            "parent_id": {
+                                "type": ["string", "null"],
+                                "description": "Parent tempId or existing id; null for root.",
+                            },
+                            "task_type": {"type": "string", "description": "Task kind hint for routing."},
                             "title": {"type": "string", "description": "Task title."},
                             "description": {
                                 "type": "string",
@@ -6527,14 +6591,14 @@ _ALL_TOOL_DEFINITIONS = [
                     },
                 },
             },
-            "required": ["source", "tasks"],
+            "required": ["source"],
         },
     },
     {
         "name": "task_batch_update",
         "description": (
-            "Replace a pending proposal's tasks and edges, re-running the same "
-            "shape, reference and cycle checks as task_batch_propose. Only "
+            "Replace a pending change set, re-running final graph, state and version "
+            "checks as task_batch_propose. Only "
             "proposals still in ``draft`` or ``ready`` can be updated — a "
             "committed or discarded one is history."
         ),
@@ -6545,8 +6609,8 @@ _ALL_TOOL_DEFINITIONS = [
                 "payload": {
                     "type": "object",
                     "description": (
-                        'The replacement graph: ``{"tasks": [...], '
-                        '"edges": [...]}`` in the same shape '
+                        "The complete replacement change set (tasks, edits, edges, "
+                        "remove_edges, comments), in the same shape "
                         "task_batch_propose takes."
                     ),
                 },
@@ -6558,14 +6622,15 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "task_batch_commit",
         "description": (
             "Atomically materialise an approved proposal into the live work "
-            "graph: creates every task, then every dependency edge, stamping "
+            "graph: creates and edits tasks, changes edges and appends comments, stamping "
             "the proposal's source as provenance. Refused (``not_approved``) "
             "unless a resolved human gate in the proposal's project, awaiting "
             "this proposal, carries an approval resolution (``approve`` or "
-            "``approved``). The ready→committed flip is a single conditional "
-            "update, so two concurrent commits cannot both win. Any failure "
-            "unwinds every task and edge already created and returns the "
-            "proposal to ``ready`` for a retry. Committing an already "
+            "``approved``), or the server stamped approved-document authority "
+            "from a live spec-ingest role. Task versions and graph state are rechecked under the "
+            "routing/hierarchy/write locks; two concurrent commits cannot both win. Any failure "
+            "rolls back all changes, the audit and receipt in PostgreSQL, leaving the "
+            "proposal in ``ready`` for a retry. A conflict requires a fresh proposal. Committing an already "
             "committed proposal returns its original task ids with "
             "``already_committed: true``. Returns the created task ids."
         ),

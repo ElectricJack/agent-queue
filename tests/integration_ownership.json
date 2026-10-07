@@ -1879,12 +1879,6 @@
         403
       ]
     },
-    "src/commands/project_commands.py::ProjectCommandsMixin._configure_promotion_flow": {
-      "reason": "Promotion-flow activation: validates layers 1-3, dry-runs the integration policy fence, creates missing targets outside it and writes behind the same generation."
-    },
-    "src/commands/project_commands.py::ProjectCommandsMixin._create_flow_targets": {
-      "reason": "Promotion-flow activation layer 4: create-only pushes of missing chain targets from the project workspace."
-    },
     "src/commands/project_onboarding_commands.py::ProjectOnboardingCommandsMixin._github_client": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -2070,6 +2064,18 @@
         404,
         530
       ]
+    },
+    "src/commands/task_changes.py::apply": {
+      "reason": "Atomic task change-set application delegates hierarchical filing, reparenting, archive guards and container settlement to their existing integration-aware writers on the proposal connection."
+    },
+    "src/commands/task_changes.py::boundary": {
+      "reason": "Proposal transaction locks integration checkpoints together with task, dependency and gate state so concurrent integration changes cannot straddle validation and commit."
+    },
+    "src/commands/task_changes.py::import from src.database.tables import gates, projects, sessions, task_dependencies, task_gates, task_integration_checkpoints, task_metadata, tasks": {
+      "reason": "Imports integration checkpoints for the proposal transaction lock and reviewed read set; the generic task, dependency, gate and metadata tables retain their own storage ownership."
+    },
+    "src/commands/task_changes.py::snapshot": {
+      "reason": "Includes integration checkpoints, hierarchy scope, gates and integration mode in the reviewed proposal read set to refuse commits after concurrent integration or task-graph changes."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_create_task_graph": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -6287,9 +6293,6 @@
         1226
       ]
     },
-    "src/orchestrator/core.py::Orchestrator._recheck_promotion_flows": {
-      "reason": "Daemon-start re-validation of stored promotion flows (layers 1-3); records problems for status, writes nothing."
-    },
     "src/orchestrator/core.py::Orchestrator._reconcile_sessions": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -8159,10 +8162,25 @@
       "reason": "Integration workspace preparation merges a proven parent head under the managed child writer fence; preserves local and published child history."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_remove_task": {
-      "reason": "Operator removal coordinates stopped subtree cleanup with integration batch aborts, orphan retirement and preserved branch/audit identity."
+      "reason": "Confirmed operator removal coordinates subtree holds, session cleanup and integration-locked removal while preserving branches and audit history."
     },
     "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_task_on": {
-      "reason": "Transaction-scoped subtree archive enforces integration removal guards, retains abandonment and delegate retirement evidence, and preserves branch identity."
+      "reason": "Transaction-local subtree archive enforces integration ownership and delivery guards, retires branch origins and preserves audit identity before deleting active rows."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.queries.hierarchy_queries import HIERARCHY_MODES, ProjectIntegrationMode, container_flag_exists, cross_parent_prerequisites_on_default, delivered_prerequisites_for_projects, delivered_same_parent_prerequisites_when_hierarchical, materialized_origin_when_hierarchical, never_leaseable_container": {
+      "reason": "Imports cross-parent default-branch delivery admission alongside sibling-stack and container frontier predicates."
+    },
+    "src/database/queries/hierarchy_queries.py::cross_parent_prerequisites_on_default": {
+      "reason": "Requires exact default-branch delivery for cross-parent blocks prerequisites and withholds children while their epic has an open integration batch."
+    },
+    "src/commands/project_commands.py::ProjectCommandsMixin._configure_promotion_flow": {
+      "reason": "Promotion-flow activation: validates layers 1-3, dry-runs the integration policy fence, creates missing targets outside it and writes behind the same generation."
+    },
+    "src/commands/project_commands.py::ProjectCommandsMixin._create_flow_targets": {
+      "reason": "Promotion-flow activation layer 4: create-only pushes of missing chain targets from the project workspace."
+    },
+    "src/orchestrator/core.py::Orchestrator._recheck_promotion_flows": {
+      "reason": "Daemon-start re-validation of stored promotion flows (layers 1-3); records problems for status, writes nothing."
     },
     "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_schema": {
       "reason": "Read-only promotion-flow schema command; owns the integration configuration contract."
@@ -8179,8 +8197,65 @@
     "src/commands/promote_commands.py::import from src.commands.supervisor_authority import integration_operator": {
       "reason": "Promotion validation uses project-scoped integration operator authority."
     },
-    "src/commands/promote_commands.py::import from src.integration.promotion_steps import FlowSchema": {
-      "reason": "Promotion commands depend on the integration-owned flow schema."
+    "src/commands/contracts/promote.py::register_promote_contracts": {
+      "reason": "Registers the promotion intent request, approval, cancellation and cached-read contracts through the integration operational contract adapter."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_approve": {
+      "reason": "Posts a pinned human GitHub approval for an open promotion intent and caches its review evidence for the integration step gate."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_cancel": {
+      "reason": "Closes an unpublished promotion PR and aborts its intent under the integration branch lock; never touches the target or tag."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_request": {
+      "reason": "Admits an idempotent promotion intent: retains the exact source, pushes the private request head, opens the pinned PR and freezes the promotion batch."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_cached": {
+      "reason": "Reads promotion intents with cached check and PR review evidence from integration batch storage."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_inputs": {
+      "reason": "Authorizes the caller and resolves the project's validated promotion flow and bound integration repository."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_intent": {
+      "reason": "Loads a promotion batch and its immutable request identity from the integration policy snapshot."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_runtime": {
+      "reason": "Resolves the integration train lane, Git operations and GitHub client for a promotion step target."
+    },
+    "src/commands/promote_commands.py::_check_pull": {
+      "reason": "Verifies the GitHub PR still matches the pinned promotion source, private head, target and repository identity."
+    },
+    "src/commands/promote_commands.py::_intent_response": {
+      "reason": "Projects a promotion batch row and its request identity into the command response."
+    },
+    "src/commands/promote_commands.py::import from src.integration.batches import Batch, BatchMember, BatchStore": {
+      "reason": "Promotion requests freeze an integration batch for the step's exact source."
+    },
+    "src/commands/promote_commands.py::import from src.database.tables import integration_batch_members, integration_batches, integration_check_evidence, integration_review_evidence, projects, task_context, task_metadata, tasks": {
+      "reason": "Promotion intent commands read and write integration batch, member and evidence storage alongside the daemon-authored task."
+    },
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, promotion_ref": {
+      "reason": "Promotion intents use the integration-owned step identity, result and private request ref."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._woken": {
+      "reason": "Wakes the integration train target when a promotion request, approval or cancellation changes its admission inputs."
+    },
+    "src/commands/promote_commands.py::_check_flow": {
+      "reason": "Rechecks the bound integration repository and promotion policy; holds a shared project-row lock only during intent writes to prevent a concurrent policy edit."
+    },
+    "src/git/github_contracts.py::rate_limit_cause": {
+      "reason": "Preserves GitHub rate-limit identity and retry timing across wrapped failures in promotion admission and train observation."
+    },
+    "src/commands/promote_commands.py::_unavailable": {
+      "reason": "Converts promotion GitHub failures into unavailable or rate-limited command outcomes while preserving provider retry timing."
+    },
+    "src/commands/promote_commands.py::import from src.git.github_contracts import GitHubAccessError, rate_limit_cause": {
+      "reason": "Promotion commands preserve integration GitHub error categories and rate-limit retry timing across wrapped failures."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._settle_stale_container": {
+      "reason": "Stale container settlement applies the guarded episode completion check before completing a train container whose legacy collection episode was cancelled."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._episode_completion_token": {
+      "reason": "Reads a container's collection episode checkpoint and repair operation under the caller's lock to admit only a cancelled train episode to guarded completion; refuses a live episode."
     }
   },
   "exclusions": {
@@ -12141,7 +12216,9 @@
     "1dbd1dc2e1c65b0f88735e32298e7c0f635409e30b7dcdc798b0cb77119d5a98",
     "2390e3c6e9f20e2c63615dd8429e6148c0451a6e2f06388d9fabc263b91a524c",
     "5c38788248a432e1f59e1cac3b2f4611f202c9dce5c9cda3fe7627dc9595aad9",
-    "6dc53e72699f31ce9c89c26eb979120a8729c29f5bbffaa2564b2727e3337b27"
+    "6dc53e72699f31ce9c89c26eb979120a8729c29f5bbffaa2564b2727e3337b27",
+    "a978ebd22389e6928ea8b90a3a7df9f839306a69413dccde69c13ea1aafa1020",
+    "a9a2995cc9355388cd8a85285754257f7aac11c559938c9ca4a5d25fbb12cf5d"
   ],
   "owned_file_fingerprints": [
     "020e0abc4dae8c8c3a3671fab609db3a5b1308dba6bd380a94fccfb591c63c4d",
@@ -12312,14 +12389,14 @@
     "ff91ab72b816695b830aae93767148b6cbc2fe8b2e22ef7edaef174f88011b1f"
   ],
   "storage_sinks": {
-    "src/api/host_shell.py::_audit::d71ee6e4a340780de2532bfca9177cd80d4b0ac848427deaa9ea807392a56034": {
-      "line": 71,
-      "owner": "_audit",
+    "src/api/host_shell.py::audit_host_shell::d71ee6e4a340780de2532bfca9177cd80d4b0ac848427deaa9ea807392a56034": {
+      "line": 81,
+      "owner": "audit_host_shell",
       "call": "log_event",
-      "owner_fingerprint": "50a37c834526eb2bd5ae51ba3117b2b671b17015cb2a9dd17ed937b041dc0366",
+      "owner_fingerprint": "67b996e1fb1d13cb6b10603a9f594d7f1ccff561b089d210606b3989f2dc7ad4",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Host-shell HTTP and WebSocket lifecycle audit records shell names and caller identities; no integration state or ref replay authority."
     },
     "src/api/streams.py::build_streams_router::6960e4f6e861b9d8097f655744686f73af90e871585f534dfb20d676d1881afb": {
       "line": 464,
@@ -12349,34 +12426,34 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: REPAIR_RECORD_META"
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::2142606549fbb7fc55f12062ec13ac7e0c300036166e68b70a945ed44a752050": {
-      "line": 1295,
+      "line": 1323,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "326a9833d4d625b883f7efb54518377ce1bb16aaaede2cb49d30396e15d38571",
+      "owner_fingerprint": "b4f28ff2142f568498ea0ebdd53af8dfd6ec62e98a4aa35b725c53a36b7c84c8",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary slot-reset failure diagnostics after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: 'slot_reset_failure'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
-      "line": 1281,
+      "line": 1309,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "326a9833d4d625b883f7efb54518377ce1bb16aaaede2cb49d30396e15d38571",
+      "owner_fingerprint": "b4f28ff2142f568498ea0ebdd53af8dfd6ec62e98a4aa35b725c53a36b7c84c8",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary attention marker when permanent preparation failure cannot safely detach an attached writer; PostgreSQL contention bypasses this write. Metadata key: 'needs_attention'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
-      "line": 1234,
+      "line": 1262,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "326a9833d4d625b883f7efb54518377ce1bb16aaaede2cb49d30396e15d38571",
+      "owner_fingerprint": "b4f28ff2142f568498ea0ebdd53af8dfd6ec62e98a4aa35b725c53a36b7c84c8",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary claim-preparation attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: 'needs_attention'; records repair_target_unpublished without remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._recover_stale_binding::4da77d287ab4d26107e389b895bb84e501975a032a135aa4074cb2a9dd28a70c": {
-      "line": 859,
+      "line": 924,
       "owner": "ClaimCommandsMixin._recover_stale_binding",
       "call": "set_task_meta",
       "owner_fingerprint": "99a5abfe960334f70d651bb2d30fb440da856cb1c7bfc6ab0431150d36bead9d",
@@ -12385,7 +12462,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::064f8fcc1a52d145e4f7ee9a86a696a94b43a48b4533d10ca7ad822f1aac750d": {
-      "line": 1017,
+      "line": 1036,
       "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
       "call": "set_task_meta",
       "owner_fingerprint": "6dc53e72699f31ce9c89c26eb979120a8729c29f5bbffaa2564b2727e3337b27",
@@ -12493,145 +12570,145 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::2000800a19f07b12dcfd441b364b958149789c935756a56406678e50d5d7e2c8": {
-      "line": 1184,
+      "line": 1263,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "edf240b24ded5a3a9fb5a01faeef4eda2875b9edf83e0dcbc04a929ffab723c1",
+      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'failure_class'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::4440a33c54ab4fa4c809666198358bb0499a892c5fc60e199b16f28357f6a517": {
-      "line": 1194,
+      "line": 1273,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "edf240b24ded5a3a9fb5a01faeef4eda2875b9edf83e0dcbc04a929ffab723c1",
+      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_notes'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::56578aa26104563e627d6920b6ab71ed75c43b52451419defe2a62b353044c31": {
-      "line": 1198,
+      "line": 1277,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "edf240b24ded5a3a9fb5a01faeef4eda2875b9edf83e0dcbc04a929ffab723c1",
+      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_session_id'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::660e646c2bc73a87acbd9635c6d7c2d7bfb27bc207880247753c79164914ad87": {
-      "line": 1574,
+      "line": 1659,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "edf240b24ded5a3a9fb5a01faeef4eda2875b9edf83e0dcbc04a929ffab723c1",
+      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::ae11c6bd4fb43bd6de75c4c48200714e0e53b8fabfe707dbbd4107030938735a": {
-      "line": 1186,
+      "line": 1265,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "edf240b24ded5a3a9fb5a01faeef4eda2875b9edf83e0dcbc04a929ffab723c1",
+      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_outcome'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::be73c4ceb2c880e944a4b02d2f545fec23c5e2b042151119ccb55a6a109bcd41": {
-      "line": 1188,
+      "line": 1267,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "edf240b24ded5a3a9fb5a01faeef4eda2875b9edf83e0dcbc04a929ffab723c1",
+      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::ca3f2cdcd35a7a2089869aaff868b1ed242d5a4dc3a16c2f22bbee657ab3d40f": {
-      "line": 1448,
+      "line": 1533,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "edf240b24ded5a3a9fb5a01faeef4eda2875b9edf83e0dcbc04a929ffab723c1",
+      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'summary'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::da4a85ceaecac9a0a1152f3e0883f7f88015afbe1b94fb6f5e36892a01f386b4": {
-      "line": 1182,
+      "line": 1261,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "edf240b24ded5a3a9fb5a01faeef4eda2875b9edf83e0dcbc04a929ffab723c1",
+      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'outcome'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::dc542d68e996f280c4f1a0ad5174d7f358d5e33051a34bae65de5a76b92faf40": {
-      "line": 1196,
+      "line": 1275,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "edf240b24ded5a3a9fb5a01faeef4eda2875b9edf83e0dcbc04a929ffab723c1",
+      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'verification'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::e6420f7ac1c540cf49ce31f733f1e46efaca47d04099608408916ce1c06433ab": {
-      "line": 1254,
+      "line": 1333,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "edf240b24ded5a3a9fb5a01faeef4eda2875b9edf83e0dcbc04a929ffab723c1",
+      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: PENDING_COMPLETION_KEY"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::f27f9aaff90d2f291ca36b29a447e4ecbd3822acfd900bbda99ee4792c8e586f": {
-      "line": 1192,
+      "line": 1271,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "edf240b24ded5a3a9fb5a01faeef4eda2875b9edf83e0dcbc04a929ffab723c1",
+      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_branch'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::f3b4697bfd97ba0305066ae8ff852bfbb7c8f4a9737eb15f0d6b36946b634acd": {
-      "line": 1430,
+      "line": 1515,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "edf240b24ded5a3a9fb5a01faeef4eda2875b9edf83e0dcbc04a929ffab723c1",
+      "owner_fingerprint": "407f0bfd8ab7d2fdb839348c137e2c4f21b55c98251cc8ae1d0b0a737228e145",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit_auto'"
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::6081f9d27dc57e18ce5f31c465cfb8159e76c4d4c1a37d2b8b8d0c741d9fbeca": {
-      "line": 288,
+      "line": 295,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "log_event",
-      "owner_fingerprint": "cad58f2fcacbb9c7782f4c4e371ffaf5856f3a3358f35db1c420af5483092f05",
+      "owner_fingerprint": "b0a6110b153fe2803e1eea4c5e2f6dea26ece7b537cf571e7e7a83d65186f384",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::8513b8ad44440cd5bfaed1abc65ab824b7856f8b84f009f84e3bd7f9a0f86647": {
-      "line": 295,
+      "line": 302,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "set_task_meta",
-      "owner_fingerprint": "cad58f2fcacbb9c7782f4c4e371ffaf5856f3a3358f35db1c420af5483092f05",
+      "owner_fingerprint": "b0a6110b153fe2803e1eea4c5e2f6dea26ece7b537cf571e7e7a83d65186f384",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_dir'"
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::cc1e1a1a54bb465b81b098e4b9a03d3717342bf5a286fd44dbf8b548c7a49003": {
-      "line": 300,
+      "line": 307,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "set_task_meta",
-      "owner_fingerprint": "cad58f2fcacbb9c7782f4c4e371ffaf5856f3a3358f35db1c420af5483092f05",
+      "owner_fingerprint": "b0a6110b153fe2803e1eea4c5e2f6dea26ece7b537cf571e7e7a83d65186f384",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: key"
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::efc628222166414397713182d90d1198aedc0c7804e05b3ccfd55c64a58c99f5": {
-      "line": 281,
+      "line": 288,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "log_event",
-      "owner_fingerprint": "cad58f2fcacbb9c7782f4c4e371ffaf5856f3a3358f35db1c420af5483092f05",
+      "owner_fingerprint": "b0a6110b153fe2803e1eea4c5e2f6dea26ece7b537cf571e7e7a83d65186f384",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
@@ -12652,7 +12729,7 @@
       "owner_fingerprint": "c2d080d6a41d1f4a83600a343c9ba005a50d4fc0e58f905870ba2584a2f45ee9",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Single/bulk archive and intentional delivery-abandonment audit calls are unchanged; reason-bearing archive now accepts DEFINED/READY/PAUSED tasks. Audit only, with no ref replay authority or duplicate delivery lifecycle."
+      "reason": "Bulk task_archived notification after successful guarded archive; records task identity only, with no ref replay authority."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_archive_task::9714980f10843aa262af671185695c727cd489e62a924f7532ca3efd80612ed7": {
       "line": 4946,
@@ -12661,7 +12738,7 @@
       "owner_fingerprint": "c2d080d6a41d1f4a83600a343c9ba005a50d4fc0e58f905870ba2584a2f45ee9",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Single/bulk archive and intentional delivery-abandonment audit calls are unchanged; reason-bearing archive now accepts DEFINED/READY/PAUSED tasks. Audit only, with no ref replay authority or duplicate delivery lifecycle."
+      "reason": "Operator task.delivery_abandoned audit after a reasoned archive; records the task identity, not ref mutation or replay state."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_archive_task::b611360d398cc725e9ada50f9112d9c7be31f747e1251e86de6d9f03c44ab5f7": {
       "line": 4940,
@@ -12670,7 +12747,7 @@
       "owner_fingerprint": "c2d080d6a41d1f4a83600a343c9ba005a50d4fc0e58f905870ba2584a2f45ee9",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Single/bulk archive and intentional delivery-abandonment audit calls are unchanged; reason-bearing archive now accepts DEFINED/READY/PAUSED tasks. Audit only, with no ref replay authority or duplicate delivery lifecycle."
+      "reason": "Single task_archived notification after successful guarded archive; records task identity only, with no ref replay authority."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_edit_task::b6009fee9d6fc35151315162ef7595d81bde3db54b069841732e5140523619ff": {
       "line": 4110,
@@ -12835,19 +12912,19 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._settle_stale_container::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1860,
+      "line": 2145,
       "owner": "HierarchyQueryMixin._settle_stale_container",
       "call": "delete",
-      "owner_fingerprint": "d4250cd67d66a5062b52937d9cd0242e517bb6bac2e0d10c8f836f1dbaeb5bb7",
+      "owner_fingerprint": "08f7ea62fcc46e26da435ebe169ac0aace377d15c48097619f1e9f6be2ef88d8",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._settle_stale_container::ecd3dcb6d1ce14a3120ede8797e5b9039667a2dee3c39944d4ba97fbf1427000": {
-      "line": 1879,
+      "line": 2165,
       "owner": "HierarchyQueryMixin._settle_stale_container",
       "call": "log_event",
-      "owner_fingerprint": "d4250cd67d66a5062b52937d9cd0242e517bb6bac2e0d10c8f836f1dbaeb5bb7",
+      "owner_fingerprint": "08f7ea62fcc46e26da435ebe169ac0aace377d15c48097619f1e9f6be2ef88d8",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
@@ -12925,13 +13002,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1537,
+      "line": 1684,
       "owner": "TaskQueryMixin._apply_transition",
       "call": "delete",
-      "owner_fingerprint": "50d9ac74245484c2c0d1e863304a61dac6994f2fe633bfee8d268de8f16192a2",
+      "owner_fingerprint": "720d89323646a3a50ca29b13d81d3f2ad1053ce90101e7e364cd038e4d5b4e33",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary lifecycle metadata cleanup when task status changes; proposal transactions may defer graph projection, while integration completion and wake guards retain authority. No ref replay state."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 1956,
@@ -12970,13 +13047,13 @@
       "reason": "Ordinary claim-ownership marker cleanup for a claim whose every holder session is proved stopped with matching claim epoch, instance token and desired state, and whose workspace and branch ownership are already released. Metadata key: 'claimed_by_session'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._resume_locked::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1036,
+      "line": 1178,
       "owner": "TaskQueryMixin._resume_locked",
       "call": "delete",
-      "owner_fingerprint": "d717b3b5493b9f12c572b3d756e1ce429128481a397cd5c276131957481fef3f",
+      "owner_fingerprint": "c3509903f9344bc47d9ec0ad03e8aa289a933f663272c29527def2f6248461ec",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Removes ordinary manual-pause and attention metadata on resume; proposal transactions may defer graph projection, while managed integration episodes remain paused without verifier wake authority. No ref replay state."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin.delete_task_meta::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 2208,
@@ -13699,10 +13776,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/integration/train_sources.py::EpicCompletions.settle::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
-      "line": 642,
+      "line": 783,
       "owner": "EpicCompletions.settle",
       "call": "insert",
-      "owner_fingerprint": "99ae5203a04a7d863811f94036b07788dcb3930ef94859fe7839eef4e1762fb8",
+      "owner_fingerprint": "e95f2fc38689b91fcb8035f14f30f211b103c931a1119da2d8c7e53cb7463a43",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Current-generation pointer written under the project hierarchy lock in the same transaction as the immutable collected-epic completion record it names, after readiness is re-verified under that lock. Metadata key: DEVELOPMENT_COMPLETION_ID_KEY; a completion identity only, with no ref, PR or publication intent."
@@ -13780,10 +13857,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::cfcd13e9187c1de3a01142301b8203fae1e11a8a3a4ce9bf92d2a08ca1895e28": {
-      "line": 2250,
+      "line": 2279,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b0a1502c2738d9852ecb16ced975ea7e6325dbdc168f8caf239de2b859902aec",
+      "owner_fingerprint": "4ea8ae45b7b3e24dd84602f69d012f7bc9a6a8973ed1ffd1ce2cd99629a34ecf",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
@@ -14005,7 +14082,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: CHECKPOINT_META"
     },
     "src/orchestrator/workspace.py::WorkspaceMixin.arecover_completed_integration_pool_claim::1320846324f64b9a88c33a5a658ca64eaa3257d89135ad3028fb672a9cc9a076": {
-      "line": 1878,
+      "line": 2031,
       "owner": "WorkspaceMixin.arecover_completed_integration_pool_claim",
       "call": "log_event",
       "owner_fingerprint": "1987d63ba311f2a811d1759438b010cf17ace1cdbf223a58f42d1524c19b71f8",
@@ -14248,13 +14325,13 @@
       "reason": "Clearing the exact holder from the task's own claimed_by_session record when the release takes that claim back; the claim itself, not a hold, ref replay or a duplicate lifecycle write."
     },
     "src/integration/batches.py::BatchStore.set_intent::6d729f7a8f24a4746d37ecea7871dfd209ea8cce995ce7499c8290475b86f660": {
-      "line": 226,
+      "line": 430,
       "owner": "BatchStore.set_intent",
       "call": "log_event",
-      "owner_fingerprint": "19001f37899a71985161848da0bcf4af2e8f152e77ace4a4b80f82d9d456f21d",
+      "owner_fingerprint": "8b5bef73d474523b3d932137a051929dd0533a05af059f6aa74118ed76c1a41d",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Operator audit of batch intent with principal and reason; abort now projects terminal lifecycle and queues cleanup atomically. The audit payload and call are unchanged, never replayed and carry no ref-update lifecycle."
+      "reason": "Operator audit of batch intent with principal and reason. Intent and terminal abort projection remain on the batch row; this event is never replayed and carries no ref-update lifecycle."
     },
     "src/integration/train_controls.py::TrainControls.retire_origin::0b56c6446d96c90b01889f9a0444c2e70ac5351db133ff1989c85a029ccd494a": {
       "line": 226,
@@ -14272,7 +14349,7 @@
       "owner_fingerprint": "dc7e8c21ee18224c68d8a13f1fab56a2d7d4c7bd8def89199b52501f66412a7f",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Audit of an orphan operation cancelled after proving its runtime and writers gone; records operation identity and reason, with no ref replay authority or duplicate lifecycle."
+      "reason": "integration.orphan_cancelled audit records operation identity and the reason after a locked no-runtime/no-writer proof; no ref OIDs, replay instructions or duplicate delivery state."
     },
     "src/integration/task_removal.py::remove_subtree::73697ddfc387c53175151dd95f9dbb7b91a34442e6e39a3e63343535ad8e310d": {
       "line": 247,
@@ -14281,7 +14358,115 @@
       "owner_fingerprint": "af23ad5f5ef990c77e5b05941b4f8c6e6216e16b666f6b07b250d30c0b3e5e98",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Operator audit of committed subtree removal, disposition, aborted batches and cancelled operations with actor/reason; branches remain intact and the event is never ref replay authority."
+      "reason": "task.removed audit records the confirmed operator decision, removed subtree, disposition and cancelled operations/batches; preserves history without asserting ref or delivery truth."
+    },
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._cmd_task_batch_commit::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "line": 467,
+      "owner": "TaskProposalCommandsMixin._cmd_task_batch_commit",
+      "call": "insert",
+      "owner_fingerprint": "644f415c55b56fbf76e4fa10449bf8805acb3eae65860283681c17672329e28d",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Immutable task change-set audit containing actor, source, reviewed diff and receipt in the proposal transaction; no ref replay or authoritative delivery lifecycle state."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._admission_times::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 406,
+      "owner": "DatabaseBatches._admission_times",
+      "call": "delete",
+      "owner_fingerprint": "8ddac67e598852d5a29c9f7f1b50fd720127f9e8c76bd3c54f2036e8c52d5374",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Root settling timestamps for currently PR-admitted exact completions. Eligibility is recomputed from Git and PR proof on every visit; these hints preserve the bounded cadence across restarts and never authorize membership, replay a ref or prove delivery. Stale hints and frozen-batch hints are deleted."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._clear_admissions::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 437,
+      "owner": "DatabaseBatches._clear_admissions",
+      "call": "delete",
+      "owner_fingerprint": "f83d1b3aaae28d2e05ae26221544738c1a6363446fd9ce7594924e462f73b6c4",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Root settling timestamps for currently PR-admitted exact completions. Eligibility is recomputed from Git and PR proof on every visit; these hints preserve the bounded cadence across restarts and never authorize membership, replay a ref or prove delivery. Stale hints and frozen-batch hints are deleted."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._admission_times::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "line": 415,
+      "owner": "DatabaseBatches._admission_times",
+      "call": "insert",
+      "owner_fingerprint": "8ddac67e598852d5a29c9f7f1b50fd720127f9e8c76bd3c54f2036e8c52d5374",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Root settling timestamps for currently PR-admitted exact completions. Eligibility is recomputed from Git and PR proof on every visit; these hints preserve the bounded cadence across restarts and never authorize membership, replay a ref or prove delivery. Stale hints and frozen-batch hints are deleted."
+    },
+    "src/integration/train_sources.py::DatabaseBatches._admission_times::51be9b5b9698cee60f963e966b52a7527686e8e5a5f266c953c9f4919f14106d": {
+      "line": 429,
+      "owner": "DatabaseBatches._admission_times",
+      "call": "update",
+      "owner_fingerprint": "8ddac67e598852d5a29c9f7f1b50fd720127f9e8c76bd3c54f2036e8c52d5374",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Root settling timestamps for currently PR-admitted exact completions. Eligibility is recomputed from Git and PR proof on every visit; these hints preserve the bounded cadence across restarts and never authorize membership, replay a ref or prove delivery. Stale hints and frozen-batch hints are deleted."
+    },
+    "src/integration/stacked_branches.py::StackedBranches.refresh::be3be394bad4eaa21aa8a28db135b02557490ddb64be7fdc9e1c1efef1d879ec": {
+      "line": 772,
+      "owner": "StackedBranches.refresh",
+      "call": "pg_insert",
+      "owner_fingerprint": "7a1bc3f333a758f54cc05eb78b7d12bff7e19157bae45de6e1daa3ec7687905b",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Current immutable completion locator after a fenced source merge; ordinary completion state, never delivery or ref replay authority."
+    },
+    "src/integration/stacked_branches.py::StackedBranches._file_repair::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "line": 886,
+      "owner": "StackedBranches._file_repair",
+      "call": "insert",
+      "owner_fingerprint": "d98102eb3cec04f30ace549c0b5abe35e08f547d3246a79a9fe0267274af67c8",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Associates an isolated conflict repair with its preserved dependent for adoption; Git ancestry and current branch fences remain authoritative."
+    },
+    "src/integration/batches.py::BatchStore.eject::02dbb6e454b19e80a1f07be2b10de35299d826ab592437d231735f74ef0f522a": {
+      "line": 341,
+      "owner": "BatchStore.eject",
+      "call": "log_event",
+      "owner_fingerprint": "c04a34ac34307bacf3d91e8d28b5009b7ddc7f78f22ab583939c619271347b25",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Audit of an explicit batch ejection with principal and reason. Admission reads the separate release instruction, not this event; no ref replay or duplicated delivery lifecycle."
+    },
+    "src/integration/batches.py::BatchStore.supersede::71ad4246d258b2576f1bae229c1e92b1ae60dbae8a616cd7a77cd72c8e6b53f0": {
+      "line": 403,
+      "owner": "BatchStore.supersede",
+      "call": "log_event",
+      "owner_fingerprint": "168f97beaf0573ede334f27b30c2bf1350b76fddb7d20f8f975ea40639d814bc",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Audit of an obsolete batch superseded after prerequisite refresh. The batch-owned ejection record authorizes input release; this event never replays refs or asserts delivery."
+    },
+    "src/integration/stacked_branches.py::EpicRefresh.refresh::85c997f17278e49c5a7a51cb1d2aaa7efb3367004ec68ae50f173b3772c77128": {
+      "line": 1015,
+      "owner": "EpicRefresh.refresh",
+      "call": "log_event",
+      "owner_fingerprint": "ad434e515d6ed61722f7ea7edbbdafb8b87b0b7e0fcf383e1e1c6afcd2c35a76",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Audit of a requested epic refresh with principal and observed train state. Frozen batch inputs and exact Git/check proofs remain authoritative; this event cannot replay refs or authorize delivery."
+    },
+    "src/integration/promotion_steps.py::settle_promotion::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "line": 1286,
+      "owner": "settle_promotion",
+      "call": "insert",
+      "owner_fingerprint": "eb88834bdab7f4de65363755e369e43d19143010ddb220eda5001d9c0f3d4b7c",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Write-once result of a promotion task (source SHA, tag OID and batch id), separate from the immutable request intent. Git ancestry and annotated-tag read-back are always reobserved; this result never authorizes ref replay or substitutes for delivery truth."
+    },
+    "src/integration/promotion_steps.py::PromotionVisit._record_publish::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "line": 1269,
+      "owner": "PromotionVisit._record_publish",
+      "call": "insert",
+      "owner_fingerprint": "17c963313bfdd150113a34f976ea675e741aa0c2f6b3db5a473b519c0e879107",
+      "integration_signal": false,
+      "disposition": "intent",
+      "reason": "Write-once authorization for this exact promotion request, source and target after its live PR gate and attestation pass. Permits missing-tag recovery only after Git independently proves target containment; the record does not assert publication, delivery or successful ref mutation."
     }
   },
   "generic_dependencies": {
@@ -14506,9 +14691,14 @@
     "src/database.py::Database": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database.py::create_database": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database.py::tables": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/backup.py::backup_database": "Generic whole-database custom archive creation shared by aq db backup and updater/daemon backups; no integration state, ref journal or delivery authority. Existing updater/daemon wrappers remain charged.",
+    "src/database/backup.py::postgres_clients": "Generic PostgreSQL client discovery and production worker refusal shared by database backup/restore callers; no integration lifecycle or Git authority.",
     "src/database/base.py::DatabaseBackend": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/integrity.py::integrity_violation": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/migration_guard.py::DAEMON": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/migration_guard.py::WORKER": "Generic database administration scope identifier; no integration state, delivery decision or Git authority.",
+    "src/database/migration_guard.py::current_scope": "Generic database administration scope resolution shared by migrations and backups; no integration lifecycle.",
+    "src/database/migration_guard.py::is_production_database": "Generic production database identity check protecting all migration and backup callers; no integration storage or delivery authority.",
     "src/database/migration_guard.py::same_database": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/migration_guard.py::set_process_scope": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries.py::proposal_queries": "Generic dependency; integration-specific definitions in this file are charged independently.",
@@ -14538,6 +14728,7 @@
     "src/database/queries/digest_queries.py::DigestQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/digest_queries.py::DigestSupervisorQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/escalation_queries.py::EscalationQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/escalation_queries.py::OPEN_ESCALATION_STATES": "Shared escalation state vocabulary used by ordinary repair green settlement; owns no integration mechanism, ref replay, or lifecycle journal.",
     "src/database/queries/event_queries.py::EventQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/gate_queries.py::GateQueriesMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/hierarchy_queries.py::HIERARCHY_MODES": "Generic dependency; integration-specific definitions in this file are charged independently.",
@@ -14560,6 +14751,7 @@
     "src/database/queries/plugin_queries.py::PluginQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/profile_queries.py::ProfileQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/project_queries.py::ProjectQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/proposal_queries.py::get_proposal": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/provider_availability_queries.py::ProviderAvailabilityQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/provider_usage_queries.py::ProviderUsageQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/pull_request_queries.py::mark_pull_request_approved": "Generic dependency; integration-specific definitions in this file are charged independently.",

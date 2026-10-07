@@ -188,6 +188,10 @@ only. In a worktree slot never run `alembic upgrade`, `alembic stamp` or `aq sta
 
 ## Restarting after an update
 
+For tag deployments, configure `deploy.tag_glob` and `deploy.target` in operator config,
+then run `aq update` (or `aq update --ref <tag>`). It validates annotated tags and records
+the detached deployment in `~/.agent-queue/deploy.json`; no selection keeps branch updates.
+
 Use `aq restart --no-dashboard`: it preserves agent sessions, the updating supervisor's
 included, so the daemon re-adopts them. **Never plain `aq stop` then `aq start` for an
 update** — `aq stop` kills every agent tmux session. If a stopped phase is needed:

@@ -27,7 +27,7 @@ from src.database.tables import (
     tasks,
 )
 from src.integration.delivery_truth import DeliveryState
-from src.integration.models import RepairPolicy
+from src.integration.models import RepairPolicy, integration_ci_sources
 from src.integration.promotion_steps import flow_status
 from src.integration.records import ParentEpisodeRecords
 
@@ -322,6 +322,7 @@ class IntegrationStatusService:
             "subjects": subjects,
             "operator_decisions": await history_on(conn, project_id),
             "promotion_flow": await self._promotion_flow_on(conn, project),
+            "ci_source": integration_ci_sources(project["hierarchical_integration_policy"]),
         }
 
     async def _promotion_flow_on(self, conn: AsyncConnection, project) -> dict[str, Any] | None:
@@ -660,6 +661,33 @@ class IntegrationStatusService:
         for batch in batches:
             blockers.extend(self._train_batch_blockers(batch, visits))
         blockers.extend(self._train_source_blockers(visits))
+        from src.integration.stacked_branches import EpicRefresh
+        from src.git.manager import GitError
+        from src.integration.train_sources import project_snapshot
+        from src.integration.train import TrainTarget
+
+        epics = []
+        repository = await self.db.get_repo(project["integration_repository_id"]) if project[
+            "integration_repository_id"] else None
+        if repository is not None:
+            default = "refs/heads/" + repository.default_branch.removeprefix("refs/heads/")
+            observed = await project_snapshot(self.db, TrainTarget(
+                project_id, repository.id, default))
+            async with self.db._engine.connect() as conn:
+                child = tasks.alias("status_epic_child")
+                ids = (await conn.execute(select(tasks.c.id).where(
+                    tasks.c.project_id == project_id, tasks.c.repo_id == repository.id,
+                    tasks.c.branch_name.is_not(None),
+                    select(child.c.id).where(child.c.parent_task_id == tasks.c.id).exists(),
+                ).order_by(tasks.c.id))).scalars().all()
+            for task_id in ids:
+                try:
+                    if observed is None:
+                        raise ValueError("default branch cannot be observed")
+                    _, _, _, distance = await EpicRefresh(self.db).inspect(task_id, snapshot=observed)
+                    epics.append(distance)
+                except (ValueError, GitError, OSError):
+                    epics.append({"task_id": task_id, "behind": None, "state": "unknown"})
         return {
             "projection_kind": "train",
             "project_id": project_id,
@@ -673,8 +701,11 @@ class IntegrationStatusService:
             "operator_decisions": decisions,
             "targets": [{**visit, **evidence.get(key, {})} for key, visit in visits.items()],
             "batches": batches,
+            "epics": epics,
             "blockers": _sorted_blockers(blockers),
             "promotion_flow": promotion_flow,
+            # Which runner produces each target kind's required checks.
+            "ci_source": integration_ci_sources(project["hierarchical_integration_policy"]),
         }
 
     async def train_task_blockers(self, task_id: str) -> dict[str, Any] | None:
@@ -714,11 +745,14 @@ class IntegrationStatusService:
 
     async def _train_batches_on(self, conn: AsyncConnection, where) -> list[dict[str, Any]]:
         """Open git batches with their members, intent and open repair tasks."""
+        from src.integration.batches import candidate_ref, ejection_instruction
+
         table = integration_batches
         rows = await self._all(
             conn,
             select(table.c.id, table.c.project_id, table.c.repository_id, table.c.target_ref, table.c.intent,
-                   table.c.lifecycle, table.c.repair_attempt_count, table.c.created_at)
+                   table.c.lifecycle, table.c.repair_attempt_count, table.c.created_at,
+                   ejection_instruction(table.c.id).label("ejected"))
             .where(where, table.c.target_ref.is_not(None), table.c.lifecycle != "promoted")
             .order_by(table.c.created_at, table.c.id)
             .limit(100),
@@ -745,11 +779,15 @@ class IntegrationStatusService:
             )
             .order_by(tasks.c.id),
         )
-        from src.integration.batches import candidate_ref
-
         from src.operator_decisions import history_on, related_on
 
         for row in rows:
+            ejected = row.pop("ejected")
+            row["member_disposition"] = (
+                "pending" if row["intent"] == "aborted" and ejected
+                else "withheld" if row["intent"] == "aborted"
+                else row["intent"]
+            )
             row["operator_decisions"] = await history_on(
                 conn, row["project_id"], await related_on(conn, "batch", row["id"])
             )

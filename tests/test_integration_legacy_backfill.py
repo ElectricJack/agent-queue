@@ -60,7 +60,10 @@ async def legacy(world, tid, *, record_commits=True, land=False, squash=False,
 
 async def blocker_codes(world):
     blockers: list[dict] = []
-    await DatabaseBatches(world.db).pending(MAIN, await snapshot(world), blockers=blockers)
+    # This diagnostic tests Git delivery/provenance independently of hosted PR admission.
+    await DatabaseBatches(world.db).pending(
+        MAIN, await snapshot(world), blockers=blockers, gate_pr=False,
+    )
     return {item["task_id"]: item["code"] for item in blockers}
 
 

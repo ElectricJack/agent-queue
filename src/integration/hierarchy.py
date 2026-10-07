@@ -536,6 +536,7 @@ class HierarchyIntegration:
         child_tasks: list[Task],
         *,
         routing_policy=None,
+        defer_projection=False,
     ) -> list[dict]:
         """Insert sibling tasks with one parent-generation advance.
 
@@ -570,7 +571,8 @@ class HierarchyIntegration:
                 conn, task_id=task_id, title=task.title, is_epic=False
             )
             await self.db.set_parent(
-                task_id, parent_id, conn=conn, integration_authorized=True
+                task_id, parent_id, conn=conn, integration_authorized=True,
+                defer_projection=defer_projection,
             )
             # ``set_parent`` writes the row.  Preserve that placement on the
             # in-memory task too, because the routing policy evaluates the

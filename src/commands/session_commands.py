@@ -1430,7 +1430,13 @@ class SessionCommandsMixin:
             escalated = bool(result.get("escalated"))
             retired = result.get("retired")
             bullets = "\n".join(f"- {msg}" for msg in issues)
-            if retired:
+            if result.get("close_deferred"):
+                lead = "close deferred: the workspace is still in use by a managed job"
+                tail = (
+                    "Your task, claim and repair reservation remain open. Wait for the job "
+                    "to settle, then retry close with the same claim."
+                )
+            elif retired:
                 # The integration operation no longer needs this delegate:
                 # nothing in this workspace can make the close acceptable,
                 # and "fix these and close again" is what kept a worker
@@ -1470,7 +1476,7 @@ class SessionCommandsMixin:
                 )
             return {
                 "success": False,
-                "result": "verification_failed",
+                "result": result.get("close_deferred") or "verification_failed",
                 "task_id": task_id,
                 "status": result.get("status"),
                 "escalated": escalated,

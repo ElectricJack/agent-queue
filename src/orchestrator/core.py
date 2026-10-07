@@ -2019,7 +2019,7 @@ class Orchestrator(
             if train_active else None,
             maintenance={
                 "orphaned parent operations": settle_orphaned_parents,
-                "aborted batch cleanup": self.integration_cleanup_service.reconcile_aborted,
+                "batch cleanup": self.integration_cleanup_service.reconcile,
                 "branch discard": self._drain_branch_discards,
                 "branch materialization": self._drain_branch_materializations,
                 "owner recovery": self._sweep_stranded_owners,

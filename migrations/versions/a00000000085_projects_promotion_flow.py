@@ -1,15 +1,15 @@
 """Store promotion flows separately from frozen integration policy snapshots.
 
-Revision ID: a00000000081
-Revises: a00000000080
+Revision ID: a00000000085
+Revises: a00000000084
 """
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision = "a00000000081"
-down_revision = "a00000000080"
+revision = "a00000000085"
+down_revision = "a00000000084"
 branch_labels = None
 depends_on = None
 

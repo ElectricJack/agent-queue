@@ -912,12 +912,15 @@ class TaskBatchProposeResponse(BaseModel):
 
     success: bool = True
     proposal_id: str | None = None
+    dry_run: bool = False
+    diff: dict[str, Any] | None = None
 
 
 class TaskBatchAckResponse(BaseModel):
     """``task_batch_update`` / ``task_batch_discard`` — bare acknowledgement."""
 
     success: bool = True
+    diff: dict[str, Any] | None = None
 
 
 class ClaimSessionSummary(BaseModel):

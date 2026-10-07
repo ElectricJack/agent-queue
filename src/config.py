@@ -1498,6 +1498,11 @@ class DatabaseConfig:
     #: the wire.  ``0`` disables recycling.
     pool_recycle_seconds: int = 1800
 
+    #: Directory retained from the newer release for verified code rollbacks.
+    schema_ahead_migrations: str = ""
+    #: Null leaves the revision-distance limit disabled until release cutover.
+    schema_ahead_max_revisions: int | None = None
+
     @property
     def backend(self) -> str:
         """Infer backend from the URL scheme."""
@@ -1505,6 +1510,16 @@ class DatabaseConfig:
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
+        if self.schema_ahead_max_revisions is not None and (
+            type(self.schema_ahead_max_revisions) is not int
+            or self.schema_ahead_max_revisions < 0
+        ):
+            errors.append(
+                ConfigError(
+                    "database", "schema_ahead_max_revisions",
+                    "must be null or a nonnegative integer",
+                )
+            )
         if not self.url:
             errors.append(ConfigError("database", "url", "database url/path is required"))
         if self.backend == "postgresql":
@@ -3576,18 +3591,24 @@ class HostShellConfig:
     YAML: ``dashboard.host_shell`` **or** a top-level ``host_shell:`` block
     (the config editor's field-name spelling); the nested one wins. Off by
     default: an enabled host shell is remote code execution by design, open
-    only to the authenticated local operator. Read per request, so an edit
-    bites on the next open or attach.
+    only to the local operator unless ``allow_remote`` also admits remote
+    dashboard viewers. Read per request, so an edit bites on the next open or
+    attach.
     """
 
     enabled: bool = False
     #: Upper bound on concurrently open host shells.
     max_shells: int = 4
+    #: Also admit a viewer the dashboard server proxied from another machine
+    #: (its edge verdict ``other``), not only the local operator. A bearer
+    #: token -- a worker or a supervisor -- is refused either way.
+    allow_remote: bool = False
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
-        if not isinstance(self.enabled, bool):
-            errors.append(ConfigError("dashboard.host_shell", "enabled", "must be true or false"))
+        for key in ("enabled", "allow_remote"):
+            if not isinstance(getattr(self, key), bool):
+                errors.append(ConfigError("dashboard.host_shell", key, "must be true or false"))
         if isinstance(self.max_shells, bool) or not isinstance(self.max_shells, int) or not (
             1 <= self.max_shells <= 32
         ):
@@ -3800,6 +3821,24 @@ class GitIdentityConfig:
 
 
 @dataclass
+class DeployConfig:
+    """Optional tag selection; unset preserves the installation's branch updater."""
+
+    tag_glob: str | None = None
+    target: str = "main"
+
+    def validate(self) -> list[ConfigError]:
+        errors = []
+        if self.tag_glob is not None and (
+            not isinstance(self.tag_glob, str) or not self.tag_glob.strip()
+        ):
+            errors.append(ConfigError("deploy", "tag_glob", "must be a non-empty string or null"))
+        if not isinstance(self.target, str) or not self.target.strip():
+            errors.append(ConfigError("deploy", "target", "must be a non-empty branch name"))
+        return errors
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration aggregating all subsystem configs.
 
@@ -3836,6 +3875,7 @@ class AppConfig:
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     docs: DocsConfig = field(default_factory=DocsConfig)
     git_identity: GitIdentityConfig = field(default_factory=GitIdentityConfig)
+    deploy: DeployConfig = field(default_factory=DeployConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
@@ -3943,6 +3983,7 @@ class AppConfig:
         errors: list[ConfigError] = []
 
         errors.extend(self._project_roots_errors)
+        errors.extend(self.deploy.validate())
         seen_root_ids: set[str] = set()
         seen_root_paths: set[str] = set()
         for index, root in enumerate(self.project_roots):
@@ -4276,6 +4317,7 @@ HOT_RELOADABLE_SECTIONS = {
     # an edit governs the next launch and retires stale pool sessions at
     # their next claim (docs/specs/git-identity.md).
     "git_identity",
+    "deploy",  # selectors are read per operator update
     # Read per use through lambda getters (``orchestrator.core`` knowledge
     # reads and ``records`` outbox/export), so an edit bites on the next
     # access without a restart.
@@ -4868,6 +4910,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.workspace_dir = raw["workspace_dir"]
     if "docs" in raw and isinstance(raw["docs"], dict):
         config.docs = DocsConfig(**_dataclass_kwargs(DocsConfig, raw["docs"]))
+    if "deploy" in raw and isinstance(raw["deploy"], dict):
+        config.deploy = DeployConfig(**_dataclass_kwargs(DeployConfig, raw["deploy"]))
     if "git_identity" in raw and isinstance(raw["git_identity"], dict):
         config.git_identity = GitIdentityConfig(
             **_dataclass_kwargs(GitIdentityConfig, raw["git_identity"])
@@ -4886,6 +4930,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             pool_max_size=d.get("pool_max_size", 10),
             pre_ping=str(d.get("pre_ping", "local")),
             pool_recycle_seconds=int(d.get("pool_recycle_seconds", 1800)),
+            schema_ahead_migrations=str(d.get("schema_ahead_migrations", "")),
+            schema_ahead_max_revisions=d.get("schema_ahead_max_revisions"),
         )
     # Backward compat: if no explicit database section, populate from database_path
     if not config.database.url:

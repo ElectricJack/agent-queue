@@ -55,11 +55,16 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_recover_candidate_member",
         "integration_recover_unwritten_resolution",
         "integration_promote_main",
+        "integration_promotion_publish",
         "integration_release",
         "integration_cleanup",
         "integration_status",
         "integration_abort_batch",
+        "integration_pause_batch",
+        "integration_resume_batch",
+        "integration_seal_now",
         "integration_retire_origin",
+        "integration_refresh_epic",
         "integration_trust_manifest",
         "integration_app_verify",
         "integration_eject",
@@ -127,6 +132,17 @@ class PromoteRulesetsValue(PromoteValidateValue):
     rulesets: tuple[dict[str, Any], ...] = ()
 
 
+class IntegrationPromotionPublishArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+
+
+class IntegrationPromotionPublishValue(CommandValue):
+    batch_id: str | None = None
+    source_sha: str | None = None
+    target_sha: str | None = None
+    detail: dict[str, Any] | None = None
+
+
 class IntegrationAbortBatchArgs(CommandArgs):
     batch_id: str = Field(min_length=1)
     reason: str = ""
@@ -140,6 +156,16 @@ class IntegrationRetireOriginArgs(CommandArgs):
     dry_run: bool = True
 
 
+class IntegrationRefreshEpicArgs(CommandArgs):
+    task_id: str = Field(min_length=1)
+    dry_run: bool = True
+
+
+class IntegrationSealNowArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    dry_run: bool = True
+
+
 class IntegrationTrainControlValue(CommandValue):
     project_id: str | None = None
     batch_id: str | None = None
@@ -150,6 +176,18 @@ class IntegrationTrainControlValue(CommandValue):
     target_sha: str | None = None
     intent: str | None = None
     dry_run: bool | None = None
+    replacement_batch_id: str | None = None
+    members: tuple[str, ...] = ()
+    blockers: tuple[dict[str, Any], ...] = ()
+
+
+class IntegrationRefreshEpicValue(IntegrationTrainControlValue):
+    default_ref: str | None = None
+    default_sha: str | None = None
+    ahead: int | None = None
+    behind: int | None = None
+    state: str | None = None
+    detail: dict[str, Any] | None = None
 
 
 class IntegrationStatusReadArgs(IntegrationStatusArgs):
@@ -204,7 +242,8 @@ class IntegrationAppVerifyValue(CommandValue):
 class IntegrationEjectArgs(CommandArgs):
     batch_id: str = Field(min_length=1)
     task_id: str = Field(min_length=1)
-    reason: str = Field(min_length=1)
+    reason: str = ""
+    dry_run: bool = True
 
 
 class IntegrationReleaseOwnerArgs(CommandArgs):
@@ -1061,6 +1100,7 @@ def _operational_contract(
     successes: frozenset[str],
     side_effect: SideEffectClass,
     result_model: type[CommandValue] = IntegrationOperationalValue,
+    supports_preview: bool = False,
 ) -> CommandContract:
     effects = (
         (ReadClause(subject=EffectSubject.INTEGRATION_OPERATION),)
@@ -1087,6 +1127,7 @@ def _operational_contract(
             side_effect=side_effect,
             idempotency=IdempotencySpec(mode="natural"),
             retry_safe=True,
+            supports_preview=supports_preview,
             effects=effects,
             sensitive_args=frozenset({"reason"}) if "reason" in args_model.model_fields else frozenset(),
             receipt_projection=tuple(result_model.model_fields),
@@ -1124,6 +1165,22 @@ INTEGRATION_STATUS = _operational_contract(
     side_effect=SideEffectClass.READ,
     result_model=IntegrationStatusValue,
 )
+
+INTEGRATION_PROMOTION_PUBLISH = _operational_contract(
+    "integration_promotion_publish", IntegrationPromotionPublishArgs,
+    ("delivered", "testing", "held", "moved", "unknown", "published",
+     "unavailable", "not_found", "promotion_intent_invalid"),
+    successes=frozenset({"delivered", "testing", "held", "moved", "unknown", "published"}),
+    side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationPromotionPublishValue,
+)
+
+
+async def _promotion_publish_adapter(args, ctx):
+    return await _hierarchy_adapter(
+        "integration_promotion_publish", args, ctx, IntegrationPromotionPublishValue,
+        {"delivered", "testing", "held", "moved", "unknown", "published", "unauthorized",
+         "unavailable", "not_found", "promotion_intent_invalid"},
+    )
 #: Every refusal names its cause (spec §3 I6); ``manifest`` is the only success.
 TRUST_MANIFEST_OUTCOMES = (
     "manifest",
@@ -1187,12 +1244,23 @@ INTEGRATION_APP_VERIFY = INTEGRATION_APP_VERIFY.model_copy(update={
         ),
     }),
 })
+class IntegrationEjectValue(IntegrationOperationalValue):
+    replacement_batch_id: str | None = None
+    intent: str | None = None
+    target_ref: str | None = None
+    target_sha: str | None = None
+    candidate_sha: str | None = None
+    members: tuple[dict[str, Any] | str, ...] = ()
+
+
 INTEGRATION_EJECT = _operational_contract(
     "integration_eject",
     IntegrationEjectArgs,
-    ("ejected", "unknown_batch", "not_a_member", "invalid_state"),
-    successes=frozenset({"ejected"}),
+    ("preview", "ejected", "refused", "unknown_batch", "not_a_member", "invalid_state"),
+    successes=frozenset({"preview", "ejected"}),
     side_effect=SideEffectClass.COMPOSITE,
+    result_model=IntegrationEjectValue,
+    supports_preview=True,
 )
 class IntegrationReevaluateRepairArgs(CommandArgs):
     operation_id: str = Field(min_length=1)
@@ -2743,8 +2811,8 @@ async def _eject_adapter(args: IntegrationEjectArgs, ctx: CommandContext | None)
         "integration_eject",
         args,
         ctx,
-        IntegrationOperationalValue,
-        {"ejected", "unknown_batch", "not_a_member", "invalid_state"},
+        IntegrationEjectValue,
+        {"preview", "ejected", "refused", "unknown_batch", "not_a_member", "invalid_state"},
     )
 
 
@@ -2902,24 +2970,39 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     declaration together.  Unavailable security-sensitive mutations remain
     outside the allowlist.
     """
-    for name, args_model, applied in (
-        ("integration_abort_batch", IntegrationAbortBatchArgs, "aborted"),
-        ("integration_retire_origin", IntegrationRetireOriginArgs, "retired"),
+    for name, args_model, applied, value_model in (
+        ("integration_abort_batch", IntegrationAbortBatchArgs, "aborted", IntegrationTrainControlValue),
+        ("integration_pause_batch", IntegrationAbortBatchArgs, "paused", IntegrationTrainControlValue),
+        ("integration_resume_batch", IntegrationAbortBatchArgs, "resumed", IntegrationTrainControlValue),
+        ("integration_seal_now", IntegrationSealNowArgs, "sealed", IntegrationTrainControlValue),
+        ("integration_retire_origin", IntegrationRetireOriginArgs, "retired", IntegrationTrainControlValue),
+        ("integration_refresh_epic", IntegrationRefreshEpicArgs, "refreshed", IntegrationRefreshEpicValue),
     ):
         if registry.get(name) is not None:
             continue
         outcomes = ("preview", applied, "refused")
+        successes = {"preview", applied}
+        if name == "integration_seal_now":
+            outcomes += ("no_ready_work", "existing_batch")
+            successes.update({"no_ready_work", "existing_batch"})
+        elif name == "integration_refresh_epic":
+            outcomes += ("pending", "current")
+            successes.update({"pending", "current"})
         contract = _operational_contract(
-            name, args_model, outcomes, successes=frozenset({"preview", applied}),
-            side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationTrainControlValue,
+            name, args_model, outcomes, successes=frozenset(successes),
+            side_effect=SideEffectClass.COMPOSITE, result_model=value_model,
+            supports_preview=True,
         )
 
-        async def train_control(args, ctx, command=name, outcomes=outcomes):
+        async def train_control(args, ctx, command=name, outcomes=outcomes, value_model=value_model):
             return await _hierarchy_adapter(
-                command, args, ctx, IntegrationTrainControlValue, set(outcomes),
+                command, args, ctx, value_model, set(outcomes),
             )
 
-        registry.register(CommandRegistration(name, contract, train_control))
+        async def train_control_preview(args, ctx, invoke=train_control):
+            return await invoke(args.model_copy(update={"dry_run": True}), ctx)
+
+        registry.register(CommandRegistration(name, contract, train_control, train_control_preview))
     name = "integration_release_held_gate"
     if registry.get(name) is None:
         contract = _operational_contract(
@@ -2988,6 +3071,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         )
     for contract, adapter in (
         (INTEGRATION_STATUS, _status_adapter),
+        (INTEGRATION_PROMOTION_PUBLISH, _promotion_publish_adapter),
         (PROMOTE_SCHEMA, _promote_schema_adapter),
         (PROMOTE_VALIDATE, _promote_validate_adapter),
         (PROMOTE_RULESETS, _promote_rulesets_adapter),
@@ -3036,7 +3120,12 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_REPAIR_TIMEOUT, _repair_timeout_adapter),
     ):
         if registry.get(contract.name) is None:
-            registry.register(CommandRegistration(contract.name, contract, adapter))
+            preview = None
+            if contract.execution.supports_preview:
+                async def preview(args, ctx, invoke=adapter):
+                    return await invoke(args.model_copy(update={"dry_run": True}), ctx)
+
+            registry.register(CommandRegistration(contract.name, contract, adapter, preview))
 
 class IntegrationReleaseHeldGateArgs(CommandArgs):
     subject_id: str = Field(min_length=1)

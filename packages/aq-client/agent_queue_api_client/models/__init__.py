@@ -1592,6 +1592,7 @@ from .task_attachment_detail import TaskAttachmentDetail
 from .task_attachment_response import TaskAttachmentResponse
 from .task_attachments_response import TaskAttachmentsResponse
 from .task_batch_ack_response import TaskBatchAckResponse
+from .task_batch_ack_response_diff_type_0 import TaskBatchAckResponseDiffType0
 from .task_batch_commit_request import TaskBatchCommitRequest
 from .task_batch_commit_response import TaskBatchCommitResponse
 from .task_batch_commit_response_422 import TaskBatchCommitResponse422
@@ -1600,6 +1601,7 @@ from .task_batch_discard_response_422 import TaskBatchDiscardResponse422
 from .task_batch_propose_request import TaskBatchProposeRequest
 from .task_batch_propose_response import TaskBatchProposeResponse
 from .task_batch_propose_response_422 import TaskBatchProposeResponse422
+from .task_batch_propose_response_diff_type_0 import TaskBatchProposeResponseDiffType0
 from .task_batch_update_request import TaskBatchUpdateRequest
 from .task_batch_update_request_payload import TaskBatchUpdateRequestPayload
 from .task_batch_update_response_422 import TaskBatchUpdateResponse422
@@ -3370,6 +3372,7 @@ __all__ = (
     "TaskAttachmentResponse",
     "TaskAttachmentsResponse",
     "TaskBatchAckResponse",
+    "TaskBatchAckResponseDiffType0",
     "TaskBatchCommitRequest",
     "TaskBatchCommitResponse",
     "TaskBatchCommitResponse422",
@@ -3378,6 +3381,7 @@ __all__ = (
     "TaskBatchProposeRequest",
     "TaskBatchProposeResponse",
     "TaskBatchProposeResponse422",
+    "TaskBatchProposeResponseDiffType0",
     "TaskBatchUpdateRequest",
     "TaskBatchUpdateRequestPayload",
     "TaskBatchUpdateResponse422",

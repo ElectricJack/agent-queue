@@ -16,9 +16,11 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import Protocol
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import func, insert, select, union_all, update
 
-from src.database.tables import integration_batch_members, integration_batches
+from src.database.tables import (
+    archived_tasks, integration_batch_members, integration_batches, projects, tasks,
+)
 from src.git.manager import GitError, is_valid_git_oid
 from src.integration.delivery_truth import DeliveryRequest
 from src.integration.git_truth import GitTruthSnapshot
@@ -26,6 +28,28 @@ from src.integration.gitops import ZERO, GitOperations, RetainedRepository, bran
 from src.integration.provenance import CompletionIdentity, GitProvenance
 
 logger = logging.getLogger(__name__)
+
+def ejection_instruction(batch_identity):
+    """Only a batch-owned eject record for its frozen member releases inputs.
+
+    Task metadata is untrusted, including legacy ejection markers. The record
+    is written atomically by eject or daemon supersede and survives member
+    archival/deletion.
+    """
+    batch = integration_batches.alias("ejected_batch")
+    member = integration_batch_members.alias("ejected_member")
+    record = batch.c.ejection_record
+    return select(batch.c.id).select_from(batch.join(member,
+        member.c.batch_id == batch.c.id)).where(
+        batch.c.id == batch_identity,
+        batch.c.intent == "aborted",
+        record["batch_id"].astext == batch.c.id,
+        record["project_id"].astext == batch.c.project_id,
+        record["task_id"].astext == member.c.task_id,
+        member.c.repository_id == batch.c.repository_id,
+        func.length(func.trim(record["operator_id"].astext)) > 0,
+        func.length(func.trim(record["reason"].astext)) > 0,
+    ).exists()
 
 
 def candidate_ref(batch_id: str) -> str:
@@ -53,6 +77,10 @@ class Batch:
         sources, rather than another delivery of already-contained children.
         """
         return self.id.startswith("train-epic-sync-")
+
+    @property
+    def epic_refresh(self) -> bool:
+        return self.id.startswith("train-epic-refresh-")
 
     def __post_init__(self):
         branch(self.target_ref)
@@ -107,6 +135,20 @@ def ordered_members(
     return tuple(result)
 
 
+class SupersedeMemberUnavailable(ValueError):
+    """A refreshed frozen member has no auditable task identity in its batch project."""
+
+    def __init__(self, task_id: str, *, ambiguous: bool = False, foreign_project: bool = False):
+        self.task_id = task_id
+        if foreign_project:
+            self.code = "stack_member_foreign_project"
+            detail = "belongs to a different project"
+        else:
+            self.code = "stack_member_ambiguous" if ambiguous else "stack_member_missing"
+            detail = "appears in both tasks and archived_tasks" if ambiguous else "has no task row"
+        super().__init__(f"Cannot supersede: refreshed member {task_id} {detail}")
+
+
 class BatchStore:
     """Intent/input writes invoked by commands; legacy columns retire at stage four."""
 
@@ -129,59 +171,144 @@ class BatchStore:
         return tuple(BatchMember(row["task_id"], row["source_sha"],
                                  row["source_base_sha"], row["ordinal"]) for row in rows)
 
-    async def freeze(self, batch: Batch, members: Iterable[BatchMember], *, trees: Mapping[str, str]):
+    async def freeze(self, batch: Batch, members: Iterable[BatchMember], *,
+                     trees: Mapping[str, str], exclusive_target=False,
+                     promotion: Mapping | None = None, conn=None):
         """Atomic immutable membership; replay must name exactly the same inputs."""
         members = tuple(members)
+        if conn is not None:
+            return await self._freeze_locked(conn, batch, members, trees=trees,
+                                             exclusive_target=exclusive_target,
+                                             promotion=promotion)
+        async with self.db.immediate() as owned:
+            return await self._freeze_locked(owned, batch, members, trees=trees,
+                                             exclusive_target=exclusive_target,
+                                             promotion=promotion)
+
+    async def _freeze_locked(self, conn, batch, members, *, trees, exclusive_target, promotion):
+        await self._target_lock(conn, batch)
+        if exclusive_target:
+            await self._exclusive_target(conn, batch)
+        return await self._freeze_on(conn, batch, members, trees=trees, promotion=promotion)
+
+    @staticmethod
+    async def _target_lock(conn, batch):
+        key = repr((batch.project_id, batch.repository_id, batch.target_ref))
+        await conn.execute(select(func.pg_advisory_xact_lock(
+            func.hashtextextended("git-batch-target:" + key, 0),
+        )))
+
+    @staticmethod
+    async def _exclusive_target(conn, batch, *, excluding=None):
+        other = await conn.scalar(select(integration_batches.c.id).where(
+            integration_batches.c.project_id == batch.project_id,
+            integration_batches.c.repository_id == batch.repository_id,
+            integration_batches.c.target_ref == batch.target_ref,
+            integration_batches.c.intent != "aborted",
+            integration_batches.c.lifecycle != "promoted",
+            integration_batches.c.id != batch.id,
+            integration_batches.c.id != (excluding or batch.id),
+        ))
+        if other:
+            raise ValueError("another batch already owns this target")
+
+    async def _freeze_on(self, conn, batch, members, *, trees, promotion=None):
         if tuple(member.order for member in members) != tuple(range(len(members))):
             raise ValueError("membership must have contiguous frozen order")
         if not members:
             raise ValueError("empty work needs no batch")
         if len({member.task_id for member in members}) != len(members):
             raise ValueError("duplicate batch member")
+        integration_branch = candidate_ref(batch.id)
+        if promotion is not None:
+            from src.integration.promotion_steps import promotion_ref
+
+            integration_branch = promotion_ref(promotion["step"], promotion)
         now = self.clock()
-        async with self.db.immediate() as conn:
-            # Serialize absent-id creation too. No Git or check work under this lock.
-            await conn.execute(select(func.pg_advisory_xact_lock(
-                func.hashtextextended("git-batch:" + batch.id, 0),
-            )))
-            existing = (await conn.execute(select(integration_batches).where(
-                integration_batches.c.id == batch.id,
-            ).with_for_update())).mappings().first()
-            if existing:
-                frozen = (await conn.execute(select(integration_batch_members).where(
-                    integration_batch_members.c.batch_id == batch.id,
-                ).order_by(integration_batch_members.c.ordinal))).mappings().all()
-                identity = (existing["project_id"], existing["repository_id"], existing["target_ref"])
-                wanted = (batch.project_id, batch.repository_id, batch.target_ref)
-                inputs = tuple(BatchMember(r["task_id"], r["source_sha"],
-                                          r["source_base_sha"], r["ordinal"]) for r in frozen)
-                if identity != wanted or inputs != members:
-                    raise ValueError("batch id already names different frozen inputs")
-                return Batch.from_row(existing)
-            manifest = hashlib.sha256(repr(members).encode()).hexdigest()
-            await conn.execute(insert(integration_batches).values(
-                id=batch.id, project_id=batch.project_id, repository_id=batch.repository_id,
-                target_ref=batch.target_ref, intent=batch.intent,
-                repair_attempt_count=batch.repair_attempt_count,
-                created_at=batch.created_at or now, updated_at=now,
-                # Compatibility-only required fields, never read by this engine.
-                request_id=batch.id, source_manifest_digest=manifest,
-                base_sha=members[0].base_sha, integration_branch=candidate_ref(batch.id),
-                lifecycle="sealing", policy_snapshot={}, artifact_snapshot={}, cleanup_state="pending",
+        active = (await conn.execute(select(integration_batches.c.id).where(
+            integration_batches.c.project_id == batch.project_id,
+            integration_batches.c.repository_id == batch.repository_id,
+            integration_batches.c.target_ref == batch.target_ref,
+            integration_batches.c.id != batch.id,
+            integration_batches.c.intent != "aborted",
+            integration_batches.c.lifecycle != "promoted",
+        ))).scalars().all()
+        if active and (batch.epic_refresh or any(
+            id_.startswith("train-epic-refresh-") for id_ in active
+        )):
+            raise ValueError("epic refresh must serialize with its open collection batch")
+        # Serialize absent-id creation too. No Git or check work under this lock.
+        await conn.execute(select(func.pg_advisory_xact_lock(
+            func.hashtextextended("git-batch:" + batch.id, 0),
+        )))
+        existing = (await conn.execute(select(integration_batches).where(
+            integration_batches.c.id == batch.id,
+        ).with_for_update())).mappings().first()
+        if existing:
+            frozen = (await conn.execute(select(integration_batch_members).where(
+                integration_batch_members.c.batch_id == batch.id,
+            ).order_by(integration_batch_members.c.ordinal))).mappings().all()
+            identity = (existing["project_id"], existing["repository_id"], existing["target_ref"])
+            wanted = (batch.project_id, batch.repository_id, batch.target_ref)
+            inputs = tuple(BatchMember(r["task_id"], r["source_sha"],
+                                      r["source_base_sha"], r["ordinal"]) for r in frozen)
+            if identity != wanted or inputs != members:
+                raise ValueError("batch id already names different frozen inputs")
+            if promotion is not None and (
+                existing["trigger"] != "promotion"
+                or existing["request_id"] != promotion["request_id"]
+                or existing["policy_snapshot"].get("promotion_step") != promotion["step"]
+                or existing["policy_snapshot"].get("promotion_intent") != dict(promotion)
+            ):
+                raise ValueError("batch id already names a different promotion request")
+            return Batch.from_row(existing)
+        manifest = hashlib.sha256(repr(members).encode()).hexdigest()
+        policy = await conn.scalar(select(projects.c.hierarchical_integration_policy).where(
+            projects.c.id == batch.project_id,
+        )) or {}
+        retention = (policy.get("cleanup") or {}).get("successful_source_refs", "delete")
+        await conn.execute(insert(integration_batches).values(
+            id=batch.id, project_id=batch.project_id, repository_id=batch.repository_id,
+            target_ref=batch.target_ref, intent=batch.intent,
+            repair_attempt_count=batch.repair_attempt_count,
+            created_at=batch.created_at or now, updated_at=now,
+            # Legacy required fields, the immutable cleanup policy snapshot and,
+            # for a promotion, its frozen step and intent.
+            request_id=batch.id if promotion is None else promotion["request_id"],
+            trigger="manual" if promotion is None else "promotion",
+            source_manifest_digest=manifest,
+            base_sha=members[0].base_sha, integration_branch=integration_branch,
+            lifecycle="sealing", policy_snapshot=dict(policy) if promotion is None else {
+                **policy,
+                "promotion_step": promotion["step"],
+                "promotion_intent": dict(promotion),
+            }, artifact_snapshot={}, cleanup_state="pending",
+        ))
+        for member in members:
+            tree = trees[member.task_id]
+            if not is_valid_git_oid(tree):
+                raise ValueError("source tree must be exact")
+            source = None
+            for table in (tasks, archived_tasks):
+                source = (await conn.execute(select(table.c.branch_name, table.c.pr_url).where(
+                    table.c.id == member.task_id, table.c.repo_id == batch.repository_id,
+                ))).mappings().one_or_none()
+                if source is not None:
+                    break
+            source_ref = ("refs/heads/" + source["branch_name"].removeprefix("refs/heads/")
+                          if source and source["branch_name"] else None)
+            await conn.execute(insert(integration_batch_members).values(
+                batch_id=batch.id, ordinal=member.order, task_id=member.task_id,
+                repository_id=batch.repository_id, source_sha=member.source_sha,
+                source_base_sha=member.base_sha, reviewed_head_sha=member.source_sha,
+                reviewed_tree_sha=tree, review_evidence_id=None, review_evidence={},
+                pr_url=source["pr_url"] if source else None,
+                source_ref=source_ref,
+                source_ref_retention=retention if source_ref else None,
             ))
-            for member in members:
-                tree = trees[member.task_id]
-                if not is_valid_git_oid(tree):
-                    raise ValueError("source tree must be exact")
-                await conn.execute(insert(integration_batch_members).values(
-                    batch_id=batch.id, ordinal=member.order, task_id=member.task_id,
-                    repository_id=batch.repository_id, source_sha=member.source_sha,
-                    source_base_sha=member.base_sha, reviewed_head_sha=member.source_sha,
-                    reviewed_tree_sha=tree, review_evidence_id=None, review_evidence={},
-                ))
-            await conn.execute(update(integration_batches).where(
-                integration_batches.c.id == batch.id,
-            ).values(lifecycle="sealed"))
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == batch.id,
+        ).values(lifecycle="sealed"))
         return replace(batch, created_at=batch.created_at or now)
 
     @asynccontextmanager
@@ -198,6 +325,115 @@ class BatchStore:
             ).with_for_update())).scalar_one_or_none()
             yield row == "open"
 
+    async def eject(self, batch, task_id, replacement, members, *, trees, authorize,
+                    dry_run, operator_id, reason):
+        """Abort and replace under the publisher's lock; never edit membership.
+
+        The batch owns the operator's release instruction. It changes neither
+        the sealed batch identity nor its completion/delivery evidence.
+        """
+        async with self.db.immediate() as conn:
+            await self._target_lock(conn, batch)
+            row = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == batch.id,
+            ).with_for_update())).mappings().one()
+            if row["intent"] == "aborted" or row["lifecycle"] == "promoted":
+                raise ValueError("batch is no longer open or paused")
+            if Batch.from_row(row) != batch:
+                raise ValueError("batch changed; preview again")
+            frozen = (await conn.execute(select(integration_batch_members).where(
+                integration_batch_members.c.batch_id == batch.id,
+            ).order_by(integration_batch_members.c.ordinal))).mappings().all()
+            expected = tuple(replace(BatchMember(r["task_id"], r["source_sha"],
+                r["source_base_sha"], r["ordinal"]), order=i)
+                for i, r in enumerate(r for r in frozen if r["task_id"] != task_id))
+            if not any(r["task_id"] == task_id for r in frozen) or expected != members:
+                raise ValueError("frozen batch membership changed")
+            source_projects = (await conn.execute(union_all(*(
+                select(table.c.project_id).where(table.c.id == task_id)
+                for table in (tasks, archived_tasks)
+            )))).scalars().all()
+            if source_projects != [batch.project_id]:
+                raise ValueError("ejected member does not belong to the batch project")
+            if not (operator_id or "").strip():
+                raise ValueError("ejection requires an operator")
+            if not dry_run and not reason.strip():
+                raise ValueError("ejection requires a nonblank reason")
+            await self._exclusive_target(conn, replacement or batch, excluding=batch.id)
+            # Fence reopen/abandon and origin refresh alongside publication.
+            ids = sorted(r["task_id"] for r in frozen)
+            await conn.execute(select(tasks.c.id).where(tasks.c.id.in_(ids))
+                               .order_by(tasks.c.id).with_for_update())
+            if not await authorize():
+                raise ValueError("batch sources, target or candidate changed; preview again")
+            if dry_run:
+                return
+            instruction = {"batch_id": batch.id, "project_id": batch.project_id,
+                           "task_id": task_id,
+                           "replacement_batch_id": replacement.id if replacement else None,
+                           "operator_id": operator_id, "reason": reason}
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch.id,
+            ).values(intent="aborted", lifecycle="aborted",
+                     human_abort_reason=reason, ejection_record=instruction,
+                     cleanup_state="pending", updated_at=self.clock()))
+            if replacement is not None:
+                await self._freeze_on(conn, replacement, members, trees=trees)
+            import json
+
+            await self.db.log_event("integration.batch_ejected", project_id=batch.project_id,
+                task_id=task_id, payload=json.dumps({"batch_id": batch.id,
+                    "replacement_batch_id": replacement.id if replacement else None,
+                    "operator_id": operator_id, "reason": reason}), conn=conn)
+
+    async def supersede(self, batch: Batch, task_id: str, *, reason: str) -> bool:
+        """Abort an open batch a refreshed stack replaced; release its inputs.
+
+        Its frozen candidate can no longer publish the refreshed source, so it
+        must not keep the target. Unlike an ordinary abort, its unchanged
+        members return to pending. An explicit pause still holds.
+        """
+        import json
+
+        if not reason.strip():
+            raise ValueError("supersede requires a nonblank reason")
+        async with self.db.immediate() as conn:
+            await self._target_lock(conn, batch)
+            row = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == batch.id,
+            ).with_for_update())).mappings().one_or_none()
+            if row is None or row["intent"] != "open" or row["lifecycle"] == "promoted":
+                return False
+            if Batch.from_row(row) != batch:
+                return False
+            member = await conn.scalar(select(integration_batch_members.c.task_id).where(
+                integration_batch_members.c.batch_id == batch.id,
+                integration_batch_members.c.task_id == task_id,
+                integration_batch_members.c.repository_id == batch.repository_id,
+            ))
+            source_projects = (await conn.execute(union_all(*(
+                select(table.c.project_id).where(table.c.id == task_id)
+                for table in (tasks, archived_tasks)
+            )))).scalars().all()
+            if member is None:
+                raise ValueError("superseded member does not belong to the frozen batch project")
+            if len(source_projects) != 1:
+                raise SupersedeMemberUnavailable(task_id, ambiguous=bool(source_projects))
+            if source_projects != [batch.project_id]:
+                raise SupersedeMemberUnavailable(task_id, foreign_project=True)
+            instruction = {"batch_id": batch.id, "project_id": batch.project_id,
+                           "task_id": task_id, "replacement_batch_id": None,
+                           "operator_id": "service:integration-train", "reason": reason}
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch.id,
+            ).values(intent="aborted", lifecycle="aborted",
+                     human_abort_reason=reason, ejection_record=instruction,
+                     cleanup_state="pending", updated_at=self.clock()))
+            await self.db.log_event("integration.batch_superseded", project_id=batch.project_id,
+                task_id=task_id, payload=json.dumps(instruction),
+                conn=conn)
+        return True
+
     async def set_intent(self, batch_id: str, intent: str, *, dry_run=False,
                          authorize=None, operator_id=None, reason=""):
         """Abort before intentional candidate deletion; an abort is irreversible."""
@@ -210,8 +446,14 @@ class BatchStore:
             ).with_for_update())).mappings().one()
             if row["intent"] == "aborted" and intent != "aborted":
                 raise ValueError("aborted batch cannot reopen")
+            if row["lifecycle"] == "promoted" and intent != "aborted":
+                raise ValueError("promoted batch intent cannot change")
             if intent == "aborted" and row["lifecycle"] == "promoted":
                 raise ValueError("promoted batch cannot be aborted")
+            if intent == "paused" and row["intent"] != "open":
+                raise ValueError("only an open batch can be paused")
+            if intent == "open" and row["intent"] != "paused":
+                raise ValueError("only a paused batch can be resumed")
             if authorize is not None and not await authorize():
                 raise ValueError("batch target or candidate changed; preview again")
             if dry_run:
@@ -322,6 +564,13 @@ class BatchService:
         dependencies: Mapping[str, Iterable[str]] | None = None,
     ) -> Batch:
         """Retain current exact completion sources before freezing their inputs."""
+        members, trees = await self.freeze_inputs(
+            batch, members, requests=requests, snapshot=snapshot, dependencies=dependencies,
+        )
+        return await self.store.freeze(batch, members, trees=trees, exclusive_target=True)
+
+    async def freeze_inputs(self, batch, members, *, requests, snapshot, dependencies=None):
+        """Retain current exact completion sources before freezing their inputs."""
         repo = await self.gitops.repository(batch)
         await self.gitops.validate_repository(repo)
         members = ordered_members(members, dependencies)
@@ -353,7 +602,7 @@ class BatchService:
         # Never write a replacement delivery record or a new journal at seal.
         if not await self.eligible(batch, members) or not await snapshot.observation.is_fresh():
             raise ValueError("source identity/target moved while sealing")
-        return await self.store.freeze(batch, members, trees=trees)
+        return members, trees
 
     async def _transfer(self, batch, repo, ref, sha, expected, authorize):
         """Read-back also settles an exception after a successful authenticated push."""
@@ -452,7 +701,9 @@ class BatchService:
             # partial merge. Candidate inclusion alone cannot settle members.
             proofs = [await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha)
                       for m in members]
-            if members and all(proof is True for proof in proofs) and not batch.epic_sync:
+            if members and all(proof is True for proof in proofs) and not (
+                batch.epic_sync or batch.epic_refresh
+            ):
                 return BatchObservation("delivered", candidate, target)
             if any(proof is None for proof in proofs):
                 return BatchObservation("unknown", candidate, target)
@@ -508,7 +759,8 @@ class BatchService:
 
             async def authorize():
                 return (await self._authorized(batch, members) and
-                        await self.gitops.remote(repo, ref) == candidate and
+                        (batch.epic_refresh or
+                         await self.gitops.remote(repo, ref) == candidate) and
                         await self.gate(batch, candidate, tree))
 
             # Explicit expected-old CAS and ancestry enforce the exact final FF.

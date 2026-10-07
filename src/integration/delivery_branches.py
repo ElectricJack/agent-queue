@@ -53,6 +53,7 @@ from src.database.tables import (
     integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
+    integration_subjects,
     projects,
     repos,
     sessions,
@@ -63,7 +64,6 @@ from src.database.tables import (
 )
 from src.git.manager import GitError, RemoteRefState
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
-from src.integration.promotion_steps import flow_targets
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -418,8 +418,77 @@ async def remote_heads(run_git, store) -> dict[str, str]:
     return heads
 
 
+async def train_cleanup_hold(conn, *, repository_id: str, ref: str) -> str | None:
+    """Protect current writers and open collection targets during train cleanup.
+
+    A completed origin alone is not a hold: the caller separately proves the
+    exact remote tip reachable in Git and deletes under a managed ref lease.
+    """
+    name = branch_of(ref)
+    aliases = (name, f"refs/heads/{name}")
+    for table in (tasks, archived_tasks):
+        live = await conn.scalar(select(table.c.id).where(
+            table.c.repo_id == repository_id, table.c.branch_name.in_(aliases),
+            table.c.status.in_(LIVE_TASK_STATUSES),
+        ).limit(1))
+        if live:
+            return f"task {live} can still run"
+    session = await conn.scalar(select(tasks.c.id).join(
+        sessions, sessions.c.task_id == tasks.c.id,
+    ).where(tasks.c.repo_id == repository_id, tasks.c.branch_name.in_(aliases),
+            sessions.c.state.in_(LIVE_SESSION_STATES)).limit(1))
+    if session:
+        return f"task {session} has a live session"
+    target = await conn.scalar(select(integration_batches.c.id).where(
+        integration_batches.c.repository_id == repository_id,
+        integration_batches.c.lifecycle.in_(ACTIVE_BATCH_LIFECYCLES),
+        or_(integration_batches.c.target_ref == ref,
+            integration_batches.c.integration_branch == ref),
+    ).limit(1))
+    if target:
+        return f"batch {target} still needs this ref"
+    for table in (tasks, archived_tasks):
+        member = await conn.scalar(select(integration_batch_members.c.task_id)
+            .join(integration_batches,
+                  integration_batches.c.id == integration_batch_members.c.batch_id)
+            .outerjoin(table, table.c.id == integration_batch_members.c.task_id)
+            .where(integration_batches.c.repository_id == repository_id,
+                   integration_batches.c.lifecycle.in_(ACTIVE_BATCH_LIFECYCLES),
+                   or_(integration_batch_members.c.source_ref == ref,
+                       table.c.branch_name.in_(aliases))).limit(1))
+        if member:
+            return f"active batch still needs member {member}"
+    subject = await conn.scalar(select(integration_subjects.c.id).where(
+        integration_subjects.c.repository_id == repository_id,
+        integration_subjects.c.target_ref == ref,
+        integration_subjects.c.phase != "done",
+    ).limit(1))
+    if subject:
+        return f"subject {subject} still targets this ref"
+    discard = await conn.scalar(select(task_branch_origins.c.task_id).where(
+        task_branch_origins.c.repository_id == repository_id,
+        task_branch_origins.c.branch_name.in_(aliases),
+        task_branch_origins.c.discard_state == "pending",
+    ).limit(1))
+    return f"branch discard of {discard} is pending" if discard else None
+
+
+async def preserve_branch_tips(
+    run_git, store, heads: dict[str, str], *, target_sha: str, backup_dir: Path,
+    repository_id: str, now: float,
+) -> Path:
+    """Bundle unreachable tips without deleting or moving their branches."""
+    return await _bundle(run_git, store, heads, main_head=target_sha, backup_dir=backup_dir,
+                         repository_id=repository_id, now=now)
+
+
+
+
 def protected_branches(default_branch: str, promotion_flow=None) -> frozenset[str]:
     """All flow targets stay protected, including ones in the ``aq/`` namespace."""
+    # The promotion lane builds on gitops -> development -> this module.
+    from src.integration.promotion_steps import flow_targets
+
     return (PROTECTED_BRANCHES | {branch_of(default_branch)} | {
         branch_of(target) for target in flow_targets(promotion_flow)
     }) - {None}

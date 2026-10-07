@@ -138,6 +138,8 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "promote_schema",
         "promote_validate",
         "promote_rulesets",
+        "promote_status",
+        "promote_list",
         # The command derives the candidate/member/fence from this session's
         # live repair assignment and separately fences pool calls by claim
         # epoch.  No caller-selected integration identity reaches the service.
@@ -191,6 +193,11 @@ PROJECT_ONBOARDING_SCOPE_ERROR = "out of scope: project onboarding requires glob
 OPERATOR_INTEGRATION_CONTROLS = frozenset(
     {
         "integration_abort_batch",
+        "integration_pause_batch",
+        "integration_resume_batch",
+        "integration_seal_now",
+        "integration_eject",
+        "integration_refresh_epic",
         "integration_retire_origin",
         "integration_reevaluate_repair",
         "integration_recover_candidate_member",
@@ -206,8 +213,10 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
     }
 )
 LOCAL_TEST_SELECTION_CONTROLS = frozenset({"test_selection_promote", "test_selection_revoke"})
+#: ``promote_approve`` posts its review with the daemon host's own gh login,
+#: so only the human at that host may run it.
 LOCAL_REVIEW_CONTROLS = frozenset({
-    "review_delegate", "review_import_edits", "approve_pull_request",
+    "review_delegate", "review_import_edits", "approve_pull_request", "promote_approve",
 })
 #: ``edit_project`` fields that bind or change a project's integration
 #: configuration.  An elevated supervisor session reaches the handler, which
@@ -522,6 +531,24 @@ _PLAYBOOK_COMPILER_COMMANDS = frozenset(
     }
 )
 
+_SPEC_INGEST_COMMANDS = frozenset({
+    "list_tasks", "get_downstream_tasks", "task_batch_propose", "task_batch_commit",
+})
+
+
+async def spec_ingest_task_for_session(db, scope: RequestScope):
+    """A live, server-assigned ingestion role; client hints grant no authority."""
+    if db is None or not scope.session_id or not scope.project_id:
+        return None
+    session = await db.get_session(scope.session_id)
+    if session is None or session.profile_id != "spec-ingest":
+        return None
+    task = await held_task_for_session(db, scope)
+    if (task is None or task.profile_id != "spec-ingest" or task.route_source != "role"
+            or not (task.dedup_key or "").startswith("spec-ingest:")):
+        return None
+    return task
+
 # A reviewer task's whole job is a verdict on *another* task: read it, and
 # either approve (close its own review task) or reject.  Rejection is
 # ``reopen_with_feedback`` on the reviewed task, which is neither in
@@ -816,6 +843,29 @@ async def check_request_scope(
     """
     if (error := _canonicalise_reroute_args(command, args, scope)) is not None:
         return error
+    if scope.kind == "session" and not scope.elevated and command in _SPEC_INGEST_COMMANDS:
+        held = await spec_ingest_task_for_session(db, scope)
+        if held is not None:
+            if args.get("session_id") not in (None, scope.session_id):
+                return "out of scope: session_id mismatch"
+            if args.get("project_id") not in (None, scope.project_id):
+                return "out of scope: project_id mismatch"
+            args["project_id"] = scope.project_id
+            if command == "task_batch_commit":
+                from src.database.queries.proposal_queries import get_proposal
+
+                proposal = await get_proposal(db, args.get("proposal_id"))
+                if proposal is None or proposal["project_id"] != scope.project_id:
+                    return "out of scope: proposal mismatch"
+                if (proposal["payload"].get("spec_ingest") or {}).get("task_id") != held.id:
+                    return "out of scope: proposal does not belong to held ingestion task"
+            if command == "get_downstream_tasks":
+                task = await db.get_task(args.get("task_id"))
+                if task is None or task.project_id != scope.project_id:
+                    return "out of scope: task_id mismatch"
+            return None
+        # ``list_tasks`` is also a triage capability. A session without an
+        # ingestion assignment must still reach that independently checked grant.
     if (scope.kind == "session" and not scope.elevated and command in {
         "integration_resolve_conflict", "integration_push_conflict_resolution",
     }):

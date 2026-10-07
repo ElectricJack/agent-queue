@@ -37,6 +37,11 @@ HANDCRAFTED_COVERAGE = {
     "promote_schema",
     "promote_validate",
     "promote_rulesets",
+    "promote_request",
+    "promote_approve",
+    "promote_cancel",
+    "promote_status",
+    "promote_list",
     # pool_provider.py mounts schema-generated status/apply in a nested group
     # and translates preview's operator flags into structured arguments.
     "provider_allocation_status",
@@ -54,6 +59,8 @@ HANDCRAFTED_COVERAGE = {
     "restart_task",
     # tasks.py — `aq task create --graph|--from-spec|--dry-run`
     "create_task_graph",
+    # tasks.py — file-based or inline transactional change sets with a diff preview.
+    "task_batch_propose",
     # agent_surface.py — claim-aware worker-loop commands: positional task
     # ids, --claim-epoch fenced against .aq/claim.json (swarm-work-model §10).
     "task_claim",
