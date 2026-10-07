@@ -28,7 +28,7 @@ from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
 from src.playbooks.run_state import RunLifecycle
 from src.playbooks.services import resolve_integration_route
-from src.profiles.capabilities import DENY_ALL
+from src.profiles.capabilities import CapabilityPolicy
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore, RecordingBus, RecordingRunRepository, StubActivations, artifact_ref_for,
 )
@@ -76,7 +76,7 @@ async def policy_engine(e, kind):
     store, runs = InMemoryArtifactStore(), RecordingRunRepository()
     store.put(artifact)
     registry = ContractRegistry()
-    calls = []
+    calls, results = [], []
     for name in {str(step.command) for step in artifact.steps.values() if step.type == 'command'}:
         registration = CONTRACTS.get(name)
 
@@ -87,6 +87,7 @@ async def policy_engine(e, kind):
             else:
                 with principal_context(ctx):
                     raw = await getattr(e.handler, '_cmd_' + name)(args.model_dump(mode='json'))
+            results.append((name, raw))
             value = contract.result_model(**{k: v for k, v in raw.items()
                                              if k in contract.result_model.model_fields})
             return CommandResult(outcome=raw['outcome'], value=value, summary=raw.get('error', ''))
@@ -96,8 +97,9 @@ async def policy_engine(e, kind):
     engine = PlaybookEngine(services=EngineServices(contracts=registry, artifact_store=store,
         bus=RecordingBus(), clock=lambda: 1000.0), runs=runs, waits=None,
         activations=StubActivations([ref]))
-    principal = ExecutionPrincipal(kind=PrincipalKind.SERVICE, policy=DENY_ALL,
-                                   service_name='fixture-promotion', project_id='p')
+    principal = ExecutionPrincipal(kind=PrincipalKind.PLAYBOOK,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=list(artifact.compiled_against.commands)),
+        service_name='fixture-promotion-' + kind, project_id='p')
 
     async def run(rule, *, step='release', **facts):
         event = {'project_id': 'p', 'step_id': step, 'notes_reviewed': False, **facts}
@@ -105,7 +107,7 @@ async def policy_engine(e, kind):
         assert outcome.lifecycle is RunLifecycle.COMPLETED, (outcome, runs.receipts)
         return outcome
 
-    return SimpleNamespace(run=run, calls=calls, runs=runs, artifact=artifact, ref=ref)
+    return SimpleNamespace(run=run, calls=calls, results=results, runs=runs, artifact=artifact, ref=ref)
 
 
 async def chain_lanes(e, flow):
@@ -263,7 +265,8 @@ async def test_two_step_policies_publish_notes_and_hotfix_backmerges(promote_env
         return await original_author(self, *args, **kwargs)
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(BackmergeAdmission, 'author', author)
-        authored = await e.handler._cmd_integration_backmerge_source({'project_id': 'p', 'step_id': 'release'})
+        await requested.run('backmerge-delivered', batch_id=urgent['batch_id'])
+        authored = requested.results[-1][1]
     assert authored['success'], authored
     assert len(authored['backmerges']) == 2
     await record('lower-backmerges-requested')
