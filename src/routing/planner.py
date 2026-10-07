@@ -43,7 +43,13 @@ from typing import Any
 
 from src.models import TaskType
 from src.profiles.catalog import worker_route
-from src.routing.policy import CLASSIFICATION_FLAGS, Balance, Lane, RoutingPolicy
+from src.routing.policy import (
+    CLASSIFICATION_FLAGS,
+    Balance,
+    Lane,
+    RoutingPolicy,
+    selector_matches,
+)
 from src.routing.sources import LEGACY, OVERRIDE, ROLE, ROUTER, UNROUTED
 
 #: A route the router must still write (§6.1).  ``legacy`` is re-routed.
@@ -134,6 +140,9 @@ class Snapshot:
     context: Mapping[str, Any] = field(default_factory=dict)
     #: Fresh server observations used only to rank hosted preference, not admission.
     headroom: Mapping[str, int] = field(default_factory=dict)
+    #: Installed harness ids, for reporting lane selectors that match none;
+    #: empty when unknown.
+    harnesses: frozenset[str] = frozenset()
 
     def profile(self, profile_id: str) -> ProfileFacts | None:
         return next((p for p in self.profiles if p.id == profile_id), None)
@@ -437,15 +446,16 @@ def _rule(task: TaskFacts, policy: RoutingPolicy, classified: Classification | N
 def _cells(
     snapshot: Snapshot,
     class_id: str,
-    harnesses: frozenset[str] | None,
+    selectors: frozenset[str] | None,
     *,
     exclude: frozenset[str] = frozenset(),
 ) -> list[ProfileFacts]:
+    """Worker profiles at *class_id* a lane's *selectors* admit and *exclude* does not."""
     return [
         profile for profile in snapshot.profiles
         if class_id in worker_classes(profile)
-        and (harnesses is None or profile.harness in harnesses)
-        and profile.harness not in exclude
+        and (selectors is None or any(selector_matches(profile.harness, s) for s in selectors))
+        and not any(selector_matches(profile.harness, s) for s in exclude)
     ]
 
 
@@ -971,7 +981,8 @@ def plan_route(
             })
         candidates = [
             _candidate(profile, arm.class_, tier=PREFERRED, lane=None, hold=True)
-            for profile in _cells(snapshot, arm.class_, frozenset({arm.harness}))
+            for profile in _cells(snapshot, arm.class_, None)
+            if profile.harness == arm.harness
         ]
         candidates, reason = _filter(
             candidates, task, policy, respect_reserved=False, local_gate=False,
@@ -1018,6 +1029,13 @@ def plan_route(
     known = classification is not None
     flags = (classified.flags if classified else frozenset()) if known else None
     rule = _rule(task, policy, classified)
+    unmatched = policy.unmatched_selectors(snapshot.harnesses) if snapshot.harnesses else []
+    if unmatched:
+        # Reported, never refused: OpenCode harnesses are operator-installed, so
+        # the shipped lanes match nothing on an install without them.
+        rule = replace(rule, notes=(
+            *rule.notes, "lane selectors match no installed harness: " + ", ".join(unmatched),
+        ))
     pool = _candidates(task, policy, snapshot, rule, flags)
     eligible = pool.candidates
     pool, refused = _apply_preference(pool, task)

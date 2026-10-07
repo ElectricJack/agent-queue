@@ -104,7 +104,9 @@ harness, never by rung id. Key by key:
   narrow, test-verified standard-high work to OpenCode on a hosted gateway:
   the `opencode-zen` harness (Space Bunny Free), `opencode-zen-nemotron`
   (Nemotron 3 Ultra free) and `opencode-zen-longcat` (LongCat 2.5 Preview
-  free). Each hosted model is its own harness, so each has an independent
+  free). The lane matches `opencode-zen*`, so new Zen preview harnesses cannot
+  become general candidates or take integration/development repairs. Each
+  hosted model is its own harness, so each has an independent
   availability row (free-tier exhaustion is separate from local OpenCode's and
   from the other hosted models), and they share one lane so the lane can be
   tightened as a unit.
@@ -157,7 +159,7 @@ lanes:
     requires: [narrow, test_verified, independent_verifier]
     prefer: true
   narrow-hosted:
-    harnesses: [opencode-zen, opencode-zen-nemotron, opencode-zen-longcat]
+    harnesses: [opencode-zen*]
     classes: {standard-high: standard-high}
     requires: [narrow, test_verified]
     prefer: true

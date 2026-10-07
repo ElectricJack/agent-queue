@@ -26,6 +26,12 @@ from src.models import TaskStatus
 
 _TASK_OWNER_ROLES = frozenset({"worker", "repair", "verifier"})
 
+#: Stored origin of a source-CI repair.  The router reads it as the policy's
+#: ``integration_repair`` origin; the delegate claim, restart and release
+#: paths that key on a stored ``integration_repair`` never see it, because a
+#: source-CI repair is a root with its own branch, not a stage delegate.
+SOURCE_CI_REPAIR_ORIGIN = "source_ci_repair"
+
 
 def _failure(outcome: str, error: str) -> dict[str, Any]:
     return {"success": False, "outcome": outcome, "error": error}
@@ -507,6 +513,8 @@ class IntegrationCommandsMixin:
             "description": repair_description(observation), "task_type": "bugfix",
             "root": True, "reason": "authorized exact source CI recovery",
             "intelligence_class": policy.root.repair.debug_intelligence_class,
+            "_created_by_kind": SOURCE_CI_REPAIR_ORIGIN,
+            "_created_by_id": self._integration_source_ci_identity(observation),
         })
         if not created.get("success"):
             return created

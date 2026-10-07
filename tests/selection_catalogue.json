@@ -1431,7 +1431,7 @@
       ]
     }
   },
-  "digest": "sha256:e6e9ea24c63ff9b69804f872bb9cf07e990e5a2b3eede6be6f8ff5ee601c22a6",
+  "digest": "sha256:735045fae9b49b5c1561516851ec4bba97465c7bccd8b3a3ac344fb7c32bb5fd",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -1628,6 +1628,9 @@
         "src.api.graph_layout",
         "src.database.queries.layout_queries",
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
+        "src.models",
         "src.task_graph.layout.driver",
         "src.task_graph.layout.view"
       ],
@@ -2468,6 +2471,8 @@
         "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
         "src.integration.epic_delivery",
         "src.models",
         "src.task_graph.layout.driver"
@@ -4776,6 +4781,8 @@
         "src.commands.principal",
         "src.config",
         "src.database",
+        "src.integration.batches",
+        "src.integration.repair",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
@@ -4909,7 +4916,9 @@
         "src.integration.status",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Every delivery consumer asks git the same question and gets the same answer."
     },
     "tests/test_delivery_integration.py": {
@@ -14033,11 +14042,13 @@
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.commands.handler",
+        "src.commands.integration_commands",
         "src.commands.principal",
         "src.commands.routing_commands",
         "src.config",
         "src.database",
         "src.database.queries.routing_queries",
+        "src.database.tables",
         "src.event_schemas",
         "src.intelligence_classes",
         "src.models",

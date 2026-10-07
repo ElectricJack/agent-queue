@@ -106,6 +106,18 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     # the read timeout must outlast them or a
     # full `aq doctor` reports "no complete response" while checks still run.
     "doctor": 330.0,
+    # Train controls observe the root target first: a git fetch plus a PR
+    # check read for every pending root, which on a busy install outlasts 30s
+    # (seal-now's preview, refresh-epic --apply, retire-origin all timed out
+    # live on 2026-10-06). The daemon finishes the command either way, so a
+    # short read timeout only hides the answer from the operator.
+    "integration_seal_now": 300.0,
+    "integration_refresh_epic": 300.0,
+    "integration_retire_origin": 300.0,
+    "integration_pause_batch": 180.0,
+    "integration_resume_batch": 180.0,
+    "integration_abort_batch": 180.0,
+    "integration_eject": 180.0,
 }
 
 
