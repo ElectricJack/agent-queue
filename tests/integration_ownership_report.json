@@ -9945,9 +9945,9 @@
     "task_metadata": "Generic key/value mechanism remains task-owned. Every direct SQL/metadata API writer has an audited call and enclosing-code identity; duplicate delivery/repair state is marked retire."
   },
   "takeover_review": {
-    "reviewed_revision": "45b76271dd81f4b55eb892864ac11debe504e804",
+    "reviewed_revision": "93b99f9071cb7343f9c6aeb67d42b4461b88c2ae",
     "owned_definition_additions": 25,
-    "refreshed_owner_fingerprints": 31,
+    "refreshed_owner_fingerprints": 33,
     "new_storage_sites": {
       "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_hotfix::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": "ordinary",
       "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_prepare::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": "ordinary",
@@ -9961,13 +9961,13 @@
     "current_owned_groups": {
       "shared": 47570,
       "companions": 12502,
-      "engine": 87079,
+      "engine": 87187,
       "policy_sources": 1999,
       "policy": 480,
       "ui": 333,
       "guards": 639
     },
-    "current_owned_total": 150602,
+    "current_owned_total": 150710,
     "current_table_count": 45,
     "unknown_definitions": [],
     "unknown_storage_sites": [],
