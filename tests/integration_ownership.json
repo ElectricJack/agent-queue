@@ -12539,6 +12539,15 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
+    "src/commands/pool_admin.py::rename_pool::86546be0a111fd801cb74165b8a70f19a9daab1dfeee5d339799e5985c673cca": {
+      "line": 227,
+      "owner": "rename_pool",
+      "call": "log_event",
+      "owner_fingerprint": "220b25eeb1a8021d0c0db02d654b198cd516b31f82add3ebd6b3da5d68d31b40",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Pool display-name audit records the stable profile ID, old and new names, and backup path; no integration lifecycle state or ref replay authority."
+    },
     "src/commands/proposal_commands.py::TaskProposalCommandsMixin._cmd_task_batch_commit::16fbcb5f600718c2c0564535d1ed4e1a82537afa8ac1a07311dd43bc5b9c93f4": {
       "line": 431,
       "owner": "TaskProposalCommandsMixin._cmd_task_batch_commit",
