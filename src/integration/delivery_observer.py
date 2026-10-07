@@ -341,6 +341,7 @@ class PrerequisiteView:
     #: with whether its exact default-branch source is already contained in
     #: the dependent's own parent branch (so no epic refresh is needed).
     parent_containment: Mapping[str, Mapping[str, bool]] = field(default_factory=dict)
+    parent_snapshots: tuple[DeliverySnapshot, ...] = ()
 
     def get(self, task_id):
         return self.siblings.get(task_id)
@@ -362,10 +363,15 @@ class PrerequisiteView:
 
     @property
     def snapshots(self):
-        return self.siblings.snapshots + self.default.snapshots
+        return self.siblings.snapshots + self.default.snapshots + self.parent_snapshots
 
     async def fresh(self):
         return await DeliveryView(snapshots=self.snapshots).fresh()
+
+    async def parents_fresh(self):
+        return await DeliveryView(snapshots=tuple(
+            snapshot for snapshot in self.parent_snapshots if snapshot.error is None
+        )).fresh()
 
     async def verified_on(self, conn, ids):
         return await self.siblings.verified_on(conn, ids)
@@ -708,16 +714,28 @@ class DeliveryObserver:
                     if parent is not None and parent == child_parent}
         cross = {tid for tid, parent, child_parent, _dep, _branch in rows
                  if parent is None or parent != child_parent}
-        default = await self.observe(cross, max_age=max_age, target_loader=delivery_targets,
-                                     cached_only=cached_only)
-        return PrerequisiteView(
-            await self.observe(siblings, max_age=max_age, cached_only=cached_only),
-            default,
-            await self._parent_containment(rows, default, cached_only=cached_only),
-        )
+        for _attempt in range(self.FRESH_ATTEMPTS):
+            default = await self.observe(cross, max_age=max_age, target_loader=delivery_targets,
+                                         cached_only=cached_only)
+            containment, parents = await self._parent_containment(
+                rows, default, cached_only=cached_only,
+            )
+            view = PrerequisiteView(
+                await self.observe(siblings, max_age=max_age, cached_only=cached_only),
+                default, containment, parents,
+            )
+            if cached_only or await view.parents_fresh():
+                return view
+            if not await default.fresh() or not await view.siblings.fresh():
+                return view
+            # An epic may advance while main stays fixed. Retake its shared
+            # repository snapshot instead of retaining a stale containment answer.
+            max_age = 0.0
+        return view
 
-    async def _parent_containment(self, rows, default, *, cached_only=False
-                                ) -> dict[str, dict[str, bool]]:
+    async def _parent_containment(
+        self, rows, default, *, cached_only=False,
+    ) -> tuple[dict[str, dict[str, bool]], tuple[DeliverySnapshot, ...]]:
         """Whether each cross-parent prerequisite is already in the dependent's epic.
 
         A child whose epic branch already contains every cross-epic
@@ -728,8 +746,9 @@ class DeliveryObserver:
         from src.integration.delivery_truth import DeliveryState
 
         result: dict[str, dict[str, bool]] = {}
+        parents: dict[tuple[str, str, str], DeliverySnapshot] = {}
         if self.truth is None:
-            return result
+            return result, ()
         from src.integration.git_truth import GitTruthSnapshot
 
         snapshots = {(s.project_id, s.repository_id): s for s in default.snapshots}
@@ -751,6 +770,9 @@ class DeliveryObserver:
             try:
                 observed = GitTruthSnapshot(self.truth, snapshot,
                                             cached_only=cached_only).for_target(parent_ref)
+                parents[(snapshot.project_id, snapshot.repository_id, parent_ref)] = (
+                    observed.observation
+                )
                 contained = await observed.is_delivered(
                     replace(proof.request, target_ref=parent_ref),
                     source_base=getattr(proof, "source_base", None),
@@ -760,7 +782,7 @@ class DeliveryObserver:
                              tid, dependent_id, exc)
                 continue
             sources[tid] = bool(contained.satisfied and contained.source_oid == proof.source_oid)
-        return result
+        return result, tuple(parents.values())
 
     async def observe(self, task_ids: Iterable[str], *, max_age: float = 0.0,
                       target_loader=None, cached_only: bool = False) -> DeliveryView:

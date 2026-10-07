@@ -320,6 +320,18 @@ they do not infer eligibility from a cached scheduler snapshot. Receipt freshnes
 in shadow mode is scoped to the prerequisite's own `integration_rework_at`, never
 another task's marker or ordinary `updated_at` bookkeeping.
 
+Cross-epic prerequisites in hierarchy/train mode require two independent proofs.
+Their exact completed sources must be on the default branch
+(`frontier_prerequisite_not_on_default_branch` when unproven). A dependent with an
+epic branch also requires those sources to be contained in that branch and any
+open `train-epic-refresh-*` batch targeting it to finish
+(`frontier_epic_refresh_pending`, with blocking batch ids in the detail).
+Ordinary sibling collection batches never withhold an already-contained dependent,
+including when failed or human-blocked. Missing epic containment withholds even
+without an open batch. Scheduler, pool demand, explain and claim share these
+predicates; claim retains fresh Git and identity revalidation. The explicit
+`cross_epic_prerequisites: completed` policy keeps legacy graph-only admission.
+
 ### 9.2 Ready frontier
 
 `aq project ready` returns the frontier — tasks that would be picked next: `status = READY ∧ is_blocked = 0 ∧ no hold label`, plus a `withheld` section (DEFINED ∧ unblocked, promoted next tick) so operators see the whole runnable edge. `--json` everywhere per the CLI workstream.
