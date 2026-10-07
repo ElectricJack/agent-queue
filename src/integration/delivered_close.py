@@ -8,6 +8,10 @@ import time
 
 from sqlalchemy import delete, insert, select, update
 
+from src.database.queries.integration_state_queries import (
+    session_attached_clause,
+    unresolved_claim_clause,
+)
 from src.database.tables import (
     integration_batch_members,
     integration_batches,
@@ -113,7 +117,7 @@ class DeliveredClose:
             select(sessions.c.id)
             .where(
                 sessions.c.task_id == task["id"],
-                sessions.c.state.in_(("starting", "running", "draining")),
+                session_attached_clause(),
             )
             .limit(1)
         ):
@@ -130,6 +134,7 @@ class DeliveredClose:
             select(task_metadata.c.value).where(
                 task_metadata.c.task_id == task["id"],
                 task_metadata.c.key == "claimed_by_session",
+                unresolved_claim_clause(),
             )
         ):
             raise ValueError("task still has a workspace or claim; use supported slot reset")

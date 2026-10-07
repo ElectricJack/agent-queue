@@ -8,6 +8,10 @@ import time
 from sqlalchemy import select, update
 
 from src.database import tables as t
+from src.database.queries.integration_state_queries import (
+    session_attached_clause,
+    unresolved_claim_clause,
+)
 from src.git.manager import RemoteRefState, is_valid_git_oid
 from src.integration.engine import RootEngineOwnership
 from src.integration.lock import BranchLock
@@ -125,12 +129,13 @@ class ExpiredMutationRecovery:
             select(t.sessions.c.id).where(
                 t.sessions.c.project_id == request.project_id,
                 t.sessions.c.task_id.is_not(None),
-                t.sessions.c.state.in_(("starting", "running", "draining")),
+                session_attached_clause(),
             ),
             select(t.workspaces.c.id).where(t.workspaces.c.locked_by_task_id.in_(task_ids)),
             select(t.task_metadata.c.task_id).where(
                 t.task_metadata.c.task_id.in_(task_ids),
                 t.task_metadata.c.key == "claimed_by_session",
+                unresolved_claim_clause(),
             ),
             select(t.project_integration_leases.c.batch_id).where(
                 t.project_integration_leases.c.project_id == request.project_id,

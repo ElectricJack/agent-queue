@@ -8,12 +8,16 @@ import time
 from sqlalchemy import select, union, update
 
 from src.database import tables as t
+from src.database.queries.integration_state_queries import (
+    session_attached_clause,
+    unresolved_claim_clause,
+)
 from src.integration.engine import RootEngineOwnership
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
 from src.integration.owner_recovery import _Refusal
 from src.integration.stale_owners import _fence_blocker
-from src.integration.subjects import Subject, SubjectSchedule, schedule_values
+from src.integration.runtime_contracts import Subject, SubjectSchedule, schedule_values
 
 
 class TrainQuiesce:
@@ -154,12 +158,13 @@ class TrainQuiesce:
                 select(t.sessions.c.id).where(
                     t.sessions.c.project_id == request.project_id,
                     t.sessions.c.task_id.is_not(None),
-                    t.sessions.c.state.in_(("starting", "running", "draining")),
+                    session_attached_clause(),
                 ),
                 select(t.workspaces.c.id).where(t.workspaces.c.locked_by_task_id.in_(task_ids)),
                 select(t.task_metadata.c.task_id).where(
                     t.task_metadata.c.task_id.in_(task_ids),
                     t.task_metadata.c.key == "claimed_by_session",
+                    unresolved_claim_clause(),
                 ),
             )
             for statement in blockers:
