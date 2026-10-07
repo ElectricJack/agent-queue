@@ -57,6 +57,54 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_cutover_plan(self, args: dict) -> dict:
+        return await self._integration_cutover(args, read_only=True)
+
+    async def _cmd_integration_cutover(self, args: dict) -> dict:
+        return await self._integration_cutover(args, read_only=False)
+
+    async def _integration_cutover(self, args, *, read_only):
+        from src.commands.contracts.integration import IntegrationCutoverArgs
+        from src.integration.cutover import Cutover, CutoverGit
+        from src.git.github_contracts import GitHubAccessError
+
+        request = IntegrationCutoverArgs.model_validate(args)
+        if not read_only and (current_principal() or TRUSTED_LOCAL).kind is not PrincipalKind.LOCAL:
+            return _failure("unauthorized", "cutover and reverse require a local operator")
+        operator, refusal = await integration_operator(self.db, request.project_id)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        project = await self.db.get_project(request.project_id)
+        repository = await self.db.get_repo(project.integration_repository_id or "") if project else None
+        if repository is None or repository.project_id != request.project_id:
+            return _failure("refused", "project has no designated integration repository")
+        try:
+            resolver = getattr(self.orchestrator, "github_repository_binding_resolver", None)
+            factory = getattr(self.orchestrator, "github_client_factory", None)
+            if resolver is None or factory is None:
+                return _failure("refused", "GitHub repository access is unavailable")
+            binding = resolver(repository)
+            if inspect.isawaitable(binding):
+                binding = await binding
+            if binding is None:
+                return _failure("refused", "repository identity cannot be verified")
+            client = factory(binding)
+            if inspect.isawaitable(client):
+                client = await client
+            service = Cutover(self.db, CutoverGit(self.db, client))
+            options = {"allow_epics": request.allow_epics, "reverse": request.reverse}
+            if read_only:
+                result = {"outcome": "planned", "plan": await service.plan(
+                    request.project_id, request.flow, **options)}
+            else:
+                result = await service.run(
+                    request.project_id, request.flow, dry_run=request.dry_run,
+                    expected_generation=request.expected_generation, operator_id=operator,
+                    baseline=request.baseline, **options)
+        except (ValueError, GitError, GitHubAccessError, OSError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": result["outcome"] in {"planned", "preview", "configured"}, **result}
+
     async def _cmd_integration_pause_batch(self, args: dict) -> dict:
         return await self._integration_batch_intent(args, "paused")
 

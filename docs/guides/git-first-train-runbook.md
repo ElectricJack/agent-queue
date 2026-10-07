@@ -14,6 +14,74 @@ After the live canary, use the
 [backlog settlement checklist](git-first-backlog-settlement.md) to capture each
 recorded stall's Git, check, tree-review and task-transition evidence.
 
+## Moving the root to a promotion-flow source
+
+Run cutover from a local operator CLI. The supervisor can read the plan, but
+cannot apply or preview the control. First deliver the reviewed workflow change
+through the train: `.github/workflows/tests.yml` must explicitly cover the new
+default and every flow target in `pull_request.branches`. Missing coverage refuses
+cutover before any branch or binding write.
+
+Save the inventory before changing GitHub's default or rulesets:
+
+```bash
+aq integration cutover-plan --project demo --flow promotion-flow.yaml > cutover.json
+```
+
+The plan records the configuration generation, root OID, open PRs, live subjects,
+owners, legacy intents and train batches, retained undelivered completions, and
+GitHub's default, rulesets and classic protection. Its aborted-member section names
+every undelivered member of an aborted root batch, including source SHA, reason,
+time and whether Git provenance is retained. After rebind, ordinary selection on
+the new default admits retained members; their old batch remains aborted and
+continues withholding them on the old target. Reopen or archive work aborted for
+content reasons before applying. No ejection is required.
+
+Follow the ordered operator steps in the saved plan. Settle or abort open root
+batches and resolve other listed holders, then regenerate the saved plan before
+manual GitHub changes if the root or inventory changed. Use `--allow-epics` on
+both commands when epic collection should continue. If the new default is
+missing, run apply once to create it; `github_default_pending` leaves AQ's
+configuration unchanged. Install branch and tag rulesets by hand,
+then run the printed `gh repo edit` command to change GitHub's default. Cutover
+verifies the App, required attestation contexts and bypass policy before changing
+AQ's rows; it never edits workflows or GitHub settings.
+
+```bash
+aq integration cutover --project demo --flow promotion-flow.yaml
+aq integration cutover --project demo --flow promotion-flow.yaml \
+  --apply --expected-generation 7 --plan cutover.json
+```
+
+Replace `7` with the saved generation. Apply creates a missing default at the
+captured root OID using a create-only lease, or verifies an existing branch has
+that exact OID. A push failure or changed preview refuses configuration changes.
+Branch creation may succeed before a later GitHub verification refuses; restore
+the required remote policy and retry against the same saved plan. AQ's repository
+default, project default, flow and scoped data fixes commit together. Receipt
+updates temporarily suspend only their update trigger under a PostgreSQL table
+lock, restore it before commit and verify it afterwards; exact receipt and epic
+origin IDs are audited for reversal. Ordinary receipt updates remain forbidden.
+Retarget the listed open PRs by hand after apply, then resume and verify delivery
+to the new root.
+
+For rollback, preview the recorded inverse and save it. Restore the recorded
+workflow branch list through a reviewed change and restore the recorded GitHub
+default, rulesets and classic protection by hand. The old default must contain
+the current root; fast-forward it through the operator procedure if needed.
+Regenerate the reverse preview after delivering any workflow restoration, so
+its root OID and generation are current.
+
+```bash
+aq integration cutover-plan --project demo --reverse > reverse.json
+aq integration cutover --project demo --reverse \
+  --apply --expected-generation 8 --plan reverse.json
+```
+
+Reverse refuses until remote state matches the recorded state, then restores
+only the audited configuration and data rows. It does not reset branches or
+rewrite unrelated receipts.
+
 ## What `active` changes
 
 - **One loop.** The integration service constructs no subject runtime and no second

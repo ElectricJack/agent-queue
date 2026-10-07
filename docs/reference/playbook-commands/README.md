@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-180 commands are registered.
+182 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -90,6 +90,8 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_cleanup`](integration_cleanup.md) | Advance integration cleanup | Materialize and advance bounded cleanup for one terminal root batch. |
 | [`integration_close_delivered_pr`](integration_close_delivered_pr.md) | Integration Close Delivered Pr | Authenticated hierarchical integration operational control. |
 | [`integration_complete_parent`](integration_complete_parent.md) | Integration Complete Parent | Complete a verified parent task at its exact verified generation and head. |
+| [`integration_cutover`](integration_cutover.md) | Integration Cutover | Authenticated hierarchical integration operational control. |
+| [`integration_cutover_plan`](integration_cutover_plan.md) | Integration Cutover Plan | Authenticated hierarchical integration operational control. |
 | [`integration_delivery_readiness`](integration_delivery_readiness.md) | Integration Delivery Readiness | Read whether every child of one parent has delivered, changing nothing. |
 | [`integration_development_engine_transfer`](integration_development_engine_transfer.md) | Development engine transfer | Preview or transfer every Development subject of one project to the reconciler, at the exact previewed versions; the same command rolls it back. |
 | [`integration_eject`](integration_eject.md) | Integration Eject | Authenticated hierarchical integration operational control. |

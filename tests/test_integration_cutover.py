@@ -24,11 +24,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import insert, select
 
 from src.database.tables import integration_outbox, integration_subject_journal
 from src.integration.outbox import enqueue_integration_event
 from src.integration.service import IntegrationService
+from tests.test_integration_train_sources import world  # noqa: F401 - shared real-Git fixture
 
 #: The reduced protocol's own modules. Every guard these run reads git, checks
 #: or review evidence; a checkpoint or journal reference here would be a
@@ -220,3 +221,532 @@ def test_the_check_cache_reshapes_in_place_and_adds_no_table():
     assert "integration_commit_checks" not in retained
     assert "integration_check_evidence" in retained
     assert len(retained) == 45, "stage two adds no table; the predicate stays at 45"
+
+
+# Promotion-flow cutover (G1 / B14). These tests never contact the live daemon.
+
+FLOW = [{"id": "release", "source": "dev", "target": "main"}]
+
+
+@pytest.fixture
+async def cutover_world(reuse_database):
+    from unittest.mock import AsyncMock
+
+    from src.integration.cutover import Cutover
+    from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+
+    db = await reuse_database("promotion-cutover")
+    await db.create_project(Project(id="p", name="project",
+        repo_url="https://github.com/acme/widgets.git", repo_default_branch="main"))
+    await db.create_repo(RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE,
+        url="https://github.com/acme/widgets.git", default_branch="main"))
+    from sqlalchemy import update
+    from src.database.tables import projects
+
+    async with db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            integration_repository_id="repo", hierarchical_integration_generation=7,
+            hierarchical_integration_mode="train", hierarchical_integration_policy={
+                "train": {"cadence_seconds": 42, "settling_cap_seconds": 84}}))
+    for task_id, parent in (("done", None), ("epic", None), ("child", "epic")):
+        await db.create_task(Task(id=task_id, project_id="p", title=task_id,
+            description="fixture", status=TaskStatus.COMPLETED, parent_task_id=parent))
+    from src.database.tables import task_branch_origins, task_delivery_receipts
+
+    async with db.immediate() as conn:
+        for task_id in ("done", "epic", "child"):
+            await conn.execute(insert(task_branch_origins).values(
+                id="origin-" + task_id, task_id=task_id, repository_id="repo",
+                branch_name="aq/" + task_id, parent_ref="main" if task_id != "done" else None,
+                base_sha="a" * 40, creation_generation=0, created_at=0))
+        for id_, repo, target in (("old", "repo", "main"), ("existing-dev", "repo", "dev"),
+                                  ("other-repo", "unrelated", "main")):
+            await conn.execute(insert(task_delivery_receipts).values(
+                id=id_, domain_key=id_, source_task_id="done" if id_ == "existing-dev" else "epic",
+                repository_id=repo,
+                target_branch=target, disposition="code", created_at=0))
+    facts = {"cut_oid": "a" * 40, "target_oid": None,
+             "workflow_branches": ["main", "dev", "staging"],
+             "open_prs": [{"number": 12, "html_url": "https://github.com/acme/widgets/pull/12",
+                           "title": "pending change"}]}
+    facts["remote_state"] = {"default_branch": "main", "rulesets": [], "protection": {}}
+    facts["manifest"] = {"promotion_attestation_names": [
+        "Agent Queue Promotion Attestation (release)"]}
+    port = SimpleNamespace(observe=AsyncMock(return_value=facts), prepare=AsyncMock(),
+                           prepare_flow=AsyncMock(), verify=AsyncMock(),
+                           retained=AsyncMock(return_value=["child", "done"]))
+    return db, Cutover(db, port, clock=lambda: 100), port
+
+
+async def cutover_rows(db):
+    from src.database.tables import events, projects, repos, task_branch_origins, task_delivery_receipts
+
+    async with db._engine.connect() as conn:
+        return {table.name: [dict(row) for row in (await conn.execute(
+                    select(table).order_by(*table.primary_key.columns))).mappings()]
+                for table in (projects, repos, task_branch_origins, task_delivery_receipts, events)}
+
+
+async def cutover_batch(db, id_, target, *, intent="open", lifecycle="building"):
+    from src.database.tables import integration_batches
+
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_batches).values(
+            id=id_, project_id="p", repository_id="repo", request_id=id_, trigger="schedule",
+            target_ref="refs/heads/" + target, intent=intent,
+            source_manifest_digest="sha256:" + "3" * 64, base_sha="a" * 40,
+            lifecycle=lifecycle, integration_branch="aq/batches/" + id_,
+            policy_snapshot={}, artifact_snapshot={}, cleanup_state="pending", created_at=0,
+            updated_at=0))
+
+
+async def test_promotion_cutover_plan_and_dry_run_are_read_only(cutover_world):
+    db, service, port = cutover_world
+    before = await cutover_rows(db)
+    plan = await service.plan("p", FLOW)
+    assert plan["ready"] and plan["generation"] == 7
+    assert plan["undelivered_completions"] == ["child", "done"]
+    assert plan["open_prs"][0]["number"] == 12
+    assert plan["cut_oid"] == "a" * 40
+    assert plan["receipt_count"] == plan["origin_count"] == 1
+    assert plan["cadence"] == {"cadence_seconds": 42, "settling_cap_seconds": 84}
+    assert [step["id"] for step in plan["steps"]].index("workflow") < [
+        step["id"] for step in plan["steps"]].index("binding")
+    assert (await service.run("p", FLOW, operator_id="operator"))["outcome"] == "preview"
+    assert await cutover_rows(db) == before
+    port.prepare.assert_not_awaited()
+
+
+async def test_cutover_rejects_an_epic_origin_changed_since_preview(cutover_world):
+    from sqlalchemy import update
+    from src.database.tables import task_branch_origins
+
+    db, service, port = cutover_world
+    plan = await service.plan("p", FLOW)
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == "epic").values(parent_ref="different"))
+    before = await cutover_rows(db)
+    with pytest.raises(ValueError, match="saved_plan_changed: origin_ids"):
+        await service.run("p", FLOW, dry_run=False, expected_generation=7,
+                          baseline=plan, operator_id="operator")
+    assert await cutover_rows(db) == before
+    port.prepare.assert_not_awaited()
+
+
+@pytest.mark.parametrize("intent,lifecycle,blocked", [
+    ("open", "building", True), ("paused", "testing", True),
+    ("open", "promoted", False), ("aborted", "aborted", False),
+])
+async def test_promotion_cutover_barrier_reads_root_batches(cutover_world, intent, lifecycle, blocked):
+    db, service, port = cutover_world
+    await cutover_batch(db, "root", "main", intent=intent, lifecycle=lifecycle)
+    plan = await service.plan("p", FLOW, allow_epics=True)
+    assert bool(plan["blockers"]) is blocked
+    result = await service.run("p", FLOW, dry_run=False, expected_generation=7,
+                               allow_epics=True, operator_id="operator")
+    assert result["outcome"] == ("blocked" if blocked else "configured")
+    if blocked:
+        port.prepare.assert_not_awaited()
+        assert plan["inventory"]["batches"][0]["id"] == "root"
+
+
+async def test_promotion_cutover_allow_epics_preserves_live_collection(cutover_world):
+    from src.database.tables import (
+        integration_batches, integration_branch_owners, integration_subjects, playbook_artifacts,
+    )
+    from src.integration.records import PolicyActivation
+
+    db, service, _port = cutover_world
+    await cutover_batch(db, "epic-batch", "aq/epic/epic")
+    async with db.immediate() as conn:
+        await conn.execute(insert(playbook_artifacts).values(
+            artifact_sha256="cutover-artifact", playbook_id="parent", source_digest="source",
+            contract_fingerprint="contracts", compiler_build="fixture", path="unused", created_at=0))
+        await conn.execute(insert(integration_subjects).values(
+            id="epic-subject", project_id="p", repository_id="repo", kind="parent_episode",
+            subject_key="epic", task_id="epic", phase="admitting", policy_playbook_id="parent",
+            policy_artifact_sha256="cutover-artifact", target_ref="refs/heads/aq/epic/epic",
+            due_set_at=0, next_due_at=1, max_wait_seconds=60, created_at=0, updated_at=0))
+        await conn.execute(insert(integration_branch_owners).values(
+            id="epic-owner", repository_id="repo", ref="aq/epic/epic", owner_id="collector",
+            owner_role="collector", fence_token=1, handoff_state="attached", created_at=0,
+            updated_at=0))
+    before = await cutover_rows(db)
+    assert (await service.plan("p", FLOW))["inventory"]["subjects"][0]["id"] == "epic-subject"
+    assert (await service.run("p", FLOW, dry_run=False, expected_generation=7,
+                              operator_id="operator"))["outcome"] == "blocked"
+    assert await cutover_rows(db) == before
+    assert await PolicyActivation(db).has_active_work("p")
+    changed = await service.run("p", FLOW, dry_run=False, expected_generation=7,
+                                allow_epics=True, operator_id="operator")
+    assert changed["outcome"] == "configured"
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.intent).where(
+            integration_batches.c.id == "epic-batch")) == "open"
+        assert await conn.scalar(select(integration_branch_owners.c.handoff_state)) == "attached"
+
+
+async def test_promotion_cutover_reverse_restores_exact_prior_binding_and_scoped_fixes(cutover_world):
+    db, service, port = cutover_world
+    before = await cutover_rows(db)
+
+    async def before_publication(*_args, **_kwargs):
+        assert await cutover_rows(db) == before  # all writes follow Git verification
+
+    port.prepare.side_effect = before_publication
+    changed = await service.run("p", FLOW, dry_run=False, expected_generation=7, operator_id="operator")
+    assert changed["outcome"] == "configured" and changed["generation"] == 8
+    rows = await cutover_rows(db)
+    assert rows["projects"][0]["repo_default_branch"] == rows["repos"][0]["default_branch"] == "dev"
+    assert rows["projects"][0]["promotion_flow"][0]["source"] == "dev"
+    assert {row["id"]: row["parent_ref"] for row in rows["task_branch_origins"]} == {
+        "origin-done": None, "origin-epic": "dev", "origin-child": "main"}
+    assert {row["id"]: row["target_branch"] for row in rows["task_delivery_receipts"]} == {
+        "old": "dev", "existing-dev": "dev", "other-repo": "main"}
+    port.prepare.side_effect = None
+    reversed_ = await service.run("p", None, reverse=True, dry_run=False,
+                                  expected_generation=8, operator_id="operator")
+    assert reversed_["outcome"] == "configured" and reversed_["generation"] == 9
+    restored = await cutover_rows(db)
+    assert restored["repos"] == before["repos"]
+    assert restored["projects"][0]["repo_default_branch"] == "main"
+    assert restored["projects"][0]["promotion_flow"] is None
+    assert restored["task_delivery_receipts"] == before["task_delivery_receipts"]
+    assert restored["task_branch_origins"] == before["task_branch_origins"]
+    assert reversed_["plan"]["workflow_branches"] == changed["plan"]["workflow_branches"]
+
+
+@pytest.mark.parametrize("failure", ["push", "generation", "workflow"])
+async def test_promotion_cutover_failed_preconditions_change_no_configuration(cutover_world, failure):
+    from src.git.manager import GitError
+
+    db, service, port = cutover_world
+    before = await cutover_rows(db)
+    expected = 6 if failure == "generation" else 7
+    if failure == "push":
+        port.prepare.side_effect = GitError("push denied")
+        with pytest.raises(GitError, match="push denied"):
+            await service.run("p", FLOW, dry_run=False, expected_generation=expected,
+                              operator_id="operator")
+    else:
+        if failure == "workflow":
+            port.observe.return_value = {**port.observe.return_value, "workflow_branches": ["main"]}
+        result = await service.run("p", FLOW, dry_run=False, expected_generation=expected,
+                                   operator_id="operator")
+        assert result["outcome"] == ("stale" if failure == "generation" else "blocked")
+        port.prepare.assert_not_awaited()
+    assert await cutover_rows(db) == before
+
+
+async def test_promotion_cutover_rechecks_a_batch_arriving_after_inventory(cutover_world):
+    db, service, port = cutover_world
+    before = await cutover_rows(db)
+    facts = port.observe.return_value
+
+    async def observe(*_args, **_kwargs):
+        await cutover_batch(db, "raced-root", "main")
+        return facts
+
+    port.observe.side_effect = observe
+    result = await service.run("p", FLOW, dry_run=False, expected_generation=7, operator_id="operator")
+    assert result["outcome"] == "blocked"
+    assert result["blockers"][0]["id"] == "raced-root"
+    assert await cutover_rows(db) == before
+    port.prepare.assert_not_awaited()
+
+
+async def test_cutover_first_dev_batch_selects_retained_and_aborted_main_inputs(world):  # noqa: F811
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import update
+    from src.database.tables import projects
+    from src.git.github_contracts import GitHubRepositoryBinding
+    from src.integration.batches import Batch, BatchMember, BatchStore
+    from src.integration.cutover import Cutover, CutoverGit
+    from src.integration.train import TrainTarget
+    from tests.test_delivery_consumers import git
+    from tests.test_integration_train_sources import completed, fixture_batches, snapshot, tree
+
+    db, origin = world.db, world.origin
+    workflow = origin.clone / ".github" / "workflows" / "tests.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("on:\n  pull_request:\n    branches: [main, dev]\n")
+    (origin.clone / ".github" / "agent-queue-integration.json").write_text(json.dumps({
+        "promotion_attestation_names": ["Agent Queue Promotion Attestation (release)"]}))
+    git(origin.clone, "add", ".")
+    git(origin.clone, "commit", "-qm", "reviewed cutover prerequisites")
+    git(origin.clone, "push", "-q", "origin", "main")
+    aborted_source = await completed(world, "aborted")
+    ordinary_source = await completed(world, "ordinary")
+    await completed(world, "no-provenance", done=False)
+    await db.update_task("no-provenance", status="COMPLETED")
+    store = BatchStore(db)
+    await store.freeze(Batch("old-main", "p", "r", "refs/heads/main"), (
+        BatchMember("aborted", aborted_source, git(origin.clone, "rev-parse", aborted_source + "^")),
+    ), trees={"aborted": tree(world, aborted_source)})
+    await store.set_intent("old-main", "aborted")
+    batches = fixture_batches(db)
+    members, _, _ = await batches.pending(TrainTarget("p", "r", "refs/heads/main"),
+                                         await snapshot(world))
+    assert [member.task_id for member in members] == ["ordinary"]
+    # The production fence permits local repositories only in development mode.
+    async with db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_mode="development", repo_url=origin.url))
+    client = SimpleNamespace(repository=GitHubRepositoryBinding(123, "acme/widgets"),
+        request=AsyncMock(return_value=SimpleNamespace(body="[]")))
+    port = CutoverGit(db, client)
+    port.remote_state = AsyncMock(return_value={
+        "default_branch": "main", "rulesets": [], "protection": {"main": None, "dev": None}})
+    port.verify = AsyncMock()  # GitHub ruleset verification has separate API-fixture coverage.
+    service = Cutover(db, port)
+    plan = await service.plan("p", FLOW)
+    assert plan["undelivered_completions"] == ["aborted", "ordinary"]
+    assert len(plan["aborted_members"]) == 1
+    assert {key: plan["aborted_members"][0][key] for key in (
+        "batch_id", "task_id", "source_sha")} == {"batch_id": "old-main", "task_id": "aborted",
+                                                  "source_sha": aborted_source}
+    assert "abort_reason" in plan["aborted_members"][0]
+    assert plan["aborted_members"][0]["aborted_at"] > 0
+    applied = await service.run("p", FLOW, dry_run=False, expected_generation=0,
+                                operator_id="operator", baseline=plan)
+    assert applied["outcome"] == "configured", applied
+    assert git(origin.clone, "ls-remote", "origin", "refs/heads/dev").split()[0] == plan["cut_oid"]
+    assert (await store.get("old-main")).intent == "aborted"
+    dev = TrainTarget("p", "r", "refs/heads/dev")
+
+    async def freeze(batch, members, **_kwargs):
+        from dataclasses import replace
+
+        members = tuple(replace(member, order=index) for index, member in enumerate(members))
+        await store.freeze(batch, members, trees={m.task_id: tree(world, m.source_sha) for m in members})
+        return batch
+
+    first = await batches.open_batch(dev, await snapshot(world, dev),
+        SimpleNamespace(store=store, freeze=freeze))
+    assert {m.task_id: m.source_sha for m in first.members} == {
+        "aborted": aborted_source, "ordinary": ordinary_source}
+
+
+@pytest.mark.parametrize("mismatch", ["workflow", "default", "rulesets"])
+async def test_reverse_refuses_until_manual_github_state_is_restored(cutover_world, mismatch):
+    from unittest.mock import AsyncMock
+
+    from src.integration.cutover import CutoverGit
+
+    db, service, port = cutover_world
+    assert (await service.run("p", FLOW, dry_run=False, expected_generation=7,
+                              operator_id="operator"))["outcome"] == "configured"
+    before = await cutover_rows(db)
+    facts = dict(port.observe.return_value)
+    if mismatch == "workflow":
+        facts["workflow_branches"] = ["main", "dev"]
+        port.observe.return_value = facts
+        result = await service.run("p", None, reverse=True, dry_run=False,
+                                   expected_generation=8, operator_id="operator")
+        assert result["outcome"] == "blocked"
+    else:
+        real = CutoverGit(db, None)
+        state = dict(facts["remote_state"])
+        state["default_branch" if mismatch == "default" else "rulesets"] = (
+            "dev" if mismatch == "default" else [{"id": 999}])
+        real.remote_state = AsyncMock(return_value=state)
+        port.verify.side_effect = real.verify
+        with pytest.raises(ValueError, match="github_state_not_restored"):
+            await service.run("p", None, reverse=True, dry_run=False,
+                              expected_generation=8, operator_id="operator")
+    assert await cutover_rows(db) == before
+
+
+async def test_cutover_refuses_a_changed_aborted_member_preview(cutover_world):
+    from sqlalchemy import update
+    from src.database.tables import integration_batches
+    from src.integration.batches import Batch, BatchMember, BatchStore
+
+    db, service, port = cutover_world
+    store = BatchStore(db)
+    await store.freeze(Batch("aborted", "p", "repo", "refs/heads/main"),
+        (BatchMember("done", "b" * 40, "a" * 40),), trees={"done": "c" * 40})
+    await store.set_intent("aborted", "aborted")
+    plan = await service.plan("p", FLOW)
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "aborted").values(human_abort_reason="content rejected"))
+    before = await cutover_rows(db)
+    with pytest.raises(ValueError, match="saved_plan_changed: aborted_members"):
+        await service.run("p", FLOW, dry_run=False, expected_generation=7,
+                          baseline=plan, operator_id="operator")
+    assert await cutover_rows(db) == before
+    port.prepare.assert_not_awaited()
+
+
+@pytest.mark.parametrize("failure_point", ["after_fixes", "guard_suspended"])
+async def test_cutover_preserves_receipt_update_guard_and_rolls_back_mid_fix(
+    cutover_world, monkeypatch, failure_point,
+):
+    from sqlalchemy import event, text, update
+    from sqlalchemy.exc import DBAPIError
+    from src.database.tables import task_delivery_receipts
+    from src.integration.cutover import _Activation
+
+    db, service, _port = cutover_world
+    before = await cutover_rows(db)
+    original = _Activation.write_on
+
+    async def fail_after_fixes(self, conn, project):
+        await original(self, conn, project)
+        raise ValueError("injected post-fix failure")
+
+    def fail_during_receipt_update(conn, _cursor, statement, _parameters, _context, _many):
+        if statement.startswith("UPDATE task_delivery_receipts SET target_branch"):
+            assert conn.scalar(text("SELECT tgenabled::text FROM pg_trigger WHERE "
+                "tgrelid = 'task_delivery_receipts'::regclass AND "
+                "tgname = 'trg_task_delivery_receipts_update'")) == "D"
+            raise ValueError("injected post-fix failure")
+
+    if failure_point == "guard_suspended":
+        event.listen(db._engine.sync_engine, "before_cursor_execute", fail_during_receipt_update)
+    try:
+        with monkeypatch.context() as context:
+            if failure_point == "after_fixes":
+                context.setattr(_Activation, "write_on", fail_after_fixes)
+            with pytest.raises(ValueError, match="post-fix failure"):
+                await service.run("p", FLOW, dry_run=False, expected_generation=7,
+                                  operator_id="operator")
+    finally:
+        if failure_point == "guard_suspended":
+            event.remove(db._engine.sync_engine, "before_cursor_execute", fail_during_receipt_update)
+    assert await cutover_rows(db) == before
+    with pytest.raises(DBAPIError, match="append-only"):
+        async with db.immediate() as conn:
+            await conn.execute(update(task_delivery_receipts).where(
+                task_delivery_receipts.c.id == "old").values(target_branch="unauthorized"))
+    assert (await service.run("p", FLOW, dry_run=False, expected_generation=7,
+                              operator_id="operator"))["outcome"] == "configured"
+    for reverse, generation in ((False, 8), (True, 9)):
+        if reverse:
+            assert (await service.run("p", None, reverse=True, dry_run=False,
+                expected_generation=generation - 1, operator_id="operator"))["outcome"] == "configured"
+        with pytest.raises(DBAPIError, match="append-only"):
+            async with db.immediate() as conn:
+                await conn.execute(update(task_delivery_receipts).where(
+                    task_delivery_receipts.c.id == "old").values(target_branch="unauthorized"))
+
+
+@pytest.mark.parametrize("failure", [None, "default", "bypass", "attestation", "tags", "trust"])
+async def test_cutover_verifies_operator_branch_and_tag_rulesets(cutover_world, failure):
+    from unittest.mock import AsyncMock
+    from src.git.github_contracts import (
+        GitHubCredentialIdentity, GitHubCredentialMode, GitHubRepositoryBinding,
+    )
+    from src.integration.cutover import CutoverGit
+    from src.integration.trust_manifest import ATTESTATION_NAME, build_trust_manifest
+
+    db, service, port = cutover_world
+    name = "Agent Queue Promotion Attestation (release)"
+    manifest = build_trust_manifest(canonical_repository_id="repo", repository_id=123,
+        full_name="acme/widgets", ci_producer_app_id=11, attestation_app_id=22,
+        checks=["tests"], check_version="v1", promotion_attestation_names=[name])
+    port.observe.return_value["manifest"] = manifest
+    flow = [{**FLOW[0], "versioning": {"kind": "semver_tag", "source": "pyproject"}}]
+    plan = await service.plan("p", flow)
+    state = {"default_branch": "dev", "protection": {"dev": None, "main": None}, "rulesets": [
+        {"id": 3, "target": "tag", "enforcement": "active",
+         "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
+         "bypass_actors": [{"actor_id": 22, "actor_type": "Integration", "bypass_mode": "always"}],
+         "rules": [{"type": "creation"}]},
+        {"id": 4, "target": "tag", "enforcement": "active",
+         "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
+         "bypass_actors": [], "rules": [{"type": "update"}, {"type": "deletion"}]},
+    ]}
+    if failure == "default":
+        state["default_branch"] = "main"
+    if failure == "tags":
+        state["rulesets"][1]["bypass_actors"] = [{"actor_id": 22}]
+
+    async def effective(path, **_kwargs):
+        root = "/dev?" in path
+        return [{"ruleset_id": 1 if root else 2, "type": "required_status_checks",
+                 "parameters": {"required_status_checks": [{
+                     "context": ATTESTATION_NAME if root or failure == "attestation" else name,
+                     "integration_id": 22}]}}]
+
+    client = SimpleNamespace(repository=GitHubRepositoryBinding(123, "acme/widgets"),
+        credential_identity=GitHubCredentialIdentity(GitHubCredentialMode.APP,
+            app_id=99 if failure == "trust" else 22, installation_id=33),
+        paged_list=AsyncMock(side_effect=effective), request_json=AsyncMock(return_value={
+            "current_user_can_bypass": "always" if failure == "bypass" else "never"}))
+    real = CutoverGit(db, client)
+    real.remote_state = AsyncMock(return_value=state)
+    if failure:
+        with pytest.raises(ValueError, match="github_"):
+            await real.verify(plan, policy=None)
+    else:
+        await real.verify(plan, policy=None)
+
+
+@pytest.mark.parametrize("read_only", [False, True])
+async def test_worker_cannot_run_cutover_or_read_its_operator_plan(read_only):
+    from unittest.mock import AsyncMock
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import (
+        ExecutionPrincipal, PrincipalKind, TRUSTED_LOCAL, principal_context,
+    )
+
+    db = SimpleNamespace(get_project=AsyncMock())
+    handler = SimpleNamespace(db=db)
+    with principal_context(ExecutionPrincipal(PrincipalKind.SESSION, TRUSTED_LOCAL.policy,
+                                              project_id="p", session_id="worker")):
+        result = await IntegrationCommandsMixin._integration_cutover(
+            handler, {"project_id": "p", "flow": FLOW}, read_only=read_only)
+    assert result["success"] is False and result["outcome"] == "unauthorized"
+    db.get_project.assert_not_awaited()
+
+
+@pytest.mark.parametrize("apply", [False, True])
+async def test_supervisor_cannot_apply_or_preview_receipt_cutover(apply):
+    from unittest.mock import AsyncMock
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.commands.principal import (
+        ExecutionPrincipal, PrincipalKind, TRUSTED_LOCAL, principal_context,
+    )
+
+    db = SimpleNamespace(get_project=AsyncMock(), get_session=AsyncMock(return_value=SimpleNamespace(
+        id="supervisor", profile_id="supervisor", lifecycle="named", state="running",
+        desired_state="running", project_id="p")))
+    with principal_context(ExecutionPrincipal(PrincipalKind.SESSION, TRUSTED_LOCAL.policy,
+        project_id="p", session_id="supervisor", elevated=True)):
+        result = await IntegrationCommandsMixin._integration_cutover(
+            SimpleNamespace(db=db), {"project_id": "p", "flow": FLOW,
+                "dry_run": not apply, "baseline": {} if apply else None}, read_only=False)
+    assert result["outcome"] == "unauthorized" and "local operator" in result["error"]
+    db.get_project.assert_not_awaited()
+
+
+@pytest.mark.parametrize("failure", ["denied", "wrong_oid", "source_moved"])
+async def test_cutover_exact_oid_publication_failure_preserves_all_rows(cutover_world, failure):
+    from unittest.mock import AsyncMock
+    from src.git.manager import GitError, RemoteRefResult, RemoteRefState
+    from src.integration.cutover import CutoverGit
+
+    db, service, port = cutover_world
+    git = SimpleNamespace(als_remote_ref=AsyncMock(side_effect=[
+        RemoteRefResult(RemoteRefState.ABSENT),
+        RemoteRefResult(RemoteRefState.PRESENT, oid="b" * 40)]),
+        _apush_oid=AsyncMock(side_effect=GitError("denied") if failure == "denied" else None))
+    real = CutoverGit(db, None)
+    real.target_oid = None
+    real.repository = await db.get_repo("repo")
+    real.snapshot = SimpleNamespace(target_oid="a" * 40,
+        is_fresh=AsyncMock(return_value=failure != "source_moved"),
+        observation=SimpleNamespace(git=git, store="unused"))
+    port.prepare.side_effect = real.prepare
+    before = await cutover_rows(db)
+    with pytest.raises((ValueError, GitError)):
+        await service.run("p", FLOW, dry_run=False, expected_generation=7, operator_id="operator")
+    assert await cutover_rows(db) == before
+    if failure != "source_moved":
+        git._apush_oid.assert_awaited_once_with("unused", "a" * 40, "dev",
+            expected_old_oid="0" * 40,
+            repository_url=real.repository.url)

@@ -1429,7 +1429,7 @@
       ]
     }
   },
-  "digest": "sha256:1b4f34ad9901a527ddde5a89ae9f7497a86da41d2d6964e4e6b994475b78b614",
+  "digest": "sha256:45a721d2a3108e24a8b6d5fef79a458e2f400d24f1cda54f6574928718b82dfa",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7633,10 +7633,20 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
         "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.cutover",
         "src.integration.outbox",
+        "src.integration.records",
         "src.integration.service",
-        "src.integration.shadow"
+        "src.integration.shadow",
+        "src.integration.train",
+        "src.integration.trust_manifest",
+        "src.models"
       ],
       "markers": [
         "parametrize"
@@ -14698,7 +14708,8 @@
         "src.orchestrator"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "``set_default_branch`` publishes a new default branch under the exact-OID push contract."
     },
