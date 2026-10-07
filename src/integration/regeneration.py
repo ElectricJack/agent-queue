@@ -89,6 +89,7 @@ async def merge_generated_tree(
     timeout_seconds: int = REGENERATION_TIMEOUT_SECONDS,
     regenerate: bool = True,
     regenerations: list[dict] | None = None,
+    defer_regeneration: bool = False,
 ) -> str:
     """Merge exact inputs and rebuild overlapping generated artifacts.
 
@@ -102,6 +103,10 @@ async def merge_generated_tree(
     (:class:`MissingRegenerator`), never a silent regeneration. ``regenerate``
     is the caller's policy; with it off, an overlapping generated artifact is
     an ordinary conflict.
+
+    ``defer_regeneration`` restores generated conflicts without invoking the
+    command and records overlaps in ``regenerations``. Batch construction runs
+    that command once on the final combined tree.
     """
     merged = await git.arun_git_result(merge_args, cwd=str(store))
     if merged.returncode not in {0, 1}:
@@ -161,9 +166,10 @@ async def merge_generated_tree(
     if not shlex.split(command or ""):
         raise MissingRegenerator(f"no regenerate command is configured ({command!r})")
     try:
-        rebuilt = await regenerated_tree(
+        rebuilt = tree if defer_regeneration and not conflicts else await regenerated_tree(
             git, store, tree, command=command, timeout_seconds=timeout_seconds,
             restore_from=current, restore_paths=tuple(sorted(conflicts)),
+            restore_only=defer_regeneration,
         )
     except MissingRegenerator:
         # A configuration gap is never a member's conflict, however the merge
@@ -183,6 +189,7 @@ async def merge_generated_tree(
         regenerations.append({
             "files": sorted(generated), "merged_tree": tree, "regenerated_tree": rebuilt,
             "parents": [current, other],
+            "deferred": defer_regeneration,
         })
     return rebuilt
 
@@ -216,6 +223,7 @@ async def regenerated_tree(
     timeout_seconds: int = REGENERATION_TIMEOUT_SECONDS,
     restore_from: str | None = None,
     restore_paths: tuple[str, ...] = (),
+    restore_only: bool = False,
 ) -> str:
     """Materialize *merge_tree_sha* in a scratch worktree, run *command* there,
     commit the sweep into a fresh tree, and return that tree SHA.
@@ -229,12 +237,16 @@ async def regenerated_tree(
     The scratch worktree is always removed (and its registration pruned),
     including on failure.  Objects written during the sweep stay in the bare
     store's object database, which is harmless unreachable object space.
+
+    ``restore_only`` returns the tree after restoring the specified generated
+    conflicts. It leaves the command for the batch's final combined sweep.
     """
     worktree = Path(tempfile.mkdtemp(prefix="aq-regen-", dir=str(store.parent)))
     try:
         return await _run(
             git, store, worktree, merge_tree_sha, command, timeout_seconds,
             restore_from, restore_paths,
+            restore_only,
         )
     finally:
         await _remove_worktree(git, store, worktree)
@@ -249,6 +261,7 @@ async def _run(
     timeout_seconds: int,
     restore_from: str | None,
     restore_paths: tuple[str, ...],
+    restore_only: bool,
 ) -> str:
     # ``git worktree add`` needs a commit, not a tree SHA; wrap the merge tree
     # in a placeholder commit first.
@@ -270,6 +283,11 @@ async def _run(
             raise RegenerationFailure(
                 restored.stderr or "could not restore generated conflicts", retryable=True
             )
+
+    if restore_only:
+        # Intermediate batch merges retain generated artifacts from the current
+        # side. The final combined tree receives the single regeneration sweep.
+        return (await _checked(git, ["write-tree"], worktree)).stdout.strip()
 
     argv = shlex.split(command or "")
     if not argv:

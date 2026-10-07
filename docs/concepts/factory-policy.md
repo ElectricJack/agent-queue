@@ -38,6 +38,14 @@ reports, reviews and superseded specs are evidence, not directives.
 - Publication validates the exact candidate SHA; a changed candidate
   invalidates earlier checks. The project declares its required checks. A
   check that could not run is *unavailable*, never a pass.
+- Compatible completed sources for one delivery branch collect into one frozen
+  candidate. A base conflict and authenticated absence of the exact PR workflow
+  do not require each author to merge the default branch first. Source identity
+  and configured review authorization still gate admission; genuine red or
+  unavailable observations remain gates. One bounded batch repair carries every
+  frozen source as an ancestor, merges all remaining members, regenerates shared
+  artifacts once, and validates the complete candidate before publication. See
+  [the conflicting-source contract](../specs/design/conflicting-source-batches.md).
 - There is **no automatic** per-task reviewer, final reviewer, merge sweep or
   review-of-review chain, and no mandatory multi-pass gate chain. Review is
   optional and risk-based; when wanted it is one explicit task or gate.

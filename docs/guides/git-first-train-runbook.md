@@ -48,6 +48,16 @@ recorded stall's Git, check, tree-review and task-transition evidence.
   source first. A source or repair already delivered to a target takes no part, and
   the prerequisite named is the one that publishes the base, never a sibling that
   merely merged its branch.
+- **Conflicting source PRs.** An exact open, same-repository, non-draft PR with
+  the configured review authorization can enter the shared batch when GitHub
+  reports it dirty and an authenticated check observation proves that its PR
+  workflow never ran. Its missing PR checks are not passes; integration validity
+  comes from the final combined candidate's own required checks. Genuine red
+  source checks, an executing workflow, an unavailable observation, unknown
+  mergeability, explicit holds and withheld inputs still block admission. A
+  conflicting epic joins the root candidate without an automatic per-epic
+  refresh or another round of author checks. See the
+  [source admission and batch repair contract](../specs/design/conflicting-source-batches.md).
 - **Checks.** A development project's default branch runs its pinned development
   policy's validation commands as integration jobs on a retained snapshot of the exact
   candidate (`validation: none` publishes without jobs; `advisory` publishes on red).
@@ -139,10 +149,18 @@ recorded stall's Git, check, tree-review and task-transition evidence.
   creating a repair or consuming an attempt.
   A merge conflict files its repair with a plain-English brief naming the
   conflicting member, its source OID, the conflicting files, the members already
-  merged into the starting head and the members still to merge in order; generated
-  files are regenerated, never hand-merged. A repaired head is published to the target
-  only once it proves every frozen member's source, so a member is never dropped by a
-  partial repair.
+  merged into the starting head and the members still to merge in order. That
+  one repair owns every remaining member and must preserve all exact sources as
+  ancestors. During merges, take either side of a generated conflict and run
+  regeneration once after all sources are combined; generated files are never
+  hand-merged. Automatic generated-only construction uses the same final sweep.
+  A repaired head is published to the target only once every frozen source is
+  an ancestor and its own exact required checks pass. Source trailers and green
+  checks on a partial repair cannot authorize publication.
+  A passing repair close also requires every frozen source as an ancestor;
+  missing sources return to the same worker without releasing its claim.
+  Frozen source commits are inherited history for the publishing identity
+  check, while new repair commits still require the worker's allowed identity.
   A candidate with no authenticated push workflow run on its exact SHA gets
   five minutes from the first missing-run observation. The deadline survives
   daemon restarts. After that, `ci_not_triggered` names its workflow filters

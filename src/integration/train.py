@@ -243,9 +243,8 @@ def conflict_brief(
     is still owed to the target.
 
     The repair exists to land every remaining member, not to make the starting
-    head green: a repaired head published without them lets the train
-    fast-forward the target, and those members conflict again in the next
-    batch. A raw detail dict is never an instruction, so nothing else reaches
+    head green: a repaired head without them cannot close successfully or
+    advance the target. A raw detail dict is never an instruction, so nothing else reaches
     the worker's description.
     """
     detail = dict(detail or {})
@@ -284,13 +283,17 @@ def conflict_brief(
         (f"Resolve the conflict, then merge every member listed above onto the "
          f"starting head {starting_sha} in that order. Do not stop once the "
          "conflict is resolved, or once the checks on the starting head are "
-         "green: a repaired head published without every remaining member lets "
-         "the train fast-forward the target without them, and they conflict "
-         "again in the next batch."),
+         "green: a repaired head without every remaining member cannot close "
+         "successfully or advance the target."),
         (f"Generated files are regenerated, never hand-merged: resolve a conflict "
          f"in a path carrying the merge=aq-generated attribute in .gitattributes by "
-         f"running the repository's regeneration command ({REGENERATION_COMMAND} by "
-         f"default), never by resolving its conflict markers by hand."),
+         "taking either side while merging the sources, then running the repository's "
+         f"regeneration command ({REGENERATION_COMMAND} by default) once after every "
+         "remaining member is merged. Never resolve generated conflict markers by hand."),
+        "Before publishing, verify that every frozen source listed above is an ancestor "
+        "of HEAD. Keep all merge parents; do not squash, rebase or cherry-pick the inputs. "
+        "Run the required checks on the complete repaired candidate. The train still "
+        "requires its exact candidate checks and publication gates before advancing the target.",
     ]
     return "\n".join(line for line in lines if line)
 

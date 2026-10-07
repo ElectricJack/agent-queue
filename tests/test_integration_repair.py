@@ -8223,9 +8223,10 @@ async def test_ordinary_repair_claim_and_workspace_use_leased_ref_without_origin
 
 
 @pytest.mark.parametrize("lifecycle", ["task", "pool"])
+@pytest.mark.parametrize("remaining_source", [False, True])
 async def test_ordinary_repair_close_uses_normal_published_completion(
     command_handler_factory, tmp_path,
-    lifecycle,
+    lifecycle, remaining_source,
 ):
     from dataclasses import replace
 
@@ -8249,12 +8250,17 @@ async def test_ordinary_repair_close_uses_normal_published_completion(
     git(checkout, "config", "user.email", "source@example.test")
     with patch.dict("os.environ", GitIdentity("Source Worker", "source@example.test").env()):
         starting = commit(checkout, {"source": "inherited source"})
+        remaining = commit(checkout, {"other-source": "another inherited source"}, base=base)
+    git(checkout, "checkout", "-q", "--detach", starting)
     git(checkout, "config", "user.name", "Tester")
     git(checkout, "config", "user.email", "tester@example.test")
     await handler.db.update_repo("repo", url=str(remote), source_path=str(checkout))
     store = BatchStore(handler.db)
+    members = [BatchMember("source", starting, base)]
+    if remaining_source:
+        members.append(BatchMember("other-source", remaining, base, order=1))
     await store.freeze(Batch("ordinary", "p", "repo", "refs/heads/main"),
-                       (BatchMember("source", starting, base),), trees={"source": starting})
+                       members, trees={member.task_id: member.source_sha for member in members})
     ref = candidate_ref("ordinary")
     git(checkout, "push", "origin", f"HEAD:{ref}")
     service = OrdinaryRepairService(handler.db)
@@ -8267,7 +8273,7 @@ async def test_ordinary_repair_close_uses_normal_published_completion(
         None, SimpleNamespace(git_identity_name="Tester", git_identity_email="tester@example.test"),
         handler.db, GitManager(), task_id,
     )
-    assert policy.authorized_heads == {starting}
+    assert policy.authorized_heads == {member.source_sha for member in members}
     assert await GitManager().acheck_publish_identity(
         str(checkout), head, base_ref=base, branch="aq/identity-probe", policy=policy,
     ) == []
@@ -8310,6 +8316,24 @@ async def test_ordinary_repair_close_uses_normal_published_completion(
     assert refused["success"] is False
     assert (await handler.db.get_task(task_id)).status == TaskStatus.IN_PROGRESS
     git(checkout, "push", "origin", f"HEAD:{ref}")
+    if remaining_source:
+        incomplete = await handler._cmd_task_close(args)
+        assert not incomplete["success"], incomplete
+        assert "still to merge: other-source" in incomplete["feedback"]
+        assert (await handler.db.get_task(task_id)).status == TaskStatus.IN_PROGRESS
+        assert await handler.db.get_task_completions(task_id) == []
+        with patch.dict("os.environ", GitIdentity("Tester", "tester@example.test").env()):
+            git(checkout, "merge", "--no-ff", "-qm", "merge remaining frozen source", remaining)
+        head = git(checkout, "rev-parse", "HEAD")
+        assert await GitManager().acheck_publish_identity(
+            str(checkout), head, base_ref=base, branch=ref, policy=policy,
+        ) == []
+        with pytest.raises(GitError, match="refusing to publish"):
+            await GitManager().acheck_publish_identity(
+                str(checkout), head, base_ref=base, branch=ref,
+                policy=replace(policy, authorized_heads=frozenset({starting})),
+            )
+        git(checkout, "push", "origin", f"HEAD:{ref}")
     if lifecycle == "pool":
         from src.jobs.workspace import guard_workspace
         from tests.test_jobs_queries import values
