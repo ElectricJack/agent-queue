@@ -433,6 +433,8 @@ class DatabaseBatches:
                 # A local refresh failure withholds only this epic, allowing
                 # unrelated roots through their own PR gates. Retry with capped
                 # backoff; exception text can contain credentials or DB inputs.
+                logger.warning("Automatic epic refresh unavailable for %s", task_id,
+                               exc_info=True)
                 delay = min((previous or {}).get("retry_seconds", 30) * 2, 600)
                 refresh = {"outcome": "unavailable", "reason": type(exc).__name__,
                            "retry_at": self.clock() + delay, "retry_seconds": delay}

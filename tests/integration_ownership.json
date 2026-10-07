@@ -14555,10 +14555,10 @@
       "reason": "Write-once authorization for this exact promotion request, source and target after its live PR gate and attestation pass. Permits missing-tag recovery only after Git independently proves target containment; the record does not assert publication, delivery or successful ref mutation."
     },
     "src/integration/train_sources.py::DatabaseBatches._refresh_conflicting_epics::23794b0f2bbfe8599ed5c73366232ec30ac62261b170aa38dfd61beb1d944bf4": {
-      "line": 399,
+      "line": 428,
       "owner": "DatabaseBatches._refresh_conflicting_epics",
       "call": "log_event",
-      "owner_fingerprint": "9c8d0b47a2e4a3fc5313c07904f802b48b6c74e777bde18872e3aeb36a76f3ec",
+      "owner_fingerprint": "9d82976066ead4b65a54f90f9d0cc1c69bbe45b3dc8b63c1255f42a48d8512ec",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Audit of an epic refresh the train started because the epic's root PR conflicts with the default branch, with the PR URL and the (epic head, default head) pair. The deterministic frozen refresh batch is the once-per-pair record; this event cannot replay refs or authorize delivery."

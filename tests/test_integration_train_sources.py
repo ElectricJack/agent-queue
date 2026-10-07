@@ -3475,7 +3475,7 @@ async def test_conflicting_epic_pr_starts_one_attested_refresh_per_head_pair(col
 @pytest.mark.parametrize("collected_epic", ["controlled_clock"], indirect=True)
 @pytest.mark.parametrize("error", [OSError, SQLAlchemyError, ValueError])
 async def test_conflicting_epic_refresh_error_does_not_block_leaf_admission(
-    collected_epic, monkeypatch, error,
+    collected_epic, monkeypatch, error, caplog,
 ):
     from src.integration.stacked_branches import EpicRefresh
 
@@ -3498,6 +3498,13 @@ async def test_conflicting_epic_refresh_error_does_not_block_leaf_admission(
     assert "is unavailable" in blocker["action"] and error.__name__ in blocker["action"]
     assert blocker["action"] in blocker["detail"]
     assert "private refresh input" not in json.dumps(visit.detail)
+    [warning] = [record for record in caplog.records
+                 if record.name == "src.integration.train_sources"
+                 and record.getMessage() == "Automatic epic refresh unavailable for epic"]
+    assert warning.levelname == "WARNING"
+    assert warning.exc_info[0] is error
+    assert str(warning.exc_info[1]) == "private refresh input must not escape"
+    assert warning.exc_info[2] is not None
     assert start.await_count == 1
     assert await case.train.batches.current(case.target) is None
     assert git(case.origin.url, "rev-parse", "aq/epic") == head
