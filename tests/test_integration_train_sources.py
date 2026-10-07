@@ -144,6 +144,7 @@ from src.integration.ownership import BranchBusy
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.repair import OrdinaryRepairService
 from src.integration.reviews import ReviewRequirements, TreeReviews
+from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
 from src.integration.status import IntegrationStatusService
 from src.integration.train import CandidateChecks, IntegrationTrain, TrainLane, TrainTarget
 from src.integration.train_controls import TrainControls
@@ -453,6 +454,55 @@ async def test_pending_members_are_exact_undelivered_sources(world):
     assert dependencies == {"a": set(), "b": set()}
     assert set(requests) == {"a", "b"}
     assert batch_id(MAIN, members) == batch_id(MAIN, tuple(reversed(members)))
+
+
+async def test_open_reuses_one_candidate_scan_and_filters_before_root_proof(world, monkeypatch):
+    from src.integration import train_sources
+
+    await world.db.create_task(Task(id="epic", project_id="p", repo_id="r", title="epic",
+                                   description="",
+                                   branch_name="aq/epic", status=TaskStatus.IN_PROGRESS))
+    git(world.origin.clone, "push", "-q", "origin", "main:aq/epic")
+    for index in range(6):
+        await completed(world, f"child-{index}", parent="epic")
+    await completed(world, "top")
+    batches = DatabaseBatches(world.db, pr_gate=AsyncMock(return_value={
+        "code": "awaiting_pr_checks", "task_id": "top", "ref": "top"}))
+    scan = AsyncMock(wraps=train_sources._pending_tasks)
+    monkeypatch.setattr(train_sources, "_pending_tasks", scan)
+    proof = AsyncMock(wraps=batches.delivered)
+    monkeypatch.setattr(batches, "delivered", proof)
+    service = SimpleNamespace(store=BatchStore(world.db), gitops=None, freeze=AsyncMock())
+    for _ in range(2):  # A subsequent visit scans again; there is no mutable identity cache.
+        metrics = SelectionMetrics()
+        observed = await snapshot(world)
+        with selection_metrics_scope(metrics):
+            selection = await batches.open_batch(MAIN, observed, service)
+        assert selection.batch is None and selection.blockers
+        assert metrics.counts["candidate_scans"] == 1
+        assert metrics.counts["candidate_window_reuses"] == 1
+        assert metrics.counts["repository_ids"] == 7
+        assert metrics.counts["routed_ids"] == 1
+        assert metrics.as_dict()["stages"]["root_delivery"]["items"] == 1
+        assert proof.call_args.args[2] == ["top"]
+    assert scan.await_count == proof.await_count == 2
+    service.freeze.assert_not_awaited()
+
+
+async def test_candidate_limit_applies_after_root_delivery_and_rechecks_new_work(world):
+    await completed(world, "owed")
+    await completed(world, "recent-landed", land=True)
+    async with world.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "recent-landed")
+                           .values(updated_at=time.time() + 100))
+    batches = fixture_batches(world.db, limit=1)
+    assert await batches._candidate_ids(MAIN, await snapshot(world)) == ["owed"]
+    # Newly completed work and a new pinned view must be visible on the next scan.
+    await completed(world, "new")
+    async with world.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "new")
+                           .values(updated_at=time.time() + 200))
+    assert await batches._candidate_ids(MAIN, await snapshot(world)) == ["new"]
 
 
 @pytest.mark.parametrize("mode", ["development", "train", "hierarchy"])
@@ -2187,6 +2237,7 @@ async def test_active_status_projects_the_train_not_subjects(world):
 
 async def test_missing_completion_provenance_reports_blocked_target_and_task(world):
     db, origin = world.db, world.origin
+    now = [1000.0]
     heads = {}
     for tid in ("missing-a", "missing-b"):
         heads[tid] = await completed(world, tid, done=False)
@@ -2194,7 +2245,7 @@ async def test_missing_completion_provenance_reports_blocked_target_and_task(wor
         # published branch, even when its exact source is reported in the DB.
         await close(db, tid, [heads[tid]])
     await completed(world, "landed", land=True)
-    train, _, _ = lane(world, LocalGit(Path(origin.url)))
+    train, _, _ = lane(world, LocalGit(Path(origin.url)), clock=lambda: now[0])
     await train.tick()
     await train.drain()
     status = IntegrationStatusService(db, git_first="active", train=train)
@@ -2219,6 +2270,8 @@ async def test_missing_completion_provenance_reports_blocked_target_and_task(wor
         await provenance.write_completion(CompletedSource(
             CompletionIdentity("p", "r", tid, completion.id), head,
         ))
+    assert (await train.tick())["deferred"] == ["/".join(MAIN.key)]
+    now[0] = train.status()[0]["detail"]["retry_at"]
     await train.tick()
     await train.drain()
     project = await status.control_status("p")

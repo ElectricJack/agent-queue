@@ -17,6 +17,7 @@ from src.integration.git_truth import (
     repair_progress,
 )
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
 
 
 @dataclass
@@ -696,6 +697,24 @@ async def test_warm_completion_proofs_do_not_launch_git_processes(repository, mo
         current = replace(request, task_version=index, branch_name=f"renamed-{index}")
         assert (await snapshot.is_delivered(current)).satisfied
     run.assert_not_awaited()
+
+
+async def test_cache_metrics_report_warm_hits_and_changed_completion_misses(repository):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.publish()
+    observed = await repo.snapshot()
+    metrics = SelectionMetrics()
+    with selection_metrics_scope(metrics):
+        assert (await observed.is_delivered(request)).satisfied
+        assert (await observed.is_delivered(request)).satisfied
+        assert (await observed.is_delivered(replace(request, task_version=2))).satisfied
+        assert not (await observed.is_delivered(replace(request, completion_id="missing"))).satisfied
+    assert metrics.counts["completion_cache_hits"] == 1
+    assert metrics.counts["completion_cache_misses"] == 2
+    assert metrics.counts["delivery_cache_hits"] == 1
+    assert metrics.counts["delivery_cache_misses"] == 3
 
 
 async def test_cached_only_proofs_withhold_cold_changed_and_evicted_inputs(repository, monkeypatch):

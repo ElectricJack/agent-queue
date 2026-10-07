@@ -261,6 +261,56 @@ ends, a single target probes GitHub first and the rest resume once it gets
 through. The daemon log carries one warning per pause; the traceback appears
 only at DEBUG.
 
+Train admission allows at most four concurrent visits per repository, including
+explicit refresh requests. Additional targets remain deferred without creating
+waiting tasks. Each tick admits the least recently started idle targets; unvisited
+targets go ahead of previously visited targets. Other repositories have their
+own allowance. A blocked target retries after 10 seconds, doubling for the same
+batch, target OID and refusal up to 60 seconds. A changed refusal or target resets
+the delay. `IntegrationTrain.wake` clears it. The delay is a scheduling hint:
+each retry takes fresh Git observations and repeats the normal admission and
+publication checks. New work on an existing blocked target may wait up to the
+retry cap; a new target receives a turn within one frontier sweep once running
+visits finish. Existing repository rate-limit and promotion pauses still apply.
+
+`aq integration status PROJECT_ID` exposes `timing.selection` for each visited
+target, including a visit still in flight. `stages` reports calls, item counts
+and seconds for pending ID reads, routing, root proof, stack refresh, member
+input reads, target proof, epic readiness, PR admission and freezing. `counts`
+reports candidate scans, visit-local window reuse, repository/routed IDs, shared
+fetch hits, and completion, object and delivery cache hits/misses. Missing keys
+mean zero observed operations. Compute a cache hit rate as hits divided by hits
+plus misses for that cache; shared fetch hits divided by hits plus fetch starts
+measures fetch reuse. The completion and delivery keys retain the pinned metadata
+OID, exact completion identity and exact target OID. Missing or invalid provenance
+still withholds admission.
+
+Substage durations include I/O waits, and nested substages overlap. They cannot
+be summed with the exclusive `timing.stages_seconds`, or used to distinguish
+subprocess work from resource contention without a separate profile. The reported
+197.46-second `select_batch` observation alone does not identify a culprit.
+Selection now routes before root proof and reuses its member window within a
+single visit. Root proof still removes delivered work before the member limit;
+historical delivery and out-of-window dependency checks remain active.
+
+Two bounded, isolated benchmarks make the measurements reproducible:
+
+```bash
+python scripts/benchmark-train-selection.py --targets 55 --members 4
+python scripts/benchmark-git-truth.py --members 137 --passes 1
+```
+
+The first uses synthetic database rows and proof latency with the actual
+selection and admission mechanisms. The previous scan layout performs 110
+scans and 24,200 root-proof items; the new layout performs 55 scans and 220
+items. On the development run, wall times were 0.361 and 0.070 seconds. Its
+repository peak was four visits; new runnable work received a turn after 13
+additional rounds, while the message delivery engine completed 14 inbox passes.
+These are workload-model results, not a speedup claim for the historical daemon
+visit. The second uses disposable real Git objects: 137 cold delivered proofs
+used 961 Git commands in 2.864 seconds; the warm pass used zero commands with
+137 delivery-cache hits in 0.004 seconds. Wall times vary with machine load.
+
 ## Controls quick reference
 
 - `aq integration seal-now --project PROJECT_ID --apply` freezes eligible root inputs immediately, bypassing cadence once.
