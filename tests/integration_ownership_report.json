@@ -2378,6 +2378,83 @@
         107
       ]
     },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_abort_batch']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        119,
+        119
+      ],
+      "baseline_span": [
+        119,
+        119
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_eject']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        120,
+        120
+      ],
+      "baseline_span": [
+        120,
+        120
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_pause_batch']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        117,
+        117
+      ],
+      "baseline_span": [
+        117,
+        117
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_refresh_epic']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        115,
+        115
+      ],
+      "baseline_span": [
+        115,
+        115
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_resume_batch']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        118,
+        118
+      ],
+      "baseline_span": [
+        118,
+        118
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_retire_origin']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        116,
+        116
+      ],
+      "baseline_span": [
+        116,
+        116
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_seal_now']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        109,
+        114
+      ],
+      "baseline_span": [
+        109,
+        114
+      ]
+    },
     "src/cli/client.py::_COMMAND_TIMEOUTS['integration_trust_manifest']": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -9328,83 +9405,6 @@
     "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._episode_completion_token": {
       "reason": "Reads a container's collection episode checkpoint and repair operation under the caller's lock to admit only a cancelled train episode to guarded completion; refuses a live episode."
     },
-    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_abort_batch']": {
-      "reason": "Integration import, registered surface, schema, policy or adapter.",
-      "landing_span": [
-        119,
-        119
-      ],
-      "baseline_span": [
-        119,
-        119
-      ]
-    },
-    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_eject']": {
-      "reason": "Integration import, registered surface, schema, policy or adapter.",
-      "landing_span": [
-        120,
-        120
-      ],
-      "baseline_span": [
-        120,
-        120
-      ]
-    },
-    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_pause_batch']": {
-      "reason": "Integration import, registered surface, schema, policy or adapter.",
-      "landing_span": [
-        117,
-        117
-      ],
-      "baseline_span": [
-        117,
-        117
-      ]
-    },
-    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_refresh_epic']": {
-      "reason": "Integration import, registered surface, schema, policy or adapter.",
-      "landing_span": [
-        115,
-        115
-      ],
-      "baseline_span": [
-        115,
-        115
-      ]
-    },
-    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_resume_batch']": {
-      "reason": "Integration import, registered surface, schema, policy or adapter.",
-      "landing_span": [
-        118,
-        118
-      ],
-      "baseline_span": [
-        118,
-        118
-      ]
-    },
-    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_retire_origin']": {
-      "reason": "Integration import, registered surface, schema, policy or adapter.",
-      "landing_span": [
-        116,
-        116
-      ],
-      "baseline_span": [
-        116,
-        116
-      ]
-    },
-    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_seal_now']": {
-      "reason": "Integration import, registered surface, schema, policy or adapter.",
-      "landing_span": [
-        109,
-        114
-      ],
-      "baseline_span": [
-        109,
-        114
-      ]
-    },
     "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_branch_owners, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
       "reason": "Claim and integration schema imports, including the active stack origin used to hold unresolved prerequisite repairs."
     },
@@ -9434,6 +9434,15 @@
     },
     "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
       "reason": "Combined claim and integration schema imports for open epic-refresh batches and active stack origins; preserves the separately reviewed frontier and prerequisite-repair admission surfaces."
+    },
+    "src/orchestrator/workspace.py::WorkspaceMixin._prepare_exact_origin_workspace_locked": {
+      "reason": "Exact managed checkout preparation under the existing branch mutation fence; consumes retained merge inputs without publication or changing the immutable filing origin."
+    },
+    "src/orchestrator/workspace_attachments.py::detach_retained_preparation": {
+      "reason": "Narrow unactivated-preparation handoff: prove exact clean HEAD durably pinned in the observer store before detach. Does not publish, reset, or waive attachment identity guards."
+    },
+    "src/database/queries/task_session_queries.py::import from src.database.tables import agents, integration_batch_members, integration_source_ci, sessions, task_dependencies, task_session_attempts, tasks": {
+      "reason": "Reads exact frozen batch members as inherited history for ordinary worker push authorization; the immutable sources remain required candidate ancestors."
     }
   },
   "shared_state": {
