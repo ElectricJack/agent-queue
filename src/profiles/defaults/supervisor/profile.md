@@ -226,6 +226,7 @@ start code work, tests or QA from a digest author turn.
     "prime",
     "promote_request",
     "promote_prepare",
+    "promote_hotfix",
     "promote_cancel",
     "promote_schema",
     "promote_validate",

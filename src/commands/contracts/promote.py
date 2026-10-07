@@ -32,6 +32,7 @@ class PromoteRequestArgs(PromoteProjectArgs):
     notes_reviewed: bool = Field(
         default=False, description="Acknowledge reading the notes at the pinned source."
     )
+    from_task: str | None = Field(default=None, description="Completed hotfix task to promote.")
 
     @field_validator("source_sha")
     @classmethod
@@ -65,6 +66,16 @@ class PromotionNotesInputArgs(PromoteProjectArgs):
     source_sha: str | None = None
 
     _exact_source = field_validator("source_sha")(PromoteRequestArgs.exact_source.__func__)
+class PromoteHotfixArgs(PromoteProjectArgs):
+    step_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    description: str | None = None
+    from_task: str | None = None
+    version: str | None = None
+
+
+class BackmergeSourceArgs(PromoteProjectArgs):
+    step_id: str = Field(min_length=1)
 
 
 class PromoteReadArgs(PromoteProjectArgs):
@@ -89,6 +100,7 @@ class PromoteValue(CommandValue):
     notes_input: dict[str, Any] | None = None
     draft: str | None = None
     notes: str | None = None
+    backmerges: list[dict[str, Any]] = Field(default_factory=list)
 
 
 REFUSALS = (
@@ -137,6 +149,8 @@ def register_promote_contracts(registry):
         ("promote_prepare", PromotePrepareArgs, ("prepared",), False),
         ("integration_promotion_notes_input", PromotionNotesInputArgs, ("notes_input",), True),
         ("promote_request", PromoteRequestArgs, ("requested", "already_requested"), False),
+        ("promote_hotfix", PromoteHotfixArgs, ("hotfix_filed",), False),
+        ("integration_backmerge_source", BackmergeSourceArgs, ("backmerges_authored",), False),
         ("promote_approve", PromoteIntentArgs, ("approved", "already_approved"), False),
         ("promote_cancel", PromoteIntentArgs, ("cancelled", "already_cancelled"), False),
         ("promote_status", PromoteReadArgs, ("status",), True),
@@ -154,6 +168,8 @@ def register_promote_contracts(registry):
         summaries = {
             "promote_prepare": "File ordinary release preparation on the repository default branch.",
             "integration_promotion_notes_input": "Assemble immutable promotion notes from full Git history.",
+            "promote_hotfix": "File a hotfix based on a promotion target, through ordinary task routing.",
+            "integration_backmerge_source": "Author gated back-merge sources and fast-forward intents down the chain.",
             "promote_request": "Open an idempotent promotion intent and a PR pinned to its source commit.",
             "promote_approve": "Post a pinned GitHub approval using the authenticated human gh login.",
             "promote_cancel": "Close an unpublished promotion PR and abort its intent.",
