@@ -84,6 +84,24 @@ def _execute_intent(ctx: click.Context, command: str, args: dict) -> None:
         raise SystemExit(1)
 
 
+@promote.command("prepare")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.option("--step", "step_id", required=True)
+@click.option("--bump", type=click.Choice(["minor", "patch"]))
+@click.option("--version", help="Explicit version to prepare.")
+@click.option("--from-task", help="Task motivating this preparation.")
+@click.pass_context
+@_handle_errors
+def promote_prepare(ctx, project_id, step_id, bump, version, from_task):
+    """File a version bump and notes draft as ordinary work on the default branch."""
+    if (version is None) == (bump is None):
+        raise click.UsageError("Choose exactly one of --version or --bump.")
+    _execute_intent(ctx, "promote_prepare", {
+        "project_id": project_id, "step_id": step_id, "bump": bump,
+        "version": version, "from_task": from_task,
+    })
+
+
 @promote.command("request")
 @click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
 @click.option("--step", "step_id", required=True)

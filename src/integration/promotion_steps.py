@@ -31,7 +31,7 @@ from src.database.tables import (
     task_metadata,
     tasks,
 )
-from src.git.github_contracts import GitHubAccessError
+from src.git.github_contracts import GitHubAccessError, rate_limit_cause
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.integration.batches import BatchObservation, BatchService
 from src.integration.ci import (
@@ -1681,3 +1681,35 @@ async def settle_promotion(db, batch, observation, *, clock=time.time, conn=None
         ))
         if json.loads(recorded) != result:
             raise PromotionIntentInvalid("promotion settlement differs from its recorded result")
+
+
+class PromotionSourceRefusal(ValueError):
+    """Request-time exact-source CI cannot authorize an intent."""
+
+    def __init__(self, outcome, message):
+        super().__init__(message)
+        self.outcome = outcome
+
+
+async def check_source_green(client, trust, required, source):
+    from src.integration.ci import (
+        AttestationError, AuthenticatedGitHubObserver, CIObservationDeferred, FailedCIObservation,
+    )
+
+    selected = trust.model_copy(update={"required_checks": required})
+    try:
+        observed = await AuthenticatedGitHubObserver(client, expected_event="push").observe(
+            selected, source,
+        )
+    except CIObservationDeferred as exc:
+        reason = "promotion_source_pending" if exc.classification in {"pending", "none"} \
+            else "promotion_source_unavailable"
+        raise PromotionSourceRefusal(reason, str(exc)) from exc
+    except AttestationError as exc:
+        raise PromotionSourceRefusal("promotion_source_untrusted", str(exc)) from exc
+    except GitHubAccessError as exc:
+        if rate_limit_cause(exc) is not None:
+            raise
+        raise PromotionSourceRefusal("promotion_source_unavailable", str(exc)) from exc
+    if isinstance(observed, FailedCIObservation):
+        raise PromotionSourceRefusal("promotion_source_red", "Required source checks are not green.")

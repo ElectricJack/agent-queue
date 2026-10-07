@@ -42,6 +42,7 @@ class IntentGitHub(PromotionGitHub):
         self.fail_pull_once = False
 
     async def create_pull_request(self, *, head, base, **kwargs):
+        self.body = kwargs["body"]
         if not self.created:
             self.created += 1
             self.pull["head"].update(
@@ -119,6 +120,7 @@ async def promote_env(promotion):
         await conn.execute(update(repos).values(default_branch="dev"))
     e.source = source
     e.github = IntentGitHub(e)
+    e.github.runs[source] = "success"
     e.human = HumanGitHub(e.github)
     e.trust = IntegrationTrustManifest(
         schema="aq.integration-trust.v1",
@@ -193,6 +195,7 @@ async def test_competing_versions_cannot_open_two_intents(promote_env):
         e.repo.store, {"pyproject.toml": '[project]\nversion = "0.2.1"\n'}, base=e.source
     )
     git(e.repo.store, "push", "origin", other + ":refs/heads/dev")
+    e.github.runs[other] = "success"
     results = await asyncio.gather(request(e, source_sha=e.source), request(e, source_sha=other))
     assert {r["outcome"] for r in results} == {"requested", "promotion_in_progress"}, results
     assert e.github.created == 1
@@ -333,8 +336,9 @@ async def test_notes_acknowledgement_and_hash_use_pinned_bytes(promote_env):
     e = promote_env
     step = copy.deepcopy(e.meta["step"])
     step["notes"] = {"kind": "file_template", "path": "notes/{version}.md"}
-    body = "Release notes\n\n"
+    body = "---\nsource_digest: " + hashlib.sha256(b"").hexdigest() + "\n---\nRelease notes\n\n"
     source = commit(e.repo.store, {"notes/0.2.0.md": body}, base=e.source)
+    e.github.runs[source] = "success"
     git(e.repo.store, "push", "origin", source + ":refs/heads/dev")
     async with e.db._engine.begin() as conn:
         await conn.execute(update(projects).values(promotion_flow=[step]))
@@ -436,7 +440,7 @@ def test_intent_contracts_have_typed_arguments_and_read_only_cache_commands():
     from src.commands.contracts import CONTRACTS
     from src.commands.contracts.models import SideEffectClass
 
-    for name in ("request", "approve", "cancel", "status", "list"):
+    for name in ("prepare", "request", "approve", "cancel", "status", "list"):
         registration = CONTRACTS.get("promote_" + name)
         assert registration is not None
         contract = registration.contract.execution
@@ -453,6 +457,10 @@ def test_intent_contracts_have_typed_arguments_and_read_only_cache_commands():
 @pytest.mark.parametrize(
     "name,argv,args",
     [
+        (
+            "prepare", ["--step", "release", "--bump", "minor", "--from-task", "feature"],
+            {"step_id": "release", "bump": "minor", "version": None, "from_task": "feature"},
+        ),
         (
             "request",
             ["--step", "release", "--from", "a" * 40, "--version", "0.2.0", "--notes-reviewed"],
@@ -621,6 +629,7 @@ async def test_supervisor_cancels_its_own_request_and_operator_cancels_any(promo
         e.repo.store, {"pyproject.toml": '[project]\nversion = "0.2.1"\n'}, base=e.source
     )
     git(e.repo.store, "push", "origin", other + ":refs/heads/dev")
+    e.github.runs[other] = "success"
     e.github.created = 0
     e.github.pull["state"] = "open"
     with principal_context(_supervisor("p", session_id="another")):
@@ -772,6 +781,7 @@ async def test_request_fetches_new_remote_source_before_reading_version(promote_
     git(writer, "push", "origin", source + ":refs/heads/dev")
     before = await e.ops.git.arun_git_result(["cat-file", "-e", source], cwd=str(e.repo.store))
     assert before.returncode != 0
+    e.github.runs[source] = "success"
     opened = await request(e, source_sha=source)
     assert opened["success"] and opened["promotion"]["source_sha"] == source, opened
 
