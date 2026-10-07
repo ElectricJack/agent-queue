@@ -304,6 +304,9 @@ _START_SITES = {
     ("src/integration/candidates.py", "self.repair.start"): 1,
     # Freezes an epic refresh batch; the train visits it without launching an agent.
     ("src/integration/train_sources.py", "EpicRefresh(self.db, clock=self.clock).start"): 1,
+    # Changelog section boundaries use re.Match offsets, never agent launches.
+    ("src/integration/promotion_notes.py", "following.start"): 1,
+    ("src/integration/promotion_notes.py", "match.start"): 3,
     ("src/intelligence_classes/editing.py", "block.start"): 1,
     ("src/main.py", "adapter.start"): 1,
     ("src/main.py", "metrics_sampler.start"): 1,

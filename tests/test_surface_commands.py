@@ -142,6 +142,33 @@ class TestGetSchema:
 
 
 class TestTaskShow:
+    async def test_preparation_input_is_readable_only_on_own_task(self, handler, db, task):
+        from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+        from src.profiles.capabilities import CapabilityPolicy
+        from src.api.auth import RequestScope
+        from src.api.scope import check_command_scope
+
+        notes_input = {"source_digest": "digest", "sources": [{"task": "feature"}]}
+        await db.set_task_meta(task.id, "notes_input", notes_input)
+        other = Task(id="other", project_id=task.project_id, title="Other", description="")
+        await db.create_task(other)
+        policy = CapabilityPolicy.from_namespaces(aq_commands=["task_show", "task_set"],
+                                                   harness_tools=[], plugin_tools=[])
+        principal = ExecutionPrincipal(kind=PrincipalKind.SESSION, policy=policy,
+                                       session_id="worker", task_id=task.id,
+                                       project_id=task.project_id)
+        with principal_context(principal):
+            scope = {"kind": "session", "task_id": task.id, "project_id": task.project_id,
+                     "session_id": "worker"}
+            shown = await handler.execute("task_show", {"task_id": task.id, "_scope": scope})
+            assert shown["metadata"]["notes_input"] == notes_input
+            refused = check_command_scope("task_show", {"task_id": other.id}, RequestScope(**scope))
+            assert refused == "out of scope: task_id mismatch"
+            changed = await handler.execute("task_set", {"task_id": task.id,
+                                                         "meta": {"notes_input": {}}, "_scope": scope})
+            assert "immutable" in changed["error"]
+        assert await db.get_task_meta(task.id, "notes_input") == notes_input
+
     async def test_missing_task_id(self, handler):
         result = await handler.execute("task_show", {})
         assert "error" in result

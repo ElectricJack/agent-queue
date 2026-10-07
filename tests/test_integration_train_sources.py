@@ -3112,7 +3112,7 @@ async def hosted_train(world, *, retained_store=None, clock=time.time, settling=
     async with db._engine.connect() as conn:
         for tid, branch, url in (await conn.execute(select(
                 tasks.c.id, tasks.c.branch_name, tasks.c.pr_url))).all():
-            if url:
+            if url and branch:
                 github.pulls[url] = branch
                 github.pr_runs[git(origin.url, "rev-parse", branch)] = "success"
 

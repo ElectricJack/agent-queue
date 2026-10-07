@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from src.commands.contracts.models import CommandArgs, CommandValue, SideEffectClass
 from src.commands.contracts.registry import CommandRegistration
@@ -32,6 +32,7 @@ class PromoteRequestArgs(PromoteProjectArgs):
     notes_reviewed: bool = Field(
         default=False, description="Acknowledge reading the notes at the pinned source."
     )
+    from_task: str | None = Field(default=None, description="Completed hotfix task to promote.")
 
     @field_validator("source_sha")
     @classmethod
@@ -45,6 +46,40 @@ class PromoteIntentArgs(PromoteProjectArgs):
     request_id: str = Field(
         min_length=1, description="Promotion request identity returned by request."
     )
+
+
+class PromotePrepareArgs(PromoteProjectArgs):
+    step_id: str = Field(min_length=1)
+    version: str | None = Field(default=None, min_length=1)
+    bump: Literal["minor", "patch"] | None = None
+    from_task: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def one_version_choice(self):
+        if (self.version is None) == (self.bump is None):
+            raise ValueError("Choose exactly one of --version or --bump")
+        return self
+
+
+class PromotionNotesInputArgs(PromoteProjectArgs):
+    step_id: str = Field(min_length=1)
+    source_sha: str | None = None
+
+    _exact_source = field_validator("source_sha")(PromoteRequestArgs.exact_source.__func__)
+class PromoteHotfixArgs(PromoteProjectArgs):
+    step_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    description: str | None = None
+    from_task: str | None = None
+    version: str | None = None
+
+
+class PromotionPolicyInputArgs(PromoteRequestArgs):
+    pass
+
+
+class BackmergeSourceArgs(PromoteProjectArgs):
+    step_id: str = Field(min_length=1)
 
 
 class PromoteReadArgs(PromoteProjectArgs):
@@ -65,9 +100,16 @@ class PromoteValue(CommandValue):
     promotions: list[dict[str, Any]] = Field(default_factory=list)
     evidence_source: str | None = None
     retry_at: float | None = None
+    version: str | None = None
+    notes_input: dict[str, Any] | None = None
+    draft: str | None = None
+    notes: str | None = None
+    policy: dict[str, Any] | None = None
+    backmerges: list[dict[str, Any]] = Field(default_factory=list)
 
 
 REFUSALS = (
+    "backmerge_ledger_invalid", "hotfix_patch_required",
     "not_found",
     "unavailable",
     "rate_limited",
@@ -91,6 +133,18 @@ REFUSALS = (
     "promotion_not_open",
     "promotion_review_invalid",
     "promotion_publish_started",
+    "promotion_source_red",
+    "promotion_source_pending",
+    "promotion_source_unavailable",
+    "promotion_source_untrusted",
+    "promotion_train_required",
+    "prepare_in_progress",
+    "version_not_increasing",
+    "notes_stale",
+    "notes_range_invalid",
+    "notes_range_too_large",
+    "notes_source_missing",
+    "promotion_body_too_large",
 )
 
 
@@ -98,7 +152,12 @@ def register_promote_contracts(registry):
     from src.commands.contracts.integration import _hierarchy_adapter, _operational_contract
 
     for name, args_model, successes, read in (
+        ("integration_promotion_policy_input", PromotionPolicyInputArgs, ("policy_input",), True),
+        ("promote_prepare", PromotePrepareArgs, ("prepared",), False),
+        ("integration_promotion_notes_input", PromotionNotesInputArgs, ("notes_input",), True),
         ("promote_request", PromoteRequestArgs, ("requested", "already_requested"), False),
+        ("promote_hotfix", PromoteHotfixArgs, ("hotfix_filed",), False),
+        ("integration_backmerge_source", BackmergeSourceArgs, ("backmerges_authored",), False),
         ("promote_approve", PromoteIntentArgs, ("approved", "already_approved"), False),
         ("promote_cancel", PromoteIntentArgs, ("cancelled", "already_cancelled"), False),
         ("promote_status", PromoteReadArgs, ("status",), True),
@@ -114,6 +173,11 @@ def register_promote_contracts(registry):
             result_model=PromoteValue,
         )
         summaries = {
+            "integration_promotion_policy_input": "Read pinned source and outstanding promotion facts for reviewed policy.",
+            "promote_prepare": "File ordinary release preparation on the repository default branch.",
+            "integration_promotion_notes_input": "Assemble immutable promotion notes from full Git history.",
+            "promote_hotfix": "File a hotfix based on a promotion target, through ordinary task routing.",
+            "integration_backmerge_source": "Author gated back-merge sources and fast-forward intents down the chain.",
             "promote_request": "Open an idempotent promotion intent and a PR pinned to its source commit.",
             "promote_approve": "Post a pinned GitHub approval using the authenticated human gh login.",
             "promote_cancel": "Close an unpublished promotion PR and abort its intent.",

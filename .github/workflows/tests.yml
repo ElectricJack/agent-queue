@@ -8,6 +8,7 @@ name: Tests
 # * A push to `aq/batches/**` tests the git-first train's batch candidate
 #   (`src/integration/batches.py:candidate_ref`) the same way.
 # * A push to `aq/promote/**` tests the exact promotion source SHA.
+# * A push to `aq/backmerge/**` tests an immutable backmerge source SHA.
 # * A push to `aq/parent/**` tests an immutable parent snapshot ref that
 #   `src/integration/parent_ci.py` publishes and then reads the run from.
 #
@@ -32,6 +33,7 @@ on:
       - 'aq/integration/**'
       - 'aq/batches/**'
       - 'aq/promote/**'
+      - 'aq/backmerge/**'
   workflow_dispatch:
   workflow_call:
 

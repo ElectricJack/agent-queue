@@ -122,6 +122,8 @@ def normalize(args: dict) -> dict:
             isinstance(spec["priority"], bool) or not isinstance(spec["priority"], int)
         ):
             raise ChangeSetError("priority must be an integer")
+        if spec.get("task_type") in {"promotion", "backmerge"}:
+            raise ChangeSetError("Promotion and backmerge task types are daemon-owned.")
         if spec.get("task_type") is not None:
             TaskType(spec["task_type"])
         if (
@@ -197,6 +199,10 @@ async def snapshot(conn, project_id, payload, *, previous=None):
         .all()
     )
     by_id = {row["id"]: dict(row) for row in rows}
+    for edit in payload["edits"]:
+        row = by_id.get(edit["task_id"])
+        if row and "task_type" in edit and row["task_type"] in {"promotion", "backmerge"}:
+            raise ChangeSetError("Promotion and backmerge task types are daemon-owned.")
     temp_ids = {t["tempId"] for t in payload["tasks"]}
     if temp_ids & by_id.keys():
         raise ChangeSetError("tempId collides with an existing task id")

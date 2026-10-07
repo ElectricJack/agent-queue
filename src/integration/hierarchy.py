@@ -617,9 +617,11 @@ class HierarchyIntegration:
         edges: list[tuple[str, str, str | None]] | None = None,
         labels: list[str] | None = None,
         routing_policy=None,
+        target_ref: str | None = None,
     ) -> dict:
         """Insert an enabled-project root and reserve its isolated origin."""
-        _project, repo = await self._root_route(conn, task.project_id)
+        _project, repo = await self._root_route(conn, task.project_id,
+                                              promotion_target=target_ref)
         await self.db.lock_hierarchy_project(conn, task.project_id)
         task.id = await fresh_root_id(conn)
         task.parent_task_id = None
@@ -641,7 +643,8 @@ class HierarchyIntegration:
             conn, task_id=task.id, title=task.title, is_epic=True
         )
         await self._ensure_origin_chain(
-            conn, task.id, repo, root_branch=repo.default_branch
+            conn, task.id, repo, root_branch=target_ref or repo.default_branch,
+            root_parent_ref=target_ref,
         )
         return {"task_id": task.id, "generation": 0, "gate_id": gate_id}
 
@@ -1090,23 +1093,29 @@ class HierarchyIntegration:
             "new_parent_generation": new_generation,
         }
 
-    async def _root_route(self, conn, project_id: str) -> tuple[dict, RepoConfig]:
+    async def _root_route(self, conn, project_id: str, *, promotion_target=None) -> tuple[dict, RepoConfig]:
         """The (project, repo) a new root in *project_id* files through."""
         project = (
             await conn.execute(
                 select(self._projects_table()).where(self._projects_table().c.id == project_id)
             )
         ).mappings().one_or_none()
-        if project is None or project["hierarchical_integration_mode"] not in {
-            "hierarchy",
-            "train",
-        }:
+        modes = {"hierarchy", "train"} | ({"development"} if promotion_target else set())
+        if project is None or project["hierarchical_integration_mode"] not in modes:
             raise HierarchyError("invalid", "hierarchical integration is not enabled")
         project = dict(project)
         repository_id = project["integration_repository_id"]
         repo = await self._repo_on(conn, repository_id) if repository_id else None
         if repo is None or repo.project_id != project_id:
             raise HierarchyError("invalid", "designated repository is not in the project")
+        if promotion_target:
+            from src.integration.promotion_steps import FlowSchema
+
+            flow = FlowSchema.validate(project["promotion_flow"], default_branch=repo.default_branch)
+            if flow.layer < 3 or promotion_target not in {
+                "refs/heads/" + step["target"] for step in flow.flow or []
+            }:
+                raise HierarchyError("invalid", "root target is not on the promotion chain")
         return project, repo
 
     async def graph_route(
@@ -1306,6 +1315,7 @@ class HierarchyIntegration:
         *,
         origin_generation: int = 0,
         root_branch: str | None = None,
+        root_parent_ref: str | None = None,
     ) -> None:
         chain: list[dict] = []
         current = await self._task_row(conn, task_id)
@@ -1331,7 +1341,7 @@ class HierarchyIntegration:
                 base_sha = await self._resolve_head(
                     repo, root_branch or row["branch_name"] or repo.default_branch
                 )
-                parent_ref = repo.default_branch
+                parent_ref = root_parent_ref or repo.default_branch
             else:
                 base_sha = parent_checkpoint["checkpoint_sha"]
                 parent_ref = parent_checkpoint["branch"]

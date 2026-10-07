@@ -105,6 +105,9 @@ class TaskType(Enum):
     RESEARCH = "research"
     PLAN = "plan"
     SYNC = "sync"
+    # Completed daemon sources and pinned intents never enter worker routing.
+    PROMOTION = "promotion"
+    BACKMERGE = "backmerge"
     # Design kinds the router sends to the design lanes (mandatory-routing
     # spec §6.3): ``design`` is code or system design, ``art`` is art-heavy.
     DESIGN = "design"

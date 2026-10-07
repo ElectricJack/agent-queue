@@ -53,7 +53,7 @@ playbook.py        `aq playbook` — compile, run, HITL, health
 pool_provider.py   `aq pool provider` — generated status/apply and structured preview flags
 plugins.py         `aq plugin {list,info,install,remove,enable,disable,update,config,logs,...}`
 projects.py        Hand-crafted `aq project` commands needing composite logic or UX sugar
-promote.py         `aq promote {schema,validate,request,approve,cancel,status,list}` — flow
+promote.py         `aq promote {schema,validate,prepare,request,hotfix,approve,cancel,status,list}` — flow
                    validation, pinned step PRs, and cached promotion history
 promote_rulesets.py `aq promote rulesets` — print chain/tag rulesets and workflow triggers
 questions.py       `aq question {list,answer,escalate}` — identity-based worker questions

@@ -800,3 +800,22 @@ adds four things:
 from `s1` on mutates the repository and refuses to run until the operator's
 approval is written to `$AQ_E2E_HOME/APPROVED`. The first run is recorded in
 [app-mode-train-2026-09-28.md](../gates/app-mode-train-2026-09-28.md).
+
+The `hotfix` step exercises a prepared one-step `dev -> main` promotion flow
+with `after.backmerge: true`. It files and routes a bugfix off `main`, completes
+the fixture worker, opens the exact-head promotion PR onto `main`, applies the
+configured human approval, then authors the backmerge's own PR onto `dev` and
+waits for Git containment. Versioned flows need the PATCH version and notes in
+the supplied file changes, for example:
+
+```bash
+bash scripts/e2e-app-train.sh run hotfix --scenario hotfix-main-dev \
+  --version 0.0.2 --copy pyproject.toml=/tmp/fixture-pyproject.toml \
+  --copy notes/0.0.2.md=/tmp/fixture-notes.md
+```
+
+The paths must match the prepared fixture's version and notes configuration.
+The step records resumable evidence in the fixture home and requires its
+existing `APPROVED` file. The isolated PostgreSQL/Git proof also runs in
+`tests/test_promotion_backmerge.py`, including both integration modes, a held
+lower-branch PR, a new frozen batch, and delivery of the hotfix source to `dev`.

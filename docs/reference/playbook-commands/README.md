@@ -82,6 +82,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_abort_batch`](integration_abort_batch.md) | Integration Abort Batch | Authenticated hierarchical integration operational control. |
 | [`integration_app_verify`](integration_app_verify.md) | Integration App Verify | Check the App credential, repository, producer, trust manifest, Actions variables, protection and audit workflow App mode depends on; one item each. |
 | [`integration_authorize_root`](integration_authorize_root.md) | Integration Authorize Root | Authenticated hierarchical integration operational control. |
+| [`integration_backmerge_source`](integration_backmerge_source.md) | Integration Backmerge Source | Author gated back-merge sources and fast-forward intents down the chain. |
 | [`integration_build_candidate`](integration_build_candidate.md) | Build exact root candidate | Build exact root candidate |
 | [`integration_checkpoint_parent`](integration_checkpoint_parent.md) | Checkpoint integration parent | Pin the parent head and generation before waiting for child deliveries. |
 | [`integration_ci_evidence`](integration_ci_evidence.md) | Observe exact root candidate CI | Observe exact root candidate CI |
@@ -97,6 +98,8 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_parent_verify`](integration_parent_verify.md) | Integration Parent Verify | Record one parent verification against its exact checkpoint head and evidence. |
 | [`integration_pause_batch`](integration_pause_batch.md) | Integration Pause Batch | Authenticated hierarchical integration operational control. |
 | [`integration_promote_main`](integration_promote_main.md) | Promote exact root candidate | Reconcile and fast-forward main to the exact trusted green candidate. |
+| [`integration_promotion_notes_input`](integration_promotion_notes_input.md) | Integration Promotion Notes Input | Assemble immutable promotion notes from full Git history. |
+| [`integration_promotion_policy_input`](integration_promotion_policy_input.md) | Integration Promotion Policy Input | Read pinned source and outstanding promotion facts for reviewed policy. |
 | [`integration_promotion_publish`](integration_promotion_publish.md) | Integration Promotion Publish | Authenticated hierarchical integration operational control. |
 | [`integration_push_conflict_resolution`](integration_push_conflict_resolution.md) | Push conflict resolution | Push a frozen conflict resolution under the current repair writer fence. |
 | [`integration_quiesce`](integration_quiesce.md) | Quiesce idle train admission | Local operator closes an unfrozen root and releases explicitly fenced idle reservations. |
@@ -203,7 +206,9 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`object_score_record`](object_score_record.md) | Object Score Record | Coordinate a bounded, durable object evaluation round. |
 | [`promote_approve`](promote_approve.md) | Promote Approve | Post a pinned GitHub approval using the authenticated human gh login. |
 | [`promote_cancel`](promote_cancel.md) | Promote Cancel | Close an unpublished promotion PR and abort its intent. |
+| [`promote_hotfix`](promote_hotfix.md) | Promote Hotfix | File a hotfix based on a promotion target, through ordinary task routing. |
 | [`promote_list`](promote_list.md) | Promote List | List promotion history using the local evidence cache. |
+| [`promote_prepare`](promote_prepare.md) | Promote Prepare | File ordinary release preparation on the repository default branch. |
 | [`promote_request`](promote_request.md) | Promote Request | Open an idempotent promotion intent and a PR pinned to its source commit. |
 | [`promote_schema`](promote_schema.md) | Promote Schema | Authenticated hierarchical integration operational control. |
 | [`promote_status`](promote_status.md) | Promote Status | Read promotion intents and cached check and PR review evidence. |

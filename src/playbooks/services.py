@@ -33,7 +33,7 @@ GLOBAL_EVENT_PREFIXES = ("timer.", "cron.")
 # fenced.  Other system playbooks (default review, notifications, observers)
 # retain normal event-to-scope fanout.
 INTEGRATION_LIFECYCLE_PLAYBOOK_IDS = frozenset(
-    {"hierarchical-delivery", "root-integration-train", "parent-integration", "root-train"}
+    {"hierarchical-delivery", "root-integration-train", "parent-integration", "root-train", "promotion-request", "promotion-continuous"}
 )
 _PARENT_INTEGRATION_EVENTS = frozenset(
     {
@@ -92,8 +92,12 @@ class IntegrationRouteTarget:
         )
 
 
+PROMOTION_POLICY_EVENTS = frozenset({"promotion.source_settled", "promotion.request_due",
+    "promotion.hotfix_completed", "promotion.intent_due", "promotion.delivered"})
+
+
 def is_integration_route_event(event_type: str) -> bool:
-    return event_type in _PARENT_INTEGRATION_EVENTS | _ROOT_INTEGRATION_EVENTS
+    return event_type in _PARENT_INTEGRATION_EVENTS | _ROOT_INTEGRATION_EVENTS | PROMOTION_POLICY_EVENTS
 
 
 async def resolve_integration_route(
@@ -116,9 +120,12 @@ async def resolve_integration_route(
     project = await db.get_project(project_id)
     if (
         project is None
-        or project.hierarchical_integration_mode not in {"hierarchy", "train"}
+        or project.hierarchical_integration_mode not in ({"hierarchy", "train", "development"}
+            if event_type in PROMOTION_POLICY_EVENTS else {"hierarchy", "train"})
     ):
         return None
+    if event_type in PROMOTION_POLICY_EVENTS:
+        return await _promotion_route(db, project, event)
     try:
         policy = HierarchicalIntegrationPolicy.model_validate(
             project.hierarchical_integration_policy
@@ -177,6 +184,47 @@ async def resolve_integration_route(
         scope_identifier=route.scope_identifier,
         artifact_sha256=route.artifact.artifact_sha256,
     )
+
+
+async def _promotion_route(db, project, event):
+    """Bind the stored step type to an enabled reviewed activation, never event authority."""
+    from sqlalchemy import select
+
+    from src.database.tables import integration_batches, projects, repos
+    from src.integration.promotion_steps import FlowSchema
+
+    async with db._engine.connect() as conn:
+        flow = await conn.scalar(select(projects.c.promotion_flow).where(projects.c.id == project.id))
+        default = await conn.scalar(select(repos.c.default_branch).where(
+            repos.c.id == project.integration_repository_id, repos.c.project_id == project.id))
+        validated = FlowSchema.validate(flow, default_branch=default or "main")
+        if validated.layer < 3:
+            return None
+        step = next((item for item in validated.flow or [] if item["id"] == event.get("step_id")), None)
+        if event.get("batch_id"):
+            row = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == event["batch_id"],
+                integration_batches.c.project_id == project.id,
+                integration_batches.c.repository_id == project.integration_repository_id,
+                integration_batches.c.trigger == "promotion",
+            ))).mappings().first()
+            if row is None:
+                return None
+            step = (row["policy_snapshot"] or {}).get("promotion_step")
+        if not isinstance(step, dict) or step.get("type") not in {"request", "continuous"}:
+            return None
+    playbook_id = "promotion-" + step["type"]
+    rows = await db.list_playbook_activations(enabled_only=True)
+    candidates = [row for row in rows if row.get("playbook_id") == playbook_id
+                  and row.get("scope") == "project" and row.get("scope_identifier") == project.id
+                  and getattr(row.get("health"), "value", row.get("health")) == "ready"
+                  and row.get("active_artifact_sha256")]
+    if not candidates:
+        return None
+    row = candidates[0]
+    event["step_id"] = step["id"]
+    return IntegrationRouteTarget(row.get("id"), playbook_id, row["scope"],
+                                  row.get("scope_identifier") or "", row["active_artifact_sha256"])
 
 
 def is_global_event(event_type: str) -> bool:

@@ -3528,6 +3528,40 @@ class GitManager:
             oid=oid, destination_ref=destination_ref,
         )
 
+    async def als_remote_tag_refs(
+        self, checkout_path: str, *, repository_url: str | None = None,
+    ) -> dict[str, str]:
+        """List remote tag objects and peels using this repository's read credentials."""
+        destination, token = await self._apush_destination(
+            checkout_path, "origin", repository_url=repository_url,
+        )
+        if destination is None:
+            result = await self.arun_git_result(
+                ["ls-remote", "--tags", "origin"], cwd=checkout_path,
+            )
+            if result.returncode:
+                raise GitError(result.stderr or "remote tag inventory failed")
+            output = result.stdout
+        else:
+            with tempfile.TemporaryDirectory(prefix="aq-app-tags-") as temporary:
+                home = Path(temporary)
+                home.chmod(0o700)
+                output = (await self._arun_authenticated_git(
+                    ["ls-remote", "--tags", destination], home=home,
+                    repository_url=destination, token=token,
+                    deadline=asyncio.get_running_loop().time() + self._GIT_TIMEOUT,
+                    budget_seconds=self._GIT_TIMEOUT,
+                )).decode("utf-8")
+        found = {}
+        for line in output.splitlines():
+            oid, separator, ref = line.partition("\t")
+            if (not separator or not ref.startswith("refs/tags/")
+                    or not is_valid_git_oid(oid) or ref in found):
+                raise GitError("remote returned malformed or duplicate tag identity")
+            _validate_ref(ref.removesuffix("^{}"))
+            found[ref] = oid
+        return found
+
     async def als_remote_qualified_refs(
         self, checkout_path: str, refs: Sequence[str], *, remote: str = "origin",
         repository_url: str | None = None,

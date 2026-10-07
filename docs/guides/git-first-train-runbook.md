@@ -417,6 +417,28 @@ A repair claim with `needs_attention: repair_target_unpublished` found its
 remote target absent and reports an integration train defect. It does not
 consume slot-reset retries or create the ref from the worker slot.
 
+## Roll back
+
+The fidelity rollout is roll-forward only. If an unpromoted batch misbehaves,
+preserve its evidence and file a fix through the configured integration owner.
+An operator or authorized project supervisor can:
+
+- **Pause** the affected batch (`aq integration pause-batch <id> --apply
+  --reason "investigate gate"`) to pause publication while investigating.
+- **Abort** the batch (`aq integration abort-batch <id> --apply --reason "..."`)
+  to withhold its exact inputs from future visits. The aborted batch is never
+  rebuilt; its member tasks return to pending with PRs and approvals intact.
+- **Eject** a failing member (`aq integration eject --batch <id> --task <id>
+  --apply --reason "isolate failure"`) to freeze the remainder under a new
+  batch ID. The ejected member returns to pending with its PR and approval intact.
+
+Every action records the principal and reason. No command edits frozen
+membership or forces a target ref. A switch to `git_first: shadow` reactivates
+legacy writers and pending outbox delivery; it cannot undo a fast-forward
+already proved by Git and is not the fidelity recovery procedure. See
+[Controls](#controls) and
+[Recovery after fidelity cutover](#recovery-after-fidelity-cutover).
+
 ## Controls
 
 For concise command syntax, see the [Controls quick reference](hierarchical-integration-trains.md#controls-quick-reference).

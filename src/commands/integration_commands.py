@@ -236,8 +236,12 @@ class IntegrationCommandsMixin:
         if row is None:
             return _failure("not_found", "promotion batch does not exist")
         principal = current_principal()
-        if principal is None or principal.kind is not PrincipalKind.SERVICE:
-            return _failure("unauthorized", "promotion publication requires a daemon service")
+        if principal is None or principal.kind not in {PrincipalKind.SERVICE, PrincipalKind.PLAYBOOK}:
+            return _failure("unauthorized", "promotion publication requires a daemon service or reviewed playbook")
+        if principal.kind is PrincipalKind.PLAYBOOK and (
+            principal.unresolved or principal.project_id != row["project_id"]
+        ):
+            return _failure("unauthorized", "promotion publication is outside the playbook project")
         snapshot = row["policy_snapshot"] or {}
         if (row["trigger"] != "promotion" or not isinstance(snapshot, dict)
                 or not isinstance(snapshot.get("promotion_step"), dict)

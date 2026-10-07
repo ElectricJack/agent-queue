@@ -24,14 +24,16 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from src.database.tables import (
+    archived_tasks,
     integration_batch_members,
     integration_batches,
     integration_review_evidence,
     task_context,
+    task_completion_records,
     task_metadata,
     tasks,
 )
-from src.git.github_contracts import GitHubAccessError
+from src.git.github_contracts import GitHubAccessError, rate_limit_cause
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.integration.batches import BatchObservation, BatchService
 from src.integration.ci import (
@@ -48,6 +50,47 @@ log = logging.getLogger(__name__)
 PROMOTION_CONTEXT = "promotion_intent"
 PROMOTION_RESULT = "promotion_result"
 PROMOTION_PUBLISH = "promotion_publish_intent"
+
+
+async def backmerge_ledger(conn, repository_id):
+    """Recorded debts; only Git containment can satisfy these entries."""
+    values = (await conn.execute(select(task_metadata.c.value)
+        .join(tasks, tasks.c.id == task_metadata.c.task_id)
+        .where(tasks.c.repo_id == repository_id, tasks.c.task_type == "backmerge",
+               tasks.c.status.not_in(("FAILED", "CANCELLED")), task_metadata.c.key == "backmerge"))).scalars().all()
+    try:
+        entries = [json.loads(value) for value in values]
+    except (ValueError, TypeError) as exc:
+        raise PromotionIntentInvalid("Malformed daemon backmerge ledger JSON.") from exc
+    # Completion history survives archival, unlike live task metadata.
+    archived = select(archived_tasks.c.id).where(
+        archived_tasks.c.repo_id == repository_id, archived_tasks.c.task_type == "backmerge",
+        archived_tasks.c.status == "COMPLETED")
+    records = (await conn.execute(select(task_completion_records.c.notes).where(
+        task_completion_records.c.task_id.in_(archived),
+        task_completion_records.c.id.startswith("backmerge:"),
+    ))).scalars().all()
+    try:
+        entries.extend(json.loads(value)["backmerge"] for value in records)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise PromotionIntentInvalid("Malformed archived daemon backmerge ledger JSON.") from exc
+    rows = (await conn.execute(select(integration_batches.c.policy_snapshot).where(
+        integration_batches.c.repository_id == repository_id,
+        integration_batches.c.trigger == "promotion",
+        integration_batches.c.intent != "aborted",
+        integration_batches.c.lifecycle != "failed",
+    ))).scalars().all()
+    entries.extend(meta for row in rows
+                   if (meta := row.get(PROMOTION_CONTEXT, {})).get("kind") == "backmerge")
+    unique = {}
+    for entry in entries:
+        if (not isinstance(entry, dict) or not is_valid_git_oid(entry.get("source_sha"))
+                or not all(isinstance(entry.get(key), str) and entry[key].startswith("refs/heads/")
+                           for key in ("target_ref", "origin_ref"))):
+            raise PromotionIntentInvalid("Malformed daemon backmerge ledger metadata.")
+        unique[(entry["source_sha"], entry["target_ref"])] = entry
+    return list(unique.values())
+
 
 DEFAULT_ATTESTATION = "Agent Queue Integration Attestation"
 STEP_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,31}\Z")
@@ -573,7 +616,7 @@ def promotion_workflow_triggers(flow: list[dict] | None, *, default_branch: str)
                 "types": ["opened", "synchronize", "reopened", "ready_for_review"],
             },
             "push": {"branches": ["aq/parent/**", "aq/integration/**",
-                                   "aq/batches/**", "aq/promote/**"]},
+                                   "aq/batches/**", "aq/promote/**", "aq/backmerge/**"]},
         },
         ".github/workflows/main-attestation.yml": {"push": {"branches": branches}},
     }
@@ -972,10 +1015,12 @@ class StepAdmission:
                     or "notes_sha256" not in meta
                     or (meta["notes_sha256"] is not None and re.fullmatch(
                         r"[0-9a-f]{64}", meta["notes_sha256"]) is None)
-                    or (step["notes"]["kind"] != "none" and meta["notes_sha256"] is None)
+                    or (meta.get("kind") != "backmerge" and step["notes"]["kind"] != "none"
+                        and meta["notes_sha256"] is None)
                     or meta["request_id"] != row["request_id"]
                     or not row["request_id"].startswith(
-                        f"promotion:{batch.repository_id}:{step['id']}:"
+                        f"{'backmerge' if meta.get('kind') == 'backmerge' else 'promotion'}:"
+                        f"{batch.repository_id}:{step['id']}:"
                     )
                     or meta["repository_id"] != batch.repository_id
                     or meta["target_ref"] != batch.target_ref
@@ -1014,6 +1059,21 @@ class StepAdmission:
             ).read_completion(identity, refs={"refs/remotes/origin/" + identity.branch: retained.oid})
             if record is None or record["source_oid"] != member.source_sha:
                 raise ValueError("promotion source is not retained under its request generation")
+            if meta.get("kind") == "backmerge":
+                origin = meta["origin_ref"]
+                if not origin.startswith("refs/heads/") or origin == batch.target_ref:
+                    raise ValueError("backmerge origin is invalid")
+                tip = await self.gitops.remote(repo, origin)
+                if not tip:
+                    raise ValueError("backmerge originating branch is absent")
+                present = await self.gitops.git.arun_git_result(
+                    ["cat-file", "-e", tip], cwd=str(repo.store))
+                if present.returncode:
+                    await self.gitops.git.afetch_repository_oid(str(repo.store),
+                        repository=repo.binding, oid=tip,
+                        destination_ref="refs/aq/promotion-sources/" + tip)
+                if not await self.gitops.is_ancestor(repo, member.source_sha, tip):
+                    raise ValueError("backmerge source is no longer on its originating branch")
             return meta
         except (KeyError, TypeError, ValueError) as exc:
             raise PromotionIntentInvalid(str(exc)) from exc
@@ -1039,13 +1099,14 @@ class StepAdmission:
 
 
 def promotion_ref(step: dict, meta: dict) -> str:
-    prefix = f"promotion:{meta['repository_id']}:{step['id']}:"
+    kind = "backmerge" if meta.get("kind") == "backmerge" else "promotion"
+    prefix = f"{kind}:{meta['repository_id']}:{step['id']}:"
     request_id = meta["request_id"]
     if not request_id.startswith(prefix) or not request_id[len(prefix):]:
         raise PromotionIntentInvalid("promotion request identity is invalid")
     suffix = request_id[len(prefix):]
     # Custom tag versions may contain '/', but never arbitrary Git revision syntax.
-    ref = f"refs/heads/aq/promote/{step['id']}/{suffix}"
+    ref = f"refs/heads/aq/{'backmerge' if kind == 'backmerge' else 'promote'}/{step['id']}/{suffix}"
     from src.integration.gitops import branch
 
     branch(ref)
@@ -1427,7 +1488,7 @@ class PromotionVisit(BatchService):
 
     async def _tag(self, repo, meta, member):
         versioning = meta["step"]["versioning"]
-        if versioning["kind"] == "none":
+        if meta.get("kind") == "backmerge" or versioning["kind"] == "none":
             return None
         date = datetime.fromtimestamp(meta.get("requested_at", 0), UTC).strftime("%Y-%m-%d")
         name = versioning["tag_format"].format(
@@ -1568,13 +1629,18 @@ class PromotionVisit(BatchService):
             proof = proof and await self.gitops.is_ancestor(repo, source, target)
             if proof and tag_state in {"valid", "none"}:
                 await self.cleanup(batch, repo, meta, member)
-                return BatchObservation("delivered", source, target, detail={"tag_oid": tag_oid})
+                detail = {"tag_oid": tag_oid}
+                if meta.get("kind") == "backmerge" and not await self._publish_recorded(batch, meta, member):
+                    detail["reason"] = "superseded_by_route"
+                return BatchObservation("delivered", source, target, detail=detail)
             if (await OperatorDecisions(self.store.db).holds("batch", batch.id)
                     or not await self._authorized(batch, members)):
                 return BatchObservation("held", source, target)
             if not proof and not await self.gitops.is_ancestor(repo, target, source):
                 return BatchObservation("held", source, target,
-                                        detail={"reason": "promotion_not_fast_forward"})
+                                        detail={"reason": "backmerge_not_fast_forward"
+                                                if meta.get("kind") == "backmerge"
+                                                else "promotion_not_fast_forward"})
             await self.gitops.exact(repo, source)
             tree = await self.gitops.git.atree_sha(str(repo.store), source)
             if proof:
@@ -1657,6 +1723,16 @@ class PromotionVisit(BatchService):
             return BatchObservation("unknown", detail={"reason": str(exc)})
 
 
+async def promotion_policy_event(conn, *, project_id, step_id, kind, identity, now, **facts):
+    """Durable notification; inactive bundles leave the project without an automatic author."""
+    from src.integration.outbox import enqueue_integration_event
+
+    key = f"promotion-policy:{kind}:{identity}:{step_id}"
+    await enqueue_integration_event(conn, event_id=key, dedup_key=key, project_id=project_id,
+        event_type="promotion." + kind,
+        payload={"project_id": project_id, "step_id": step_id, **facts}, available_at=now)
+
+
 async def settle_promotion(db, batch, observation, *, clock=time.time, conn=None):
     """Called only after the visit's git_truth and optional annotated-tag read-back."""
     if observation.state != "delivered":
@@ -1672,6 +1748,8 @@ async def settle_promotion(db, batch, observation, *, clock=time.time, conn=None
                        .values(status="COMPLETED", updated_at=clock()))
     result = {"tag_oid": (observation.detail or {}).get("tag_oid"),
               "source_sha": observation.candidate_sha, "batch_id": batch.id}
+    if (observation.detail or {}).get("reason"):
+        result["reason"] = observation.detail["reason"]
     for task_id in members:
         await conn.execute(insert(task_metadata).values(
             task_id=task_id, key=PROMOTION_RESULT, value=json.dumps(result, sort_keys=True),
@@ -1681,3 +1759,38 @@ async def settle_promotion(db, batch, observation, *, clock=time.time, conn=None
         ))
         if json.loads(recorded) != result:
             raise PromotionIntentInvalid("promotion settlement differs from its recorded result")
+
+
+class PromotionSourceRefusal(ValueError):
+    """Request-time exact-source CI cannot authorize an intent."""
+
+    def __init__(self, outcome, message):
+        super().__init__(message)
+        self.outcome = outcome
+
+
+async def check_source_green(client, trust, required, source):
+    from src.integration.ci import (
+        AttestationError,
+        AuthenticatedGitHubObserver,
+        CIObservationDeferred,
+        FailedCIObservation,
+    )
+
+    selected = trust.model_copy(update={"required_checks": required})
+    try:
+        observed = await AuthenticatedGitHubObserver(client, expected_event="push").observe(
+            selected, source,
+        )
+    except CIObservationDeferred as exc:
+        reason = "promotion_source_pending" if exc.classification in {"pending", "none"} \
+            else "promotion_source_unavailable"
+        raise PromotionSourceRefusal(reason, str(exc)) from exc
+    except AttestationError as exc:
+        raise PromotionSourceRefusal("promotion_source_untrusted", str(exc)) from exc
+    except GitHubAccessError as exc:
+        if rate_limit_cause(exc) is not None:
+            raise
+        raise PromotionSourceRefusal("promotion_source_unavailable", str(exc)) from exc
+    if isinstance(observed, FailedCIObservation):
+        raise PromotionSourceRefusal("promotion_source_red", "Required source checks are not green.")

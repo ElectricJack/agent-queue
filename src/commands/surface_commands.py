@@ -77,6 +77,10 @@ class SurfaceCommandsMixin:
         info["operator_decisions"] = await OperatorDecisions(self.db).history("task", task_id)
         info["context"] = await self.db.get_task_contexts(task_id)
         info["labels"] = await self.db.get_task_labels(task_id)
+        # Preparation workers need only their own immutable, daemon-built input.
+        notes_input = await self.db.get_task_meta(task_id, "notes_input")
+        if notes_input is not None:
+            info["metadata"] = {"notes_input": notes_input}
         deps = await self._cmd_task_deps({"task_id": task_id})
         info["provenance"] = deps.get("provenance", [])
 
@@ -212,6 +216,11 @@ class SurfaceCommandsMixin:
 
         if any(str(key).startswith("manual_pause") for key in (args.get("meta") or {})):
             return {"error": "manual_pause is reserved; use pause_task/resume_task."}
+
+        if {"notes_input", "promotion_prepare", "promotion_hotfix", "backmerge",
+            "backmerge_result", "promotion_intent", "promotion_result",
+            "promotion_publish_intent"}.intersection(args.get("meta") or {}):
+            return {"error": "Promotion preparation metadata is immutable and daemon-owned."}
 
         if any(str(key).startswith("supervisor_recovery") for key in (args.get("meta") or {})):
             return {"error": "supervisor_recovery metadata is reserved; use task_recover."}

@@ -10689,6 +10689,56 @@
         "type": "object"
       }
     },
+    "integration_backmerge_source": {
+      "name": "integration_backmerge_source",
+      "description": "Author gated back-merge sources and fast-forward intents down the chain.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "minLength": 1,
+            "title": "Step Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "step_id"
+        ],
+        "title": "BackmergeSourceArgs",
+        "type": "object"
+      }
+    },
     "integration_build_candidate": {
       "name": "integration_build_candidate",
       "description": "Build exact root candidate",
@@ -11389,6 +11439,165 @@
           "revision"
         ],
         "title": "IntegrationPromoteMainArgs",
+        "type": "object"
+      }
+    },
+    "integration_promotion_notes_input": {
+      "name": "integration_promotion_notes_input",
+      "description": "Assemble immutable promotion notes from full Git history.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "minLength": 1,
+            "title": "Step Id",
+            "type": "string"
+          },
+          "source_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Sha"
+          }
+        },
+        "required": [
+          "project_id",
+          "step_id"
+        ],
+        "title": "PromotionNotesInputArgs",
+        "type": "object"
+      }
+    },
+    "integration_promotion_policy_input": {
+      "name": "integration_promotion_policy_input",
+      "description": "Read pinned source and outstanding promotion facts for reviewed policy.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "description": "Configured promotion step id.",
+            "minLength": 1,
+            "title": "Step Id",
+            "type": "string"
+          },
+          "source_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Exact commit to pin; defaults to the source branch tip.",
+            "title": "Source Sha"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Version at the pinned source; required for custom tags.",
+            "title": "Version"
+          },
+          "notes_reviewed": {
+            "default": false,
+            "description": "Acknowledge reading the notes at the pinned source.",
+            "title": "Notes Reviewed",
+            "type": "boolean"
+          },
+          "from_task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Completed hotfix task to promote.",
+            "title": "From Task"
+          }
+        },
+        "required": [
+          "project_id",
+          "step_id"
+        ],
+        "title": "PromotionPolicyInputArgs",
         "type": "object"
       }
     },
@@ -14755,6 +14964,98 @@
         "type": "object"
       }
     },
+    "promote_hotfix": {
+      "name": "promote_hotfix",
+      "description": "File a hotfix based on a promotion target, through ordinary task routing.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "minLength": 1,
+            "title": "Step Id",
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "from_task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "From Task"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Version"
+          }
+        },
+        "required": [
+          "project_id",
+          "step_id",
+          "title"
+        ],
+        "title": "PromoteHotfixArgs",
+        "type": "object"
+      }
+    },
     "promote_list": {
       "name": "promote_list",
       "description": "List promotion history using the local evidence cache.",
@@ -14817,6 +15118,98 @@
           "project_id"
         ],
         "title": "PromoteReadArgs",
+        "type": "object"
+      }
+    },
+    "promote_prepare": {
+      "name": "promote_prepare",
+      "description": "File ordinary release preparation on the repository default branch.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "minLength": 1,
+            "title": "Step Id",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Version"
+          },
+          "bump": {
+            "anyOf": [
+              {
+                "enum": [
+                  "minor",
+                  "patch"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Bump"
+          },
+          "from_task": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "From Task"
+          }
+        },
+        "required": [
+          "project_id",
+          "step_id"
+        ],
+        "title": "PromotePrepareArgs",
         "type": "object"
       }
     },
@@ -14894,6 +15287,19 @@
             "description": "Acknowledge reading the notes at the pinned source.",
             "title": "Notes Reviewed",
             "type": "boolean"
+          },
+          "from_task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Completed hotfix task to promote.",
+            "title": "From Task"
           }
         },
         "required": [

@@ -568,7 +568,10 @@
         "tests/test_integration_train_promotion.py",
         "tests/test_parent_ci_publication.py",
         "tests/test_promote_commands.py",
+        "tests/test_promotion_backmerge.py",
         "tests/test_promotion_flow.py",
+        "tests/test_promotion_notes_input.py",
+        "tests/test_promotion_policy.py",
         "tests/test_promotion_rulesets.py",
         "tests/test_promotion_steps.py",
         "tests/test_repair_checkout_refs.py"
@@ -13467,6 +13470,31 @@
       ],
       "summary": "PR intent commands over real PostgreSQL and Git, with isolated GitHub transports."
     },
+    "tests/test_promotion_backmerge.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "digest": "sha256:e134e519be829da8fe527b385826714b1758f84da3f5d82768ca7fbcd64a3923",
+      "imports": [
+        "src.commands.handler",
+        "src.commands.promote_commands",
+        "src.config",
+        "src.database.queries.task_queries",
+        "src.database.tables",
+        "src.integration.batches",
+        "src.integration.hierarchy",
+        "src.integration.promotion_steps",
+        "src.integration.provenance",
+        "src.integration.train",
+        "src.integration.train_sources",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Hotfix and backmerge gates with real PostgreSQL, retained refs and Git DAGs."
+    },
     "tests/test_promotion_flow.py": {
       "areas": [
         "integration-promotion"
@@ -13500,6 +13528,68 @@
         "parametrize"
       ],
       "summary": "Dev-branch releases §3.1/§3.11: pure validation and its command surfaces."
+    },
+    "tests/test_promotion_notes_input.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "digest": "sha256:b9cf2b20638d2d60edce3da24d79ea3ce90789d2f86a8c37a7209b427e977dbc",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.promote",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.integration.promotion_notes",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Preparation and exact-source notes admission over real Git and PostgreSQL."
+    },
+    "tests/test_promotion_policy.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "digest": "sha256:c160041a098e53af6e927cdf57a680332bca10cfa270c93dc30094066c454d7f",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.models",
+        "src.commands.contracts.registry",
+        "src.commands.handler",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.commands.task_changes",
+        "src.config",
+        "src.database.queries.task_queries",
+        "src.database.tables",
+        "src.integration.git_truth",
+        "src.integration.hierarchy",
+        "src.integration.promotion_notes",
+        "src.integration.promotion_steps",
+        "src.integration.provenance",
+        "src.integration.status",
+        "src.integration.train",
+        "src.integration.train_sources",
+        "src.orchestrator.events",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.playbooks.run_state",
+        "src.playbooks.services",
+        "src.profiles.capabilities",
+        "src.task_graph.models",
+        "src.task_graph.validator"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Reviewed promotion policies on real Git/PostgreSQL release and hotfix lanes."
     },
     "tests/test_promotion_rulesets.py": {
       "areas": [
@@ -16069,16 +16159,20 @@
         "command-dispatch"
       ],
       "default_arm": true,
-      "digest": "sha256:bc43858c8852a1013a107ebc660739d7954fa203718d62b685fcc0ab5d23ac4c",
+      "digest": "sha256:0e24e162b24cd6d30beb2c64416557955d94f042db54f55dfbb30c02d9809ef2",
       "imports": [
         "src",
+        "src.api.auth",
+        "src.api.scope",
         "src.commands.handler",
+        "src.commands.principal",
         "src.config",
         "src.database",
         "src.database.tables",
         "src.event_bus",
         "src.handoffs",
-        "src.models"
+        "src.models",
+        "src.profiles.capabilities"
       ],
       "markers": [
         "asyncio",

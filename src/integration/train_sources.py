@@ -22,7 +22,7 @@ from dataclasses import asdict, replace
 from typing import Any
 
 import yaml
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from src.database.tables import (
@@ -452,6 +452,165 @@ def _conflict_action(refusal, snapshot, *, epic: bool, refresh=None):
     return {**refusal, **detail, "default_sha": snapshot.target_oid, "epic": epic, "action": action,
             "detail": f"root {refusal['task_id']} PR conflicts with the default branch at "
                       f"{snapshot.target_oid}: {action}"}
+class BackmergeAdmission:
+    """Daemon-authored immutable sources use the lower branch's ordinary PR gate."""
+
+    def __init__(self, db, gitops, *, clock=time.time):
+        self.db, self.gitops, self.clock = db, gitops, clock
+
+    async def author(self, project_id, repository_id, origin_ref, target_ref, source, client,
+                     *, enabled=True, validate_on=None):
+        from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
+        from src.git.github import GitHubAccess
+        from src.integration.ownership import BranchOwnership
+
+        repo = await self.gitops.repository(Batch("backmerge", project_id, repository_id, target_ref))
+        target = await self.gitops.remote(repo, target_ref)
+        if not target:
+            raise ValueError("backmerge target is missing")
+        if await self.gitops.is_ancestor(repo, source, target):
+            return None
+        base = (await self.gitops.run(repo, "merge-base", source, target)).strip()
+        key = f"backmerge:{repository_id}:{source}:{target_ref}"
+        digest = hashlib.sha256(key.encode()).hexdigest()
+        tid, branch = "backmerge-" + digest[:24], "aq/backmerge/" + digest
+        generation = "backmerge:" + source + ":" + tid
+        meta = {"source_sha": source, "base_sha": base, "origin_ref": origin_ref,
+                "target_ref": target_ref, "kind": "source" if enabled else "ledger"}
+        async with self.db.immediate() as conn:
+            await conn.execute(select(func.pg_advisory_xact_lock(
+                func.hashtext("aq-backmerge:" + repository_id))))
+            if validate_on:
+                await validate_on(conn)
+            existing = (await conn.execute(select(tasks.c.pr_url, task_metadata.c.value)
+                .join(task_metadata, task_metadata.c.task_id == tasks.c.id)
+                .where(tasks.c.id == tid, task_metadata.c.key == "backmerge"))).first()
+            if existing:
+                previous = json.loads(existing.value)
+                if previous["kind"] == "source" or not enabled:
+                    return {"task_id": tid, "pr_url": existing.pr_url, **previous}
+                # Enabling authorship for an existing ledger preserves the pinned base.
+                meta = {**previous, "kind": "source"}
+                base = meta["base_sha"]
+            elif await conn.scalar(select(archived_tasks.c.id).where(archived_tasks.c.id == tid)):
+                record = await conn.scalar(select(task_completion_records.c.notes)
+                    .where(task_completion_records.c.id == generation))
+                return {"task_id": tid, **json.loads(record)["backmerge"]}
+            if not enabled:
+                now = self.clock()
+                await conn.execute(insert(tasks).values(
+                    id=tid, project_id=project_id, repo_id=repository_id,
+                    title=f"Back-merge owed from {origin_ref} to {target_ref}", description="",
+                    task_type="backmerge", status="COMPLETED", created_by_kind="backmerge",
+                    created_by_id=TRAIN_HOLDER, dedup_key=key, created_at=now, updated_at=now,
+                ))
+                await conn.execute(insert(task_metadata).values(
+                    task_id=tid, key="backmerge", value=json.dumps(meta, sort_keys=True),
+                ))
+                await conn.execute(insert(task_completion_records).values(id=generation,
+                    task_id=tid, outcome="pass", notes=json.dumps({"backmerge": meta}),
+                    completed_at=now))
+                return {"task_id": tid, **meta}
+            # Frozen membership remains intact even when its originating branch moves again.
+            old = (await conn.execute(select(tasks.c.id, task_metadata.c.value)
+                .join(task_metadata, task_metadata.c.task_id == tasks.c.id)
+                .where(tasks.c.repo_id == repository_id, tasks.c.task_type == "backmerge",
+                       tasks.c.status == "COMPLETED", task_metadata.c.key == "backmerge")))
+            for old_id, value in old:
+                previous = json.loads(value)
+                frozen = await conn.scalar(select(integration_batch_members.c.batch_id)
+                    .join(integration_batches, integration_batches.c.id == integration_batch_members.c.batch_id)
+                    .where(integration_batch_members.c.task_id == old_id,
+                           integration_batches.c.intent != "aborted",
+                           integration_batches.c.lifecycle != "promoted"))
+                if (not frozen and previous["target_ref"] == target_ref
+                        and previous["origin_ref"] == origin_ref
+                        and old_id != tid
+                        and await self.gitops.is_ancestor(repo, previous["source_sha"], source)):
+                    await conn.execute(update(tasks).where(tasks.c.id == old_id)
+                                       .values(status="FAILED", updated_at=self.clock()))
+                    await conn.execute(insert(task_metadata).values(task_id=old_id,
+                        key="backmerge_result", value=json.dumps({"reason": "superseded", "by": tid}))
+                        .on_conflict_do_nothing(index_elements=["task_id", "key"]))
+            await BranchOwnership(self.db).acquire(
+                BranchKey(repository_id=repository_id, branch="refs/heads/" + branch),
+                tid, "worker", conn=conn,
+            )
+        # Ref creation, completion retention and the PR are recoverable by their
+        # deterministic identities. No provider request holds a DB transaction.
+        remote = await self.gitops.remote(repo, "refs/heads/" + branch)
+        if remote is None:
+            await self.gitops.push(repo, "refs/heads/" + branch, source, "")
+        elif remote != source:
+            raise ValueError("backmerge source ref changed")
+        await GitProvenance(self.gitops.git, str(repo.store),
+            repository_url=f"https://github.com/{repo.binding.full_name}.git").write_completion(
+                CompletedSource(CompletionIdentity(project_id, repository_id, tid, generation), source))
+        url = await client.create_pull_request(title=f"Back-merge {origin_ref}@{source[:12]} into {target_ref}",
+            body=f"Back-merge `{source}` through this branch's train gate.\n\nAQ-Backmerge: {key}\n",
+            head=branch, base=target_ref.removeprefix("refs/heads/"))
+        GitHubAccess.validate_pr_url(repo.binding, url)
+        if await self.gitops.remote(repo, origin_ref) != source:
+            raise ValueError("backmerge originating head changed during authorship")
+        async with self.db.immediate() as conn:
+            await conn.execute(select(func.pg_advisory_xact_lock(
+                func.hashtext("aq-backmerge:" + repository_id))))
+            existing = (await conn.execute(select(tasks.c.pr_url, task_metadata.c.value)
+                .join(task_metadata, task_metadata.c.task_id == tasks.c.id)
+                .where(tasks.c.id == tid, task_metadata.c.key == "backmerge"))).first()
+            if existing and json.loads(existing.value).get("kind") == "source":
+                return {"task_id": tid, "pr_url": existing.pr_url, **json.loads(existing.value)}
+            if validate_on:
+                await validate_on(conn)
+            now = self.clock()
+            await conn.execute(insert(tasks).values(id=tid, project_id=project_id, repo_id=repository_id,
+                title=f"Back-merge {origin_ref}@{source[:12]} into {target_ref}", description="Daemon-authored source.",
+                task_type="backmerge", status="COMPLETED", branch_name=branch, pr_url=url,
+                created_by_kind="backmerge", created_by_id="service:integration-train", dedup_key=key,
+                created_at=now, updated_at=now).on_conflict_do_update(index_elements=["id"],
+                    set_={"branch_name": branch, "pr_url": url, "updated_at": now}))
+            await conn.execute(insert(task_branch_origins).values(id="origin-" + digest, task_id=tid,
+                repository_id=repository_id, branch_name=branch, base_sha=base, creation_generation=0,
+                reserved=True, materialized=True, created_at=now, materialized_at=now))
+            await conn.execute(insert(task_completion_records).values(id=generation,
+                task_id=tid, outcome="pass", branch=branch, commits=json.dumps([source]),
+                pr_url=url, notes=json.dumps({"backmerge": meta}), completed_at=now)
+                .on_conflict_do_update(index_elements=["id"], set_={"branch": branch,
+                    "commits": json.dumps([source]), "pr_url": url,
+                    "notes": json.dumps({"backmerge": meta})}))
+            completion_id = generation
+            await conn.execute(insert(task_metadata).values(task_id=tid,
+                key=DEVELOPMENT_COMPLETION_ID_KEY, value=json.dumps(completion_id)))
+            await conn.execute(insert(task_metadata).values(task_id=tid, key="backmerge",
+                value=json.dumps(meta, sort_keys=True)).on_conflict_do_update(
+                    index_elements=["task_id", "key"], set_={"value": json.dumps(meta, sort_keys=True)}))
+        return {"task_id": tid, "pr_url": url, **meta}
+
+    async def eligible(self, batch, member, snapshot):
+        """Recheck daemon identity and originating Git head, including at publication."""
+        async with self.db._engine.connect() as conn:
+            row = (await conn.execute(select(tasks, task_metadata.c.value.label("backmerge"))
+                .join(task_metadata, task_metadata.c.task_id == tasks.c.id)
+                .where(tasks.c.id == member.task_id, task_metadata.c.key == "backmerge"))).mappings().first()
+        if (not row or row["project_id"] != batch.project_id or row["repo_id"] != batch.repository_id
+                or row["task_type"] != "backmerge" or row["profile_id"] is not None
+                or row["created_by_kind"] != "backmerge" or row["created_by_id"] != TRAIN_HOLDER
+                or row["status"] != "COMPLETED"
+                or snapshot is None or snapshot.error):
+            return False
+        meta = json.loads(row["backmerge"])
+        if (meta["kind"] != "source" or meta["target_ref"] != batch.target_ref
+                or meta["source_sha"] != member.source_sha
+                or meta["base_sha"] != member.base_sha):
+            return False
+        origin = snapshot.for_target(meta["origin_ref"]).target_oid
+        if not origin:
+            return False
+        observed = snapshot.observation
+        result = await observed.git.arun_git_result(
+            ["merge-base", "--is-ancestor", member.source_sha, origin], cwd=observed.store,
+        )
+        return result.returncode == 0
 
 
 class DatabaseBatches:
@@ -686,7 +845,9 @@ class DatabaseBatches:
                 query = query.where(integration_batches.c.trigger == "promotion")
             rows = (await conn.execute(
                 query
-                .order_by(integration_batches.c.created_at, integration_batches.c.id)
+                .order_by(case((integration_batches.c.policy_snapshot["promotion_intent"]
+                                ["kind"].as_string() == "backmerge", 1), else_=0),
+                          integration_batches.c.created_at, integration_batches.c.id)
             )).mappings().all()
             for row in rows:
                 # A refreshed stack needs a new exact candidate; it must not be
@@ -1265,6 +1426,16 @@ class DatabaseBatches:
         for member in members:
             if not await stacks.current(member.task_id, source_sha=member.source_sha):
                 return False
+        source_types = {}
+        async with self.db._engine.connect() as conn:
+            source_types = dict((await conn.execute(select(tasks.c.id, tasks.c.task_type)
+                                                  .where(tasks.c.id.in_(ids)))).all())
+        for member in members:
+            if source_types.get(member.task_id) == "backmerge":
+                observed = self._refresh_snapshots.get(
+                    (batch.project_id, batch.repository_id, batch.target_ref))
+                if not await BackmergeAdmission(self.db, None).eligible(batch, member, observed):
+                    return False
         for task_id in ids:
             request, target = requests.get(task_id), routed.get(task_id)
             if ((not batch.epic_sync and task_id not in live)
@@ -1400,6 +1571,22 @@ class DatabaseBatches:
                         tested_candidate_sha=observation.candidate_sha,
                         updated_at=self.clock())
             )
+            from src.integration.promotion_steps import promotion_policy_event
+
+            flow = await conn.scalar(select(projects.c.promotion_flow).where(
+                projects.c.id == batch.project_id))
+            for step in flow or []:
+                if "refs/heads/" + step["source"] == batch.target_ref:
+                    await promotion_policy_event(conn, project_id=batch.project_id, step_id=step["id"],
+                        kind="source_settled", identity=batch.id, now=self.clock(),
+                        source_sha=observation.target_sha)
+            if trigger == "promotion":
+                row = await conn.scalar(select(integration_batches.c.policy_snapshot).where(
+                    integration_batches.c.id == batch.id))
+                step = row["promotion_step"]
+                await promotion_policy_event(conn, project_id=batch.project_id, step_id=step["id"],
+                    kind="delivered", identity=batch.id, now=self.clock(), batch_id=batch.id,
+                    source_sha=observation.target_sha)
         if self.cleanup is not None:
             # External identity resolution is outside the settlement transaction;
             # maintenance recovers a failure between commit and materialization.
