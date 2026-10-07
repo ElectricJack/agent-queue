@@ -14,6 +14,11 @@ After the live canary, use the
 [backlog settlement checklist](git-first-backlog-settlement.md) to capture each
 recorded stall's Git, check, tree-review and task-transition evidence.
 
+The restored process is specified by the operator-vault document
+`projects/agent-queue/specs/2026-10-06-git-first-train-fidelity.md`, §2.2.
+For the branch-chain release path, see [promotion flows](promotion-flow.md)
+and [releases](releases.md); their pending sections describe work awaiting delivery.
+
 ## What `active` changes
 
 - **One loop.** The integration service constructs no subject runtime and no second
@@ -138,6 +143,45 @@ recorded stall's Git, check, tree-review and task-transition evidence.
   Pending `integration_outbox` rows are left undelivered and are never handed to the
   old writers while `active` is set.
 
+## Restored PR gate, cadence and cleanup
+
+When an epic's required children are contained in its branch and that exact head
+is green, the train opens its PR; maintenance retries a failed open. Leaf roots
+get their PR at worker close. Before freezing a root member, the train checks
+that its PR is open on the exact source head and that the boundary's required
+checks pass. `admission: authorized` requires no human review;
+`admission: reviewed` additionally requires an approval on that head and no
+outstanding changes requested. A GitHub outage is unknown evidence with retry,
+not a failed check. PR checks are admission evidence; the train separately tests
+its exact candidate before publishing. Sources:
+[src/integration/train_sources.py](../../src/integration/train_sources.py),
+[root_pull_requests.py](../../src/integration/root_pull_requests.py) and
+[reviews.py](../../src/integration/reviews.py).
+
+Root batching uses the policy's optional `train` block:
+
+```yaml
+train:
+  cadence_seconds: 300
+  settling_cap_seconds: 1800
+```
+
+These are shipped defaults. The next automatic seal is the earlier of
+`latest_admission + cadence_seconds` and `first_admission + settling_cap_seconds`.
+A new eligible input extends the quiet period, but never the cap. Epic targets
+freeze immediately. `seal-now` bypasses only cadence, once; it preserves PR,
+check and publication requirements. Sources:
+[src/integration/models.py](../../src/integration/models.py) and
+[train_sources.py](../../src/integration/train_sources.py) (`DatabaseBatches.open_batch`).
+
+After Git proves promotion, cleanup is tracked separately. It retires private
+candidate refs and eligible member branches, comments delivery evidence on the
+PR, and protects live targets. A member head that lacks safe delivery proof is
+preserved or bundled rather than deleted. Aborted batches clean their candidate
+refs without treating members as delivered. Cleanup does not gate publication.
+Sources: [cleanup.py](../../src/integration/cleanup.py) and
+[delivery_branches.py](../../src/integration/delivery_branches.py).
+
 ## Preconditions
 
 1. **Schema at head.** Revisions `a00000000073_integration_ref_leases`,
@@ -220,6 +264,38 @@ consume slot-reset retries or create the ref from the worker slot.
 
 ## Controls
 
+### Supervisor controls
+
+The local operator or an authorized live project supervisor uses these controls;
+a worker token is out of scope. Every command below defaults to preview.
+Apply uses the same command with `--apply`. Inspect the returned batch identity,
+members, blockers and target before applying, then re-read
+`aq integration status <project>` for the resulting intent and new batch ID.
+These are command forms, not control actions executed for this documentation.
+
+| Command form | Preview/apply behavior |
+|---|---|
+| `aq integration pause-batch BATCH --reason "investigate gate"` | Preview a move to `paused`; `--apply` pauses publication. It does not undo a delivered candidate or stop a repair worker. |
+| `aq integration resume-batch BATCH --reason "investigation resolved"` | Preview a move back to `open`; `--apply` lets visits resume with existing frozen members and checks. |
+| `aq integration eject --batch BATCH --task TASK --reason "isolate failure"` | Preview aborting the old batch and freezing its remainder under a new ID; `--apply` requires a nonblank reason. The ejected member returns to pending with its PR and approval intact. |
+| `aq integration seal-now --project PROJECT` | Preview eligible inputs; `--apply` freezes them immediately, returns an existing batch, or reports `no_ready_work`. It cannot admit a member that fails its gate. |
+
+Eject refuses a promoted batch, changed source/candidate evidence, or removal
+of an undelivered prerequisite needed by the remainder. It never edits frozen
+membership in place. Keep the returned `replacement_batch_id`; the old ID
+remains aborted audit history. Pause/resume preserve intent evidence and the
+configured publisher's fence. Sources:
+[src/cli/integration.py](../../src/cli/integration.py) and
+[src/integration/train_controls.py](../../src/integration/train_controls.py).
+
+Check the local syntax without sending a control request:
+
+```bash
+aq integration pause-batch --help
+```
+
+### Abort and retire delivered origins
+
 Batch intent (`open`, `paused`, `aborted`) is the only control the train reads. An
 aborted batch is never rebuilt, and its exact (task, source) inputs are withheld
 from that target until the task's source changes. A local operator or live named
@@ -256,9 +332,13 @@ Retirement rechecks the completion, origin and delivery proof, removes the origi
 from pending train inputs, and records the principal and reason. Do not edit
 `integration_batches` or branch origins by hand.
 
-## Roll back
+## Recovery after fidelity cutover
 
-Set `git_first: shadow` and run `aq restart --no-dashboard`. The subject runtimes
-return and outbox dispatch resumes, so pending legacy events then reach their
-writers as before activation. Rolling back never undoes a fast-forward the train
-already published: that work is contained in its target under either protocol.
+The fidelity rollout is roll-forward only. Pause or abort an affected unpromoted
+batch, preserve its evidence and file the fix through the configured owner.
+Never force-move a target or edit a batch record to simulate rollback.
+
+`git_first: shadow` remains an optional compatibility selector in code; it
+reactivates legacy writers and pending outbox delivery. It is not the restored
+train's recovery procedure. A protocol switch also cannot undo a fast-forward
+already proved by Git. See the [policy entry](../specs/design/promotion-flow.md).
