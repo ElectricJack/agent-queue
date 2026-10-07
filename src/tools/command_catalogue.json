@@ -11649,6 +11649,66 @@
         "type": "object"
       }
     },
+    "integration_record_delivered": {
+      "name": "integration_record_delivered",
+      "description": "Local operator verifies exact source on the designated default and records shipped work.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "source_sha": {
+            "title": "Source Sha",
+            "type": "string"
+          },
+          "base_sha": {
+            "title": "Base Sha",
+            "type": "string"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "tests": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tests",
+            "type": "array"
+          },
+          "commands": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Commands",
+            "type": "array"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "task_id",
+          "project_id",
+          "source_sha",
+          "base_sha",
+          "reason"
+        ],
+        "title": "IntegrationRecordDeliveredArgs",
+        "type": "object"
+      }
+    },
     "integration_record_noop": {
       "name": "integration_record_noop",
       "description": "Bind a child's current no-op completion and exact Git head to its parent receipt.",

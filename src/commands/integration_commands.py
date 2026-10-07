@@ -112,6 +112,20 @@ class IntegrationCommandsMixin:
             return _failure("refused", str(exc))
         return {"success": result["outcome"] in {"planned", "preview", "configured"}, **result}
 
+    async def _cmd_integration_record_delivered(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationRecordDeliveredArgs
+        from src.integration.delivered_close import DeliveredClose
+
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.LOCAL:
+            return _failure("refused", "record-delivered requires the local operator")
+        request = IntegrationRecordDeliveredArgs.model_validate(args)
+        try:
+            result = await DeliveredClose(self.db).record(request)
+        except (ValueError, GitError, HierarchyError, BranchBusy, TimeoutError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def _cmd_integration_record_root_noop(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationRecordRootNoopArgs
         from src.integration.train_controls import TrainControls

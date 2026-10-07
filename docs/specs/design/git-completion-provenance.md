@@ -95,6 +95,25 @@ with a branch or an active recorded origin, including children and projects
 outside train modes, and names normal close or this explicit no-op control.
 Clearing a branch name does not remove its origin or supply completion evidence.
 
+For work delivered by an external operator, `integration_record_delivered` is
+local-operator-only and defaults to preview. Apply requires an explicit project,
+task, full source and base OIDs, and a nonblank reason. The source must differ
+from and descend from the base, and be contained in the fetched designated
+repository's actual default branch. An existing materialized origin must match
+that repository, canonical branch and base; a legacy task without an origin gets
+an explicit materialized origin from these verified inputs. Required deliverables,
+open children or checklist subtasks, live sessions, claims, workspaces, active
+batches and manual holds must first be resolved through their supported controls.
+A detached reservation belonging to this task may be released atomically, with a
+fresh fence and audit event, after proving no writer or external mutation relies
+on it. Another task's reservation or an attached writer is refused. Apply publishes
+immutable `artifact:true` provenance, rechecks the remote default tip, and records
+a passing shipped completion with the supplied checks and source commit in the
+same transaction as COMPLETED. Existing different completion generations remain
+intact; repeating this exact operator completion is idempotent. A failed proof or
+publication leaves task state and ownership unchanged. This command records
+observed delivery without starting an integration runtime.
+
 Unknown delivery evidence withholds that source and work depending on it. Its
 task-scoped blocker remains visible while unrelated eligible sources can seal,
 check and publish, including an already sealed batch on the same root target.

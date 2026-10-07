@@ -371,6 +371,7 @@ areas:
       - tests/test_integration_batch_settlement.py
       - tests/test_integration_batches.py
       - tests/test_integration_root_noop.py
+      - tests/test_integration_record_delivered.py
       - tests/test_integration_operator_decisions.py
       - tests/test_integration_cli_controls_present.py
       - tests/test_integration_train.py

@@ -37,6 +37,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_delivery_readiness",
         "integration_record_noop",
         "integration_record_root_noop",
+        "integration_record_delivered",
         "integration_parent_verify",
         "integration_complete_parent",
         "delivery_promote",
@@ -988,6 +989,36 @@ class IntegrationRecordNoopValue(CommandValue):
     revision: int | None = None
     reviewed_head_sha: str | None = None
     reviewed_tree_sha: str | None = None
+
+
+class IntegrationRecordDeliveredArgs(CommandArgs):
+    task_id: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
+    source_sha: str
+    base_sha: str
+    reason: str = Field(min_length=1)
+    tests: list[str] = Field(default_factory=list)
+    commands: list[str] = Field(default_factory=list)
+    dry_run: bool = True
+
+    @model_validator(mode="after")
+    def exact_source(self) -> IntegrationRecordDeliveredArgs:
+        if not is_valid_git_oid(self.source_sha) or not is_valid_git_oid(self.base_sha):
+            raise ValueError("source_sha and base_sha require exact Git OIDs")
+        if not self.reason.strip():
+            raise ValueError("reason must be nonblank")
+        return self
+
+
+class IntegrationRecordDeliveredValue(CommandValue):
+    task_id: str | None = None
+    project_id: str | None = None
+    completion_id: str | None = None
+    source_sha: str | None = None
+    base_sha: str | None = None
+    target_sha: str | None = None
+    target_ref: str | None = None
+    dry_run: bool = True
 
 
 class IntegrationRecordRootNoopArgs(CommandArgs):
@@ -3046,6 +3077,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         registry.register(CommandRegistration(
             name, contract, cutover_control, None if read_only else cutover_preview))
     for name, args_model, applied, value_model in (
+        ("integration_record_delivered", IntegrationRecordDeliveredArgs, "recorded",
+         IntegrationRecordDeliveredValue),
         ("integration_record_root_noop", IntegrationRecordRootNoopArgs, "recorded",
          IntegrationRecordRootNoopValue),
         ("integration_abort_batch", IntegrationAbortBatchArgs, "aborted", IntegrationTrainControlValue),
@@ -3070,7 +3103,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             side_effect=SideEffectClass.COMPOSITE, result_model=value_model,
             supports_preview=True,
         )
-        if name == "integration_record_root_noop":
+        if name in {"integration_record_root_noop", "integration_record_delivered"}:
             applying = ClausePredicate(arg_equals=("dry_run", False))
             contract = contract.model_copy(update={
                 "execution": contract.execution.model_copy(update={"effects": (
@@ -3085,6 +3118,12 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
                     summary="Preview or complete an unheld root with exact no-artifact Git provenance.",
                 ),
             })
+
+        if name == "integration_record_delivered":
+            contract = contract.model_copy(update={"presentation": CommandPresentation(
+                title="Record exact externally delivered completion",
+                summary="Local operator verifies exact source on the designated default and records shipped work.",
+            )})
 
         async def train_control(args, ctx, command=name, outcomes=outcomes, value_model=value_model):
             return await _hierarchy_adapter(
