@@ -602,8 +602,10 @@ class Worker:
         )
 
 
-def claim_fixture(worker: Worker, task_id: str, *, what: str) -> dict:
+def claim_fixture(worker: Worker, task_ids: str | list[str], *, what: str) -> dict:
     """Bound transient empty claims without hiding a wrong task or session failure."""
+    fixtures = [task_ids] if isinstance(task_ids, str) else task_ids
+    check(fixtures, f"{what}: no fixture tasks available")
     last_claim = None
 
     def claim():
@@ -615,13 +617,16 @@ def claim_fixture(worker: Worker, task_id: str, *, what: str) -> dict:
         if last_claim.get("result") == "no_ready_work":
             return None
         check(last_claim.get("result") == "claimed", f"{what}: {last_claim}")
-        check(worker.task_id == task_id, f"{what}: expected fixture {task_id}, held {worker.task_id}")
+        check(worker.task_id in fixtures,
+              f"{what}: expected fixture {task_ids}, held {worker.task_id}")
         return last_claim
 
     def diagnostic():
-        task = task_show(task_id)
         keys = ("id", "status", "profile_id", "route_source", "is_blocked", "claimed_by")
-        fixture_state = {key: task.get(key) for key in keys}
+        fixture_state = [
+            {key: task.get(key) for key in keys}
+            for task in (task_show(task_id) for task_id in fixtures)
+        ]
         return f"last_claim={last_claim}; fixture={fixture_state}"
 
     return wait_for(
@@ -823,8 +828,11 @@ def s2_claim_loop(state: dict) -> str:
     worker = idle_worker()
     state["s2_session"] = worker.session_id
 
-    first = worker.claim_next()
-    check(first["result"] == "claimed", f"first claim: {first}")
+    # S1 may have run in a previous pytest item's subprocess, so read its
+    # remaining fixtures through the public surface rather than local state.
+    fixtures = [task["id"] for task in _open_pool_tasks()
+                if task["title"].startswith("S1 worker task ")]
+    first = claim_fixture(worker, fixtures, what="S2 worker to claim an S1 fixture")
     check(isinstance(first["claim_epoch"], int), f"no integer claim_epoch: {first}")
     first_task = worker.task_id
 
@@ -892,8 +900,9 @@ def s2_claim_loop(state: dict) -> str:
 def s3_worker_filed_work(state: dict) -> str:
     """Work a worker discovers is DEFINED, provenance-linked and gated."""
     worker = idle_worker()
-    claimed = worker.claim_next()
-    check(claimed["result"] == "claimed", f"S3 needs a held task: {claimed}")
+    fixtures = [task["id"] for task in _open_pool_tasks()
+                if task["title"].startswith("S1 worker task ")]
+    claim_fixture(worker, fixtures, what="S3 worker to claim a remaining S1 fixture")
     held = worker.task_id
     state["s3_worker"] = worker
 
