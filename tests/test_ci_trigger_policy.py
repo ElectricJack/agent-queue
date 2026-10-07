@@ -108,10 +108,11 @@ def test_push_ci_only_covers_integration_boundaries(branch, expected):
     assert _pushed(workflow()['on'], branch) is expected
 
 
-def test_only_the_attestation_audit_runs_on_a_push_to_main():
+@pytest.mark.parametrize('branch', ['dev', 'staging', 'main'])
+def test_only_the_attestation_audit_runs_on_a_push_to_delivery_branch(branch):
     files = sorted(WORKFLOWS.glob('*.yml')) + sorted(WORKFLOWS.glob('*.yaml'))
     assert files
-    pushed = {path.name for path in files if _pushed(workflow(path.name)['on'], 'main')}
+    pushed = {path.name for path in files if _pushed(workflow(path.name)['on'], branch)}
     assert pushed == {'main-attestation.yml'}
 
 
@@ -186,9 +187,9 @@ def test_the_warmed_venv_is_the_entry_each_tests_job_restores(job):
     assert _pip_installs(warm_install['run']) == installs
 
 
-def test_pull_requests_into_main_run_ci():
+def test_pull_requests_into_delivery_branches_run_ci():
     pull_request = workflow()['on']['pull_request']
-    assert pull_request['branches'] == ['main']
+    assert pull_request['branches'] == ['dev', 'staging', 'main']
     assert pull_request['types'] == ['opened', 'synchronize', 'reopened', 'ready_for_review']
 
 
@@ -224,7 +225,7 @@ def _checkout_action():
 def test_main_attestation_is_the_specified_audit_workflow():
     audit = workflow('main-attestation.yml')
     assert audit['name'] == 'Main attestation'
-    assert audit['on'] == {'push': {'branches': ['main']}}
+    assert audit['on'] == {'push': {'branches': ['dev', 'staging', 'main']}}
     assert audit['permissions'] == {'contents': 'read', 'checks': 'read'}
     # Its own group would share tests.yml's `tests-refs/heads/main` and deadlock the call.
     assert 'concurrency' not in audit
@@ -256,6 +257,9 @@ def test_main_attestation_is_the_specified_audit_workflow():
             'SHA': '${{ github.sha }}',
             'APP_ID': '${{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}',
             'CHECK_VERSION': '${{ vars.AQ_INTEGRATION_REQUIRED_CHECK_VERSION }}',
+            'ATTESTATION_NAME': "${{ github.ref_name == 'staging' && 'Agent Queue Promotion Attestation (staging)' || github.ref_name == 'main' && 'Agent Queue Promotion Attestation (release)' || 'Agent Queue Integration Attestation' }}",
+            'STEP': "${{ github.ref_name == 'staging' && 'staging' || github.ref_name == 'main' && 'release' || '' }}",
+            'TARGET_REF': '${{ github.ref }}',
         },
         'run': 'python3 src/integration/hosted_attestation.py',
     }

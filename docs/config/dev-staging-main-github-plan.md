@@ -48,12 +48,17 @@ reviewed policy and manifest require **`ci-4f7c710bba01`**.
 4. Create the dev and staging attestation rulesets. Replace ruleset `24002443`
    with the release attestation rule in the JSON plan: leaving its old required
    check would require two incompatible delivery proofs on `main`.
-5. Set GitHub's default branch to `dev`. Bind AQ's repository default branch and
+5. Protect `refs/tags/v*` with two separate rulesets: creation is blocked except
+   for the sole App `5075923` bypass; updates, deletion and non-fast-forward
+   changes are blocked without bypass actors. This allows the App to create a
+   release tag while keeping existing tags immutable.
+6. Set GitHub's default branch to `dev`. Bind AQ's repository default branch and
    project integration target to `dev`, and install the project-scoped promotion
    flow and enabled `promotion-continuous` / `promotion-request` activations.
-6. Read back the branch heads, default branch, variables and each ruleset. Confirm
+7. Read back the branch heads, default branch, variables and each ruleset. Confirm
    the required checks are pinned to App `5075923`, bypass actors are empty, and
-   basic protection covers all three branches. AQ must observe the same branch,
+   basic protection covers all three branches, and both tag rules match the
+   proposed payloads. AQ must observe the same branch,
    step names and check-version values before it resumes delivery.
 
 The API payloads contain no pull-request requirement or strict base-up-to-date
