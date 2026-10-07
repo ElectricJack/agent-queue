@@ -32,7 +32,11 @@ class FakeTmux:
             return ""
         if cmd == "show-environment" and "-g" in args:
             return "".join(f"{k}={v}\n" for k, v in self.globals.items())
-        target = args[args.index("-t") + 1].lstrip("=")
+        raw = args[args.index("-t") + 1]
+        if cmd in ("set-option", "show-options") and raw.startswith("=") and not raw.endswith(":"):
+            # tmux 3.4 reads a bare "=name" as a pane target for options.
+            raise SessionError(f"no such session: {raw}")
+        target = raw.lstrip("=").removesuffix(":")
         target = target.removeprefix("$")
         session = self.sessions.get(target)
         if session is None:
