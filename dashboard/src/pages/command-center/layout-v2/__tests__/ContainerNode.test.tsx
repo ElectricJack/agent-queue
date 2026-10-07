@@ -12,9 +12,8 @@ const node = { id: "e", title: "Epic", status: "IN_PROGRESS", priority: 100, is_
 describe("ContainerNode", () => {
   it("shows aggregates and wires enter and open", async () => {
     const onFocus = vi.fn(), onOpenTask = vi.fn();
-    render(<ContainerNode id="e" data={{ node, projectId: "p1", onFocus, onOpenTask }} selected={false} /> as never);
-    expect(screen.getByText("2/5 done")).toBeInTheDocument();
-    expect(screen.getByText("1 running")).toBeInTheDocument();
+    const { container } = render(<ContainerNode id="e" data={{ node, projectId: "p1", onFocus, onOpenTask }} selected={false} /> as never);
+    expect(container.querySelector("[data-count-line]")).toHaveTextContent("2 of 5 done · 1 running");
     await userEvent.click(screen.getByRole("button", { name: "Enter Epic" }));
     await userEvent.click(screen.getByRole("button", { name: "Open task Epic" }));
     expect(onFocus).toHaveBeenCalledWith("e");
@@ -29,6 +28,26 @@ describe("ContainerNode", () => {
   it("offers no enter control for the container already entered", () => {
     render(<ContainerNode id="e" data={{ node, projectId: "p1" }} /> as never);
     expect(screen.queryByRole("button", { name: /^Enter/ })).not.toBeInTheDocument();
+  });
+
+  it("offers the way back up from the entered container", async () => {
+    const onUp = vi.fn();
+    render(<ContainerNode id="e" data={{ node, projectId: "p1", upTarget: { id: "root", title: "Root epic" }, onUp }} /> as never);
+    await userEvent.click(screen.getByRole("button", { name: "Up to Root epic" }));
+    expect(onUp).toHaveBeenCalledWith("root");
+  });
+
+  it("goes up to the project root when the entered container has no parent", async () => {
+    const onUp = vi.fn();
+    render(<ContainerNode id="e" data={{ node, projectId: "p1", upTarget: { id: null, title: "agent-queue" }, onUp }} /> as never);
+    await userEvent.click(screen.getByRole("button", { name: "Up to agent-queue" }));
+    expect(onUp).toHaveBeenCalledWith(null);
+  });
+
+  it("offers Enter rather than Up on a container that can still be entered", () => {
+    render(<ContainerNode id="e" data={{ node, projectId: "p1", onFocus: vi.fn(), upTarget: { id: null, title: "agent-queue" }, onUp: vi.fn() }} /> as never);
+    expect(screen.getByRole("button", { name: "Enter Epic" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Up to/ })).not.toBeInTheDocument();
   });
 
   it("passes the container's own run id so a run task keeps its routing", async () => {
@@ -70,7 +89,7 @@ describe("ContainerNode", () => {
     expect(screen.queryByLabelText("Phase gated")).not.toBeInTheDocument();
   });
 
-  it("renders a failed-phase hold with status-bearing links to the affected children", async () => {
+  it("condenses a failed-phase hold to N failed, opening the first failed child", async () => {
     const onOpenTask = vi.fn();
     render(
       <ContainerNode
@@ -96,11 +115,32 @@ describe("ContainerNode", () => {
         }}
       /> as never,
     );
-    expect(screen.getByText("Waiting for failed work")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Open failed work e.1 (FAILED)" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Open failed work e.2 (BLOCKED)" })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Open failed work e.2 (BLOCKED)" }));
-    expect(onOpenTask).toHaveBeenCalledWith("e.2", { id: "e.2" });
+    const failed = screen.getByRole("button", { name: "2 failed: open failed work e.1 (FAILED)" });
+    expect(failed).toHaveTextContent("2 failed");
+    // The tooltip names every failed child until the frame's hover card does.
+    expect(failed).toHaveAttribute("title", "Waiting for failed work: e.1 · FAILED, e.2 · BLOCKED; 3 incomplete descendants");
+    await userEvent.click(failed);
+    expect(onOpenTask).toHaveBeenCalledWith("e.1", { id: "e.1" });
+  });
+
+  it("counts failed children past the ones the hold lists", () => {
+    render(
+      <ContainerNode
+        id="e"
+        data={{
+          node: {
+            ...node,
+            phase_order: 1,
+            phase_hold: {
+              phase_id: "e", failed_children_total: 4, descendant_blocker_count: 1, remedies: [],
+              failed_children: [{ id: "e.1", status: "FAILED" }],
+            },
+          },
+          projectId: "p1",
+        }}
+      /> as never,
+    );
+    expect(screen.getByRole("button", { name: /^4 failed/ })).toHaveAttribute("title", "Waiting for failed work: e.1 · FAILED and 3 more; 1 incomplete descendant");
   });
 
   /**
@@ -179,9 +219,9 @@ describe("ContainerNode", () => {
 describe("ContainerNode epic delivery", () => {
   it("shows implementation apart from a blocked delivery and never reads an integration hold as paused", () => {
     const epic = { ...node, status: "PAUSED", agg_completed: 9, agg_descendants: 9, agg_running: 0, delivery: EPIC.strandedReservation };
-    render(<ContainerNode id="e" data={{ node: epic, projectId: "p1" }} /> as never);
-    expect(screen.getByText("9/9 tasks complete")).toBeInTheDocument();
-    expect(screen.getByText("Verification blocked - branch handoff required")).toBeInTheDocument();
+    const { container } = render(<ContainerNode id="e" data={{ node: epic, projectId: "p1" }} /> as never);
+    expect(container.querySelector("[data-count-line]")).toHaveTextContent("9 of 9 done");
+    expect(screen.getByText(EPIC.strandedReservation.label)).toBeInTheDocument();
     expect(screen.queryByText(/paused/i)).not.toBeInTheDocument();
     expect(screen.getByRole("progressbar", { name: "9 of 9 done" })).toBeInTheDocument();
   });
@@ -193,8 +233,8 @@ describe("ContainerNode epic delivery", () => {
   });
 
   it("marks delivery complete only from the delivered projection", () => {
-    render(<ContainerNode id="e" data={{ node: { ...node, status: "COMPLETED", agg_completed: 5, delivery: EPIC.queuedVerifier }, projectId: "p1" }} /> as never);
-    expect(screen.getByText("5/5 tasks complete")).toBeInTheDocument();
+    const { container } = render(<ContainerNode id="e" data={{ node: { ...node, status: "COMPLETED", agg_completed: 5, delivery: EPIC.queuedVerifier }, projectId: "p1" }} /> as never);
+    expect(container.querySelector("[data-count-line]")).toHaveTextContent("5 of 5 done");
     expect(screen.queryByText("Delivered")).not.toBeInTheDocument();
     cleanup();
     render(<ContainerNode id="e" data={{ node: { ...node, status: "COMPLETED", agg_completed: 5, delivery: EPIC.delivered }, projectId: "p1" }} /> as never);

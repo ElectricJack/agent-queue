@@ -58,7 +58,7 @@ describe("MobileLayoutList", () => {
   it("shows the same progress bars and phase header as the canvas cards", async () => {
     list.mockResolvedValueOnce({
       nodes: [
-        { ...n("a"), agg_descendants: 4, agg_completed: 2, agg_running: 1, agg_blocked: 0 },
+        { ...n("a"), agg_children: 2, agg_descendants: 4, agg_completed: 2, agg_running: 1, agg_blocked: 0 },
         { ...n("b"), subtasks_total: 3, subtasks_settled: 1 },
         { ...n("c"), phase_order: 2, phase_label: "Build" },
       ],
@@ -66,10 +66,9 @@ describe("MobileLayoutList", () => {
     });
     render(<MemoryRouter><MobileLayoutList {...props} /></MemoryRouter>);
 
-    expect(await screen.findByText("2/4 descendants completed")).toBeInTheDocument();
-    expect(screen.getByRole("progressbar", { name: "2 of 4 done" })).toBeInTheDocument();
-    expect(screen.getByText("1/3 subtasks")).toBeInTheDocument();
-    expect(screen.getByRole("progressbar", { name: "1 of 3 done" })).toBeInTheDocument();
+    expect(await screen.findByRole("progressbar", { name: "2 of 4 tasks done" })).toBeInTheDocument();
+    expect(screen.getByTitle("2 of 4 done · 1 running")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "1 of 3 subtasks settled" })).toBeInTheDocument();
     expect(screen.getByText("Phase 2 · Build")).toBeInTheDocument();
   });
 

@@ -10,8 +10,9 @@ import AgentAvatarLayer from "../AgentAvatarLayer";
 import ContainerNode from "./ContainerNode";
 import Breadcrumbs from "./Breadcrumbs";
 import GraphScopeNotice, { type EmptyReason } from "./GraphScopeNotice";
-import { edgeStyleForType } from "./edgeStyle";
+import { EdgeLegend } from "./EdgeLegend";
 import { useGraphState } from "../useGraphHierarchy";
+import { pillForCard } from "../statusPillModel";
 import {
   fetchRunningTarget, useHiddenFinishedCount, useLayoutExtents, useLayoutNode, type TilesParams, type Variant,
 } from "../../../api/graphLayout";
@@ -20,7 +21,7 @@ import { clearRunningWorkJump, publishRunningWorkNotice } from "./runningWork";
 import { useLayoutTiles } from "./useLayoutTiles";
 import { publishAppliedVariant } from "./appliedVariant";
 import { refetchLayout, registerLayoutRefetch } from "./liveRegistry";
-import { enteredBounds, toFlowElements, type FlowCache, type FlowHandlers, type WorldRect } from "./flowNodes";
+import { enteredBounds, toFlowElements, type FlowCache, type FlowContext, type FlowHandlers, type WorldRect } from "./flowNodes";
 import { CELL, fromPx, sizePx, toPx, worldRectFromViewport, type Rect } from "./units";
 import type { LayoutDensity } from "./density";
 import { PLAYBOOK_POSITION_SCOPE } from "./manualPositions";
@@ -34,7 +35,7 @@ import type { LocateHit } from "@aq/ts-client";
 /** A project band's label: a plain marker, not a card, so it never steals clicks. */
 function ProjectHeaderNode({ data }: { data: { label: string } }) {
   return (
-    <div className="pointer-events-none whitespace-nowrap text-xs font-semibold uppercase tracking-wide text-gray-400">
+    <div className="pointer-events-none whitespace-nowrap text-xs font-semibold uppercase tracking-wide text-g-muted">
       {data.label}
     </div>
   );
@@ -44,7 +45,7 @@ function ProjectHeaderNode({ data }: { data: { label: string } }) {
 function OverflowMarkerNode({ data }: { data: { label: string } }) {
   return (
     <div role="note" title={`${data.label} outside this view`}
-      className="pointer-events-none flex h-full w-full items-center justify-center whitespace-nowrap rounded-full border border-dashed border-gray-600 bg-gray-900/80 px-1 text-[10px] leading-none text-gray-400">
+      className="pointer-events-none flex h-full w-full items-center justify-center whitespace-nowrap rounded-full border border-dashed border-g-border-strong bg-g-panel px-1 text-[10px] leading-none text-g-muted">
       {data.label}
     </div>
   );
@@ -67,13 +68,27 @@ const initialViewport = { x: 0, y: 0, zoom: 1 };
  * containers are compact tiles at every zoom and are opened by entering them.
  */
 const EDGE_LABEL_ZOOM = 0.5;
-const RELATION_LABELS: Record<string, string> = {
-  blocks: "blocks",
-  "parent-child": "parent-child",
-  "waits-for": "waits-for",
-  "conditional-blocks": "conditional-blocks",
-  "discovered-from": "discovered-from",
-};
+/** §3.3: below this zoom the in-progress stripes are too fine to read, so
+ *  they stop drifting. */
+const STATIC_STRIPES_ZOOM = 0.45;
+/** §3.3: above this many striped cards on screen the drift stops, so the
+ *  animation never becomes the most expensive frame on the page. */
+const MAX_DRIFTING_STRIPES = 60;
+
+interface FlowRect { x: number; y: number; w: number; h: number }
+
+/** How many of `rects` (flow pixels) the viewport shows, counted only once
+ *  there are enough of them for the answer to matter. */
+function stripedInView(rects: FlowRect[], viewport: Viewport, size: { w: number; h: number }): number {
+  if (rects.length <= MAX_DRIFTING_STRIPES) return rects.length;
+  const x0 = -viewport.x / viewport.zoom;
+  const y0 = -viewport.y / viewport.zoom;
+  const x1 = x0 + size.w / viewport.zoom;
+  const y1 = y0 + size.h / viewport.zoom;
+  let count = 0;
+  for (const r of rects) if (r.x < x1 && r.x + r.w > x0 && r.y < y1 && r.y + r.h > y0) count += 1;
+  return count;
+}
 
 /** The shell publishes the resolved preference on html. Observe it because
  * theme changes need to update React Flow without remounting the graph. */
@@ -144,6 +159,7 @@ interface LayerProps {
   width: number;
   height: number;
   focusId: string | null;
+  upTarget: FlowContext["upTarget"];
   handlers: FlowHandlers;
   onElements: (projectId: string, elements: LayerElements) => void;
   density: LayoutDensity;
@@ -172,7 +188,7 @@ function nearestIn(nodes: Node[], from: Node, dir: "up" | "down" | "left" | "rig
  * project isolated: only the layer whose store changed re-runs its conversion.
  */
 function ProjectLayer({
-  projectId, projectNames, offsetY, params, viewport, width, height, focusId, handlers,
+  projectId, projectNames, offsetY, params, viewport, width, height, focusId, upTarget, handlers,
   onElements, density, hideEdgeLabels,
 }: LayerProps) {
   const rawRect = useMemo<Rect | null>(() => {
@@ -206,7 +222,7 @@ function ProjectLayer({
   const flowCache = useRef<FlowCache | undefined>(undefined);
   useEffect(() => {
     const { nodes, edges, cache } = toFlowElements(
-      store, { projectId, offsetY, focusId, handlers, projectNames, density, hideEdgeLabels }, flowCache.current,
+      store, { projectId, offsetY, focusId, upTarget, handlers, projectNames, density, hideEdgeLabels }, flowCache.current,
     );
     flowCache.current = cache;
     // Docking is resolved server-side, so a worker's `docked_at` is already a
@@ -219,7 +235,7 @@ function ProjectLayer({
       nodes, edges, workers, pending, loaded, error, variantApplied: store.variantApplied,
       enteredBounds: enteredBounds(store, focusId, projectId),
     });
-  }, [store, pending, loaded, error, projectId, projectNames, offsetY, focusId, handlers, onElements, density, hideEdgeLabels]);
+  }, [store, pending, loaded, error, projectId, projectNames, offsetY, focusId, upTarget, handlers, onElements, density, hideEdgeLabels]);
 
   return null;
 }
@@ -415,6 +431,17 @@ function Inner(props: LayoutCanvasProps) {
     });
   }, [playbookNodes, headers, projectIds, layers, selectedId, kbFocusId, manualPositions, dragPositions, density]);
 
+  // Every running card, read through the same pill model the card paints
+  // with; rebuilt only when the nodes change, so a pan only re-counts.
+  const stripedRects = useMemo<FlowRect[]>(() => nodes.flatMap((node) => {
+    if (node.type !== "task") return [];
+    const data = node.data as TaskNodeData;
+    if (data.stub || !pillForCard(data).treatment.stripe) return [];
+    return [{ x: node.position.x, y: node.position.y, w: node.width ?? 0, h: node.height ?? 0 }];
+  }), [nodes]);
+  const stripesStatic = (viewport?.zoom ?? 1) < STATIC_STRIPES_ZOOM
+    || (viewport !== null && size.w > 0 && stripedInView(stripedRects, viewport, size) > MAX_DRIFTING_STRIPES);
+
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     const allowed = new Set(nodes.filter(movable).map((node) => node.id));
     setDragPositions((current) => {
@@ -463,11 +490,6 @@ function Inner(props: LayoutCanvasProps) {
     () => projectIds.forEach((pid) => refetchLayout(pid)),
     [projectIds],
   );
-  const relationTypes = useMemo(
-    () => [...new Set(edges.map((edge) => String(edge.data?.depType)))].sort(),
-    [edges],
-  );
-
   // Entering zooms to the container entered; its direct children arrive as
   // tiles (their own children collapsed into them) and dependencies leaving
   // the container arrive as stubs.
@@ -477,6 +499,14 @@ function Inner(props: LayoutCanvasProps) {
   // there is no box to fit and no title to show until it lands.
   const { data: focusData } = useLayoutNode(focusId ? focusProject : undefined, focusId);
   const focusNode = focusData && !("pending" in focusData) ? focusData : undefined;
+  // The entered frame's "Up to" button: the nearest ancestor, else the project.
+  const upParent = focusNode?.ancestors?.[focusNode.ancestors.length - 1];
+  const upId = focusNode ? upParent?.id ?? null : undefined;
+  const upTitle = focusNode ? upParent?.title ?? projectNames.get(focusProject ?? "") ?? "Project" : undefined;
+  const upTarget = useMemo(
+    () => (upTitle === undefined ? null : { id: upId ?? null, title: upTitle }),
+    [upId, upTitle],
+  );
   // What the daemon actually served, which is not always what was asked for:
   // entering a container the active layout stubbed or dropped is answered
   // from `all`. That condition is the LAYOUT's (a container every one of
@@ -676,10 +706,10 @@ function Inner(props: LayoutCanvasProps) {
   }
 
   return (
-    <div className="aq-task-graph flex h-full min-h-0 w-full flex-col bg-g-ground font-g text-g-text">
-      {layerError && <p role="alert" className="shrink-0 border-b border-amber-800/50 bg-amber-950/30 px-4 py-2 text-sm text-amber-200">
+    <div className={`aq-task-graph flex h-full min-h-0 w-full flex-col bg-g-ground font-g text-g-text ${stripesStatic ? "aq-static-stripes" : ""}`}>
+      {layerError && <p role="alert" className="shrink-0 border-b border-l-4 border-g-border border-l-g-blocked bg-g-blocked-soft px-4 py-2 text-sm text-g-text">
         Could not load the graph. {layerError.message}{" "}
-        <button type="button" className="underline" onClick={retryLayers}>Retry</button>
+        <button type="button" className="font-medium underline" onClick={retryLayers}>Retry</button>
       </p>}
       {focusId && <Breadcrumbs
         projectName={projectNames.get(focusProject ?? "") ?? "Project"}
@@ -697,7 +727,7 @@ function Inner(props: LayoutCanvasProps) {
         className="relative min-h-0 flex-1 outline-none">
         {projectIds.map((pid) => (
           <ProjectLayer key={pid} projectId={pid} projectNames={projectNames} offsetY={offsets.get(pid) ?? 0} params={params}
-            viewport={viewport} width={size.w} height={size.h} focusId={focusId} handlers={handlers}
+            viewport={viewport} width={size.w} height={size.h} focusId={focusId} upTarget={upTarget} handlers={handlers}
             onElements={onElements} density={density} hideEdgeLabels={hideEdgeLabels} />
         ))}
         <ReactFlow
@@ -731,24 +761,7 @@ function Inner(props: LayoutCanvasProps) {
           <Background gap={24} />
           <Controls position="bottom-right" showInteractive={false} />
           <AgentAvatarLayer agents={workers} />
-          {relationTypes.length > 0 && (
-            <Panel position="bottom-left">
-              <details className="max-w-xs rounded border border-gray-700 bg-gray-950/95 px-3 py-2 text-[10px] text-gray-300">
-                <summary className="cursor-pointer">Dependencies · arrows point to dependent tasks</summary>
-                <ul className="mt-2 space-y-1">
-                  {relationTypes.map((type) => (
-                    <li key={type} className="flex items-center gap-2">
-                      <svg aria-hidden width="28" height="10">
-                        <path d="M0 5h25m-4-3 4 3-4 3" fill="none" style={edgeStyleForType(type)} />
-                      </svg>
-                      {RELATION_LABELS[type] ?? type}
-                    </li>
-                  ))}
-                </ul>
-                <p className="mt-2 text-gray-500">Parent/origin → child. ×N combines links from collapsed tasks.</p>
-              </details>
-            </Panel>
-          )}
+          <Panel position="bottom-left"><EdgeLegend /></Panel>
         </ReactFlow>
         {pending && <div role="status" className="pointer-events-none absolute inset-0 flex items-center justify-center bg-g-ground/70 text-sm text-g-muted">Laying out…</div>}
         {allLoaded && !pending && !layerError && nothingDrawn && <GraphScopeNotice
