@@ -441,6 +441,113 @@ def test_pool_worker_close_reports_a_no_op_work_outcome(monkeypatch):
 
 
 @pytest.fixture
+def s2_surfaces(monkeypatch):
+    smoke = _load_smoke()
+    worker = smoke.Worker(session_id="holder", token="holder-token")
+    responses = [{"result": "claimed", "task": {"id": "s1-2"}, "claim_epoch": 7}]
+    calls = []
+    replacement = {"id": "replacement", "state": "running"}
+    sessions = [{"id": "holder", "state": "running"}, replacement]
+
+    def fake_aq(*args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ("task", "claim"):
+            return responses.pop(0) if len(responses) > 1 else responses[0]
+        if args[:2] == ("task", "heartbeat") and kwargs.get("check_ok") is False:
+            return {"_error": smoke.CliError({"error": {
+                "message": "stale epoch", "details": {"result": "stale_claim"},
+            }}, "")}
+        if args[:2] == ("task", "close"):
+            sessions[:] = [replacement]
+            return {"success": True, "next": {
+                "result": "drain_requested", "session": {"claims": 1},
+            }}
+        return {"success": True}
+
+    monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "idle_worker", lambda: worker)
+    monkeypatch.setattr(smoke, "pool_sessions", lambda: list(sessions))
+    monkeypatch.setattr(smoke, "_open_pool_tasks", lambda: [
+        {"id": "s1-1", "title": "S1 worker task 1"},
+        {"id": "s1-2", "title": "S1 worker task 2"},
+        {"id": "unrelated", "title": "unrelated fixture"},
+    ])
+    monkeypatch.setattr(smoke, "task_show", lambda task_id: {
+        "id": task_id, "status": "COMPLETED" if not worker.task_id else "READY",
+        "profile_id": smoke.POOL_PROFILE, "route_source": "router", "is_blocked": False,
+    })
+    monkeypatch.setattr(smoke, "api_checked", lambda command, args: {
+        "session": {"state": "stopped", "end_reason": "drained"},
+    })
+    monkeypatch.setattr(smoke, "_swarm_checks", lambda: {
+        "pools.orphan_agents": {"severity": "ok"},
+    })
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+    monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 1)
+    monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.25))
+    monkeypatch.setattr(smoke, "wait_for_pool_session", lambda predicate, **kwargs: predicate())
+    # The replacement must appear only after close to exercise its identity check.
+    sessions.pop()
+    return smoke, responses, calls, clock
+
+
+@pytest.mark.parametrize("empty_attempts", [0, 2])
+def test_s2_retries_empty_claims_then_proves_fencing_and_retirement(s2_surfaces, empty_attempts):
+    smoke, responses, calls, _clock = s2_surfaces
+    responses[:0] = [{"result": "no_ready_work"}] * empty_attempts
+
+    result = smoke.s2_claim_loop({})
+
+    assert "claimed 1/1 then drain_requested; holder retired, replaced by replacement" == result
+    assert sum(args[:2] == ("task", "claim") for args, _ in calls) == empty_attempts + 1
+    heartbeats = [args for args, _ in calls if args[:2] == ("task", "heartbeat")]
+    assert heartbeats == [
+        ("task", "heartbeat", "--claim-epoch", "48"),
+        ("task", "heartbeat", "--claim-epoch", "7"),
+    ]
+    assert any(args[:2] == ("task", "close") and "--claim-next" in args for args, _ in calls)
+
+
+@pytest.mark.parametrize("result", ["prepare_failed", "drain_requested", "not_admissible"])
+def test_s2_does_not_retry_other_claim_failures(s2_surfaces, result):
+    smoke, responses, calls, clock = s2_surfaces
+    responses[:] = [{"result": result}]
+
+    with pytest.raises(smoke.Failure, match=result):
+        smoke.s2_claim_loop({})
+
+    assert len(calls) == 1
+    assert clock.now == 0
+
+
+def test_s2_rejects_a_claim_outside_its_s1_fixtures(s2_surfaces):
+    smoke, responses, calls, _clock = s2_surfaces
+    responses[0]["task"]["id"] = "unrelated"
+
+    with pytest.raises(smoke.Failure, match="s1-1.*s1-2.*unrelated"):
+        smoke.s2_claim_loop({})
+
+    assert len(calls) == 1
+
+
+def test_s2_empty_claim_timeout_reports_every_fixture(s2_surfaces):
+    smoke, responses, calls, clock = s2_surfaces
+    responses[:] = [{"result": "no_ready_work", "session": {"id": "holder", "claims": 0}}]
+
+    with pytest.raises(smoke.Failure, match="timed out after 1s") as error:
+        smoke.s2_claim_loop({})
+
+    assert clock.now == 1
+    assert all(args[:2] == ("task", "claim") for args, _ in calls)
+    for detail in ("s1-1", "s1-2", "no_ready_work", "holder", "router"):
+        assert detail in str(error.value)
+
+
+@pytest.fixture
 def s5_surfaces(monkeypatch):
     smoke = _load_smoke()
     holder = smoke.Worker(session_id="holder", token="holder-token")
