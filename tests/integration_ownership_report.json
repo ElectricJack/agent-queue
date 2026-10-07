@@ -9431,6 +9431,9 @@
     },
     "src/database/queries/hierarchy_queries.py::epic_refresh_ready": {
       "reason": "Requires proven cross-epic sources to be contained in the dependent epic and blocks admission while an epic-refresh batch remains open."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Combined claim and integration schema imports for open epic-refresh batches and active stack origins; preserves the separately reviewed frontier and prerequisite-repair admission surfaces."
     }
   },
   "shared_state": {
