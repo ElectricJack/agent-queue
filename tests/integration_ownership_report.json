@@ -9320,7 +9320,10 @@
       "reason": "Promotion commands preserve integration GitHub error categories and rate-limit retry timing across wrapped failures."
     },
     "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._settle_stale_container": {
-      "reason": "Stale container settlement completes a train container whose legacy collection episode was cancelled through the integration completion guard, re-checked under the row lock; it never completes a live episode's parent."
+      "reason": "Stale container settlement applies the guarded episode completion check before completing a train container whose legacy collection episode was cancelled."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._episode_completion_token": {
+      "reason": "Reads a container's collection episode checkpoint and repair operation under the caller's lock to admit only a cancelled train episode to guarded completion; refuses a live episode."
     }
   },
   "shared_state": {
