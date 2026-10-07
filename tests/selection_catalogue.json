@@ -1431,7 +1431,7 @@
       ]
     }
   },
-  "digest": "sha256:e42e0c3a65ffbf888e6062de1271251608b0bc6a9538436d4e11c77ede31f289",
+  "digest": "sha256:d303f022aac00446a57efd4eedb932d32e901b26dde92f28f8f27bb40e243d39",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -14634,6 +14634,7 @@
         "src.config",
         "src.database",
         "src.database.tables",
+        "src.integration.lock",
         "src.integration.models",
         "src.integration.ownership",
         "src.messages.delivery",
