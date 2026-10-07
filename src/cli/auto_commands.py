@@ -36,6 +36,7 @@ HANDCRAFTED_COVERAGE = {
     "remove_task",
     "promote_schema",
     "promote_validate",
+    "promote_rulesets",
     "promote_request",
     "promote_approve",
     "promote_cancel",

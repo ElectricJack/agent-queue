@@ -44,6 +44,12 @@ reports, reviews and superseded specs are evidence, not directives.
 - A daemon refusal (scope check, CI policy, ownership fence, stale claim) is
   an answer. Report it; never route around it with another CLI (`gh pr merge`,
   a direct push), a `force` flag, or edits to state.
+- The restored Git-first train uses the exact-head PR gate, root cadence and
+  separate cleanup. Controls preserve its checks and publisher ownership; see
+  the [train and promotion policy entry](../specs/design/promotion-flow.md).
+- [Promotion flows](../guides/promotion-flow.md) pin a PR at S, require the step's
+  checks/review, attest S, and publish by fenced fast-forward plus an optional tag.
+  Pending prepare/hotfix/playbook mechanisms stay marked by task in the guides.
 
 ## C. Recover or retire without losing evidence
 

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from src.commands.contracts.models import CommandArgs, CommandValue, SideEffectClass
 from src.commands.contracts.registry import CommandRegistration
@@ -47,6 +47,26 @@ class PromoteIntentArgs(PromoteProjectArgs):
     )
 
 
+class PromotePrepareArgs(PromoteProjectArgs):
+    step_id: str = Field(min_length=1)
+    version: str | None = Field(default=None, min_length=1)
+    bump: Literal["minor", "patch"] | None = None
+    from_task: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def one_version_choice(self):
+        if (self.version is None) == (self.bump is None):
+            raise ValueError("Choose exactly one of --version or --bump")
+        return self
+
+
+class PromotionNotesInputArgs(PromoteProjectArgs):
+    step_id: str = Field(min_length=1)
+    source_sha: str | None = None
+
+    _exact_source = field_validator("source_sha")(PromoteRequestArgs.exact_source.__func__)
+
+
 class PromoteReadArgs(PromoteProjectArgs):
     step_id: str | None = Field(default=None, description="Restrict cached results to this step.")
     limit: int = Field(default=20, ge=1, le=100, description="Maximum cached intents to return.")
@@ -65,6 +85,10 @@ class PromoteValue(CommandValue):
     promotions: list[dict[str, Any]] = Field(default_factory=list)
     evidence_source: str | None = None
     retry_at: float | None = None
+    version: str | None = None
+    notes_input: dict[str, Any] | None = None
+    draft: str | None = None
+    notes: str | None = None
 
 
 REFUSALS = (
@@ -91,6 +115,18 @@ REFUSALS = (
     "promotion_not_open",
     "promotion_review_invalid",
     "promotion_publish_started",
+    "promotion_source_red",
+    "promotion_source_pending",
+    "promotion_source_unavailable",
+    "promotion_source_untrusted",
+    "promotion_train_required",
+    "prepare_in_progress",
+    "version_not_increasing",
+    "notes_stale",
+    "notes_range_invalid",
+    "notes_range_too_large",
+    "notes_source_missing",
+    "promotion_body_too_large",
 )
 
 
@@ -98,6 +134,8 @@ def register_promote_contracts(registry):
     from src.commands.contracts.integration import _hierarchy_adapter, _operational_contract
 
     for name, args_model, successes, read in (
+        ("promote_prepare", PromotePrepareArgs, ("prepared",), False),
+        ("integration_promotion_notes_input", PromotionNotesInputArgs, ("notes_input",), True),
         ("promote_request", PromoteRequestArgs, ("requested", "already_requested"), False),
         ("promote_approve", PromoteIntentArgs, ("approved", "already_approved"), False),
         ("promote_cancel", PromoteIntentArgs, ("cancelled", "already_cancelled"), False),
@@ -114,6 +152,8 @@ def register_promote_contracts(registry):
             result_model=PromoteValue,
         )
         summaries = {
+            "promote_prepare": "File ordinary release preparation on the repository default branch.",
+            "integration_promotion_notes_input": "Assemble immutable promotion notes from full Git history.",
             "promote_request": "Open an idempotent promotion intent and a PR pinned to its source commit.",
             "promote_approve": "Post a pinned GitHub approval using the authenticated human gh login.",
             "promote_cancel": "Close an unpublished promotion PR and abort its intent.",

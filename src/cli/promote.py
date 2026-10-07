@@ -43,7 +43,7 @@ def promote_schema(ctx: click.Context) -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="YAML or JSON flow; omit to validate the stored flow.",
 )
-@click.option("--remote", is_flag=True, help="Request remote checks (deferred to phase 2).")
+@click.option("--remote", is_flag=True, help="Read remote rulesets and workflow triggers.")
 @click.pass_context
 @_handle_errors
 def promote_validate(
@@ -82,6 +82,24 @@ def _execute_intent(ctx: click.Context, command: str, args: dict) -> None:
     emit(ctx, data, render=_render)
     if not data.get("success"):
         raise SystemExit(1)
+
+
+@promote.command("prepare")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.option("--step", "step_id", required=True)
+@click.option("--bump", type=click.Choice(["minor", "patch"]))
+@click.option("--version", help="Explicit version to prepare.")
+@click.option("--from-task", help="Task motivating this preparation.")
+@click.pass_context
+@_handle_errors
+def promote_prepare(ctx, project_id, step_id, bump, version, from_task):
+    """File a version bump and notes draft as ordinary work on the default branch."""
+    if (version is None) == (bump is None):
+        raise click.UsageError("Choose exactly one of --version or --bump.")
+    _execute_intent(ctx, "promote_prepare", {
+        "project_id": project_id, "step_id": step_id, "bump": bump,
+        "version": version, "from_task": from_task,
+    })
 
 
 @promote.command("request")

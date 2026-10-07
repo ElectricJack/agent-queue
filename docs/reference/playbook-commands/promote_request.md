@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/promote.py`](../../../src/commands/contracts/promote.py) |
-| Contract fingerprint | `sha256:7d336be70118c70cacd719a904e4c30806806b3970a470dd6997eaecfe05f80c` |
+| Contract fingerprint | `sha256:9cce5020e800693078f0e81671d7ba5f5dcdbc14ae5ce9eabd2fe44e92efa33e` |
 
 ## Parameters
 
@@ -44,8 +44,12 @@
 | `promotions` | `object[]` | — |
 | `evidence_source` | `string \| null` | — |
 | `retry_at` | `number \| null` | — |
+| `version` | `string \| null` | — |
+| `notes_input` | `object \| null` | — |
+| `draft` | `string \| null` | — |
+| `notes` | `string \| null` | — |
 
-Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id`, `intent`, `pr_url`, `promotion`, `review`, `flow`, `promotions`, `evidence_source`, `retry_at`.
+Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id`, `intent`, `pr_url`, `promotion`, `review`, `flow`, `promotions`, `evidence_source`, `retry_at`, `version`, `notes_input`, `draft`, `notes`.
 
 ## Outcomes
 
@@ -56,6 +60,12 @@ Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id
 | `backmerge_pending` | failure | — |
 | `not_found` | failure | — |
 | `notes_not_reviewed` | failure | — |
+| `notes_range_invalid` | failure | — |
+| `notes_range_too_large` | failure | — |
+| `notes_source_missing` | failure | — |
+| `notes_stale` | failure | — |
+| `prepare_in_progress` | failure | — |
+| `promotion_body_too_large` | failure | — |
 | `promotion_flow_changed` | failure | — |
 | `promotion_flow_empty` | failure | — |
 | `promotion_flow_invalid` | failure | — |
@@ -69,6 +79,11 @@ Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id
 | `promotion_requester_identity_missing` | failure | — |
 | `promotion_review_invalid` | failure | — |
 | `promotion_source_not_on_chain` | failure | — |
+| `promotion_source_pending` | failure | — |
+| `promotion_source_red` | failure | — |
+| `promotion_source_unavailable` | failure | — |
+| `promotion_source_untrusted` | failure | — |
+| `promotion_train_required` | failure | — |
 | `rate_limited` | failure | — |
 | `requested` | success | — |
 | `step_not_found` | failure | — |
@@ -76,6 +91,7 @@ Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id
 | `tag_exists` | failure | — |
 | `unavailable` | failure | — |
 | `version_mismatch` | failure | — |
+| `version_not_increasing` | failure | — |
 
 ## Declared effects
 

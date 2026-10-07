@@ -137,6 +137,7 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "integration_status",
         "promote_schema",
         "promote_validate",
+        "promote_rulesets",
         "promote_status",
         "promote_list",
         # The command derives the candidate/member/fence from this session's
