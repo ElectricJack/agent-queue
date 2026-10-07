@@ -110,6 +110,7 @@ class OrdinaryRepairService:
         authorize: Callable[[], Awaitable[bool]] | None = None,
         completion_blocker: Callable[[str, str], Awaitable[dict | None]] | None = None,
         sync_default_branch: dict[str, Any] | None = None,
+        existing_only: bool = False,
     ) -> dict:
         from src.integration.batches import candidate_ref
 
@@ -192,8 +193,15 @@ class OrdinaryRepairService:
                     # ordinary claim recovery owns requeue/retry and unsaved work.
                     if live_lease and owner["holder"] != current_id:
                         return answer("busy")
-                    if not live_lease and current["status"] in {"DEFINED", "READY", "PAUSED",
-                                                               "BLOCKED"}:
+                    if not live_lease and current["status"] in {
+                        "DEFINED", "READY", "PAUSED", "BLOCKED",
+                    }:
+                        claimed = await conn.scalar(select(sessions.c.id).where(
+                            sessions.c.task_id == current_id,
+                            or_(sessions.c.state != "stopped", sessions.c.claim_phase.is_not(None)),
+                        ).limit(1))
+                        if claimed is not None:
+                            return answer("exists", task_id=current_id, lease_expired=True)
                         # The previous prepare/recovery may have released the
                         # lease. Restore this exact filing, never a new attempt.
                         # The task lock excludes a new claim while we grant it;
@@ -210,6 +218,8 @@ class OrdinaryRepairService:
                             live_lease = True
                     return answer("exists", task_id=current_id,
                                   lease_expired=not live_lease)
+            if existing_only:
+                return answer("none")
             if sync_default_branch:
                 # Ordinary filing identity survives archival. Keep the one-sync
                 # bound under the batch lock, across candidate generations and
@@ -352,6 +362,20 @@ class OrdinaryRepairService:
             ).with_for_update())
             if batch:
                 await self._settle_green_on(conn, batch_id, head_sha)
+
+    async def recover_reservation(
+        self, batch_id: str, *, target_ref: str, head_sha: str,
+        authorize: Callable[[], Awaitable[bool]], held: bool = False,
+    ) -> dict:
+        """Restore a detached repair's lease even while candidate checks are pending.
+
+        Recovery uses the allocator's batch/task/ref locks and publication proof,
+        but cannot file a successor or consume an allocation.
+        """
+        return await self.allocate(
+            batch_id, target_ref=target_ref, head_sha=head_sha,
+            authorize=authorize, held=held, existing_only=True,
+        )
 
     async def input(self, task_id: str) -> dict | None:
         """Read the immutable ordinary task input for workspace/managed push ports."""
