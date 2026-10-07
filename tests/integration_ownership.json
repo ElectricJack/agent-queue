@@ -12922,13 +12922,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1684,
+      "line": 1705,
       "owner": "TaskQueryMixin._apply_transition",
       "call": "delete",
-      "owner_fingerprint": "720d89323646a3a50ca29b13d81d3f2ad1053ce90101e7e364cd038e4d5b4e33",
+      "owner_fingerprint": "e7b40311cf8da3ed0bb3dc32f9d7bd29d839ab244fa4b6fc4b848a1d41162430",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary lifecycle metadata cleanup when task status changes; proposal transactions may defer graph projection, while integration completion and wake guards retain authority. No ref replay state."
+      "reason": "Ordinary lifecycle metadata cleanup when task status changes; proposal transactions may defer graph projection, while integration completion and wake guards retain authority. No ref replay state. Re-reviewed after the reopen path began retiring superseded source-CI repairs in the same transaction: still only the terminal-blocked marker delete."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 1956,
@@ -13658,6 +13658,15 @@
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/integration/source_delivery.py::retire_reopened_source_repairs_on::7032d70701a482232d21878d7f693cac7a9fb3daaf68364d1511a0604d9c9d91": {
+      "line": 161,
+      "owner": "retire_reopened_source_repairs_on",
+      "call": "log_event",
+      "owner_fingerprint": "95134e1f5d3ff8c5b5c49c02fe14b2c75fc86c0344e2aaebe2cc25a26881d16c",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Audit record of source-CI repairs made terminal when their source completion is discarded, written in the reopen transaction; the write names the repair and reason and grants no ref replay or duplicate lifecycle authority."
     },
     "src/integration/stale_owners.py::StaleOwnerRelease._release_stale::442e67b871abb9af88114dc8578e8889b7f2d64853464e2ccd4ec3edd2ee3525": {
       "line": 408,
