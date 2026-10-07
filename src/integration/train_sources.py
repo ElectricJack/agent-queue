@@ -78,6 +78,7 @@ from src.integration.promotion_steps import flow_status, flow_targets
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
+from src.integration.selection_metrics import selection_count, selection_stage
 from src.integration.subjects import Subject
 from src.integration.train import (
     BatchSelection,
@@ -525,7 +526,8 @@ class DatabaseBatches:
         self, target: TrainTarget, snapshot: GitTruthSnapshot, service: BatchService, *,
         seal_now: bool = False,
     ) -> BatchSelection:
-        await service.store.reconcile_aborted(target=target)
+        with selection_stage("reconcile_aborted"):
+            await service.store.reconcile_aborted(target=target)
         # One fetched observation per serialized visit. Eligibility is called
         # again inside publication locks and must only read these local facts.
         self._refresh_snapshots[target.key] = snapshot
@@ -541,12 +543,14 @@ class DatabaseBatches:
                     task_branch_origins.c.retired_at.is_(None),
                     task_branch_origins.c.stack_snapshot.is_not(None)))).scalars().all()
         for task_id in stacked_ids:
-            outcome = await stacks.refresh(task_id, service.gitops, snapshot=snapshot)
+            with selection_stage("stack_refresh", items=1):
+                outcome = await stacks.refresh(task_id, service.gitops, snapshot=snapshot)
             if outcome in {"refreshed", "changed", "repair_filed"}:
                 return BatchSelection(blockers=({"code": "stack_" + outcome, "task_id": task_id,
                     "ref": task_id, "detail": "Prerequisite stack changed; take a fresh Git view"},))
         # One live batch owns a target: a replaced stale batch must not block the freeze.
-        blockers = list(await self.supersede_refreshed(target, service))
+        with selection_stage("supersede_batches"):
+            blockers = list(await self.supersede_refreshed(target, service))
         if blockers:
             # An unauditable refresh keeps its old batch and target ownership.
             # Do not try to freeze a replacement without a release instruction.
@@ -557,7 +561,8 @@ class DatabaseBatches:
         if not snapshot.error and snapshot.target_oid:
             pending = await self.pending(target, snapshot, blockers=blockers,
                                          gate_pr=current is None,
-                                         include_ids={member.task_id for member in frozen_members})
+                                         include_ids={member.task_id for member in frozen_members},
+                                         candidate_ids=candidates)
             await self._refresh_conflicting_epics(target, snapshot, blockers)
         if current is not None:
             if target.kind == "root":
@@ -614,8 +619,9 @@ class DatabaseBatches:
         batch = Batch(id=await self.next_batch_id(target, members), project_id=target.project_id,
                       repository_id=target.repository_id, target_ref=target.target_ref,
                       created_at=now)
-        frozen = await service.freeze(batch, members, requests=requests, snapshot=snapshot,
-                                      dependencies=dependencies)
+        with selection_stage("freeze", items=len(members)):
+            frozen = await service.freeze(batch, members, requests=requests, snapshot=snapshot,
+                                          dependencies=dependencies)
         if target.kind == "root":
             await self._clear_admissions(target)
         return BatchSelection(frozen, await service.store.members(frozen.id), tuple(blockers))
@@ -755,21 +761,29 @@ class DatabaseBatches:
         if target.kind == "promotion":
             # A promotion freezes its request, never a frontier of completions.
             return []
+        selection_count("candidate_scans")
+        with selection_stage("pending_ids"):
+            async with self.db._engine.connect() as conn:
+                ids = await _pending_tasks(conn, target.project_id, target.repository_id, limit=None)
+        selection_count("repository_ids", len(ids))
+        with selection_stage("route_ids", items=len(ids)):
+            async with self.db._engine.connect() as conn:
+                routed = await delivery_targets(conn, ids, reduced=True)
+            ids = [task_id for task_id in ids if task_id in routed and
+                   (routed[task_id].repository_id, routed[task_id].target_ref) ==
+                   (target.repository_id, target.target_ref)]
+        selection_count("routed_ids", len(ids))
         async with self.db._engine.connect() as conn:
-            ids = await _pending_tasks(conn, target.project_id, target.repository_id, limit=None)
             superseded = await superseded_source_repairs_on(
                 self.db, conn, ids, repository_id=target.repository_id,
             )
         if blockers is not None:
             blockers.extend(superseded.values())
         ids = [task_id for task_id in ids if task_id not in superseded]
-        delivered_to_project = await self.delivered(target, snapshot, ids)
+        with selection_stage("root_delivery", items=len(ids)):
+            delivered_to_project = await self.delivered(target, snapshot, ids)
         ids = [task_id for task_id in ids if task_id not in delivered_to_project]
         async with self.db._engine.connect() as conn:
-            routed = await delivery_targets(conn, ids, reduced=True)
-            ids = [task_id for task_id in ids if task_id in routed and
-                   (routed[task_id].repository_id, routed[task_id].target_ref) ==
-                   (target.repository_id, target.target_ref)]
             if len(ids) > self.limit:
                 frozen_ids = [task_id for task_id in ids if task_id in (include_ids or ())]
                 ids = list((await conn.execute(select(tasks.c.id).where(tasks.c.id.in_(ids))
@@ -783,11 +797,18 @@ class DatabaseBatches:
         blockers: list[dict[str, Any]] | None = None,
         gate_pr: bool = True,
         include_ids: set[str] | None = None,
+        candidate_ids: list[str] | None = None,
     ):
         """Exact pending inputs; report unknown delivery that prevents batching."""
         if target.kind == "promotion":
             return None
-        ids = await self._candidate_ids(target, snapshot, include_ids=include_ids, blockers=blockers)
+        if candidate_ids is None:
+            ids = await self._candidate_ids(target, snapshot, include_ids=include_ids, blockers=blockers)
+        else:
+            selection_count("candidate_window_reuses")
+            ids = candidate_ids
+            if include_ids:
+                ids = list(dict.fromkeys([*ids, *sorted(include_ids)]))
         async with self.db._engine.connect() as conn:
             if not ids:
                 return None
@@ -853,7 +874,7 @@ class DatabaseBatches:
             self.db, ids, repository_id=target.repository_id, target_ref=target.target_ref,
             reduced=True,
         )
-        delivered_to_project = await self.delivered(target, snapshot, ids)
+        delivered_to_project = set()
         members: dict[str, BatchMember] = {}
         delivered: set[str] = set()
         from src.integration.stacked_branches import StackedBranches
@@ -865,12 +886,15 @@ class DatabaseBatches:
                 continue
             if request is None or not is_valid_git_oid(base or ""):
                 continue
-            evidence = await snapshot.is_delivered(request, source_base=base)
+            with selection_stage("target_delivery", items=1):
+                evidence = await snapshot.is_delivered(request, source_base=base)
             if evidence.satisfied:
                 delivered.add(task_id)
                 continue
             # Stack freshness gates new batching; it cannot undo proven delivery.
-            if not await stacks.current(task_id):
+            with selection_stage("stack_identity", items=1):
+                stack_current = await stacks.current(task_id)
+            if not stack_current:
                 if blockers is not None:
                     async with self.db._engine.connect() as conn:
                         origin = await stacks._origin(task_id, conn)
@@ -880,10 +904,11 @@ class DatabaseBatches:
                 continue
             # Epic readiness gates new batching; it cannot undo proven delivery.
             if task_id in epics:
-                async with self.db._engine.connect() as conn:
-                    current = await self._epic_current_on(conn, task_id, request.completion_id,
-                                                         snapshot=snapshot,
-                                                         source=evidence.source_oid)
+                with selection_stage("epic_readiness", items=1):
+                    async with self.db._engine.connect() as conn:
+                        current = await self._epic_current_on(conn, task_id, request.completion_id,
+                                                             snapshot=snapshot,
+                                                             source=evidence.source_oid)
                 if not current:
                     if blockers is not None:
                         blockers.append({"code": "epic_completion_pending", "ref": task_id,
@@ -909,15 +934,18 @@ class DatabaseBatches:
                     or evidence.reason != "source_not_delivered"
                     or not is_valid_git_oid(source or "") or (task_id, source) in withheld):
                 continue
-            if (not await stacks.current(task_id, source_sha=source)
-                    or not await stacks.source_contains_stack(task_id, source, snapshot)):
+            with selection_stage("stack_source", items=1):
+                stack_valid = (await stacks.current(task_id, source_sha=source)
+                               and await stacks.source_contains_stack(task_id, source, snapshot))
+            if not stack_valid:
                 continue
             member = BatchMember(task_id, source, base)
             if gate_pr and target.kind == "root":
-                refusal = (await self.pr_gate(target, member) if self.pr_gate else {
-                    "code": "unknown", "ref": task_id, "task_id": task_id,
-                    "detail": "root PR admission observer is unavailable",
-                })
+                with selection_stage("pr_admission", items=1):
+                    refusal = (await self.pr_gate(target, member) if self.pr_gate else {
+                        "code": "unknown", "ref": task_id, "task_id": task_id,
+                        "detail": "root PR admission observer is unavailable",
+                    })
                 if refusal:
                     if blockers is not None:
                         blockers.append(_conflict_action(refusal, snapshot, epic=task_id in epics))
@@ -943,9 +971,10 @@ class DatabaseBatches:
             ).where(task_branch_origins.c.task_id.in_(absent),
                     task_branch_origins.c.retired_at.is_(None)))).all())
         for task_id, request in outside.items():
-            if request.task_status == "COMPLETED" and (await snapshot.is_delivered(
-                    request, source_base=outside_bases.get(task_id))).satisfied:
-                delivered.add(task_id)
+            with selection_stage("prerequisite_delivery", items=1):
+                if request.task_status == "COMPLETED" and (await snapshot.is_delivered(
+                        request, source_base=outside_bases.get(task_id))).satisfied:
+                    delivered.add(task_id)
         blocked = (set(ids) | required) - members.keys() - delivered
         changed = True
         while changed:

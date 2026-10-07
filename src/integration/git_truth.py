@@ -28,6 +28,7 @@ from src.integration.delivery_truth import (
     delivery_snapshot,
 )
 from src.integration.provenance import CompletionIdentity, GitProvenance
+from src.integration.selection_metrics import selection_count
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,8 @@ class GitTruth:
                     except Exception as exc:
                         shared.error = exc
                         raise
+                else:
+                    selection_count("shared_fetch_hits")
                 assert shared.snapshot is not None
                 return shared.snapshot.for_target(target_ref)
         finally:
@@ -180,6 +183,7 @@ class GitTruth:
                 self.git, str(store), project_id, repository_id, repository_url,
                 target_ref, None, {}, error=failure[2],
             ), retry_at=failure[0])
+        selection_count("fetch_starts")
         observation = await delivery_snapshot(
             self.git, store, project_id=project_id, repository_id=repository_id,
             repository_url=repository_url, target_ref=target_ref,
@@ -222,8 +226,10 @@ class GitTruth:
         """
         key = self._record_key(snapshot, identity)
         if key in self._completions:
+            selection_count("completion_cache_hits")
             self._completions.move_to_end(key)
             return deepcopy(self._completions[key])
+        selection_count("completion_cache_misses")
         record = await GitProvenance(self.git, snapshot.store,
                                     repository_url=snapshot.repository_url).read_completion(
             identity, refs=snapshot.source_heads,
@@ -235,12 +241,14 @@ class GitTruth:
     async def exact(self, snapshot: DeliverySnapshot, oid: str, *, cached_only=False) -> bool:
         key = snapshot.store, snapshot.repository_id, snapshot.repository_url, oid
         if key not in self._objects:
+            selection_count("object_cache_misses")
             if cached_only:
                 return False
             await GitProvenance(self.git, snapshot.store,
                                 repository_url=snapshot.repository_url).exact(oid)
             self._remember(self._objects, key, oid)
         else:
+            selection_count("object_cache_hits")
             self._objects.move_to_end(key)
         return True
 
@@ -575,8 +583,10 @@ async def is_delivered(
         proof_key = (snapshot.truth._record_key(observed, identity),
                      observed.target_oid, request, source_base)
         if proof_key in snapshot.truth._proofs:
+            selection_count("delivery_cache_hits")
             snapshot.truth._proofs.move_to_end(proof_key)
             return snapshot.truth._proofs[proof_key]
+        selection_count("delivery_cache_misses")
         if snapshot.cached_only:
             return answer(DeliveryState.UNKNOWN, "proof_unavailable")
         provenance = GitProvenance(observed.git, observed.store,

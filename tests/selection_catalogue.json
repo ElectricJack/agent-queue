@@ -8128,14 +8128,15 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:26e9c0545700b9706f8c7683a2b8fa981ba87edc101c057c676d42886e69c841",
+      "digest": "sha256:b2493aa12f33f51350c05b221caf611262c8bf44e8dfa340ddf90dca681de402",
       "imports": [
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
         "src.integration.delivery_truth",
         "src.integration.git_truth",
-        "src.integration.provenance"
+        "src.integration.provenance",
+        "src.integration.selection_metrics"
       ],
       "markers": [
         "parametrize"
@@ -9212,7 +9213,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:7e4f481a0b4695f24ec110dedc30cbbdee5060ae2ba4f4e1e3aa80fd68db9c0c",
+      "digest": "sha256:4f2eb72c51f1cfd7acff92ac601c0a1cf56eba53fefda1ebfe11537febfd2beb",
       "imports": [
         "src.api.codegen",
         "src.cli.auto_commands",
@@ -9231,9 +9232,11 @@
         "src.integration.models",
         "src.integration.provenance",
         "src.integration.repair",
+        "src.integration.selection_metrics",
         "src.integration.train",
         "src.integration.train_sources",
         "src.mcp_registration",
+        "src.messages.delivery",
         "src.models",
         "src.profiles.capabilities",
         "src.tools.definitions"
@@ -9262,7 +9265,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:6d0e0065f1f61368f5c629ce5ecc892ec67cc0a8b4d5e9aade996e89efe97a18",
+      "digest": "sha256:6bda849d8d850d4f746edff66d0e8dcab68968458021501a13c17b577fba8a50",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -9276,6 +9279,7 @@
         "src.doctor.models",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
         "src.integration.attestation",
         "src.integration.batches",
         "src.integration.candidate_baseline",
@@ -9296,6 +9300,7 @@
         "src.integration.reviews",
         "src.integration.root_pull_requests",
         "src.integration.scheduler",
+        "src.integration.selection_metrics",
         "src.integration.source_delivery",
         "src.integration.stacked_branches",
         "src.integration.status",
