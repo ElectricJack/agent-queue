@@ -26,6 +26,26 @@ Regeneration constructs a tree; it grants no publication authority. Existing
 source review, branch fences, exact remote leases, ancestry, receipts and CI
 checks still apply to the resulting commit. Both merge parents are retained.
 
+Claim-time prerequisite stacks use this same mechanism. Generated-only overlaps
+are rebuilt from all merged sources and recorded in the regeneration log.
+A source conflict is `stack_prerequisites_conflict`, not a slot-reset failure.
+Reserve one ordinary isolated stack-repair branch from the dependent's published
+tip (or its proven parent base), with exact prerequisite IDs, refs, OIDs and
+conflicting paths in the brief. The branch materialization scanner publishes
+the reservation. A named claim-admission predicate keeps the dependent READY
+but unclaimable until that repair has a passing completion; repeated
+preparation cannot duplicate it. This is preparation state, so it does not
+add a delivery dependency on the isolated repair branch.
+
+After a passing repair completion, observe its exact published head and prove
+that it preserves the repair starting point before using it as the new merge
+base. Merge every freshly proven prerequisite and the current parent onto that
+head, so moved prerequisites cannot be silently omitted. Only a successful
+stack and claim activation clear the conflict diagnostic. Preserve the resolved
+overlay as a merge base for later preparations of the same dependent. These admission waits
+do not consume slot-reset retries or quarantine the pool worker. The existing
+single-prerequisite fast path and immutable filing origin remain unchanged.
+
 Verification includes two branches regenerating a real selection catalogue
 from different test modules, canonical combined output, preserved source
 files and merge parents, replay, generated-only main rebuild, source/mixed

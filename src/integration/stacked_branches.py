@@ -11,6 +11,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from types import SimpleNamespace
 
 from sqlalchemy import exists, insert, literal, or_, select, update
@@ -30,6 +31,16 @@ from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.integration.batches import Batch, BatchMember, BatchStore
 from src.integration.delivery_observer import DeliveryTarget, prerequisite_observer
 from src.integration.train import TrainTarget
+
+
+class StackPrerequisitesConflict(ValueError):
+    """Admission wait for the ordinary worker repairing a prerequisite stack."""
+
+    code = "stack_prerequisites_conflict"
+
+    def __init__(self, detail):
+        self.detail = detail
+        super().__init__(f"{self.code}: {json.dumps(detail, sort_keys=True)}")
 
 
 def stacked_policy(project) -> bool:
@@ -285,6 +296,7 @@ async def merge_heads(git, store, base, heads, *, stamp):
     from src.git.manager import commit_identity
     from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND, merge_generated_tree
 
+    store = Path(store)
     current = base
     for head in heads:
         result = await git.arun_git_result(
@@ -343,6 +355,9 @@ class StackedBranches:
 
     async def prepare(self, task_id, *, parent_base=None):
         """Return a freshly proven stack overlay; never reset the filing origin."""
+        from src.integration.regeneration import GeneratedMergeConflict
+        from src.models import TaskStatus
+
         task = await self.db.get_task(task_id)
         project = await self.db.get_project(task.project_id) if task else None
         if task is None or not stacked_policy(project) or self.observer is None:
@@ -378,8 +393,25 @@ class StackedBranches:
             if await self.db.hierarchy_prerequisite_delivery_head(task_id):
                 return None
             raise GitError("prerequisite stack is incomplete or reopened")
+        old = origin["stack_snapshot"]
+        pending = (old or {}).get("preparation_conflict")
+        repair_head = None
+        if pending:
+            repair = await self.db.get_task(pending["repair_task_id"])
+            completion = await self.db.get_task_completion(repair.id) if repair else None
+            if (repair is None or repair.status is not TaskStatus.COMPLETED
+                    or completion is None or completion.outcome != "pass" or not completion.commits):
+                raise StackPrerequisitesConflict(pending)
+            repair_head = completion.commits[-1]
+            remote = "refs/remotes/origin/" + repair.branch_name.removeprefix("refs/heads/")
+            view.watched_refs[repair.branch_name.removeprefix("refs/heads/")] = repair_head
+            if (view.snapshot.source_heads.get(remote) != repair_head
+                    or not await self.observer.git.ais_ancestor(
+                        view.snapshot.store, pending["starting_head"], repair_head, strict=True,
+                    )):
+                raise StackPrerequisitesConflict(pending)
         heads = [proofs[tid]["checkpoint_sha"] for tid in sorted(ids)]
-        if len(heads) == 1 and parent_base is None:
+        if len(heads) == 1 and parent_base is None and not pending:
             base = heads[0]
         else:
             parent_head = parent_base or view.snapshot.source_heads.get(
@@ -387,31 +419,76 @@ class StackedBranches:
             )
             if not parent_head:
                 raise GitError("stack parent branch is unavailable")
-            base = await merge_heads(
-                self.observer.git,
-                view.snapshot.store,
-                parent_head,
-                heads,
-                stamp=origin["created_at"],
-            )
+            try:
+                base = await merge_heads(
+                    self.observer.git,
+                    view.snapshot.store,
+                    repair_head or (old or {}).get("preparation_repaired_head") or parent_head,
+                    [parent_head, *heads],
+                    stamp=origin["created_at"],
+                )
+            except GeneratedMergeConflict as exc:
+                files = sorted({
+                    line.split("\t", 1)[1]
+                    for line in exc.stdout.splitlines()[1:]
+                    if "\t" in line and line.split("\t", 1)[0].endswith((" 1", " 2", " 3"))
+                })
+                starting = repair_head or view.snapshot.source_heads.get(
+                    "refs/remotes/origin/" + task.branch_name.removeprefix("refs/heads/"),
+                ) or parent_head
+                view.watched_refs[task.branch_name.removeprefix("refs/heads/")] = (
+                    view.snapshot.source_heads.get(
+                        "refs/remotes/origin/" + task.branch_name.removeprefix("refs/heads/"),
+                    )
+                )
+                if not await view.fresh():
+                    raise GitError("prerequisite stack changed before filing repair") from exc
+                await self._file_repair(
+                    vars(task), origin, old, proofs, starting,
+                    preparation_conflict={"files": files, "reason": str(exc),
+                                          "parent_head": parent_head},
+                )
+                detail = await self.db.get_task_meta(task_id, StackPrerequisitesConflict.code)
+                if detail is None:
+                    raise GitError("prerequisite stack changed before reserving repair") from exc
+                raise StackPrerequisitesConflict(detail) from exc
+        if not await view.fresh():
+            raise GitError("prerequisite stack changed before recording its base")
         snapshot = {"base_sha": base, "prerequisites": proofs}
+        if pending:
+            snapshot["preparation_repaired_head"] = base
         async with self.db.immediate() as conn:
+            locked_ids = ids | {task_id} | ({repair.id} if pending else set())
             await conn.execute(
                 select(tasks.c.id)
                 .where(
-                    tasks.c.id.in_(sorted(ids | {task_id})),
+                    tasks.c.id.in_(sorted(locked_ids)),
                 )
                 .order_by(tasks.c.id)
                 .with_for_update()
             )
             if set(await view.verified_on(conn, ids)) != ids:
                 raise GitError("prerequisite stack changed before recording its base")
+            if pending:
+                current_repair = await self.db._get_task_conn(repair.id, conn=conn)
+                current_completion = await conn.scalar(
+                    select(task_completion_records.c.id)
+                    .where(task_completion_records.c.task_id == repair.id)
+                    .order_by(task_completion_records.c.completed_at.desc()).limit(1)
+                )
+                if (current_repair is None or current_repair.status is not TaskStatus.COMPLETED
+                        or current_repair.branch_name != repair.branch_name
+                        or current_repair.claim_epoch != repair.claim_epoch
+                        or current_completion != completion.id):
+                    raise StackPrerequisitesConflict(pending)
             current = await self._origin(task_id, conn)
+            if current["stack_snapshot"] != old:
+                raise GitError("prerequisite stack changed before recording its base")
             previous = current["stack_snapshot"] or {}
             # Provenance belongs to the recorded dependent source. A fresh
             # workspace overlay must not relabel that source's old stack or
             # discard its recovery state. Refresh advances it after close.
-            snapshot = previous or snapshot
+            snapshot = snapshot if pending else previous or snapshot
             await conn.execute(
                 update(task_branch_origins)
                 .where(
@@ -802,7 +879,9 @@ class StackedBranches:
         finally:
             await locks.release(fence)
 
-    async def _file_repair(self, task, origin, old, proofs, head, repo, gitops):
+    async def _file_repair(
+        self, task, origin, old, proofs, head, repo=None, gitops=None, *, preparation_conflict=None,
+    ):
         """File once on an isolated repair branch, preserving the dependent's source."""
         from src.integration.epic_branch import reserve_branch_name
         from src.integration.hierarchy import HierarchyIntegration
@@ -811,14 +890,20 @@ class StackedBranches:
         from src.models import Task, TaskStatus, TaskType
         from src.task_names import child_task_id
 
-        if old.get("repair_task_id"):
-            previous = await self.db.get_task(old["repair_task_id"])
+        previous_stack = old or {}
+        if previous_stack.get("repair_task_id"):
+            previous = await self.db.get_task(previous_stack["repair_task_id"])
             if previous is None or previous.status is not TaskStatus.COMPLETED:
                 return "repair_pending"
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, task["project_id"])
             current = await self._origin(task["id"], conn)
             if current["stack_snapshot"] != old:
+                return "changed"
+            if preparation_conflict and {
+                row["task_id"]: _identity(row)
+                for row in await _inputs(conn, task["project_id"], task["id"])
+            } != proofs:
                 return "changed"
             repair_id, _capped = await child_task_id(conn, task["parent_task_id"])
             repair_task = Task(
@@ -830,6 +915,14 @@ class StackedBranches:
                     f"Preserve dependent {task['id']} at {head}. Your isolated branch starts "
                     "there. Merge these current prerequisite heads, resolve conflicts, push and close: "
                     + json.dumps(proofs, sort_keys=True)
+                    + (
+                        f"\nMerge parent head {preparation_conflict['parent_head']} as well. "
+                        f"Conflicting paths: {json.dumps(preparation_conflict['files'])}. "
+                        "Preserve every listed head as an ancestor of your result. "
+                        "Resolve source files first, then run scripts/regenerate-generated.sh; "
+                        "never hand-merge generated artifacts. Do not implement the dependent's work."
+                        if preparation_conflict else ""
+                    )
                 ),
                 task_type=TaskType.BUGFIX,
                 status=TaskStatus.DEFINED,
@@ -873,20 +966,36 @@ class StackedBranches:
                 branch=branch,
                 checkpoint_sha=head,
             )
+            new_stack = {**previous_stack, "hold": "stack_conflict", "repair_task_id": repair_id}
+            if preparation_conflict:
+                detail = {
+                    **preparation_conflict, "prerequisites": proofs,
+                    "starting_head": head, "repair_task_id": repair_id,
+                }
+                new_stack = {
+                    **previous_stack, "base_sha": head, "prerequisites": proofs,
+                    "hold": "prerequisites_conflict", "repair_task_id": repair_id,
+                    "preparation_conflict": detail,
+                }
+                await self.db._upsert_meta(
+                    task["id"], StackPrerequisitesConflict.code, detail, conn=conn,
+                )
             await conn.execute(
                 update(task_branch_origins)
                 .where(
                     task_branch_origins.c.id == origin["id"],
                 )
-                .values(
-                    stack_snapshot={**old, "hold": "stack_conflict", "repair_task_id": repair_id}
-                )
+                .values(stack_snapshot=new_stack)
             )
             await conn.execute(
                 insert(task_metadata).values(
                     task_id=repair_id, key="stack_repair_for", value=json.dumps(task["id"])
                 )
             )
+        if preparation_conflict:
+            # The normal scanner materializes this durable reservation. No
+            # remote publication is required for the failed claim to unwind.
+            return "repair_filed"
         # Materialization is retried by the normal origin scanner after any failed push.
         locks = BranchLock(self.db)
         fence = await locks.acquire(

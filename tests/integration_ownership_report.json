@@ -9404,6 +9404,12 @@
         109,
         114
       ]
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_branch_owners, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Claim and integration schema imports, including the active stack origin used to hold unresolved prerequisite repairs."
+    },
+    "src/database/queries/claim_queries.py::_claim_preparation_predicates": {
+      "reason": "Shared claim/frontier admission fences, including the active origin prerequisite-conflict snapshot and latest passing repair completion. Git proof is still required during preparation."
     }
   },
   "shared_state": {
