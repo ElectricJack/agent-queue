@@ -1583,7 +1583,9 @@ def format_pool_table(pools: list[dict]):
 
     for row in pools:
         table.add_row(
-            row.get("profile_id", ""),
+            Text(row.get("name") or row.get("profile_id", ""))
+            if not row.get("name") or row["name"] == row.get("profile_id")
+            else Text(f"{row['name']}\n{row.get('profile_id', '')}"),
             row.get("service_tier") or "—",
             str(row.get("min_active", 0)),
             "∞" if row.get("max_active") is None else str(row.get("max_active")),

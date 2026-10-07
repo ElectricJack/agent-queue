@@ -1055,6 +1055,7 @@ class PoolStatusRow(BaseModel):
     """
 
     profile_id: str
+    name: str = ""
     #: Effective explicit Codex launch tier; None inherits the CLI setting.
     service_tier: str | None = None
     #: Operator kill-switch on the (global) profile.  A disabled pool keeps
@@ -1192,6 +1193,15 @@ class PoolSetLifecycleResponse(BaseModel):
     error: str | None = None
 
 
+class PoolRenameResponse(BaseModel):
+    success: bool
+    profile_id: str | None = None
+    name: str | None = None
+    changed: bool = False
+    backup_path: str | None = None
+    error: str | None = None
+
+
 class PoolSetEnabledResponse(BaseModel):
     success: bool
     profile_id: str | None = None
@@ -1268,6 +1278,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_batch_discard": TaskBatchAckResponse,
     "task_claim": TaskClaimResponse,
     "pool_status": PoolStatusResponse,
+    "pool_rename": PoolRenameResponse,
     "pool_scale": PoolScaleResponse,
     "pool_set_lifecycle": PoolSetLifecycleResponse,
     "pool_set_enabled": PoolSetEnabledResponse,

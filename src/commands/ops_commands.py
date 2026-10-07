@@ -544,6 +544,7 @@ class OpsCommandsMixin:
             pools.append(
                 {
                     "profile_id": key.profile_id,
+                    "name": getattr(profile, "name", "") or key.profile_id,
                     "service_tier": service_tier,
                     # An operator kill-switch on the (global) profile.  Disabled
                     # pools keep their row — that is how the dashboard offers the
@@ -586,6 +587,7 @@ class OpsCommandsMixin:
                 pools.append(
                     {
                         "profile_id": profile.id,
+                        "name": profile.name or profile.id,
                         "enabled": getattr(profile, "enabled", True),
                         "min_active": getattr(profile, "min_active", None) or 0,
                         "max_active": getattr(profile, "max_active", None),
@@ -605,6 +607,12 @@ class OpsCommandsMixin:
                 )
             pools.sort(key=lambda row: row["profile_id"])
         return {"success": True, "pools": pools}
+
+    async def _cmd_pool_rename(self, args: dict) -> dict:
+        """Rename a pool's display name, preserving its stable profile ID."""
+        from src.commands.pool_admin import rename_pool
+
+        return await rename_pool(self, args)
 
     async def _cmd_pool_set_lifecycle(self, args: dict) -> dict:
         """Set the global profile lifecycle, draining former pool sessions."""

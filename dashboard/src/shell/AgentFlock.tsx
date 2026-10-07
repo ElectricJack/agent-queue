@@ -7,7 +7,7 @@ import EnableToggle from "../pages/agents/EnableToggle";
 import { useAgentSelection } from "../pages/agents/useAgentSelection";
 import { AgentState, AgentEligibility, AgentWaitingQuestion, FlockSubagents } from "../pages/agents/AgentMetadata";
 import { OutsidePoolBadge, PoolBadge, PoolPlacementRow, PoolQuarantine, PoolSupplyRow } from "../pages/agents/PoolMetadata";
-import { isPoolAgent, outsideSessionAgent, useDebouncedBusyPoolEntries, usePoolFlock, type PoolEntry } from "../pages/agents/pools";
+import { isPoolAgent, outsideSessionAgent, poolDisplayName, useDebouncedBusyPoolEntries, usePoolFlock, type PoolEntry } from "../pages/agents/pools";
 import { useShellPreferences } from "./useShellPreferences";
 
 export default function AgentFlock() {
@@ -148,14 +148,14 @@ export default function AgentFlock() {
               <button
                 type="button"
                 data-listnav="1"
-                aria-label={"Open " + entry.profileId + " pool"}
+                aria-label={"Open " + poolDisplayName(entry.pool) + " pool"}
                 aria-describedby={descriptionId}
                 aria-pressed={selected}
                 onClick={(event) => setLimitAt(selection.select(entry.key, event.shiftKey) ? null : selection.locationKey)}
                 className="block min-w-0 flex-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400"
               >
                 <span className="mb-0.5 flex items-center justify-between gap-2">
-                  <span className="truncate text-sm font-medium text-gray-200">{entry.profileId}</span>
+                  <span className="truncate text-sm font-medium text-gray-200" title={entry.profileId}>{poolDisplayName(entry.pool)}</span>
                   <PoolBadge />
                 </span>
                 <span id={descriptionId} className="block space-y-0.5 text-[10px] leading-tight text-gray-500">
@@ -174,7 +174,7 @@ export default function AgentFlock() {
               </button>
               <EnableToggle
                 enabled={entry.pool.enabled !== false}
-                subject={entry.profileId + " pool"}
+                subject={poolDisplayName(entry.pool) + " pool"}
                 pending={pending}
                 error={failed ? failed.message : null}
                 onChange={(next) => setPoolEnabled.mutate({ profile_id: entry.profileId, enabled: next })}
@@ -223,7 +223,7 @@ function OutsidePoolRows({ entry, roster, selectedIds, onSelect }: {
 }) {
   if (entry.outside.length === 0) return null;
   return (
-    <ul aria-label={"Sessions outside the " + entry.profileId + " pool"} className="ml-4 mt-1 space-y-1 border-l border-gray-800 pl-2">
+    <ul aria-label={"Sessions outside the " + poolDisplayName(entry.pool) + " pool"} className="ml-4 mt-1 space-y-1 border-l border-gray-800 pl-2">
       {entry.outside.map((session) => {
         const agent = outsideSessionAgent(session, roster);
         const name = agent?.name || session.name;
