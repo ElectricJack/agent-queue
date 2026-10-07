@@ -6097,7 +6097,7 @@
         "epic-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:8ec3df35879e8914f85553e8a750e6396ffc19869157f7cee9ee1165a579fa4d",
+      "digest": "sha256:498085415f8713fd719aedf13ddf0796ba05625f4215ddf97b71a54ff77e21d7",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -6111,6 +6111,7 @@
         "src.integration.models",
         "src.integration.promotion",
         "src.integration.provenance",
+        "src.integration.repository_git",
         "src.integration.review_evidence",
         "src.integration.reviews",
         "src.integration.scheduler",
