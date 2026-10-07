@@ -37,8 +37,10 @@ from src.database.queries.hierarchy_queries import (
     cross_parent_prerequisites_on_default,
     delivered_prerequisites_for_projects,
     delivered_same_parent_prerequisites_when_hierarchical,
+    epic_refresh_ready,
     materialized_origin_when_hierarchical,
     never_leaseable_container,
+    open_epic_refresh_batches,
 )
 from src.database.queries.session_queries import _row_to_session
 from src.database.queries.task_queries import (
@@ -49,6 +51,7 @@ from src.database.queries.task_queries import (
 )
 from src.database.tables import (
     agents,
+    integration_batches,
     integration_branch_owners,
     integration_repair_stages,
     projects,
@@ -93,6 +96,7 @@ def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
             delivered_same_parent_prerequisites_when_hierarchical(hierarchy_mode)
         ),
         "prerequisite_not_on_default_branch": cross_parent_prerequisites_on_default(hierarchy_mode),
+        "epic_refresh_pending": epic_refresh_ready(hierarchy_mode),
         # Containers settle when their children finish. A worker holding one
         # could never close it and would block the settlement it waits for.
         "container_settles_without_worker": ~container_flag_exists(),
@@ -438,17 +442,24 @@ def claim_frontier_predicates(hierarchy_modes=None):
     predicates["sibling_prerequisite_not_delivered"] = delivered_prerequisites_for_projects(
         hierarchy_modes, cross_parent=False
     )
-    predicates["prerequisite_not_on_default_branch"] = case(
-        {pid: cross_parent_prerequisites_on_default(mode) for pid, mode in (hierarchy_modes or {}).items()},
-        value=tasks.c.project_id, else_=cross_parent_prerequisites_on_default(),
-    ) if hierarchy_modes else cross_parent_prerequisites_on_default()
+    for name, predicate in (
+        ("prerequisite_not_on_default_branch", cross_parent_prerequisites_on_default),
+        ("epic_refresh_pending", epic_refresh_ready),
+    ):
+        predicates[name] = case(
+            {pid: predicate(mode) for pid, mode in hierarchy_modes.items()},
+            value=tasks.c.project_id, else_=predicate(),
+        ) if hierarchy_modes else predicate()
     return predicates
 
 
 FRONTIER_PREDICATE_DETAILS = {
     "prerequisite_not_on_default_branch": (
-        "a cross-epic prerequisite needs exact source containment on the default branch, "
-        "and an epic refresh must finish before its children start"
+        "a cross-epic prerequisite needs exact source containment on the default branch"
+    ),
+    "epic_refresh_pending": (
+        "the epic must contain every proven cross-epic source and its open epic-refresh "
+        "batch must finish before its children start"
     ),
     "supervisor_profile": "profile_id must not be supervisor",
     "dependency_blocked": "is_blocked must be false",
@@ -517,6 +528,17 @@ class ClaimQueryMixin:
             }
             for name in predicates if not row[name]
         ]
+        if not row["epic_refresh_pending"]:
+            async with self._engine.connect() as conn:
+                batches = (await conn.execute(
+                    open_epic_refresh_batches().where(tasks.c.id == task_id)
+                    .order_by(integration_batches.c.id)
+                )).scalars().all()
+            for exclusion in exclusions:
+                if exclusion["code"] == "frontier_epic_refresh_pending" and batches:
+                    exclusion["batch_id"] = batches[0]
+                    exclusion["batch_ids"] = batches
+                    exclusion["detail"] += "; blocking epic-refresh batch: " + ", ".join(batches)
         if not row["prerequisite_not_on_default_branch"]:
             from src.database.tables import task_dependencies
 
@@ -541,6 +563,7 @@ class ClaimQueryMixin:
                 if exclusion["code"] in {
                     "frontier_sibling_prerequisite_not_delivered",
                     "frontier_prerequisite_not_on_default_branch",
+                    "frontier_epic_refresh_pending",
                     "prerequisite_not_on_default_branch",
                 }:
                     exclusion["detail"] += (

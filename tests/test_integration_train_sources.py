@@ -1594,6 +1594,14 @@ async def test_cross_epic_frontier_requires_exact_default_proof(world, delivery)
     await db._delivery_observer.prerequisite_view("p", task_id="child")
     assert not [item for item in await db.claim_frontier_exclusions("child")
                 if "prerequisite" in item["code"]]
+    assert not await db.is_hierarchy_task_runnable("child")
+    assert "frontier_epic_refresh_pending" in {
+        item["code"] for item in await db.claim_frontier_exclusions("child")}
+    # The epic needs the same proven source, including squash/patch delivery.
+    git(origin.clone, "checkout", "-B", "aq/epic", "origin/aq/epic")
+    git(origin.clone, "merge", "--no-ff", "-m", "contain default prerequisite", "origin/main")
+    git(origin.clone, "push", "origin", "aq/epic")
+    await db._delivery_observer.prerequisite_view("p", task_id="child")
     assert await db.is_hierarchy_task_runnable("child")
 
 
@@ -1603,7 +1611,8 @@ async def test_cross_epic_completed_policy_is_explicit_legacy_admission(world):
     policy = {"cross_epic_prerequisites": "completed"}
     await db.update_project("p", hierarchical_integration_policy=policy)
     assert not [item for item in await db.claim_frontier_exclusions("child")
-                if "prerequisite" in item["code"]]
+                if "prerequisite" in item["code"] or item["code"] == "frontier_epic_refresh_pending"]
+    assert await db.is_hierarchy_task_runnable("child")
 
 
 async def test_epic_refresh_preview_apply_attestation_lease_and_origin(world):
@@ -1626,7 +1635,7 @@ async def test_epic_refresh_preview_apply_attestation_lease_and_origin(world):
     assert pending["outcome"] == "pending" and pending["state"] == "testing"
     assert git(origin.url, "rev-parse", "aq/epic") == epic
     reasons = await db.claim_frontier_exclusions("child")
-    assert "frontier_prerequisite_not_on_default_branch" in {item["code"] for item in reasons}
+    assert "frontier_epic_refresh_pending" in {item["code"] for item in reasons}
     checks.green.add(pending["candidate_sha"])
     # Checks alone cannot bypass attestation or another writer's epic lease.
     train_lane = await train.lane_for(target)
@@ -1680,7 +1689,7 @@ async def test_epic_refresh_conflict_files_ordinary_repair_on_epic(world):
     assert repair.branch_name == target.target_ref.removeprefix("refs/heads/")
     owner = await BranchLock(db).get(BranchKey(repository_id="r", branch=target.target_ref))
     assert owner.holder == repair.id
-    assert "frontier_prerequisite_not_on_default_branch" in {
+    assert "frontier_epic_refresh_pending" in {
         item["code"] for item in await db.claim_frontier_exclusions("child")}
 
     # An ordinary repair publishes its resolved merge on the epic under its
@@ -1723,7 +1732,7 @@ async def test_epic_refresh_serializes_with_open_collection(world):
     pending = await EpicRefresh(world.db).refresh("epic", dry_run=False)
     assert pending["outcome"] == "pending" and pending["batch_id"] == collection.id
     assert not await world.db.is_hierarchy_task_runnable("child")
-    assert "frontier_prerequisite_not_on_default_branch" in {
+    assert "frontier_epic_refresh_pending" in {
         item["code"] for item in await world.db.claim_frontier_exclusions("child")
     }
 

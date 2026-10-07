@@ -181,8 +181,9 @@ proof. The project integration policy defaults to
 `cross_epic_prerequisites: default_branch`; an explicit `completed` value restores
 the legacy rule that completion alone releases cross-epic dependencies.
 
-Before starting a cross-epic dependent, preparation refreshes its epic from the
-default branch through a frozen train batch. Publication needs the epic's lease,
+Before starting a cross-epic dependent, its epic must contain the proven sources.
+A refresh brings them from the default branch through a frozen train batch.
+Publication needs the epic's lease,
 checks on the exact candidate and attestation. Checks or an occupied lease keep
 the refresh pending; a content conflict files ordinary repair work on the epic
 branch and withholds its children. Preparation preserves the child's existing
@@ -194,7 +195,8 @@ before constructing a sibling prerequisite stack, so both inputs reach the child
 Status includes each epic's `ahead` and `behind` commit counts against the default
 branch, or an unknown distance when Git cannot observe it.
 
-Supervisors can preview and start a refresh before resuming paused dependents:
+Supervisors can preview and start a refresh to admit dependents whose epic lacks
+a proven source:
 
 ```bash
 aq integration refresh-epic --task EPIC_ID
@@ -204,8 +206,14 @@ aq integration refresh-epic --task EPIC_ID --apply
 An apply reports `pending` while the train checks or repairs its candidate.
 Subsequent train visits finish publication; repeating apply also advances the
 same frozen refresh. Apply and child preparation request bounded, serialized train
-visits and respect repository rate-limit pauses. Any open collection or refresh
-batch on the epic withholds its cross-epic dependents until that batch settles.
+visits and respect repository rate-limit pauses. An open epic-refresh batch withholds
+cross-epic dependents until it settles, even if its sources are already contained.
+An ordinary sibling collection, including a failed or human-blocked batch, does
+not withhold a dependent whose exact prerequisite sources are proven on the default
+branch and contained in its epic. Missing epic containment withholds the child even
+when no batch is open. Scheduler, pool demand, explain and claim share these rules.
+Explain reports `frontier_epic_refresh_pending` for the epic gate and names any
+blocking refresh batch id; default-branch proof retains its separate exclusion.
 Repairs for failed or missing CI start from the tested refresh candidate; conflict
 repairs start from the partial candidate containing the successful merges.
 

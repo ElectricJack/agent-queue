@@ -3186,12 +3186,13 @@ async def test_cross_epic_demand_explain_claim_and_refreshed_child_base(
     assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "no_ready_work"
     git(env.source, "push", "origin", f"{env.head}:refs/heads/main")
     await observer.prerequisite_view(PROJECT_ID, task_id="dependent")
-    assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == 1
+    assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == 0
     explanation = await handler._cmd_explain_task({"task_id": "dependent"})
     assert not [item for item in explanation["reasons"] if "prerequisite" in item["code"]]
+    assert "frontier_epic_refresh_pending" in {item["code"] for item in explanation["reasons"]}
 
-    # An ordinary collection on this epic must stop admission before workspace
-    # preparation or claim epochs churn, even though main contains the source.
+    # The epic still lacks the source. Admission stays withheld even with an
+    # ordinary collection, before workspace preparation or claim epochs churn.
     from src.integration.batches import Batch, BatchMember, BatchStore
 
     store = BatchStore(db)
@@ -3200,7 +3201,7 @@ async def test_cross_epic_demand_explain_claim_and_refreshed_child_base(
                        trees={"dependent": git(env.remote, "rev-parse", f"{env.base}^{{tree}}")})
     before = (await db.get_task("dependent")).claim_epoch
     with patch.object(handler, "_prepare_and_activate", AsyncMock(side_effect=AssertionError(
-        "an open collection must withhold workspace preparation",
+        "missing epic containment must withhold workspace preparation",
     ))):
         assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == 0
         for _ in range(2):
@@ -3210,14 +3211,18 @@ async def test_cross_epic_demand_explain_claim_and_refreshed_child_base(
     assert (await db.get_task("dependent")).claim_epoch == before
     await store.set_intent(collection.id, "aborted")
 
-    # First preparation creates the refresh, then leaves the child unclaimed
-    # while hosted checks run. Every frontier reader now sees that pending batch.
+    # Missing parent containment withholds even without a batch. The integration
+    # train or an explicit apply starts the refresh while the child stays unclaimed.
     waiting = await scoped(handler, sid)._cmd_task_claim({"next": True})
     assert waiting["result"] == "no_ready_work", waiting
-    assert "epic refresh pending" in waiting["reason"]
     assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == 0
     assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "no_ready_work"
     pending = await EpicRefresh(db, train).refresh("epic", dry_run=False)
+    explanation = await handler._cmd_explain_task({"task_id": "dependent"})
+    [reason] = [item for item in explanation["reasons"]
+                if item["code"] == "frontier_epic_refresh_pending"]
+    assert reason["batch_id"] == pending["batch_id"]
+    assert pending["batch_id"] in reason["detail"]
     checks.green.add(pending["candidate_sha"])
     applied = await handler.execute("integration_refresh_epic", {
         "task_id": "epic", "dry_run": False,
@@ -3236,18 +3241,30 @@ async def test_cross_epic_demand_explain_claim_and_refreshed_child_base(
     assert origin["base_refresh"]["default_sha"] == env.head
 
 
-async def test_cross_epic_child_already_in_epic_ignores_open_epic_batch(
-    handler, db, tmp_path, development_admission,
+@pytest.mark.parametrize("kind,lifecycle,intent,contained", [
+    (None, "sealed", "open", True),
+    ("collection", "sealed", "open", True),
+    ("collection", "failed", "open", True),
+    ("collection", "human_blocked", "paused", True),
+    ("retreated_collection", "sealed", "open", True),
+    ("refresh", "sealed", "open", True),
+    ("refresh", "failed", "open", True),
+    ("refresh", "human_blocked", "paused", True),
+    ("refresh", "promoted", "open", True),
+    ("refresh", "sealed", "aborted", True),
+    ("collection", "sealed", "open", False),
+    (None, "sealed", "open", False),
+])
+async def test_cross_epic_frontier_distinguishes_collection_refresh_and_containment(
+    handler, db, tmp_path, development_admission, kind, lifecycle, intent, contained,
 ):
-    """An epic that already holds a cross-epic source needs no refresh.
-
-    2026-10-07: a child whose epic already contained every cross-epic
-    prerequisite was withheld for as long as an unrelated sibling batch on
-    that epic sat in repair, and explain blamed the default branch.
-    """
+    """Every frontier consumer admits contained sources past unrelated sibling batches."""
+    from src.database.tables import integration_batches
     from src.integration.batches import Batch, BatchMember, BatchStore
     from src.integration.delivery_observer import DeliveryObserver
     from src.integration.git_truth import GitTruth
+    from src.integration.stacked_branches import EpicRefresh, EpicRefreshPending
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
     from src.scheduler import PoolKey
 
     env, git = development_admission, development_admission.git
@@ -3257,10 +3274,12 @@ async def test_cross_epic_child_already_in_epic_ignores_open_epic_batch(
                  branch_name="aq/other-epic")
     await db.add_dependency("prerequisite", "other-epic", "parent-child")
     await db.update_task("dependent", branch_name="aq/dependent", is_blocked=False)
-    # The prerequisite is on main and the dependent's epic already contains it.
+    parent_head = env.head if contained else env.base
     git(env.source, "push", "origin", f"{env.head}:refs/heads/main",
-        f"{env.head}:refs/heads/aq/other-epic", f"{env.head}:refs/heads/aq/epic",
+        f"{env.head}:refs/heads/aq/other-epic", f"{parent_head}:refs/heads/aq/epic",
         f"{env.head}:refs/heads/aq/dependent")
+    sid, work_dir = await pool_session(db, tmp_path)
+    git(tmp_path, "clone", str(env.remote), str(work_dir))
     async with db.immediate() as conn:
         await conn.execute(task_branch_origins.insert().values(
             id="origin-dependent", task_id="dependent", repository_id="repo",
@@ -3268,28 +3287,68 @@ async def test_cross_epic_child_already_in_epic_ignores_open_epic_batch(
             parent_ref="aq/epic", base_sha=env.head, creation_generation=1,
             reserved=True, materialized=True, created_at=time.time(),
         ))
+        await conn.execute(task_integration_checkpoints.insert().values(
+            task_id="dependent", repository_id="repo", branch="aq/dependent",
+            checkpoint_sha=env.head, updated_at=time.time(),
+        ))
     await db.update_project(PROJECT_ID, hierarchical_integration_mode="train", repo_url=str(env.remote))
+    await BranchOwnership(db).acquire(BranchKey(repository_id="repo", branch="aq/dependent"),
+                                      "dependent", "worker")
     transport = handler.orchestrator.git
     observer = DeliveryObserver(db, git=transport, truth=GitTruth(transport),
                                 data_dir=tmp_path / "prerequisites")
     db.set_prerequisite_observer(observer)
-    store = BatchStore(db)
-    collection = Batch("train-unrelated-collection", PROJECT_ID, "repo", "refs/heads/aq/epic")
-    await store.freeze(collection, (BatchMember("epic", env.head, env.base),),
-                       trees={"epic": git(env.remote, "rev-parse", f"{env.head}^{{tree}}")})
+    manager = WorktreeSlotManager(db=db, git=transport, bus=handler.orchestrator.bus,
+        config=handler.config.worktrees, git_mutex=handler.orchestrator._git_mutex)
+    handler.orchestrator._worktree_slots = MagicMock(return_value=manager)
+    batch_id = "train-epic-refresh-test" if kind == "refresh" else "train-unrelated-collection"
+    if kind:
+        store = BatchStore(db)
+        await store.freeze(Batch(batch_id, PROJECT_ID, "repo", "refs/heads/aq/epic"),
+                           (BatchMember("epic", env.head, env.base),),
+                           trees={"epic": git(env.remote, "rev-parse", f"{env.head}^{{tree}}")})
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_batches).where(integration_batches.c.id == batch_id)
+                               .values(lifecycle=lifecycle, intent=intent))
 
     view = await observer.prerequisite_view(PROJECT_ID, task_id="dependent")
-    assert view.parent_containment == {"dependent": {"prerequisite": True}}
-    assert not [item for item in await db.claim_frontier_exclusions("dependent")
-                if "prerequisite" in item["code"]]
-    assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == 1
-
-    # The same open batch still withholds a child whose epic lacks the source.
-    git(env.source, "push", "-f", "origin", f"{env.base}:refs/heads/aq/epic")
-    view = await observer.prerequisite_view(PROJECT_ID, task_id="dependent")
-    assert view.parent_containment == {"dependent": {"prerequisite": False}}
-    assert [item for item in await db.claim_frontier_exclusions("dependent")
-            if item["code"] == "frontier_prerequisite_not_on_default_branch"]
+    assert view.parent_containment == {"dependent": {"prerequisite": contained}}
+    if kind == "retreated_collection":
+        # Main and the completion source remain unchanged; a cached epic proof
+        # must not admit work after that epic loses the source.
+        git(env.source, "push", "-f", "origin", f"{env.base}:refs/heads/aq/epic")
+        assert not await view.fresh()
+        contained = False
+    refresh_open = kind == "refresh" and lifecycle != "promoted" and intent != "aborted"
+    claimable = contained and not refresh_open
+    assert await db.hierarchy_runnable_task_ids(["dependent"]) == (
+        {"dependent"} if claimable else set()
+    )
+    assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == int(claimable)
+    explanation = await handler._cmd_explain_task({"task_id": "dependent"})
+    assert not [item for item in explanation["reasons"] if "prerequisite" in item["code"]]
+    refresh_reasons = [item for item in explanation["reasons"]
+                       if item["code"] == "frontier_epic_refresh_pending"]
+    if claimable:
+        assert not refresh_reasons
+    else:
+        [reason] = refresh_reasons
+        if refresh_open:
+            assert reason["batch_id"] == batch_id
+            assert batch_id in reason["detail"]
+            # A refresh opened after selection must also stop fresh preparation,
+            # even when the parent already contains the source.
+            task = await db.get_task("dependent")
+            filing = await db.get_task_branch_origin_for_promotion("dependent", "repo")
+            with pytest.raises(EpicRefreshPending, match=batch_id):
+                await EpicRefresh(db).child_base(task, filing)
+        else:
+            assert "batch_id" not in reason
+    claimed = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert claimed["result"] == ("claimed" if claimable else "no_ready_work"), claimed
+    if claimable:
+        assert claimed["task"]["id"] == "dependent"
+        git(work_dir, "merge-base", "--is-ancestor", env.head, "HEAD")
 
 
 async def test_slow_frontier_view_fails_closed_within_its_bound(
