@@ -230,7 +230,8 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         from src.integration.epic_delivery import EpicDeliveryProjection, lease_ttl_from
 
         projection = EpicDeliveryProjection(
-            db, lease_ttl=lease_ttl_from(getattr(command_handler, "config", None))
+            db, lease_ttl=lease_ttl_from(getattr(command_handler, "config", None)),
+            cached_only=True,
         )
         return await projection.for_tasks(ids)
 

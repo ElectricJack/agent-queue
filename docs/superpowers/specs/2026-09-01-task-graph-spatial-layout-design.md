@@ -505,6 +505,11 @@ back and forth is a dictionary hit rather than a reload and a re-flow. A filtere
 is never cached: its match set comes from live task titles and statuses, which change
 without republishing the layout.
 
+Delivery enrichment must not fetch network Git on graph reads. It uses only a
+recent daemon observer snapshot, rechecking the completion identity and target;
+absent or expired snapshots report unavailable evidence rather than blocking the
+viewport on a clone/fetch. This applies equally to tiles, lists and node reads.
+
 ### 5.3 `POST /api/projects/{id}/graph/list`
 
 Body `{variant, expanded, q, status, cursor, limit}`. Returns nodes in layout order
@@ -845,3 +850,85 @@ Shipped behind `dashboard.graph_layout.enabled`, with these gaps recorded rather
 - `POST /api/task/set-status` publishes no forwarded bus event, so a status change made through
   that route reaches the canvas only on the next event or the extent's 60 s poll. Task creation,
   deletion and the `notify.task_*` family do drive the live path.
+
+
+## 2026-10-07 graph-load investigation (stark-meadow-80)
+
+Read-only Chrome measurement of the deployed agent-queue project via :5173,
+1440×1000 viewport, at 05:32 UTC: first visible task 10,992 ms; initial viewport
+tiles settled at 11,752 ms. Browser script CPU 588 ms, layout 97 ms, style 46 ms.
+These are **before deployment of the cached-only observation change**, not a
+claim that the <1 s first view / <3 s loaded target has been met. A previous
+sample's main tile request was 6,328 ms; shared-daemon load makes timings variable.
+
+Repeat with `node dashboard/layout-checks/benchmark-graph.mjs [base-url] [project]`.
+The script records every API resource, including requests caused by restored
+server-side dashboard state; zero-byte entries can be cancelled requests.
+“Loaded” means the initial viewport, not off-screen tasks. Resource timing and
+CDP CPU durations are browser measurements, not isolated React render durations.
+
+| API resource (request order) | Duration ms | Decoded bytes |
+|---|---:|---:|
+| `/api/dashboard/state-list` | 1226 | 3379 |
+| `/api/providers/usage` | 875 | 1322 |
+| `/api/providers/availability` | 2176 | 4130 |
+| `/api/project/list` | 2302 | 3967 |
+| `/api/agent/list` | 1890 | 118661 |
+| `/api/system/session-list` | 1473 | 1965 |
+| `/api/agent/list-profiles` | 1473 | 37129 |
+| `/api/review/list` | 1751 | 7169 |
+| `/api/project/list-roots` | 1670 | 328 |
+| `/api/project/get` | 1108 | 713 |
+| `/api/projects/agent-queue/graph/extent?variant=active` | 735 | 83 |
+| `/api/playbook/list` | 1088 | 8156 |
+| `/api/projects/agent-queue/graph/running-target` | 902 | 148 |
+| `/api/record/capabilities` | 765 | 1005 |
+| `/api/projects/agent-queue/graph/tiles` | 728 | 0 |
+| `/api/task/get` | 3384 | 11355 |
+| `/api/tasks/eager-falcon-39/sessions` | 905 | 576 |
+| `/api/task/subtasks` | 1631 | 80 |
+| `/api/task/comments` | 1783 | 11253 |
+| `/api/tasks/eager-falcon-39/attachments` | 1006 | 33 |
+| `/api/review/list` | 1737 | 29 |
+| `/api/task/gate-list` | 1867 | 12400 |
+| `/api/projects/agent-queue/graph/tiles` | 7752 | 10634 |
+| `/api/agent/list` | 1664 | 118663 |
+| `/api/record/link-list` | 1505 | 76 |
+| `/api/collaboration/list` | 539 | 39 |
+| `/api/system/list-intelligence-classes` | 298 | 4347 |
+| `/api/task/gate-list` | 1443 | 27 |
+| `/api/projects/agent-queue/graph/tiles` | 640 | 150 |
+
+The supervisor's production log inspection identified a fresh authenticated
+origin fetch on graph tile reads: ~3.9–4 s, 1,804 objects / ~10.5 MB, repeated
+85 times (request ids `8b4f671f`, `a8a66f19`). Tile payloads themselves are small.
+Graph reads now reuse the delivery observer's recent snapshot; cold or expired
+snapshots produce unknown without creating a store, waiting on its fetch lock,
+or contacting origin. Background/guarded observers still fetch. Current task
+identity and target checks still reject stale delivery evidence. Roster reads
+use live session settings directly and avoid resolving retired classes for idle
+historical workers, eliminating that source of repeated missing-class warnings.
+
+Production SQL tracing is unavailable to workers. On the disposable PostgreSQL
+at :5534, the repeatable `test_graph_initial_load_measurement` benchmark seeds
+100 completed epics + 5,000 live children (4 KB descriptions), 5,000 archived
+tasks and 4,900 edges. It prints SQL statement timing and EXPLAIN ANALYZE BUFFERS
+for the slowest statement; network Git is forbidden by an assertion.
+
+| Patched synthetic request | Total ms | SQL ms | SQL statements | Bytes |
+|---|---:|---:|---:|---:|
+| extent | 21.4 | 8.7 | 3 | 108 |
+| running target | 29.0 | 14.0 | 2 | 4 |
+| cold tiles | 885.5 | 189.4 | 33 | 98,327 |
+| warm tiles | 270.9 | 149.4 | 32 | 98,327 |
+
+The slowest SQL plan was the batched epic-delivery projection (25 ms on replay,
+1,012 shared-buffer hits), not an individual query per task. These synthetic
+numbers are not a controlled before/after comparison with production. Run the
+benchmark with `POSTGRES_TEST_DSN` pointing at a disposable database:
+`aq test -m perf -p no:xdist -s tests/perf/test_layout_api_statements.py -k graph_initial_load_measurement`.
+It reports timings without noisy wall-clock assertions; ordinary endpoint and
+observer regression tests enforce the no-network property for cold/warm/expired
+observations and identity changes. The <1 s / <3 s browser target still needs
+post-delivery verification on the deployed project; broad API contention remains
+visible in this baseline. No graph card or layout design was changed.
