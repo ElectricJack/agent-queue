@@ -1693,7 +1693,10 @@ class PromotionSourceRefusal(ValueError):
 
 async def check_source_green(client, trust, required, source):
     from src.integration.ci import (
-        AttestationError, AuthenticatedGitHubObserver, CIObservationDeferred, FailedCIObservation,
+        AttestationError,
+        AuthenticatedGitHubObserver,
+        CIObservationDeferred,
+        FailedCIObservation,
     )
 
     selected = trust.model_copy(update={"required_checks": required})

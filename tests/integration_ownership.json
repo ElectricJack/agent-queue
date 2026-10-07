@@ -8266,10 +8266,10 @@
     "src/commands/promote_commands.py::_source_inputs": {
       "reason": "Reads and validates the pinned promotion version and reviewed notes from the integration Git store."
     },
-    "src/commands/promote_commands.py::import from src.integration.promotion_notes import PREPARE_CONTEXT, NotesRefusal, assemble_notes_input, draft_notes, notes_metadata, previous_tag, semver, source_version, step_pr_body": {
-      "reason": "Promotion commands assemble immutable source notes, draft release content and validate source version and notes metadata."
+    "src/commands/promote_commands.py::import from src.integration.promotion_notes import PREPARE_CONTEXT, NotesRefusal, assemble_notes_input, authored_notes_section, draft_notes, notes_metadata, previous_tag, semver, source_version, step_has_version, step_pr_body": {
+      "reason": "Promotion commands assemble bounded immutable source notes, draft release content, validate source versions and authored notes sections, and build the size-limited promotion PR body."
     },
-    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, promotion_ref, check_source_green, PromotionSourceRefusal": {
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, PromotionSourceRefusal, check_source_green, promotion_ref": {
       "reason": "Promotion intents use integration step identity, result and private request ref, and require exact green source evidence."
     }
   },
@@ -14484,13 +14484,13 @@
       "reason": "Write-once authorization for this exact promotion request, source and target after its live PR gate and attestation pass. Permits missing-tag recovery only after Git independently proves target containment; the record does not assert publication, delivery or successful ref mutation."
     },
     "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_prepare::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
-      "line": 426,
+      "line": 443,
       "owner": "PromoteCommandsMixin._cmd_promote_prepare",
       "call": "insert",
-      "owner_fingerprint": "e24cf7627a6abd84ad425610f16458cc448f120b441c5533ebe5d99032888c1b",
+      "owner_fingerprint": "8cfde176c4ccdf6283bbc2c9ec7eb9d7ce9c53d35b7699d2eadeab7891619e7a",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Immutable release preparation inputs (step, version, source SHA and notes provenance) for an ordinary task; no ref replay authority or duplicate integration lifecycle. task_set refuses these daemon-owned keys."
+      "reason": "Immutable release preparation inputs (step, version, source SHA and optional notes provenance) for an ordinary task; no ref replay authority or duplicate integration lifecycle. Re-reviewed after moving the backmerge guard ahead of notes assembly and skipping notes for none-kind steps; task_set still refuses these daemon-owned keys."
     }
   },
   "generic_dependencies": {

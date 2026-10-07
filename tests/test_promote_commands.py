@@ -23,14 +23,16 @@ from src.database.tables import (
     tasks,
 )
 from src.git.github_contracts import GitHubAccessError, GitHubCredentialIdentity
+from src.integration.batches import BatchStore
 from src.integration.ci import ATTESTATION_CHECK_NAME, IntegrationTrustManifest
 from src.integration.delivery_observer import delivery_targets
-from src.integration.batches import BatchStore
 from src.integration.promotion_steps import cache_promotion_review, promotion_ref
 from src.integration.train import TrainLane
 from src.profiles.capabilities import DENY_ALL
-from tests.test_integration_gitops import commit, git, setup as setup
-from tests.test_promotion_steps import PromotionGitHub, promotion as promotion
+from tests.test_integration_gitops import commit, git
+from tests.test_integration_gitops import setup as setup
+from tests.test_promotion_steps import PromotionGitHub
+from tests.test_promotion_steps import promotion as promotion
 
 
 class IntentGitHub(PromotionGitHub):
@@ -480,7 +482,9 @@ def test_intent_contracts_have_typed_arguments_and_read_only_cache_commands():
 def test_intent_cli_forwards_exact_arguments(name, argv, args):
     from contextlib import asynccontextmanager
     from unittest.mock import patch
+
     from click.testing import CliRunner
+
     from src.cli.app import cli
 
     client = SimpleNamespace(
@@ -579,7 +583,7 @@ def _supervisor(project_id=None, session_id="supervisor"):
     from src.profiles.capabilities import CapabilityPolicy
 
     policy = CapabilityPolicy.from_namespaces(
-        aq_commands=["promote_request", "promote_cancel", "promote_status", "promote_list"],
+        aq_commands=["promote_prepare", "promote_request", "promote_cancel", "promote_status", "promote_list"],
         harness_tools=[],
         plugin_tools=[],
     )

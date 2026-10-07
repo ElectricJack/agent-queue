@@ -124,7 +124,9 @@ REFUSALS = (
     "version_not_increasing",
     "notes_stale",
     "notes_range_invalid",
+    "notes_range_too_large",
     "notes_source_missing",
+    "promotion_body_too_large",
 )
 
 

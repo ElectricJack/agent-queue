@@ -3,23 +3,45 @@
 import asyncio
 import copy
 import hashlib
+import json
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import insert, select, update
 
+from src.commands.contracts import CONTRACTS
+from src.commands.contracts.promote import PromoteRequestArgs
+from src.commands.handler import CommandHandler
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+from src.config import AppConfig
 from src.database.tables import (
-    archived_tasks, events, integration_batches, projects, task_branch_origins,
-    task_completion_records, task_labels, tasks,
+    archived_tasks,
+    events,
+    integration_batches,
+    projects,
+    task_branch_origins,
+    task_completion_records,
+    task_labels,
+    task_metadata,
+    tasks,
 )
 from src.git.github_contracts import GitHubAccessError
 from src.integration.promotion_notes import (
-    assemble_notes_input, draft_notes, notes_metadata, previous_tag, render_release_notes,
+    MAX_PR_BODY_BYTES,
+    NOTES_TRUNCATION_MARKER,
+    NotesRefusal,
+    assemble_notes_input,
+    draft_notes,
+    notes_metadata,
+    previous_tag,
+    render_release_notes,
+    step_pr_body,
 )
 from src.profiles.capabilities import DENY_ALL
-from tests.test_integration_gitops import commit, git, setup as setup
-from tests.test_promote_commands import promote_env as promote_env, request
+from tests.test_integration_gitops import commit, git
+from tests.test_integration_gitops import setup as setup
+from tests.test_promote_commands import _supervisor, request
+from tests.test_promote_commands import promote_env as promote_env
 from tests.test_promotion_steps import promotion as promotion
 
 
@@ -135,6 +157,7 @@ async def test_request_refuses_source_before_any_intent_or_pr(promote_env, condi
 async def test_nested_epic_includes_child_migrations_archived_summary_and_reverts(promote_env):
     e = promote_env
     step = await configure(e, notes_kind="file_template", bootstrap=e.source)
+    git(e.repo.store, "push", "origin", e.source + ":refs/heads/main")
     feature = commit(e.repo.store, {"feature.txt": "feature\n",
                      "migrations/versions/new.py": "migration\n"}, base=e.source)
     side = commit(e.repo.store, {"epic.txt": "epic\n"}, base=e.source)
@@ -205,13 +228,18 @@ async def test_formats_prior_hotfix_exclusion_and_prepare_digest_stability(promo
 
 
 @pytest.mark.parametrize("kind", ["file_template", "changelog_heading"])
-async def test_pr_preserves_authored_notes_and_renders_operator_input(promote_env, kind):
+@pytest.mark.parametrize("oversized", [False, True])
+async def test_pr_preserves_authored_notes_and_renders_operator_input(promote_env, kind, oversized):
     e = promote_env
     step = await configure(e, notes_kind=kind, bootstrap=e.source)
     value = await notes(e, step, e.source)
     body = draft_notes(value, kind=kind, version="0.2.0") + "\nHuman release edit.\n"
+    if oversized:
+        body += "🔧" * MAX_PR_BODY_BYTES + "\n"
+    section = body
     if kind == "changelog_heading":
-        body += "\n## [0.1.0]\nOld release must stay out of this PR.\n"
+        section += "\n"
+        body = "# Changelog\n\n" + section + "## [0.1.0]\nOld release must stay out of this PR.\n"
     source = commit(e.repo.store, {step["notes"]["path"].format(version="0.2.0"): body}, base=e.source)
     git(e.repo.store, "push", "origin", source + ":refs/heads/dev")
     e.github.runs[source] = "success"
@@ -220,7 +248,9 @@ async def test_pr_preserves_authored_notes_and_renders_operator_input(promote_en
     assert "## Release notes" in e.github.body and "## Operator notes" in e.github.body
     assert "Human release edit." in e.github.body
     assert "Old release must stay out" not in e.github.body
-    assert result["promotion"]["notes_sha256"] == hashlib.sha256(body.encode()).hexdigest()
+    assert result["promotion"]["notes_sha256"] == hashlib.sha256(section.encode()).hexdigest()
+    assert len(e.github.body.encode()) <= MAX_PR_BODY_BYTES
+    assert (NOTES_TRUNCATION_MARKER in e.github.body) is oversized
     assert result["promotion"]["notes_input"]["range"]["head"] == source
     assert value["source_digest"] in e.github.body
 
@@ -250,13 +280,17 @@ async def test_normal_worker_cannot_assemble_cross_task_notes_or_prepare(promote
 
 async def test_request_pr_renders_source_summary_and_migration_guidance(promote_env):
     e = promote_env
-    step = await configure(e, bootstrap=e.source)
+    step = await configure(e, notes_kind="file_template", bootstrap=e.source)
     source = commit(e.repo.store, {"feature.txt": "feature\n", "migrations/versions/feature.py": "migration\n"}, base=e.source)
     head = merge_source(e, e.source, source, "feature")
     await task_row(e, "feature", summary="Adds useful release behavior")
+    value = await notes(e, step, head)
+    head = commit(e.repo.store, {"notes/0.2.0.md": draft_notes(
+        value, kind="file_template", version="0.2.0",
+    )}, base=head)
     git(e.repo.store, "push", "origin", head + ":refs/heads/dev")
     e.github.runs[head] = "success"
-    result = await request(e)
+    result = await request(e, notes_reviewed=True)
     assert result["success"], result
     assert "Adds useful release behavior" in e.github.body
     assert "migrations/versions/feature.py" in e.github.body
@@ -300,3 +334,288 @@ async def test_notes_exclude_control_tasks_and_keep_bare_merges(promote_env):
     assert value["sources"] == []
     assert "Manual merge without trailer" in render_release_notes(value)
     assert value["source_digest"] == hashlib.sha256(b"").hexdigest()
+
+
+@pytest.mark.parametrize("versioning", [
+    {"kind": "none"}, {"kind": "custom", "tag_format": "build-{sha12}"},
+])
+async def test_unversioned_range_uses_target_tip_on_long_history(promote_env, monkeypatch, versioning):
+    e = promote_env
+    step = await configure(e, bootstrap=e.base)
+    step["versioning"] = versioning
+    monkeypatch.setattr("src.integration.promotion_notes.MAX_NOTES_COMMITS", 8)
+    # History before the target tip must not consume the bounded range budget.
+    tree = git(e.repo.store, "rev-parse", e.source + "^{tree}")
+    target = e.source
+    for index in range(32):
+        target = git(e.repo.store, "commit-tree", tree, "-p", target, "-m", f"Old history {index}")
+    git(e.repo.store, "push", "origin", target + ":refs/heads/main")
+    head = commit(e.repo.store, {"recent.txt": "new change"}, base=target)
+    assert await previous_tag(e.ops, e.repo, step) is None
+    value = await notes(e, step, head, {"sha": e.base, "tag": "old-build"})
+    assert value["range"] == {"base": target, "head": head, "previous_tag": None}
+    assert [entry["sha"] for entry in value["bare_commits"]] == [head]
+    body = step_pr_body(step, head, "request", value)
+    assert "Old history" not in body and len(body.encode()) <= MAX_PR_BODY_BYTES
+    # The next promotion starts where the target has advanced, without a tag.
+    git(e.repo.store, "push", "origin", head + ":refs/heads/main")
+    next_head = commit(e.repo.store, {"next.txt": "another change"}, base=head)
+    assert (await notes(e, step, next_head))["range"]["base"] == head
+
+
+@pytest.mark.parametrize("bootstrap", [False, True])
+async def test_first_versioned_range_uses_bootstrap_or_target_tip(promote_env, bootstrap):
+    e = promote_env
+    step = await configure(e, notes_kind="file_template", bootstrap=e.base if bootstrap else None)
+    git(e.repo.store, "push", "origin", e.source + ":refs/heads/main")
+    head = commit(e.repo.store, {"recent.txt": "new change"}, base=e.source)
+    assert await previous_tag(e.ops, e.repo, step) is None
+    assert (await notes(e, step, head))["range"]["base"] == (e.base if bootstrap else e.source)
+
+
+async def test_notes_range_limit_refuses_before_reading_commit_messages(promote_env, monkeypatch):
+    e = promote_env
+    step = await configure(e, notes_kind="file_template")
+    monkeypatch.setattr("src.integration.promotion_notes.MAX_NOTES_COMMITS", 2)
+    head = e.source
+    tree = git(e.repo.store, "rev-parse", head + "^{tree}")
+    for index in range(3):
+        head = git(e.repo.store, "commit-tree", tree, "-p", head, "-m", f"New history {index}")
+    e.ops.run = AsyncMock(wraps=e.ops.run)
+    with pytest.raises(NotesRefusal) as caught:
+        await notes(e, step, head)
+    assert caught.value.outcome == "notes_range_too_large"
+    assert any(call.args[1:3] == ("rev-list", "--topo-order")
+               and "--max-count=3" in call.args for call in e.ops.run.await_args_list)
+    assert not any(call.args[1] == "log" for call in e.ops.run.await_args_list)
+
+
+@pytest.mark.parametrize("command", ["request", "prepare", "notes_input"])
+async def test_disabled_notes_skip_assembly_and_unknown_task_trailers(promote_env, monkeypatch, command):
+    e = promote_env
+    await configure(e)
+    source = commit(e.repo.store, {"unknown.txt": "unknown source"}, base=e.source)
+    head = merge_source(e, e.source, source, "unknown-task")
+    git(e.repo.store, "push", "origin", head + ":refs/heads/dev")
+    e.github.runs[head] = "success"
+    assembler = AsyncMock(side_effect=AssertionError("disabled notes were assembled"))
+    monkeypatch.setattr("src.commands.promote_commands.assemble_notes_input", assembler)
+    if command == "request":
+        result = await request(e)
+        assert result["promotion"]["notes_input"] is None
+        assert result["promotion"]["notes_sha256"] is None
+        assert "## Release notes" not in e.github.body
+        assert len(e.github.body.encode()) <= MAX_PR_BODY_BYTES
+    elif command == "prepare":
+        result = await e.handler._cmd_promote_prepare({
+            "project_id": "p", "step_id": "release", "bump": "patch",
+        })
+        assert result["notes_input"] is None and result["draft"] is None
+        task = await e.db.get_task(result["task_id"])
+        assert "draft the configured notes" not in task.description
+    else:
+        result = await e.handler._cmd_integration_promotion_notes_input({
+            "project_id": "p", "step_id": "release",
+        })
+        assert result["notes_input"] is None
+    assert result["success"], result
+    assembler.assert_not_awaited()
+
+
+@pytest.mark.parametrize("versioning", [
+    {"kind": "none"}, {"kind": "custom", "tag_format": "build-{sha12}"},
+])
+async def test_request_without_version_skips_all_release_history(promote_env, monkeypatch, versioning):
+    e = promote_env
+    step = await configure(e)
+    step["versioning"] = versioning
+    async with e.db._engine.begin() as conn:
+        await conn.execute(update(projects).values(promotion_flow=[step]))
+    e.ops.run = AsyncMock(wraps=e.ops.run)
+    monkeypatch.setattr("src.commands.promote_commands.previous_tag",
+                        AsyncMock(side_effect=AssertionError("unversioned tag inventory")))
+    result = await request(e)
+    assert result["success"], result
+    assert result["promotion"]["version"] is None
+    assert result["promotion"]["notes_input"] is None
+    assert not any(call.args[1] in {"log", "rev-list"} for call in e.ops.run.await_args_list)
+
+
+def pr_notes_input():
+    return {"range": {"base": "a" * 40, "head": "b" * 40},
+            "source_digest": "c" * 64, "sources": [], "bare_commits": [],
+            "migration_files": ["migrations/versions/add.py"]}
+
+
+@pytest.mark.parametrize("authored", [False, True])
+def test_pr_body_caps_notes_and_keeps_required_evidence(authored):
+    value = pr_notes_input()
+    text = "🔧" * MAX_PR_BODY_BYTES
+    value["bare_commits"] = [{"subject": text}]
+    body = step_pr_body({"source": "dev", "target": "main"}, "b" * 40, "request",
+                        value, text if authored else None)
+    assert len(body.encode()) <= MAX_PR_BODY_BYTES
+    assert NOTES_TRUNCATION_MARKER in body
+    assert "## Operator notes" in body and value["source_digest"] in body
+    assert "migrations/versions/add.py" in body
+    assert body.endswith("AQ-Promotion-Request: request\n")
+
+
+def test_pr_body_exact_size_and_untruncated_authored_text():
+    step, value = {"source": "dev", "target": "main"}, pr_notes_input()
+    required = step_pr_body(step, "b" * 40, "request", value, "")
+    release = "x" * (MAX_PR_BODY_BYTES - len(required.encode()))
+    body = step_pr_body(step, "b" * 40, "request", value, release)
+    assert len(body.encode()) == MAX_PR_BODY_BYTES and release in body
+    assert NOTES_TRUNCATION_MARKER not in body
+
+
+@pytest.mark.parametrize("notes_enabled", [False, True])
+def test_pr_body_refuses_when_required_evidence_cannot_fit(notes_enabled):
+    value = pr_notes_input() if notes_enabled else None
+    if value:
+        value["migration_files"] = ["x" * MAX_PR_BODY_BYTES]
+    identity = "request" if notes_enabled else "x" * MAX_PR_BODY_BYTES
+    with pytest.raises(NotesRefusal) as caught:
+        step_pr_body({"source": "dev", "target": "main"}, "b" * 40, identity, value)
+    assert caught.value.outcome == "promotion_body_too_large"
+
+
+async def test_required_pr_body_limit_refuses_before_any_ref_or_intent(promote_env, monkeypatch):
+    e = promote_env
+    monkeypatch.setattr("src.integration.promotion_notes.MAX_PR_BODY_BYTES", 100)
+    before = git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/")
+    result = await request(e)
+    assert result["outcome"] == "promotion_body_too_large", result
+    assert e.github.created == 0
+    assert git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/") == before
+    async with e.db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.id)) is None
+        assert await conn.scalar(select(integration_batches.c.id)) is None
+
+
+@pytest.mark.parametrize("outcome", ["notes_range_too_large", "promotion_body_too_large"])
+async def test_notes_limits_survive_registered_request_adapter(promote_env, monkeypatch, outcome):
+    e = promote_env
+    if outcome == "notes_range_too_large":
+        await configure(e, notes_kind="file_template")
+        source = commit(e.repo.store, {"notes/0.2.0.md": "Authored notes\n"}, base=e.source)
+        git(e.repo.store, "push", "origin", source + ":refs/heads/dev")
+        e.github.runs[source] = "success"
+        monkeypatch.setattr("src.integration.promotion_notes.MAX_NOTES_COMMITS", 1)
+    else:
+        monkeypatch.setattr("src.integration.promotion_notes.MAX_PR_BODY_BYTES", 100)
+    # Exercise the registered boundary and real dispatch, rather than calling
+    # the mixin directly or synthesizing a handler's refusal response.
+    e.handler.orchestrator.db = e.db
+    handler = CommandHandler(e.handler.orchestrator, AppConfig())
+    handler._promotion_manifest = e.handler._promotion_manifest
+    monkeypatch.setattr("src.commands.contracts.builtin._handler", lambda: handler)
+    registration = CONTRACTS.require("promote_request")
+    before = git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/")
+    result = await registration.invoke(PromoteRequestArgs(
+        project_id="p", step_id="release", notes_reviewed=True,
+    ), None)
+    assert result.outcome == outcome, result
+    spec = next(spec for spec in registration.contract.execution.outcomes if spec.name == outcome)
+    assert spec.classification == "failure"
+    assert e.github.created == 0
+    assert git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/") == before
+    async with e.db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.id)) is None
+        assert await conn.scalar(select(integration_batches.c.id)) is None
+
+
+@pytest.mark.parametrize("command", ["request", "prepare", "prepare_older_version", "notes_input"])
+@pytest.mark.parametrize("target_moved", [False, True])
+async def test_outstanding_hotfix_refuses_before_notes_range(promote_env, command, target_moved):
+    e = promote_env
+    await configure(e, notes_kind="changelog_heading")
+    hotfix = commit(e.repo.store, {"hotfix.txt": "hotfix"}, base=e.base)
+    git(e.repo.store, "tag", "v0.1.9", hotfix)
+    git(e.repo.store, "push", "origin", "refs/tags/v0.1.9")
+    if target_moved:
+        git(e.repo.store, "push", "origin", hotfix + ":refs/heads/main")
+    source = commit(e.repo.store, {"CHANGELOG.md": "## [0.2.0]\nAuthored notes\n"}, base=e.source)
+    git(e.repo.store, "push", "origin", source + ":refs/heads/dev")
+    e.github.runs[source] = "success"
+    await task_row(e, "pending-backmerge", kind="backmerge")
+    async with e.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "pending-backmerge").values(status="DEFINED"))
+        await conn.execute(insert(task_metadata).values(
+            task_id="pending-backmerge", key="backmerge",
+            value=json.dumps({"source_sha": hotfix, "target_ref": "refs/heads/main"}),
+        ))
+    args = {"project_id": "p", "step_id": "release"}
+    if command in {"prepare", "prepare_older_version"}:
+        version_choice = {"version": "0.1.8"} if command == "prepare_older_version" else {"bump": "patch"}
+        result = await e.handler._cmd_promote_prepare({**args, **version_choice})
+    elif command == "request":
+        result = await request(e, notes_reviewed=True)
+    else:
+        result = await e.handler._cmd_integration_promotion_notes_input(args)
+    assert result["outcome"] == "backmerge_pending", result
+    assert e.github.created == 0
+    async with e.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.id)) is None
+
+
+@pytest.mark.parametrize("condition,outcome", [
+    ("rate_limit", "rate_limited"), ("malformed_producer", "promotion_source_untrusted"),
+    ("wrong_head", "promotion_source_untrusted"), ("foreign_producer", "promotion_source_red"),
+    ("pr_only", "promotion_source_pending"),
+])
+async def test_request_source_trust_and_rate_limit_refuse_before_writes(promote_env, condition, outcome):
+    e = promote_env
+    listing = e.github.paged_items
+    if condition == "pr_only":
+        e.github.runs.clear()
+        e.github.pr_runs[e.source] = "success"
+
+    async def observe(path, *, key):
+        if condition == "rate_limit":
+            raise GitHubAccessError("rate_limited", "source CI rate limited", retry_at=1234.5)
+        rows = await listing(path, key=key)
+        if key == "check_runs":
+            for row in rows:
+                if condition == "malformed_producer":
+                    row["app"] = None
+                elif condition == "foreign_producer":
+                    row["app"] = {"id": 999}
+                elif condition == "wrong_head":
+                    row["head_sha"] = e.base
+        return rows
+
+    e.github.paged_items = observe
+    before = git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/")
+    result = await request(e)
+    assert result["outcome"] == outcome, result
+    if condition == "rate_limit":
+        assert result["retry_at"] == 1234.5
+    assert e.github.created == 0
+    assert git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/") == before
+    async with e.db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.id)) is None
+        assert await conn.scalar(select(integration_batches.c.id)) is None
+
+
+@pytest.mark.parametrize("command", ["prepare", "request"])
+@pytest.mark.parametrize("project_id", ["p", "other-project"])
+async def test_prepare_and_request_enforce_supervisor_project_scope(promote_env, command, project_id):
+    e = promote_env
+    await configure(e)
+    with principal_context(_supervisor(project_id)):
+        if command == "prepare":
+            result = await e.handler._cmd_promote_prepare({
+                "project_id": "p", "step_id": "release", "bump": "patch",
+            })
+        else:
+            result = await request(e)
+    assert result["success"] is (project_id == "p"), result
+    assert result["outcome"] == ("unauthorized" if project_id != "p" else
+                                  "prepared" if command == "prepare" else "requested")
+    if project_id != "p":
+        assert e.github.created == 0
+        async with e.db._engine.connect() as conn:
+            assert await conn.scalar(select(tasks.c.id)) is None
+            assert await conn.scalar(select(integration_batches.c.id)) is None
