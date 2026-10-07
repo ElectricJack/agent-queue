@@ -2243,6 +2243,8 @@ class HostedGitHub:
         self.reviews = []
         self.permissions = {"alice": "write", "bob": "write", "jack": "write"}
         self.pulls = {}
+        #: PR url -> GitHub's ``mergeable_state``: "clean" unless set.
+        self.mergeability: dict[str, str] = {}
         self.origin = None
         self.unavailable = False
         self.observed: list[str] = []
@@ -2276,8 +2278,11 @@ class HostedGitHub:
         merged = (await asyncio.to_thread(subprocess.run,
             ["git", "merge-base", "--is-ancestor", head, main],
             cwd=self.origin.url, check=False)).returncode == 0
+        state = self.mergeability.get(url, "clean")
         return {"state": "closed" if merged else "open", "merged": merged,
                 "merge_commit_sha": main if merged else None,
+                "mergeable": None if state == "unknown" else state != "dirty",
+                "mergeable_state": state,
                 "head": {"ref": branch, "sha": head, "repo": {"id": 123}},
                 "base": {"ref": "main", "repo": {"id": 123}}}
 
@@ -3416,6 +3421,151 @@ async def test_root_pr_gate_refuses_before_freeze_then_admits_exact_green_head(w
     pull = await github.pull_request(url)
     assert pull["merged"] and pull["state"] == "closed"
     git(world.origin.url, "merge-base", "--is-ancestor", pull["merge_commit_sha"], "main")
+
+
+async def test_root_pr_gate_names_a_conflicting_leaf_pr_and_starts_nothing(world):
+    """GitHub runs no pull_request workflow for a conflicting PR: never wait for one."""
+    head = await completed(world, "leaf")
+    now = [1000.0]
+    train, github, _ = await hosted_train(world, clock=lambda: now[0])
+    url = (await world.db.get_task("leaf")).pr_url
+    github.pr_runs.clear()
+    github.runs[head] = "success"  # A push-event run is never a PR check.
+    github.mergeability[url] = "dirty"
+    main = git(world.origin.url, "rev-parse", "main")
+    for _ in range(2):
+        visit = await train.visit(MAIN)
+        assert (visit.state, visit.batch_id) == ("blocked", None), visit
+        [refusal] = visit.detail["blockers"]
+        assert (refusal["code"], refusal["task_id"], refusal["pr_url"], refusal["source_sha"],
+                refusal["default_sha"], refusal["epic"]) == (
+            "pr_conflicting", "leaf", url, head, main, False)
+        assert "merge the default branch into the task branch" in refusal["action"]
+        assert refusal["action"] in refusal["detail"] and "refresh" not in refusal
+        now[0] += 61
+    async with world.db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_batches.c.id))).first() is None
+        assert (await conn.execute(select(events.c.id).where(
+            events.c.event_type == "integration.epic_refresh"))).first() is None
+    assert git(world.origin.url, "rev-parse", "refs/heads/aq/leaf") == head
+    await train.tick()
+    await train.drain()
+    status = await IntegrationStatusService(world.db, git_first="active", train=train).control_status("p")
+    assert "pr_conflicting" in {blocker["code"] for blocker in status["blockers"]}
+    # Resolved on GitHub: the clean path admits the exact green head as before.
+    github.mergeability[url] = "clean"
+    github.pr_runs[head] = "success"
+    now[0] += 601
+    assert (await train.visit(MAIN)).state == "testing"
+
+
+async def test_root_pr_gate_retries_unknown_mergeability_soon_then_backs_off(world):
+    head = await completed(world, "leaf")
+    now = [1000.0]
+    train, github, _ = await hosted_train(world, clock=lambda: now[0])
+    url = (await world.db.get_task("leaf")).pr_url
+    github.pr_runs.clear()
+    github.mergeability[url] = "unknown"
+    first = (await train.visit(MAIN)).detail["blockers"][0]
+    assert (first["code"], first["mergeable"]) == ("awaiting_pr_checks", "unknown")
+    assert first["retry_at"] == now[0] + 15
+    now[0] += 16
+    again = (await train.visit(MAIN)).detail["blockers"][0]
+    assert (again["code"], again["mergeable"]) == ("awaiting_pr_checks", "unknown")
+    # GitHub still computing: the ordinary doubling backoff, never a conflict.
+    assert again["retry_seconds"] == 60 and again["retry_at"] == now[0] + 60
+    github.mergeability[url] = "dirty"
+    now[0] += 61
+    assert (await train.visit(MAIN)).detail["blockers"][0]["code"] == "pr_conflicting"
+    github.mergeability[url] = "unknown"
+    github.pr_runs[head] = "success"
+    now[0] += 601
+    # Green exact-head PR checks admit without waiting on mergeability.
+    assert (await train.visit(MAIN)).state == "testing"
+
+
+@pytest.mark.parametrize("collected_epic", ["controlled_clock"], indirect=True)
+async def test_conflicting_epic_pr_starts_one_attested_refresh_per_head_pair(collected_epic):
+    from src.integration.stacked_branches import EpicRefresh
+
+    case = collected_epic
+    head = await collect_epic(case)
+    await review_epic(case)
+    [opened] = (await case.train.visit(case.target)).detail["epic_completions"]
+    url = opened["pr_url"]
+    git(case.origin.clone, "fetch", "-q", "origin")
+    git(case.origin.clone, "checkout", "-q", "-B", "main", "origin/main")
+    (case.origin.clone / "unrelated.txt").write_text("default moves on\n")
+    git(case.origin.clone, "add", "unrelated.txt")
+    git(case.origin.clone, "commit", "-qm", "default moves on")
+    git(case.origin.clone, "push", "-q", "origin", "main")
+    default = git(case.origin.url, "rev-parse", "main")
+    case.github.pr_runs.pop(head, None)
+    case.github.mergeability[url] = "dirty"
+    assert case.github.runs[head] == "success"  # Push-event runs are not PR checks.
+
+    async def refreshes():
+        async with case.db._engine.connect() as conn:
+            batches = (await conn.execute(select(integration_batches.c.id).where(
+                integration_batches.c.id.like("train-epic-refresh-%")))).scalars().all()
+            logged = (await conn.execute(select(events.c.payload).where(
+                events.c.event_type == "integration.epic_refresh"))).scalars().all()
+        return batches, [json.loads(payload) for payload in logged]
+
+    visit = await case.train.visit(MAIN)
+    assert (visit.state, visit.batch_id) == ("blocked", None), visit
+    [conflict] = [b for b in visit.detail["blockers"] if b["code"] == "pr_conflicting"]
+    assert (conflict["task_id"], conflict["pr_url"], conflict["source_sha"],
+            conflict["default_sha"], conflict["epic"]) == ("epic", url, head, default, True)
+    assert conflict["refresh"]["outcome"] == "started"
+    [batch_id], [event] = await refreshes()
+    assert conflict["refresh"]["batch_id"] == batch_id
+    assert (event["trigger"], event["pr_url"], event["target_sha"], event["default_sha"]) == (
+        "pr_conflicting", url, head, default)
+    current = await case.train.batches.current(case.target)
+    assert current.id == batch_id and current.epic_refresh
+
+    # The same (epic head, default head) pair never starts a second refresh:
+    # not on a cached gate result, a fresh PR read, or a restarted daemon.
+    for advance in (0, 61):
+        case.now[0] += advance
+        again = await case.train.visit(MAIN)
+        [repeat] = [b for b in again.detail["blockers"] if b["code"] == "pr_conflicting"]
+        assert repeat["refresh"] == conflict["refresh"]
+    restarted = await EpicRefresh(case.db).start("epic")
+    assert (restarted["outcome"], restarted["batch_id"]) == ("running", batch_id)
+    assert await refreshes() == ([batch_id], [event])
+    assert git(case.origin.url, "rev-parse", "main") == default
+
+    # The train's own epic visits test and publish the refresh.
+    testing = await case.train.visit(case.target)
+    assert testing.state == "testing", testing
+    case.github.runs[testing.candidate_sha] = "success"
+    delivered = await case.train.visit(case.target)
+    assert delivered.state == "delivered", delivered
+    refreshed = git(case.origin.url, "rev-parse", "aq/epic")
+    for source in (head, default):
+        git(case.origin.url, "merge-base", "--is-ancestor", source, refreshed)
+    case.github.mergeability[url] = "clean"
+    # The refreshed head is a new subject: reviewed and collected again, and
+    # withheld from the root until it has its own exact-head PR checks.
+    assert (await case.train.visit(MAIN)).detail["blockers"][0]["code"] == "epic_completion_pending"
+    await review_epic(case, decision="approve-refreshed")
+    del case.github.pr_runs[refreshed]
+    assert (await case.train.visit(case.target)).state == "idle"
+    assert (await case.db.get_task_completion("epic")).commits == [refreshed]
+    case.now[0] += 601
+    waiting = await case.train.visit(MAIN)
+    assert waiting.batch_id is None
+    assert [(b["code"], b["source_sha"]) for b in waiting.detail["blockers"]] == [
+        ("awaiting_pr_checks", refreshed)]
+    assert len((await refreshes())[0]) == 1
+    case.github.pr_runs[refreshed] = "success"
+    case.now[0] += 601
+    admitted = await case.train.visit(MAIN)
+    assert admitted.state == "testing", admitted
+    frozen = await BatchStore(case.db).members(admitted.batch_id)
+    assert [(m.task_id, m.source_sha) for m in frozen] == [("epic", refreshed)]
 
 
 async def test_train_opens_three_child_epic_pr_from_completion_ref(collected_epic):

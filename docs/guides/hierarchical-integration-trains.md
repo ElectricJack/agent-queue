@@ -181,9 +181,11 @@ proof.
 
 An explicit `no_change` proof also releases a prerequisite: its passing close
 must record an empty commit list, its retained completion head must equal its
-recorded base, and Git must contain that base on the default branch. Missing or
-contradictory evidence keeps the dependent withheld. The root train uses the
-same proof and does not batch a completion that added no changes.
+recorded base, and Git must contain that base on the default branch. Completions
+that do not meet these conditions use the exact whole-source delivery proof;
+an empty commit list cannot override containment of the retained source. Missing
+provenance keeps the dependent withheld. The root train uses the same proof and
+does not batch a completion that added no changes.
 
 The project integration policy defaults to
 `cross_epic_prerequisites: default_branch`; an explicit `completed` value restores
@@ -216,6 +218,17 @@ visits and respect repository rate-limit pauses. Any open collection or refresh
 batch on the epic withholds its cross-epic dependents until that batch settles.
 Repairs for failed or missing CI start from the tested refresh candidate; conflict
 repairs start from the partial candidate containing the successful merges.
+
+GitHub runs no `pull_request` workflows for a PR that conflicts with its base, so
+a conflicting root PR would wait for checks forever. When the PR read reports it
+conflicting, the root's blocker is `pr_conflicting`, with the PR URL and the
+default-branch SHA; a still-computing mergeability is a short `awaiting_pr_checks`
+retry. For an epic root the train's next visit starts the same attested refresh as
+`refresh-epic --apply`, once per (epic head, default head) pair, and the blocker's
+`refresh` names its batch. The refreshed head is held for its own review and its
+own exact-head PR checks. For a leaf root nothing is started: merge the default
+branch into the task branch, push it and close the task again. Push-event runs
+never count as PR checks.
 
 For an existing historical subject, `engine-transfer` and
 `development-engine-transfer` offer a forward-only audited transfer to

@@ -226,7 +226,7 @@ function Inner(props: LayoutCanvasProps) {
   // hidden, read only from whatever the "all" variant's extent already sits
   // in the query cache -- never a request of its own.
   const hiddenFinishedCount = useHiddenFinishedCount(projectIds, requestVariant);
-  const { fitBounds, setCenter } = useReactFlow();
+  const { fitBounds, fitView, setCenter, zoomIn, zoomOut } = useReactFlow();
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [viewport, setViewport] = useState<Viewport | null>(initialViewport);
@@ -627,6 +627,15 @@ function Inner(props: LayoutCanvasProps) {
       wrapRef.current?.focus({ preventScroll: true });
       return;
     }
+    if (!event.ctrlKey && !event.metaKey && !event.altKey
+      && (event.key === "+" || event.key === "=" || event.key === "-" || event.key === "0")) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "0") void fitView({ duration: 200 });
+      else if (event.key === "-") void zoomOut({ duration: 200 });
+      else void zoomIn({ duration: 200 });
+      return;
+    }
     const taskButton = target.closest<HTMLButtonElement>("button[data-task-id], button[data-graph-node-id]");
     if (target.closest("button, a, summary") && !taskButton) return;
     const fromId = taskButton?.dataset.graphNodeId ?? taskButton?.dataset.taskId ?? kbFocusId ?? selectedId;
@@ -704,8 +713,10 @@ function Inner(props: LayoutCanvasProps) {
           selectionKeyCode={null}
           disableKeyboardA11y
           nodeClickDistance={5}
-          panOnScroll
-          zoomOnScroll={false}
+          panOnDrag
+          panOnScroll={false}
+          zoomOnScroll
+          zoomOnPinch
           proOptions={{ hideAttribution: true }}
           onNodeClick={(_, node) => openNode(node)}
           onNodeDoubleClick={(_, node) => enterNode(node)}

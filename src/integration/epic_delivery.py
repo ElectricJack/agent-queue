@@ -1065,7 +1065,8 @@ class EpicDeliveryProjection:
     """Batched, read-only fact gathering for :func:`classify_epic_delivery`."""
 
     def __init__(
-        self, db, *, clock=time.time, lease_ttl: float | None = None, delivery: Any = None
+        self, db, *, clock=time.time, lease_ttl: float | None = None, delivery: Any = None,
+        cached_only: bool = False,
     ) -> None:
         self.db = db
         self.clock = clock
@@ -1075,6 +1076,7 @@ class EpicDeliveryProjection:
         # Without one nothing is claimed about delivery beyond the train
         # evidence below, so an unobserved daemon keeps today's reading.
         self.delivery = delivery if delivery is not None else getattr(db, "_delivery_observer", None)
+        self.cached_only = cached_only
 
     async def for_tasks(self, task_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
         """Return ``{task_id: result}`` for every given task that has children.
@@ -1136,7 +1138,8 @@ class EpicDeliveryProjection:
             # read window is reused rather than refetched per poll; a guarded
             # writer is the only thing that must fetch.
             view = await observer.observe(
-                candidates, max_age=getattr(observer, "READ_MAX_AGE", 0.0)
+                candidates, max_age=getattr(observer, "READ_MAX_AGE", 0.0),
+                **({"cached_only": True} if self.cached_only else {}),
             )
             async with self.db._engine.connect() as conn:
                 verified = await view.verified_on(conn, candidates)

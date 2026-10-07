@@ -2363,3 +2363,40 @@ async def test_list_review_wait_lookup_is_skipped_for_an_empty_page(db, client_f
     assert r.status_code == 200
     assert r.json()["nodes"] == []
     assert [s for s in statements if "doc_reviews" in s] == []
+
+
+async def test_graph_delivery_reads_never_fetch_git(db, client_factory, tmp_path):
+    """Cold tiles/list/node reads must not clone or fetch to decorate a card."""
+    from unittest.mock import AsyncMock
+
+    from src.database.tables import projects
+    from src.git.manager import GitManager
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.models import RepoConfig, RepoSourceType
+
+    await seed(db)
+    await db.create_repo(RepoConfig(
+        id="graph-repo", project_id="p1", source_type=RepoSourceType.LINK, url="https://example.invalid/graph.git",
+    ))
+    async with db._engine.begin() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p1").values(
+            integration_repository_id="graph-repo", hierarchical_integration_mode="development",
+        ))
+        await conn.execute(update(tasks_table).where(
+            tasks_table.c.id.in_(["e", "c0", "c1", "pkg", "g0", "g1"]),
+        ).values(status="COMPLETED"))
+    observer = DeliveryObserver(db, git=GitManager(), data_dir=tmp_path)
+    observer._store = AsyncMock(side_effect=AssertionError("graph must not fetch Git"))
+    db.set_delivery_observer(observer)
+    async with client_factory() as ac:
+        tiles = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+        listed = await ac.post("/api/projects/p1/graph/list", json=ALL)
+        node = await ac.get("/api/projects/p1/graph/node/e?variant=all")
+    for response in (tiles, listed, node):
+        assert response.status_code == 200
+        body = response.json()
+        nodes = body.get("nodes", [body.get("node")])
+        epic = next(n for n in nodes if n["id"] == "e")
+        assert epic["delivery"]["state"] == "unknown"
+        assert epic["delivery"]["evidence"] == "unavailable"
+    observer._store.assert_not_awaited()

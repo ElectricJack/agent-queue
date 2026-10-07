@@ -992,21 +992,8 @@ class EpicRefresh:
         if self.train is None:
             raise ValueError("the Git-first integration train is unavailable")
         if current is None:
-            git, store = observed.observation.git, observed.observation.store
-            base = await git.arun_git_result(
-                ["merge-base", result["target_sha"], result["default_sha"]], cwd=store,
-            )
-            if base.returncode:
-                raise ValueError("epic and default branch have no common base")
-            member = BatchMember(task_id, result["default_sha"], base.stdout.strip())
-            key = hashlib.sha256(repr((target.key, member, result["target_sha"])).encode()).hexdigest()
-            batch = Batch("train-epic-refresh-" + key, target.project_id, target.repository_id,
-                          target.target_ref, created_at=self.clock())
-            tree = await git.atree_sha(store, member.source_sha)
-            if await self.identity(task_id) != row or not await observed.is_fresh():
-                raise ValueError("epic identity changed during refresh")
-            current = await BatchStore(self.db, clock=self.clock).freeze(
-                batch, (member,), trees={task_id: tree})
+            batch, member = await self._batch(task_id, target, observed, result)
+            current = await self._freeze(row, observed, batch, member)
         visit = await self.train.request_visit(target)
         if visit is None:
             return {**result, "outcome": "pending", "dry_run": False,
@@ -1019,6 +1006,48 @@ class EpicRefresh:
                 "outcome": "refreshed" if visit.state == "delivered" else "pending",
                 "dry_run": False, "batch_id": current.id, "state": visit.state,
                 "candidate_sha": visit.candidate_sha, "detail": visit.detail}
+
+    async def start(self, task_id, *, snapshot=None):
+        """Freeze the refresh of the epic's current (head, default head) pair.
+
+        The train's own visits run it; nothing here waits for one. A pair whose
+        refresh batch already exists, settled or not, is never started again.
+        """
+        from src.integration.train_sources import DatabaseBatches
+
+        row, target, observed, result = await self.inspect(task_id, snapshot=snapshot)
+        current = await DatabaseBatches(self.db, clock=self.clock).current(target)
+        if current is not None:
+            return {**result, "outcome": "running" if current.epic_refresh else "pending",
+                    "batch_id": current.id}
+        if not result["behind"]:
+            return {**result, "outcome": "current"}
+        batch, member = await self._batch(task_id, target, observed, result)
+        if await BatchStore(self.db, clock=self.clock).get(batch.id) is not None:
+            return {**result, "outcome": "settled", "batch_id": batch.id}
+        await self._freeze(row, observed, batch, member)
+        return {**result, "outcome": "started", "batch_id": batch.id}
+
+    async def _batch(self, task_id, target, observed, result):
+        """The deterministic refresh batch of one (epic head, default head) pair."""
+        git, store = observed.observation.git, observed.observation.store
+        base = await git.arun_git_result(
+            ["merge-base", result["target_sha"], result["default_sha"]], cwd=store,
+        )
+        if base.returncode:
+            raise ValueError("epic and default branch have no common base")
+        member = BatchMember(task_id, result["default_sha"], base.stdout.strip())
+        key = hashlib.sha256(repr((target.key, member, result["target_sha"])).encode()).hexdigest()
+        return Batch("train-epic-refresh-" + key, target.project_id, target.repository_id,
+                     target.target_ref, created_at=self.clock()), member
+
+    async def _freeze(self, row, observed, batch, member):
+        git, store = observed.observation.git, observed.observation.store
+        tree = await git.atree_sha(store, member.source_sha)
+        if await self.identity(member.task_id) != row or not await observed.is_fresh():
+            raise ValueError("epic identity changed during refresh")
+        return await BatchStore(self.db, clock=self.clock).freeze(
+            batch, (member,), trees={member.task_id: tree})
 
     async def child_base(self, task, origin):
         if not task.parent_task_id:
