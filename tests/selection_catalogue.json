@@ -1418,7 +1418,7 @@
       ]
     }
   },
-  "digest": "sha256:63a3cde12b14942ce9df1c8a6a5220e38e5948faac7317e72b3c1640cfb346da",
+  "digest": "sha256:e336a5cfdca71e253ccea0fefd909b6bc87ba465d6b7e3f5eeeb8c116636d9ac",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8569,6 +8569,7 @@
         "src.integration.gitops",
         "src.integration.stacked_branches",
         "src.integration.train",
+        "src.integration.train_controls",
         "src.integration.train_sources",
         "src.models"
       ],
