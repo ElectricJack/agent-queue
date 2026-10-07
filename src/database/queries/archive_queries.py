@@ -167,6 +167,7 @@ class ArchiveQueryMixin:
         abandoned_by: str = "operator",
         delivery=None,
         obsolete_integration_delegate: bool = False,
+        archive_reason: str | None = None,
     ) -> bool:
         """Archive *task_id* and its whole subtree atomically (spec §7).
 
@@ -180,171 +181,202 @@ class ArchiveQueryMixin:
         rechecked inside it, so a task reopened or re-completed meanwhile is
         held rather than archived on an old answer.
 
-        Refuses live sessions or non-terminal tasks anywhere in the subtree.
+        Refuses live sessions; DEFINED/READY/PAUSED tasks require ``archive_reason``.
         Deepest first, root last, so the subtree moves together.
         """
-        from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES, HierarchyError
-
         if abandon_undelivered and not (abandon_reason or "").strip():
             raise ValueError("abandon_undelivered requires a reason")
-        terminal = TERMINAL_STATUSES
         if delivery is None:
             delivery = await self.observe_removal_delivery([task_id])
         async with self.immediate() as conn:
-            # Archiving moves a task out of the active view; it never destroys
-            # work, so the branch always stays on the remote.  Retiring the
-            # origin is what lets a task whose branch was materialized leave the
-            # queue at all (deletion-with-materialized-branches §2 decision 2).
-            await self.guard_integration_mutation(
-                task_id,
-                "archive",
-                conn=conn,
-                retire_pending=True,
-                branch_policy="keep",
-                abandon_undelivered=abandon_undelivered,
-                delivery=delivery,
-                obsolete_integration_delegate=obsolete_integration_delegate,
+            outcome = await self._archive_task_on(
+                task_id, conn=conn, abandon_undelivered=abandon_undelivered,
+                abandon_reason=abandon_reason, abandoned_by=abandoned_by,
+                delivery=delivery, obsolete_integration_delegate=obsolete_integration_delegate,
+                archive_reason=archive_reason,
             )
-            if obsolete_integration_delegate:
-                from src.integration.delegate_release import assert_obsolete_delegate_on
-
-                proof = await assert_obsolete_delegate_on(self, conn, task_id)
-                project_id = (await conn.execute(select(tasks.c.project_id).where(
-                    tasks.c.id == task_id,
-                ))).scalar_one()
-                snapshot = json.dumps(proof, sort_keys=True)
-                # Comments are capped at 16k characters; retain the complete
-                # snapshot even when a legacy dossier or metadata is larger.
-                chunks = [snapshot[i:i + 15000] for i in range(0, len(snapshot), 15000)]
-                for index, chunk in enumerate(chunks, start=1):
-                    await conn.execute(insert(task_comments).values(
-                        id="comment-" + uuid.uuid4().hex, task_id=task_id, project_id=project_id,
-                        author_kind="agent", author_id="integration-reconciliation", kind="note",
-                        body="Obsolete integration delegate archived; branches and stage history "
-                             f"preserved. Retirement proof {index}/{len(chunks)}: " + chunk,
-                        created_at=time.time(),
-                    ))
-            ids = await self.subtree_ids(task_id, conn=conn)
-            if not ids:
-                return False
-            # Read once: the integration guards below scope their reads to this
-            # project, and the layout mark needs it before the rows leave
-            # ``tasks``.  A task never changes project.
-            project_id = (
-                await conn.execute(select(tasks.c.project_id).where(tasks.c.id == task_id))
-            ).scalar_one_or_none()
-            if abandon_undelivered:
-                from src.integration.removal_guard import undelivered_removal_holders
-
-                mode = (
-                    await conn.execute(
-                        select(projects.c.hierarchical_integration_mode).where(
-                            projects.c.id == project_id
-                        )
-                    )
-                ).scalar_one_or_none()
-                _branch, abandoned = await undelivered_removal_holders(
-                    conn,
-                    root_id=task_id,
-                    ids=ids,
-                    project_id=project_id,
-                    mode=mode,
-                    delivery=delivery,
-                )
-                named_holders = ", ".join(
-                    f"{row['task_id']} ({row['holder']})" for row in abandoned
-                ) or "none pending at archive time"
-                await conn.execute(
-                    pg_insert(task_comments).values(
-                        id="comment-" + uuid.uuid4().hex,
-                        task_id=task_id,
-                        project_id=project_id,
-                        body=(
-                            "Delivery abandoned before archive by "
-                            f"{abandoned_by}: {abandon_reason.strip()}\n"
-                            f"Affected delivery holders: {named_holders}\n"
-                            f"Affected subtree: {', '.join(sorted(ids))}"
-                        ),
-                        author_kind="supervisor",
-                        author_id=abandoned_by,
-                        kind="note",
-                        created_at=time.time(),
-                    )
-                )
-            # Follow the existing sessions-before-tasks lock order. A task
-            # can be terminal while its worker is still draining.
-            live = await self.live_descendant_sessions(task_id, conn=conn)
-            if live:
-                raise HierarchyError("live_descendants", ", ".join(sorted(t for _, t in live)))
-            task_rows = select(tasks.c.id, tasks.c.status).where(tasks.c.id.in_(ids))
-            task_rows = task_rows.order_by(tasks.c.id).with_for_update()
-            rows = (await conn.execute(task_rows)).fetchall()
-            live_ids = (
-                (
-                    await conn.execute(
-                        select(sessions.c.task_id).where(
-                            sessions.c.task_id.in_(ids),
-                            sessions.c.state.in_(LIVE_SESSION_STATES),
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            if live_ids:
-                raise HierarchyError("live_descendants", ", ".join(sorted(set(live_ids))))
-            if any(r[0] == task_id and r[1] not in terminal for r in rows):
-                raise HierarchyError("non_terminal_root", task_id)
-            open_ids = [r[0] for r in rows if r[1] not in terminal and r[0] != task_id]
-            if open_ids:
-                raise HierarchyError("open_descendants", ", ".join(sorted(open_ids)))
-            parent = (
-                await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
-            ).scalar()
-            affected = await self._collect_affected(set(ids), conn)
-            affected -= set(ids)
-            if parent:
-                affected.add(parent)
-            # Archiving moves the rows out of ``tasks``, so mark while the
-            # project id is still readable there; ``_archive_one`` reuses
-            # ``_delete_one``, which drops the layout rows (an FK holder on
-            # ``tasks``) inside this same transaction.  The surviving PARENTS
-            # are marked too: with the archived rows gone the driver cannot
-            # find the former container from a stored row, so without this
-            # the container never re-flows and its ancestors' aggregates go
-            # stale.
-            if project_id is not None:
-                await self.mark_layout_dirty(
-                    project_id,
-                    [*ids, *await self._layout_parent_ids(ids, conn=conn)],
-                    "task.archived",
-                    conn=conn,
-                )
-            for tid in reversed(ids):
-                task = await self._get_task_conn(tid, conn=conn)
-                if task is not None:
-                    await self._archive_one(task, conn=conn)
-            flipped = await self.recompute_blocked(affected, conn=conn) if affected else set()
-            # Archiving a blocker unblocks its dependents exactly as
-            # completing it would, so the same ``task.ready`` audit row and
-            # listener wake-up are owed (I2) — without them a waiting
-            # ``task_claim`` long-poll sleeps through claimable work.
-            ready = [
-                (tid, "unblocked")
-                for tid in await self._note_frontier_entry(conn, flipped, reason="unblocked")
-            ]
-            # Archiving empties a container exactly as deleting a child does, and
-            # strands its parent the same way, so the same proved release of a
-            # stopped holder's claim runs here (sharp-ridge-57).
-            if parent:
-                stale = await self.release_stale_container_claim(parent, conn=conn)
-                flipped |= stale.flipped
-                ready.extend(stale.ready)
-            settle_result = await self.settle_containers({parent} if parent else set(), conn=conn)
+        if outcome is None:
+            return False
+        flipped, ready, settle_result = outcome
         await self.log_blocked_flips(flipped | settle_result.flipped)
         await self._notify_settled(settle_result.settled)
         await self._notify_ready(ready + list(settle_result.ready))
         return True
+
+    async def _archive_task_on(
+        self, task_id, *, conn, abandon_undelivered=False, abandon_reason=None,
+        abandoned_by="operator", delivery=None, obsolete_integration_delegate=False,
+        archive_reason=None, defer_projection=False,
+    ):
+        from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES, HierarchyError
+
+        terminal = set(TERMINAL_STATUSES)
+        if archive_reason and archive_reason.strip():
+            terminal.update({"DEFINED", "READY", "PAUSED"})
+        # Archiving moves a task out of the active view; it never destroys
+        # work, so the branch always stays on the remote.  Retiring the
+        # origin is what lets a task whose branch was materialized leave the
+        # queue at all (deletion-with-materialized-branches §2 decision 2).
+        await self.guard_integration_mutation(
+            task_id,
+            "archive",
+            conn=conn,
+            retire_pending=True,
+            branch_policy="keep",
+            abandon_undelivered=abandon_undelivered,
+            delivery=delivery,
+            obsolete_integration_delegate=obsolete_integration_delegate,
+        )
+        if obsolete_integration_delegate:
+            from src.integration.delegate_release import assert_obsolete_delegate_on
+
+            proof = await assert_obsolete_delegate_on(self, conn, task_id)
+            project_id = (await conn.execute(select(tasks.c.project_id).where(
+                tasks.c.id == task_id,
+            ))).scalar_one()
+            snapshot = json.dumps(proof, sort_keys=True)
+            # Comments are capped at 16k characters; retain the complete
+            # snapshot even when a legacy dossier or metadata is larger.
+            chunks = [snapshot[i:i + 15000] for i in range(0, len(snapshot), 15000)]
+            for index, chunk in enumerate(chunks, start=1):
+                await conn.execute(insert(task_comments).values(
+                    id="comment-" + uuid.uuid4().hex, task_id=task_id, project_id=project_id,
+                    author_kind="agent", author_id="integration-reconciliation", kind="note",
+                    body="Obsolete integration delegate archived; branches and stage history "
+                         f"preserved. Retirement proof {index}/{len(chunks)}: " + chunk,
+                    created_at=time.time(),
+                ))
+        ids = await self.subtree_ids(task_id, conn=conn)
+        if not ids:
+            return None
+        # Read once: the integration guards below scope their reads to this
+        # project, and the layout mark needs it before the rows leave
+        # ``tasks``.  A task never changes project.
+        project_id = (
+            await conn.execute(select(tasks.c.project_id).where(tasks.c.id == task_id))
+        ).scalar_one_or_none()
+        if abandon_undelivered:
+            from src.integration.removal_guard import undelivered_removal_holders
+
+            mode = (
+                await conn.execute(
+                    select(projects.c.hierarchical_integration_mode).where(
+                        projects.c.id == project_id
+                    )
+                )
+            ).scalar_one_or_none()
+            _branch, abandoned = await undelivered_removal_holders(
+                conn,
+                root_id=task_id,
+                ids=ids,
+                project_id=project_id,
+                mode=mode,
+                delivery=delivery,
+            )
+            named_holders = ", ".join(
+                f"{row['task_id']} ({row['holder']})" for row in abandoned
+            ) or "none pending at archive time"
+            await conn.execute(
+                pg_insert(task_comments).values(
+                    id="comment-" + uuid.uuid4().hex,
+                    task_id=task_id,
+                    project_id=project_id,
+                    body=(
+                        "Delivery abandoned before archive by "
+                        f"{abandoned_by}: {abandon_reason.strip()}\n"
+                        f"Affected delivery holders: {named_holders}\n"
+                        f"Affected subtree: {', '.join(sorted(ids))}"
+                    ),
+                    author_kind="supervisor",
+                    author_id=abandoned_by,
+                    kind="note",
+                    created_at=time.time(),
+                )
+            )
+        if archive_reason:
+            await conn.execute(insert(task_comments).values(
+                id="comment-" + uuid.uuid4().hex, task_id=task_id, project_id=project_id,
+                author_kind="supervisor" if abandoned_by.startswith("supervisor") else "user",
+                author_id=abandoned_by, kind="note",
+                body=f"Subtree archived by {abandoned_by}: {archive_reason.strip()}",
+                created_at=time.time(),
+            ))
+        # Follow the existing sessions-before-tasks lock order. A task
+        # can be terminal while its worker is still draining.
+        live = await self.live_descendant_sessions(task_id, conn=conn)
+        if live:
+            raise HierarchyError("live_descendants", ", ".join(sorted(t for _, t in live)))
+        task_rows = select(tasks.c.id, tasks.c.status).where(tasks.c.id.in_(ids))
+        task_rows = task_rows.order_by(tasks.c.id).with_for_update()
+        rows = (await conn.execute(task_rows)).fetchall()
+        live_ids = (
+            (
+                await conn.execute(
+                    select(sessions.c.task_id).where(
+                        sessions.c.task_id.in_(ids),
+                        sessions.c.state.in_(LIVE_SESSION_STATES),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if live_ids:
+            raise HierarchyError("live_descendants", ", ".join(sorted(set(live_ids))))
+        if any(r[0] == task_id and r[1] not in terminal for r in rows):
+            raise HierarchyError("non_terminal_root", task_id)
+        open_ids = [r[0] for r in rows if r[1] not in terminal and r[0] != task_id]
+        if open_ids:
+            raise HierarchyError("open_descendants", ", ".join(sorted(open_ids)))
+        parent = (
+            await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
+        ).scalar()
+        affected = await self._collect_affected(set(ids), conn)
+        affected -= set(ids)
+        if parent:
+            affected.add(parent)
+        # Archiving moves the rows out of ``tasks``, so mark while the
+        # project id is still readable there; ``_archive_one`` reuses
+        # ``_delete_one``, which drops the layout rows (an FK holder on
+        # ``tasks``) inside this same transaction.  The surviving PARENTS
+        # are marked too: with the archived rows gone the driver cannot
+        # find the former container from a stored row, so without this
+        # the container never re-flows and its ancestors' aggregates go
+        # stale.
+        if project_id is not None:
+            await self.mark_layout_dirty(
+                project_id,
+                [*ids, *await self._layout_parent_ids(ids, conn=conn)],
+                "task.archived",
+                conn=conn,
+            )
+        for tid in reversed(ids):
+            task = await self._get_task_conn(tid, conn=conn)
+            if task is not None:
+                await self._archive_one(task, conn=conn)
+        if defer_projection:
+            # The change-set caller retains the old dependents/parent and
+            # performs their projection and stale-claim release as one pass.
+            from src.database.queries.task_queries import TransitionResult
+            return set(), [], TransitionResult()
+        flipped = await self.recompute_blocked(affected, conn=conn) if affected else set()
+        # Archiving a blocker unblocks its dependents exactly as
+        # completing it would, so the same ``task.ready`` audit row and
+        # listener wake-up are owed (I2) — without them a waiting
+        # ``task_claim`` long-poll sleeps through claimable work.
+        ready = [
+            (tid, "unblocked")
+            for tid in await self._note_frontier_entry(conn, flipped, reason="unblocked")
+        ]
+        # Archiving empties a container exactly as deleting a child does, and
+        # strands its parent the same way, so the same proved release of a
+        # stopped holder's claim runs here (sharp-ridge-57).
+        if parent:
+            stale = await self.release_stale_container_claim(parent, conn=conn)
+            flipped |= stale.flipped
+            ready.extend(stale.ready)
+        settle_result = await self.settle_containers({parent} if parent else set(), conn=conn)
+        return flipped, ready, settle_result
 
     async def _development_integration_hold(self, ids, project_id, *, conn) -> str | None:
         """Say why development delivery still owns one of *ids*, or ``None``.

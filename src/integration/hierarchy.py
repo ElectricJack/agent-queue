@@ -536,6 +536,7 @@ class HierarchyIntegration:
         child_tasks: list[Task],
         *,
         routing_policy=None,
+        defer_projection=False,
     ) -> list[dict]:
         """Insert sibling tasks with one parent-generation advance.
 
@@ -570,7 +571,8 @@ class HierarchyIntegration:
                 conn, task_id=task_id, title=task.title, is_epic=False
             )
             await self.db.set_parent(
-                task_id, parent_id, conn=conn, integration_authorized=True
+                task_id, parent_id, conn=conn, integration_authorized=True,
+                defer_projection=defer_projection,
             )
             # ``set_parent`` writes the row.  Preserve that placement on the
             # in-memory task too, because the routing policy evaluates the
@@ -1371,8 +1373,10 @@ class HierarchyIntegration:
             raise HierarchyError("invalid", "branch origin base is not an exact Git OID")
         task = await self._task_row(conn, task_id)
         branch = task["branch_name"]
-        if parent_task_id is not None and parent_ref == "main":
-            raise HierarchyError("invalid", "child delivery cannot target the default branch")
+        if parent_task_id is not None:
+            repo = await self._repo_on(conn, repository_id)
+            if repo is None or parent_ref.removeprefix("refs/heads/") == repo.default_branch:
+                raise HierarchyError("invalid", "child delivery cannot target the default branch")
         origin_id = str(uuid.uuid4())
         now = self.clock()
         values = {

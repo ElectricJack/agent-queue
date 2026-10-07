@@ -324,6 +324,7 @@ class ProjectCommandsMixin:
                 "integration_repository_id",
                 "hierarchical_integration_policy",
                 "integration_mode",
+                "promotion_flow",
             )
             if key in args
         }
@@ -332,6 +333,12 @@ class ProjectCommandsMixin:
             from src.commands.supervisor_authority import integration_operator
 
             principal = current_principal() or TRUSTED_LOCAL
+            if "promotion_flow" in sensitive and principal.kind is not PrincipalKind.LOCAL:
+                return {
+                    "success": False,
+                    "error": "local_operator_only",
+                    "message": "A promotion flow is set by the operator only.",
+                }
             if principal.kind is PrincipalKind.LOCAL:
                 operator_id = principal.describe()
             elif principal.kind is PrincipalKind.SESSION:
@@ -354,6 +361,10 @@ class ProjectCommandsMixin:
                 }
             if "expected_integration_generation" not in args:
                 return {"error": "expected_integration_generation is required"}
+            if "promotion_flow" in sensitive:
+                return await self._configure_promotion_flow(
+                    project, sensitive, args, operator_id=operator_id
+                )
             return await PolicyActivation(self.db).configure(
                 pid,
                 updates=sensitive,
@@ -441,6 +452,106 @@ class ProjectCommandsMixin:
         if state != BINDING_READY:
             return {"success": False, "error_code": f"router_{state}", "error": detail}
         return None
+
+    async def _configure_promotion_flow(
+        self, project, updates: dict, args: dict, *, operator_id: str
+    ) -> dict:
+        """Activate a promotion flow: layers 1-4, then one fenced write (§3.11).
+
+        The trust manifest is read at the designated default branch first. A
+        dry run of the fence then runs every refusal check, missing chain
+        targets are created with no database lock held (git network work never
+        waits inside the fence), and the write re-runs the checks behind the
+        same generation. A refusal writes no row; the only state one can leave
+        behind is a create-only branch at its source's tip.
+        """
+        from src.integration.promotion_steps import FlowSchema
+        from src.integration.records import PolicyActivation
+
+        pid = project.id
+        repository_id = project.integration_repository_id
+        repository = await self.db.get_repo(repository_id) if repository_id else None
+        if repository is not None and repository.project_id != pid:
+            repository = None
+        default_branch = repository.default_branch if repository else project.repo_default_branch
+        # Structural and chain errors win over a trust read failure, as in
+        # ``promote validate``; the fence re-runs layers 1-3 against the fenced
+        # default branch.
+        precheck = FlowSchema.validate(
+            updates["promotion_flow"], default_branch=default_branch or ""
+        )
+        if precheck.layer < 3:
+            problems = [problem.as_dict() for problem in precheck.problems]
+            return {"success": False, "outcome": "invalid", "project_id": pid,
+                    "error": problems[0]["code"], "problems": problems}
+        manifest: dict | None = None
+        if precheck.flow:
+            if repository is None:
+                return {
+                    "success": False,
+                    "outcome": "blocked",
+                    "project_id": pid,
+                    "error": "integration_repository_required",
+                    "message": "Designate the project's integration repository before "
+                    "activating a promotion flow.",
+                }
+            try:
+                manifest = await self._promotion_manifest(repository)
+            except Exception as exc:  # noqa: BLE001 - provider boundary; activation fails closed
+                return {
+                    "success": False,
+                    "outcome": "blocked",
+                    "error": "trust_manifest_unavailable",
+                    "message": str(exc),
+                }
+        activation = PolicyActivation(self.db)
+        fence = {
+            "expected_generation": int(args["expected_integration_generation"]),
+            "reason": str(args.get("reason") or "configure promotion flow"),
+            "operator_id": operator_id,
+            "promotion_manifest": manifest,
+        }
+        result = await activation.configure(pid, updates=dict(updates), dry_run=True, **fence)
+        created: dict[str, str] = {}
+        if result.get("outcome") == "checked":
+            flow = result["updates"]["promotion_flow"] or []
+            refusal, created = await self._create_flow_targets(pid, repository, project, flow)
+            if refusal is not None:
+                result = {"project_id": pid, "generation": result["generation"], **refusal}
+            else:
+                result = await activation.configure(pid, updates=updates, **fence)
+        if created:
+            # A create-only branch outlives a refused write; name it so the
+            # operator can delete it or simply retry, which reuses it.
+            result["created_targets"] = created
+        success = result.get("outcome") == "configured"
+        recorded = getattr(self.orchestrator, "promotion_flow_problems", None)
+        if success and isinstance(recorded, dict):
+            # The daemon-start finding described the flow this write replaced.
+            recorded.pop(pid, None)
+        if not success and result.get("outcome") == "stale":
+            result.setdefault("error", "integration_generation_stale")
+        return {"success": success, **result}
+
+    async def _create_flow_targets(
+        self, pid, repository, project, flow
+    ) -> tuple[dict | None, dict[str, str]]:
+        """Layer 4 at activation: create the flow's absent targets, create-only."""
+        from src.integration.promotion_steps import create_missing_targets
+
+        if not flow:
+            return None, {}
+        checkout = await self.db.get_project_workspace_path(pid)
+        if not checkout:
+            return {
+                "outcome": "blocked",
+                "error": "workspace_unavailable",
+                "message": "No project workspace can create the missing targets.",
+            }, {}
+        repository_url = (getattr(repository, "url", None) or project.repo_url) or None
+        return await create_missing_targets(
+            self.orchestrator.git, checkout, flow, repository_url=repository_url
+        )
 
     async def _cmd_set_default_branch(self, args: dict) -> dict:
         """Set (or change) a project's default branch.

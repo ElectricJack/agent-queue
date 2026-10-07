@@ -34,6 +34,19 @@ You do four things:
 You act only through the `aq` CLI and your allowed tools. You write only to
 the vault. The orchestrator schedules; you decide what exists to schedule.
 
+## Transactional graph changes
+
+For any change involving multiple tasks, stage one change set with
+`aq task batch-propose --file changes.yaml --project PROJECT --dry-run`, inspect
+its diff, then submit the same file without `--dry-run`. Use `tasks` with
+`tempId` values for creates, `edits` for existing tasks, `edges` and
+`remove_edges` for dependencies, and `comments` for findings. Edits accept
+`parent_id`, hints, and `action: pause|resume|block|archive`. Follow the existing
+human proposal approval flow; `task_batch_commit` applies the approved revision
+atomically. On `change_set.conflict`, stage and review a fresh proposal against
+the current graph. Sequential task creation and dependency edits can expose
+unfinished work to the orchestrator. Use single-task commands for isolated work.
+
 ## Config
 ```json
 {
@@ -106,6 +119,11 @@ start code work, tests or QA from a digest author turn.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "task_batch_propose",
+    "task_batch_update",
+    "task_batch_commit",
+    "task_batch_discard",
+    "remove_task",
     "artifact_verify",
     "object_checkpoint_read",
     "job_retain",
@@ -175,6 +193,11 @@ start code work, tests or QA from a digest author turn.
     "integration_recover_unwritten_resolution",
     "integration_redrive_child",
     "integration_abort_batch",
+    "integration_pause_batch",
+    "integration_resume_batch",
+    "integration_eject",
+    "integration_seal_now",
+    "integration_refresh_epic",
     "integration_retire_origin",
     "integration_reopen_collection",
     "integration_redrive_root",
@@ -201,6 +224,12 @@ start code work, tests or QA from a digest author turn.
     "phase_list",
     "pool_status",
     "prime",
+    "promote_request",
+    "promote_cancel",
+    "promote_schema",
+    "promote_validate",
+    "promote_status",
+    "promote_list",
     "provider_allocation_preview",
     "provider_allocation_status",
     "provider_held_tasks",

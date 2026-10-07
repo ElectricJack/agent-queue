@@ -7,7 +7,7 @@ import json
 import subprocess
 from functools import partial
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
@@ -8057,6 +8057,45 @@ async def test_ordinary_repair_replay_never_regrants_claimed_expired_writer(ordi
     assert (await env.store.get("ordinary")).repair_attempt_count == 1
 
 
+async def test_ordinary_repair_recovery_leaves_ready_but_still_claimed_writer_alone(ordinary_env):
+    env = ordinary_env
+    first = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+                                       authorize=AsyncMock(return_value=True), ttl_seconds=10)
+    task_id = first["task_id"]
+    await env.db.update_task(task_id, status=TaskStatus.READY)
+    await env.db.create_session(SessionRecord(
+        id="closing", task_id=task_id, project_id="p", profile_id="repairer",
+        harness="fake", provider="fake", name="closing", lifecycle="pool", state="running",
+        claim_phase="active", epoch="epoch", instance_token="closing", started_at=1,
+        work_dir="/closing",
+    ))
+    old = await env.locks.get(env.target)
+    env.now += 10
+    result = await env.service.recover_reservation(
+        "ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+        authorize=AsyncMock(return_value=True),
+    )
+    assert result["outcome"] == "exists" and result["lease_expired"]
+    assert await env.locks.get(env.target) == old
+
+
+@pytest.mark.parametrize("completed", [False, True])
+async def test_ordinary_reservation_recovery_never_allocates_a_task(ordinary_env, completed):
+    env = ordinary_env
+    if completed:
+        first = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+                                           authorize=AsyncMock(return_value=True))
+        await env.db.update_task(first["task_id"], status=TaskStatus.COMPLETED)
+        await env.locks.release((await env.locks.get(env.target)).grant())
+    before = (await env.store.get("ordinary")).repair_attempt_count
+    result = await env.service.recover_reservation(
+        "ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+        authorize=AsyncMock(return_value=True),
+    )
+    assert result["outcome"] == "none"
+    assert (await env.store.get("ordinary")).repair_attempt_count == before
+
+
 @pytest.mark.parametrize("blocked_by", ["other_writer", "held", "unconfirmed", "target_changed"])
 async def test_ordinary_repair_reservation_recovery_honors_current_authority(ordinary_env, blocked_by):
     env = ordinary_env
@@ -8183,8 +8222,10 @@ async def test_ordinary_repair_claim_and_workspace_use_leased_ref_without_origin
         stub, "/work", origin, fence, repository_url="") == "c" * 40
 
 
+@pytest.mark.parametrize("lifecycle", ["task", "pool"])
 async def test_ordinary_repair_close_uses_normal_published_completion(
     command_handler_factory, tmp_path,
+    lifecycle,
 ):
     from dataclasses import replace
 
@@ -8241,13 +8282,19 @@ async def test_ordinary_repair_close_uses_normal_published_completion(
     assert await service.added_commits(task_id, GitManager(), str(checkout), head) == [head]
     assert await service.added_commits(task_id, GitManager(), str(checkout), starting) == []
     await handler.db.update_task(task_id, status=TaskStatus.IN_PROGRESS)
+    await handler.db.create_agent(Agent(id="ordinary-agent", name="Worker", profile_id="repairer"))
     async with handler.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+            claim_epoch=1, assigned_agent_id="ordinary-agent",
+        ))
         await conn.execute(insert(workspaces).values(
             id="ordinary-work", project_id="p", workspace_path=str(checkout), source_type="link",
-            locked_by_task_id=task_id, enabled=True, created_at=1))
+            locked_by_task_id=task_id, locked_by_agent_id="ordinary-agent",
+            enabled=True, created_at=1))
     await handler.db.create_session(SessionRecord(
         id="ordinary-session", task_id=task_id, project_id="p", profile_id="repairer",
-        harness="fake", provider="fake", name="ordinary", lifecycle="task", state="running",
+        harness="fake", provider="fake", name="ordinary", lifecycle=lifecycle, state="running",
+        agent_id="ordinary-agent", claim_phase="active", last_claim_epoch=1,
         work_dir=str(checkout), epoch="epoch", instance_token="token", started_at=1))
     handler.orchestrator.git = GitManager()
     handler.orchestrator._run_completion_pipeline = AsyncMock(
@@ -8258,11 +8305,45 @@ async def test_ordinary_repair_close_uses_normal_published_completion(
     handler._current_scope = {"kind": "session", "session_id": "ordinary-session",
                               "task_id": task_id, "project_id": "p", "elevated": False}
     args = {"task_id": task_id, "session_id": "ordinary-session", "outcome": "pass",
-            "summary": "published ordinary repair"}
+            "summary": "published ordinary repair", "claim_epoch": 1}
     refused = await handler._cmd_task_close(args)
     assert refused["success"] is False
     assert (await handler.db.get_task(task_id)).status == TaskStatus.IN_PROGRESS
     git(checkout, "push", "origin", f"HEAD:{ref}")
+    if lifecycle == "pool":
+        from src.jobs.workspace import guard_workspace
+        from tests.test_jobs_queries import values
+
+        restored = AsyncMock()
+
+        class Slots:
+            db = handler.db
+
+            @guard_workspace("slot_ws")
+            async def restore_slot_after_task(self, slot_ws, *, task_id):
+                await restored(slot_ws.id, task_id)
+
+        slot = await handler.db.get_workspace("ordinary-work")
+        handler.orchestrator._slot_workspace_at = AsyncMock(return_value=slot)
+        handler.orchestrator._worktree_slots = MagicMock(return_value=Slots())
+        job = await handler.db.submit_job(values(
+            task_id=task_id, owner_id=task_id, workspace_id=slot.id,
+        ))
+        lease = await service.locks.get(BranchKey(repository_id="repo", branch=ref))
+        # Both passing and retryable failing closes retain the identical claim
+        # and lease until the job's cleanup is verified.
+        for outcome in ("pass", "fail"):
+            busy = await handler._cmd_task_close({**args, "outcome": outcome})
+            assert not busy["success"] and busy["result"] == "jobs.workspace_busy", busy
+            task = await handler.db.get_task(task_id)
+            assert (task.status, task.claim_epoch, task.retry_count) == (
+                TaskStatus.IN_PROGRESS, 1, 0,
+            )
+            assert (await handler.db.get_session("ordinary-session")).task_id == task_id
+            assert await service.locks.get(lease.target) == lease
+            assert await handler.db.get_task_completions(task_id) == []
+            restored.assert_not_awaited()
+        await handler.db.job_cleanup_verified(job["id"])
     closed = await handler._cmd_task_close(args)
     assert closed["success"] is True, closed
     assert (await handler.db.get_task(task_id)).status == TaskStatus.COMPLETED
@@ -8273,18 +8354,19 @@ async def test_ordinary_repair_close_uses_normal_published_completion(
         assert not (await conn.execute(select(integration_repair_operations))).first()
         assert not (await conn.execute(select(integration_promotion_intents))).first()
     assert (await service.locks.get(BranchKey(repository_id="repo", branch=ref))).holder is None
+    if lifecycle == "pool":
+        restored.assert_awaited_once_with("ordinary-work", task_id)
+        assert (await handler.db.get_session("ordinary-session")).task_id is None
 
 
 async def test_ordinary_repair_worker_git_push_rejects_expired_or_wrong_ref(ordinary_env):
-    import time
-
     from src.git.manager import GitError
     from src.plugins.internal.git import GitPlugin
 
     env = ordinary_env
-    env.now = time.time()
     result = await env.service.allocate("ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref, head_sha=STARTING_SHA)
     task_id = result["task_id"]
+    original_lease = await env.locks.get(env.target)
     plugin = GitPlugin.__new__(GitPlugin)
     plugin._db = SimpleNamespace(_db=env.db)
     plugin._git = SimpleNamespace(aref_exists=AsyncMock(return_value=True),
@@ -8295,13 +8377,18 @@ async def test_ordinary_repair_worker_git_push_rejects_expired_or_wrong_ref(ordi
     plugin._worker_publication = AsyncMock(return_value=publication)
     plugin._publish_policy = AsyncMock(return_value=SimpleNamespace(notes=[]))
     plugin._source_ci_inherited_oids = AsyncMock(return_value=[])
-    with patch("src.plugins.internal.git._worker_principal", return_value=object()):
-        async with env.db.immediate() as conn:
-            await conn.execute(update(integration_branch_owners).values(expires_at=time.time() - 1))
+    # Allocation, reacquisition and publication must use the same controlled
+    # clock; runner latency must not decide whether reacquisition sees expiry.
+    with (
+        patch("src.plugins.internal.git._worker_principal", return_value=object()),
+        patch("src.integration.repair.OrdinaryRepairService", return_value=env.service),
+    ):
+        env.now = original_lease.expires_at
         with pytest.raises(GitError, match="expired"):
             await plugin._push("/work", None, {}, None)
         plugin._git.apush_validated_delivery.assert_not_awaited()
         lease = await env.locks.acquire(env.target, task_id)
+        assert lease.token == original_lease.fence + 1
         publication.branch = "aq/other"
         with pytest.raises(GitError, match="allocated ref"):
             await plugin._push("/work", None, {}, None)

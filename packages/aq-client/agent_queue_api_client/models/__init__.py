@@ -285,6 +285,7 @@ from .edit_project_request import EditProjectRequest
 from .edit_project_request_hierarchical_integration_policy_type_0 import (
     EditProjectRequestHierarchicalIntegrationPolicyType0,
 )
+from .edit_project_request_promotion_flow_type_1 import EditProjectRequestPromotionFlowType1
 from .edit_project_response import EditProjectResponse
 from .edit_project_response_422 import EditProjectResponse422
 from .edit_task_request import EditTaskRequest
@@ -1316,6 +1317,9 @@ from .reload_config_response_422 import ReloadConfigResponse422
 from .remove_dependency_request import RemoveDependencyRequest
 from .remove_dependency_response import RemoveDependencyResponse
 from .remove_dependency_response_422 import RemoveDependencyResponse422
+from .remove_task_request import RemoveTaskRequest
+from .remove_task_response import RemoveTaskResponse
+from .remove_task_response_disposition import RemoveTaskResponseDisposition
 from .remove_workspace_request import RemoveWorkspaceRequest
 from .remove_workspace_response import RemoveWorkspaceResponse
 from .remove_workspace_response_422 import RemoveWorkspaceResponse422
@@ -1588,6 +1592,7 @@ from .task_attachment_detail import TaskAttachmentDetail
 from .task_attachment_response import TaskAttachmentResponse
 from .task_attachments_response import TaskAttachmentsResponse
 from .task_batch_ack_response import TaskBatchAckResponse
+from .task_batch_ack_response_diff_type_0 import TaskBatchAckResponseDiffType0
 from .task_batch_commit_request import TaskBatchCommitRequest
 from .task_batch_commit_response import TaskBatchCommitResponse
 from .task_batch_commit_response_422 import TaskBatchCommitResponse422
@@ -1596,6 +1601,7 @@ from .task_batch_discard_response_422 import TaskBatchDiscardResponse422
 from .task_batch_propose_request import TaskBatchProposeRequest
 from .task_batch_propose_response import TaskBatchProposeResponse
 from .task_batch_propose_response_422 import TaskBatchProposeResponse422
+from .task_batch_propose_response_diff_type_0 import TaskBatchProposeResponseDiffType0
 from .task_batch_update_request import TaskBatchUpdateRequest
 from .task_batch_update_request_payload import TaskBatchUpdateRequestPayload
 from .task_batch_update_response_422 import TaskBatchUpdateResponse422
@@ -2071,6 +2077,7 @@ __all__ = (
     "EditProfileResponse422",
     "EditProjectRequest",
     "EditProjectRequestHierarchicalIntegrationPolicyType0",
+    "EditProjectRequestPromotionFlowType1",
     "EditProjectResponse",
     "EditProjectResponse422",
     "EditTaskRequest",
@@ -3092,6 +3099,9 @@ __all__ = (
     "RemoveDependencyRequest",
     "RemoveDependencyResponse",
     "RemoveDependencyResponse422",
+    "RemoveTaskRequest",
+    "RemoveTaskResponse",
+    "RemoveTaskResponseDisposition",
     "RemoveWorkspaceRequest",
     "RemoveWorkspaceResponse",
     "RemoveWorkspaceResponse422",
@@ -3362,6 +3372,7 @@ __all__ = (
     "TaskAttachmentResponse",
     "TaskAttachmentsResponse",
     "TaskBatchAckResponse",
+    "TaskBatchAckResponseDiffType0",
     "TaskBatchCommitRequest",
     "TaskBatchCommitResponse",
     "TaskBatchCommitResponse422",
@@ -3370,6 +3381,7 @@ __all__ = (
     "TaskBatchProposeRequest",
     "TaskBatchProposeResponse",
     "TaskBatchProposeResponse422",
+    "TaskBatchProposeResponseDiffType0",
     "TaskBatchUpdateRequest",
     "TaskBatchUpdateRequestPayload",
     "TaskBatchUpdateResponse422",

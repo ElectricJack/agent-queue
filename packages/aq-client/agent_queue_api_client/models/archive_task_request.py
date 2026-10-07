@@ -15,13 +15,13 @@ T = TypeVar("T", bound="ArchiveTaskRequest")
 class ArchiveTaskRequest:
     """
     Attributes:
-        task_id (None | str | Unset): Archive a single task by ID (must be COMPLETED, FAILED, or BLOCKED)
+        task_id (None | str | Unset): Archive a single task by ID; PAUSED, DEFINED and READY require reason
         project_id (None | str | Unset): Bulk-archive all completed tasks in this project (alternative to task_id)
         include_failed (bool | None | Unset): When bulk-archiving by project_id, also archive FAILED and BLOCKED tasks.
             Default false.
         abandon_undelivered (bool | Unset): Single-task archive only: explicitly abandon completed work that has not
             reached the default branch. Requires reason and an elevated/operator caller. Default: False.
-        reason (None | str | Unset): Required reason when abandon_undelivered is true.
+        reason (None | str | Unset): Required to archive PAUSED/DEFINED/READY or abandon undelivered work.
     """
 
     task_id: None | str | Unset = UNSET

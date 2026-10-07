@@ -939,6 +939,18 @@ class GitHubClient:
             raise GitHubAccessError("conflict_or_invalid", "GitHub response was not an object")
         return value
 
+    async def authenticated_user(self) -> dict[str, Any]:
+        """Identify the human existing gh login without widening repository endpoints."""
+        from src.git.github_contracts import GitHubCredentialMode
+
+        if self.credential_identity.mode is not GitHubCredentialMode.EXISTING_LOGIN:
+            raise ValueError("human identity requires existing-login credentials")
+        response = await self._request_endpoint("GET", "user")
+        value = _decode_json(response.body)
+        if not isinstance(value, dict):
+            raise GitHubAccessError("conflict_or_invalid", "GitHub user response was not an object")
+        return value
+
     async def request_text(
         self,
         method: str,

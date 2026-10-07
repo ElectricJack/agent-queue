@@ -344,6 +344,10 @@ _PROCESS_SITES = {
     ("src/commands/helpers.py", "_run_subprocess_shell", "create_subprocess_shell"): 1,
     ("src/commands/profile_commands.py", "ProfileCommandsMixin._cmd_check_profile", "create_subprocess_exec"): 1,
     ("src/commands/profile_commands.py", "ProfileCommandsMixin._install_manifest", "create_subprocess_exec"): 3,
+    # The detached operator updater runs aq update with a scrubbed environment.
+    ("src/commands/system_commands.py", "SystemCommandsMixin._cmd_update_and_restart", "create_subprocess_exec"): 1,
+    # PostgreSQL clients, Docker probes and tmux session listing never launch agents.
+    ("src/database/backup.py", "_run", "create_subprocess_exec"): 1,
     ("src/doctor/builtin.py", "_probe_binary", "create_subprocess_exec"): 1,
     ("src/doctor/dashboard_server_checks.py", "_run_aq", "create_subprocess_exec"): 1,
     ("src/doctor/db_checks.py", "_git", "create_subprocess_exec"): 1,

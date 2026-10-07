@@ -335,7 +335,9 @@ async def test_local_lane_never_calls_attestation_publish(batch_env, monkeypatch
         github_repository_binding_resolver=AsyncMock(return_value=None),
         development_integration=SimpleNamespace(),
     )
-    lanes = DaemonLanes(orchestrator, batches=SimpleNamespace(eligible=AsyncMock(return_value=True)))
+    lanes = DaemonLanes(orchestrator, batches=SimpleNamespace(
+        eligible=AsyncMock(return_value=True), pr_gate=None,
+    ))
     monkeypatch.setattr(lanes, "_policy", AsyncMock(return_value={}))
     monkeypatch.setattr(lanes, "_settings", AsyncMock(return_value=(
         SimpleNamespace(validation="none", commands=()), "v1",

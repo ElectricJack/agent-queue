@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 
+from src.database.migration_guard import SchemaAheadPolicy
+
 from src.database.engine import (
     create_postgres_engine,
     run_schema_setup,
@@ -181,6 +183,7 @@ class PostgreSQLDatabaseAdapter(
         *,
         pre_ping: str = "local",
         pool_recycle: int = 1800,
+        schema_ahead_policy: SchemaAheadPolicy | None = None,
     ):
         try:
             import asyncpg  # noqa: F401
@@ -194,6 +197,7 @@ class PostgreSQLDatabaseAdapter(
         self._pool_max = pool_max
         self._pre_ping = pre_ping
         self._pool_recycle = pool_recycle
+        self._schema_ahead_policy = schema_ahead_policy
         self._engine = None
 
     async def initialize(self) -> None:
@@ -205,7 +209,10 @@ class PostgreSQLDatabaseAdapter(
             pre_ping=self._pre_ping,
             pool_recycle=self._pool_recycle,
         )
-        await run_schema_setup(self._engine)
+        if self._schema_ahead_policy is None:
+            await run_schema_setup(self._engine)
+        else:
+            await run_schema_setup(self._engine, schema_ahead_policy=self._schema_ahead_policy)
         await run_startup_data_migrations(self._engine)
 
     async def close(self) -> None:

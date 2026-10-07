@@ -136,6 +136,156 @@ def service(setup, **kwargs):
     )
 
 
+@pytest.fixture
+def host_shell_setup(setup, monkeypatch):
+    from src.config import HostShellConfig
+    from src.sessions.host_shell import HostShell
+
+    setup.config.host_shell = HostShellConfig(enabled=True)
+    setup.events = []
+    shell = HostShell("aq-host-shell-1", "host-instance", time.time(), 0)
+
+    async def get(name):
+        return shell if name == shell.name else None
+
+    async def log_event(event_type, **kwargs):
+        setup.events.append((event_type, kwargs))
+
+    setup.db.log_event = log_event
+    monkeypatch.setattr(
+        module().TerminalStreamService, "host_shells", lambda self: SimpleNamespace(get=get),
+    )
+    return setup
+
+
+@pytest.mark.parametrize("input_only", [False, True])
+@pytest.mark.parametrize("viewer", [None, "operator", "other"])
+async def test_host_shell_connections_and_disconnects_are_audited(
+    host_shell_setup, caplog, input_only, viewer,
+):
+    setup = host_shell_setup
+    headers = {"host": "localhost:5173", "origin": "http://localhost:5173"}
+    if viewer:
+        peer = "192.168.1.9" if viewer == "other" else "::1"
+        setup.config.host_shell.allow_remote = viewer == "other"
+        headers.update({"x-aq-dashboard-viewer": viewer, "x-aq-dashboard-peer": peer})
+        identity = (
+            f"remote-dashboard-viewer (peer {peer})" if viewer == "other"
+            else f"local-operator via dashboard (peer {peer})"
+        )
+    else:
+        # Direct connections have no edge verdict; a peer header is not evidence.
+        headers["x-aq-dashboard-peer"] = "forged-peer"
+        identity = "local-operator (127.0.0.1)"
+    ws = Socket(headers=headers)
+    svc = service(setup)
+    started_at = time.time()
+    task = asyncio.create_task(svc.handle(ws, "aq-host-shell-1", input_only=input_only))
+    try:
+        assert (await ws.next())["type"] == "ready"
+        assert len(setup.events) == 1
+        await ws.incoming.put({"type": "websocket.receive", "bytes": b"private command\r"})
+        await ws.control({"type": "ping"})
+        assert await ws.next() == {"type": "pong"}
+        await ws.disconnect()
+        await asyncio.wait_for(task, 2)
+    finally:
+        await svc.shutdown()
+    connected, disconnected = (
+        ("input_connected", "input_disconnected") if input_only else ("attached", "detached")
+    )
+    assert [event for event, _ in setup.events] == [
+        f"host_shell.{connected}", f"host_shell.{disconnected}",
+    ]
+    assert [json.loads(event["payload"]) for _, event in setup.events] == [
+        {"name": "aq-host-shell-1", "identity": identity},
+    ] * 2
+    records = [record for record in caplog.records if record.name == "aq.audit.host_shell"]
+    assert [record.getMessage() for record in records] == [
+        f"host shell {event}: aq-host-shell-1 by {identity}" for event in (connected, disconnected)
+    ]
+    assert all(started_at <= record.created <= time.time() for record in records)
+    assert "private command" not in caplog.text
+    assert setup.client.closed and not svc._handlers
+
+
+@pytest.mark.parametrize("input_only", [False, True])
+@pytest.mark.parametrize("ending", ["shutdown", "backend_error", "invalid_control"])
+async def test_host_shell_disconnect_is_audited_on_every_exit(
+    host_shell_setup, input_only, ending,
+):
+    setup = host_shell_setup
+    if ending == "backend_error":
+        async def fail(*args, **kwargs):
+            raise RuntimeError("private backend error")
+        setup.attach = setup.attach_input = fail
+    ws = Socket()
+    svc = service(setup)
+    task = asyncio.create_task(svc.handle(ws, "aq-host-shell-1", input_only=input_only))
+    try:
+        first = await ws.next()
+        if ending == "backend_error":
+            assert first["type"] == "error" and first["code"] == 1011
+        else:
+            assert first["type"] == "ready"
+            if ending == "shutdown":
+                await svc.shutdown()
+            else:
+                await ws.control({"type": "invalid"})
+                assert (await ws.next())["code"] == 4400
+        if ending == "shutdown":
+            assert task.cancelled()
+        else:
+            await asyncio.wait_for(task, 2)
+    finally:
+        await svc.shutdown()
+    assert [event for event, _ in setup.events] == (
+        ["host_shell.input_connected", "host_shell.input_disconnected"] if input_only
+        else ["host_shell.attached", "host_shell.detached"]
+    )
+
+
+@pytest.mark.parametrize("input_only", [False, True])
+@pytest.mark.parametrize("case,code", [
+    ("disabled", 4403), ("remote_disabled", 4403), ("bearer", 4403),
+    ("bearer_protocol", 4403), ("origin", 4403), ("host", 4403),
+    ("direct_remote", 4403), ("token_required", 4401), ("limit", 4429),
+    ("missing", 4409),
+])
+async def test_host_shell_refusals_never_attach_or_audit(
+    host_shell_setup, caplog, input_only, case, code,
+):
+    setup = host_shell_setup
+    setup.config.host_shell.allow_remote = True
+    ws = Socket()
+    name = "aq-host-shell-1"
+    if case == "disabled":
+        setup.config.host_shell.enabled = False
+    elif case == "remote_disabled":
+        setup.config.host_shell.allow_remote = False
+        ws.headers = Headers({"host": "localhost:5173", "x-aq-dashboard-viewer": "other"})
+    elif case == "bearer":
+        ws.headers = Headers({"host": "localhost:5173", "authorization": "Bearer aqs_valid"})
+    elif case == "bearer_protocol":
+        ws.scope["subprotocols"].append("aq-bearer.aqs_valid")
+    elif case == "origin":
+        ws.headers = Headers({"host": "localhost:5173", "origin": "http://evil.example"})
+    elif case == "host":
+        ws.headers = Headers({"host": "evil.example", "origin": "http://evil.example"})
+    elif case == "direct_remote":
+        ws.client.host = "192.168.1.9"
+        ws.headers = Headers({"host": "localhost:5173", "x-aq-dashboard-viewer": "other"})
+    elif case == "token_required":
+        setup.config.api_auth.require_session_token = True
+    elif case == "missing":
+        name = "aq-host-shell-2"
+    svc = service(setup, connection_limit=0 if case == "limit" else 16)
+    await svc.handle(ws, name, input_only=input_only)
+    assert not ws.accepted and ws.closed == code
+    assert setup.client.sizes == setup.client.input_attaches == setup.events == []
+    assert not [record for record in caplog.records if record.name == "aq.audit.host_shell"]
+
+
 async def test_binary_input_output_and_resize_without_per_key_database_work(setup):
     ws = Socket()
     task = asyncio.create_task(service(setup).handle(ws, "s"))
@@ -633,6 +783,77 @@ async def test_terminal_probe_and_keepalive_through_real_proxy(setup, tmp_path, 
                     assert setup.db.touches == []
         finally:
             await dashboard.proxy.close()
+
+
+@pytest.mark.parametrize("input_only", [False, True])
+async def test_host_shell_audit_uses_edge_peer_instead_of_forged_headers(
+    host_shell_setup, tmp_path, caplog, input_only,
+):
+    from fastapi import FastAPI
+    from websockets.asyncio.client import connect
+
+    from src.dashboard_server.app import create_app
+    from src.dashboard_server.settings import DashboardServerSettings
+    from tests.dashboard_server_helpers import serve_asgi
+    from tests.test_dashboard_server_app import stage_bundle
+
+    setup = host_shell_setup
+    origin = "http://192.168.1.69:5173"
+    setup.config.host_shell.allow_remote = True
+    setup.config.api_auth.trusted_dashboard_origins = [origin]
+    disconnected = asyncio.Event()
+    record_event = setup.db.log_event
+
+    async def log_event(event_type, **kwargs):
+        await record_event(event_type, **kwargs)
+        if event_type in {"host_shell.detached", "host_shell.input_disconnected"}:
+            disconnected.set()
+
+    setup.db.log_event = log_event
+    app = FastAPI()
+    app.include_router(module().build_terminal_router(
+        setup.orch, setup.config, attach=setup.attach, attach_input=setup.attach_input,
+    ))
+    async with serve_asgi(app) as daemon_url:
+        dashboard = create_app(DashboardServerSettings(
+            host="192.168.1.69", api_url=daemon_url, bundle_directory=stage_bundle(tmp_path),
+        ))
+
+        async def remote_peer(scope, receive, send):
+            if scope["type"] in {"http", "websocket"}:
+                scope = {**scope, "client": ("192.168.1.9", 50000), "headers": [
+                    (key, b"192.168.1.69:5173" if key.lower() == b"host" else value)
+                    for key, value in scope["headers"]
+                ]}
+            await dashboard(scope, receive, send)
+
+        try:
+            async with serve_asgi(remote_peer) as url:
+                path = "/ws/terminal/aq-host-shell-1" + ("/input" if input_only else "")
+                async with connect(
+                    url.replace("http://", "ws://") + path, origin=origin,
+                    subprotocols=["aq-terminal-v1"], proxy=None, additional_headers=[
+                        ("x-aq-dashboard-viewer", "operator"),
+                        ("x-aq-dashboard-peer", "203.0.113.10"),
+                        ("X-AQ-Dashboard-Peer", "127.0.0.1"),
+                    ],
+                ) as ws:
+                    assert json.loads(await asyncio.wait_for(ws.recv(), 2))["type"] == "ready"
+                    assert len(setup.events) == 1
+                await asyncio.wait_for(disconnected.wait(), 2)
+        finally:
+            await dashboard.proxy.close()
+    assert [event for event, _ in setup.events] == (
+        ["host_shell.input_connected", "host_shell.input_disconnected"] if input_only
+        else ["host_shell.attached", "host_shell.detached"]
+    )
+    identity = "remote-dashboard-viewer (peer 192.168.1.9)"
+    assert [json.loads(event["payload"]) for _, event in setup.events] == [
+        {"name": "aq-host-shell-1", "identity": identity},
+    ] * 2
+    records = [record for record in caplog.records if record.name == "aq.audit.host_shell"]
+    assert len(records) == 2 and all(identity in record.getMessage() for record in records)
+    assert "203.0.113.10" not in caplog.text
 
 
 # -- Input-only terminal socket (/ws/terminal/{id}/input): phones type, never attach.

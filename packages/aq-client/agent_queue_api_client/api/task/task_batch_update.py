@@ -65,13 +65,13 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: TaskBatchUpdateRequest,
 ) -> Response[TaskBatchAckResponse | TaskBatchUpdateResponse422]:
-    """Replace a pending proposal's tasks and edges, re-running the same shape, reference and cycle checks
-    as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated — a committed
-    or discarded one is history.
+    """Replace a pending change set, re-running final graph, state and version checks as
+    task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated — a committed or
+    discarded one is history.
 
-     Replace a pending proposal's tasks and edges, re-running the same shape, reference and cycle checks
-    as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated — a committed
-    or discarded one is history.
+     Replace a pending change set, re-running final graph, state and version checks as
+    task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated — a committed or
+    discarded one is history.
 
     Args:
         body (TaskBatchUpdateRequest):
@@ -100,13 +100,13 @@ def sync(
     client: AuthenticatedClient | Client,
     body: TaskBatchUpdateRequest,
 ) -> TaskBatchAckResponse | TaskBatchUpdateResponse422 | None:
-    """Replace a pending proposal's tasks and edges, re-running the same shape, reference and cycle checks
-    as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated — a committed
-    or discarded one is history.
+    """Replace a pending change set, re-running final graph, state and version checks as
+    task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated — a committed or
+    discarded one is history.
 
-     Replace a pending proposal's tasks and edges, re-running the same shape, reference and cycle checks
-    as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated — a committed
-    or discarded one is history.
+     Replace a pending change set, re-running final graph, state and version checks as
+    task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated — a committed or
+    discarded one is history.
 
     Args:
         body (TaskBatchUpdateRequest):
@@ -130,13 +130,13 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: TaskBatchUpdateRequest,
 ) -> Response[TaskBatchAckResponse | TaskBatchUpdateResponse422]:
-    """Replace a pending proposal's tasks and edges, re-running the same shape, reference and cycle checks
-    as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated — a committed
-    or discarded one is history.
+    """Replace a pending change set, re-running final graph, state and version checks as
+    task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated — a committed or
+    discarded one is history.
 
-     Replace a pending proposal's tasks and edges, re-running the same shape, reference and cycle checks
-    as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated — a committed
-    or discarded one is history.
+     Replace a pending change set, re-running final graph, state and version checks as
+    task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated — a committed or
+    discarded one is history.
 
     Args:
         body (TaskBatchUpdateRequest):
@@ -163,13 +163,13 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: TaskBatchUpdateRequest,
 ) -> TaskBatchAckResponse | TaskBatchUpdateResponse422 | None:
-    """Replace a pending proposal's tasks and edges, re-running the same shape, reference and cycle checks
-    as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated — a committed
-    or discarded one is history.
+    """Replace a pending change set, re-running final graph, state and version checks as
+    task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated — a committed or
+    discarded one is history.
 
-     Replace a pending proposal's tasks and edges, re-running the same shape, reference and cycle checks
-    as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated — a committed
-    or discarded one is history.
+     Replace a pending change set, re-running final graph, state and version checks as
+    task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated — a committed or
+    discarded one is history.
 
     Args:
         body (TaskBatchUpdateRequest):
