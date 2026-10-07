@@ -42,6 +42,7 @@ from src.integration.models import (
 )
 from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, SessionRecord
 from tests.test_generated_artifacts import _catalogue_branches
+from tests.test_integration_gitops import inherited_source
 
 
 BASE = "a" * 40
@@ -3251,6 +3252,61 @@ async def test_construction_applies_only_each_sealed_source_delta(db, tmp_path):
         "member-0.txt",
         "member-1.txt",
     ]
+    async with db._engine.connect() as conn:
+        rows = (await conn.execute(select(integration_candidate_member_results).order_by(
+            integration_candidate_member_results.c.member_ordinal,
+        ))).mappings().all()
+    # Member one's origin is absent from the target history; its unreviewed
+    # history still does not become part of the merged tree.
+    assert [row["conflict_evidence"]["effective_base_sha"] for row in rows] == [
+        member[0] for member in members
+    ]
+
+
+@pytest.mark.parametrize("scenario", ("clean", "conflict", "generated"))
+async def test_candidate_effective_base_preserves_target_and_real_conflicts(db, tmp_path, scenario):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+
+    origin, work, base, _ = _make_origin(tmp_path)
+    recorded, inherited, current, head = inherited_source(work, base, scenario)
+    tree = _git(work, "rev-parse", f"{head}^{{tree}}")
+    _git(work, "push", "origin", f"{current}:refs/heads/main", f"{head}:refs/heads/inherited")
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=((recorded, head, tree),), base_sha=current)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    service = CandidateService(
+        db, data_dir=tmp_path / "data", git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(), app_client=app, clock=lambda: 100.0,
+        regenerate_command=str(_write_regenerator(tmp_path)),
+    )
+    result = await service.build("batch")
+    assert result.outcome == ("conflict" if scenario == "conflict" else "built"), result
+    async with db._engine.connect() as conn:
+        row = (await conn.execute(select(integration_candidate_member_results))).mappings().one()
+        frozen = (await conn.execute(select(integration_batch_members))).mappings().one()
+    assert frozen["source_base_sha"] == recorded
+    evidence = row["conflict_evidence"]
+    assert evidence["source_base_sha"] == recorded
+    assert evidence["effective_base_sha"] == inherited
+    assert evidence["target_head_sha"] == current
+    assert evidence["merge_source_head_sha"] == head
+    if scenario == "conflict":
+        assert "base.txt" in evidence["detail"]
+        assert result.head_sha == current
+    else:
+        assert _git(origin, "show", f"{result.head_sha}:base.txt") == "target moved on"
+        assert _git(origin, "show", f"{result.head_sha}:own.txt") == "own change"
+        assert _git(origin, "show", "-s", "--format=%P", result.head_sha).split() == [current, head]
+        message = _git(origin, "show", "-s", "--format=%B", result.head_sha)
+        assert f"Effective-merge-base: {inherited}" in message
+        if scenario == "generated":
+            assert _git(origin, "show", f"{result.head_sha}:generated.txt") == "rebuilt"
+            assert (tmp_path / "regen-ran").exists()
+        replay = await service.build("batch")
+        assert replay.outcome == "already_built"
+        assert replay.head_sha == result.head_sha
 
 
 async def test_exact_sealed_delta_preserves_binary_delete_and_rename(db, tmp_path):

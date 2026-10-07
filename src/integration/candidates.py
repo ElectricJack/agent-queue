@@ -58,6 +58,7 @@ from src.integration.source_ancestry import (
     PROVEN_REASONS,
     SourceAncestryObservation,
     describe,
+    effective_source_base,
     prove_member_identity,
 )
 from src.integration.source_trailer import source_identity, with_source_trailers
@@ -2326,6 +2327,9 @@ class CandidateService:
                     evidence["partial_head_sha"],
                     evidence.get("detail", "replay"),
                     operation_id,
+                    merge_evidence={key: evidence[key] for key in (
+                        "effective_base_sha", "target_head_sha", "merge_source_head_sha"
+                    ) if key in evidence},
                 )
             if not await self._member_identity_matches(store, member):
                 return {
@@ -2343,6 +2347,19 @@ class CandidateService:
                     state, revision, member, current, "reserved_path", operation_id
                 )
             parent_repair = await self._accepted_parent_repair(revision, ordinal, store)
+            recorded_base, merge_head = member["source_base_sha"], member["reviewed_head_sha"]
+            if parent_repair is not None:
+                accepted = parent_repair["accepted_lineage"]
+                recorded_base, merge_head = accepted["partial_head_sha"], accepted["resolved_head_sha"]
+            effective_base = await effective_source_base(
+                self.git, str(store), recorded_base, current, merge_head
+            )
+            merge_evidence = {
+                "source_base_sha": member["source_base_sha"],
+                "effective_base_sha": effective_base,
+                "target_head_sha": current,
+                "merge_source_head_sha": merge_head,
+            }
             if parent_repair is None and await self.git.ais_ancestor(
                 str(store), member["reviewed_head_sha"], current
             ):
@@ -2356,36 +2373,25 @@ class CandidateService:
                     store, self._recovery_ref(batch_id, int(revision["revision"])), current
                 )
                 await self._crash("after_member_mutation")
-                revision = await self._applied(state, revision, member, current)
+                revision = await self._applied(
+                    state, revision, member, current, merge_evidence=merge_evidence
+                )
                 await self._crash("after_member_progress")
                 continue
-            if parent_repair is None:
-                merge_args = [
-                    "merge-tree",
-                    "--write-tree",
-                    f"--merge-base={member['source_base_sha']}",
-                    current,
-                    member["reviewed_head_sha"],
-                ]
-            else:
-                accepted = parent_repair["accepted_lineage"]
-                merge_args = [
-                    "merge-tree",
-                    "--write-tree",
-                    f"--merge-base={accepted['partial_head_sha']}",
-                    current,
-                    accepted["resolved_head_sha"],
-                ]
+            merge_args = [
+                "merge-tree", "--write-tree", f"--merge-base={effective_base}", current, merge_head,
+            ]
             try:
                 tree_sha = await self._merge_with_generated_fallback(merge_args, store)
             except MergeConflictError as exc:
                 return await self._conflict(
-                    state, revision, member, current, exc.evidence, operation_id
+                    state, revision, member, current, exc.evidence, operation_id,
+                    merge_evidence=merge_evidence,
                 )
             authors = await self._authors(
                 store, member["source_base_sha"], member["reviewed_head_sha"]
             )
-            message = self._message(state, member, authors, parent_repair)
+            message = self._message(state, member, authors, parent_repair, effective_base)
             # The member's own authors are preserved; the candidate merge is
             # committed as the project's resolved identity.
             integrator = await self._integrator(state)
@@ -2417,7 +2423,8 @@ class CandidateService:
             await self._pin(store, self._recovery_ref(batch_id, int(revision["revision"])), current)
             await self._crash("after_member_mutation")
             revision = await self._applied(
-                state, revision, member, current, parent_repair=parent_repair
+                state, revision, member, current, parent_repair=parent_repair,
+                merge_evidence=merge_evidence,
             )
             await self._crash("after_member_progress")
         async with self.db.immediate() as conn:
@@ -2716,7 +2723,9 @@ class CandidateService:
                 if canonical is None:
                     raise CandidateStaleAuthority("candidate pending insert raced") from None
 
-    async def _applied(self, state, revision, member, head, *, parent_repair=None):
+    async def _applied(
+        self, state, revision, member, head, *, parent_repair=None, merge_evidence=None
+    ):
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, state["project"]["id"])
             await self._validate_authority_on(conn, state, revision=int(revision["revision"]))
@@ -2731,7 +2740,7 @@ class CandidateService:
                 .values(
                     result="applied",
                     generated_squash_sha=head,
-                    conflict_evidence=parent_repair,
+                    conflict_evidence={**(parent_repair or {}), **(merge_evidence or {})} or None,
                     updated_at=self.clock(),
                 )
             )
@@ -3673,7 +3682,9 @@ class CandidateService:
             source_head_shas=heads,
         )
 
-    async def _conflict(self, state, revision, member, partial, evidence, operation_id):
+    async def _conflict(
+        self, state, revision, member, partial, evidence, operation_id, *, merge_evidence=None
+    ):
         detail = {
             "batch_id": state["batch"]["id"],
             "revision": int(revision["revision"]),
@@ -3684,6 +3695,7 @@ class CandidateService:
             "source_base_sha": member["source_base_sha"],
             "source_head_sha": member["reviewed_head_sha"],
             "detail": str(evidence),
+            **(merge_evidence or {}),
         }
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, state["project"]["id"])
@@ -4182,7 +4194,7 @@ class CandidateService:
         ]
 
     @staticmethod
-    def _message(state, member, authors, parent_repair=None):
+    def _message(state, member, authors, parent_repair=None, effective_base=None):
         trailers = "".join(
             f"\nCo-authored-by: {author['name']} <{author['email']}>" for author in authors[1:]
         )
@@ -4195,6 +4207,8 @@ class CandidateService:
         message = (
             f"Integrate {member['task_id']}\n\nBatch: {state['batch']['id']}\n"
             f"Reviewed-head: {member['reviewed_head_sha']}\n"
+            f"Source-base: {member['source_base_sha']}\n"
+            f"Effective-merge-base: {effective_base or member['source_base_sha']}\n"
             f"Review-evidence: {member['review_evidence_id']}{repair}{trailers}"
         )
         return with_source_trailers(
