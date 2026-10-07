@@ -380,6 +380,8 @@ class PromoteCommandsMixin:
                     version = f"{major}.{minor + 1}.0" if request.bump == "minor" \
                         else f"{major}.{minor}.{patch + 1}"
                 previous = await previous_tag(ops, repo, step) if step_has_version(step) else None
+                await _guard_backmerges(conn, ops, repo, repository.id,
+                                       "refs/heads/" + step["target"], head)
                 _increasing_version(step, version, previous)
                 # One version source per repository: concurrent steps must not file
                 # independent workers that race to bump the same version file.
@@ -402,8 +404,6 @@ class PromoteCommandsMixin:
                 notes_input, draft = None, None
                 if step["notes"]["kind"] != "none":
                     target = await ops.remote(repo, "refs/heads/" + step["target"])
-                    await _guard_backmerges(conn, ops, repo, repository.id,
-                                           "refs/heads/" + step["target"], head)
                     notes_input = await assemble_notes_input(
                         conn, ops, repo, project_id=project.id, repository_id=repository.id,
                         step=step, head=head, previous=previous, target_tip=target,

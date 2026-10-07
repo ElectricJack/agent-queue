@@ -181,10 +181,12 @@ async def assemble_notes_input(conn, ops, repo, *, project_id, repository_id, st
                                previous=None, target_tip=None):
     """Walk all parents, preserving a pinned range and first topological task identity."""
     await ensure_commit(ops, repo, head)
-    previous = previous if step_has_version(step) else None
-    bound = previous["sha"] if previous else target_tip or await ops.remote(
-        repo, "refs/heads/" + step["target"],
+    versioned = step_has_version(step)
+    previous = previous if versioned else None
+    bound = previous["sha"] if previous else (
+        step["notes"].get("bootstrap_sha") if versioned else None
     )
+    bound = bound or target_tip or await ops.remote(repo, "refs/heads/" + step["target"])
     if not bound:
         raise NotesRefusal("notes_range_invalid", "Notes target branch is unavailable.")
     await ensure_commit(ops, repo, bound)
@@ -260,12 +262,8 @@ async def assemble_notes_input(conn, ops, repo, *, project_id, repository_id, st
                         "title": row["title"], "summary": summary or None, "labels": list(labels),
                         "migrations": delta.splitlines(),
                         "reverted": sha in reverts and reverts[sha] < index})
-    if bound:
-        migrations = await ops.run(repo, "diff", "--name-only", bound, head,
-                                   "--", "migrations/versions/")
-    else:
-        migrations = await ops.run(repo, "ls-tree", "-r", "--name-only", head,
-                                   "--", "migrations/versions/")
+    migrations = await ops.run(repo, "diff", "--name-only", bound, head,
+                               "--", "migrations/versions/")
     bare = [{"sha": sha, "subject": messages[sha].splitlines()[0] if messages[sha] else "(no subject)"}
             for sha in commits if (sha not in covered or len(parents[sha]) > 1)
             and not _SOURCE.search(messages[sha])]

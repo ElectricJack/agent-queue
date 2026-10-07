@@ -9,20 +9,39 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import insert, select, update
 
+from src.commands.contracts import CONTRACTS
+from src.commands.contracts.promote import PromoteRequestArgs
+from src.commands.handler import CommandHandler
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+from src.config import AppConfig
 from src.database.tables import (
-    archived_tasks, events, integration_batches, projects, task_branch_origins,
-    task_completion_records, task_labels, task_metadata, tasks,
+    archived_tasks,
+    events,
+    integration_batches,
+    projects,
+    task_branch_origins,
+    task_completion_records,
+    task_labels,
+    task_metadata,
+    tasks,
 )
 from src.git.github_contracts import GitHubAccessError
 from src.integration.promotion_notes import (
-    MAX_PR_BODY_BYTES, NOTES_TRUNCATION_MARKER, NotesRefusal, assemble_notes_input,
-    draft_notes, notes_metadata, previous_tag, render_release_notes,
+    MAX_PR_BODY_BYTES,
+    NOTES_TRUNCATION_MARKER,
+    NotesRefusal,
+    assemble_notes_input,
+    draft_notes,
+    notes_metadata,
+    previous_tag,
+    render_release_notes,
     step_pr_body,
 )
 from src.profiles.capabilities import DENY_ALL
-from tests.test_integration_gitops import commit, git, setup as setup
-from tests.test_promote_commands import _supervisor, promote_env as promote_env, request
+from tests.test_integration_gitops import commit, git
+from tests.test_integration_gitops import setup as setup
+from tests.test_promote_commands import _supervisor, request
+from tests.test_promote_commands import promote_env as promote_env
 from tests.test_promotion_steps import promotion as promotion
 
 
@@ -278,7 +297,7 @@ async def test_request_pr_renders_source_summary_and_migration_guidance(promote_
     value = result["promotion"]["notes_input"]
     assert value["sources"][0]["task"] == "feature"
     assert value["source_digest"] in e.github.body
-    assert value["range"]["base"] == e.base
+    assert value["range"]["base"] == step["notes"]["bootstrap_sha"]
 
 
 async def test_request_uses_step_check_set_on_exact_source(promote_env):
@@ -344,12 +363,14 @@ async def test_unversioned_range_uses_target_tip_on_long_history(promote_env, mo
     assert (await notes(e, step, next_head))["range"]["base"] == head
 
 
-async def test_first_versioned_range_uses_target_instead_of_stale_bootstrap(promote_env):
+@pytest.mark.parametrize("bootstrap", [False, True])
+async def test_first_versioned_range_uses_bootstrap_or_target_tip(promote_env, bootstrap):
     e = promote_env
-    step = await configure(e, notes_kind="file_template", bootstrap=e.base)
+    step = await configure(e, notes_kind="file_template", bootstrap=e.base if bootstrap else None)
     git(e.repo.store, "push", "origin", e.source + ":refs/heads/main")
     head = commit(e.repo.store, {"recent.txt": "new change"}, base=e.source)
-    assert (await notes(e, step, head))["range"]["base"] == e.source
+    assert await previous_tag(e.ops, e.repo, step) is None
+    assert (await notes(e, step, head))["range"]["base"] == (e.base if bootstrap else e.source)
 
 
 async def test_notes_range_limit_refuses_before_reading_commit_messages(promote_env, monkeypatch):
@@ -473,7 +494,39 @@ async def test_required_pr_body_limit_refuses_before_any_ref_or_intent(promote_e
         assert await conn.scalar(select(integration_batches.c.id)) is None
 
 
-@pytest.mark.parametrize("command", ["request", "prepare", "notes_input"])
+@pytest.mark.parametrize("outcome", ["notes_range_too_large", "promotion_body_too_large"])
+async def test_notes_limits_survive_registered_request_adapter(promote_env, monkeypatch, outcome):
+    e = promote_env
+    if outcome == "notes_range_too_large":
+        await configure(e, notes_kind="file_template")
+        source = commit(e.repo.store, {"notes/0.2.0.md": "Authored notes\n"}, base=e.source)
+        git(e.repo.store, "push", "origin", source + ":refs/heads/dev")
+        e.github.runs[source] = "success"
+        monkeypatch.setattr("src.integration.promotion_notes.MAX_NOTES_COMMITS", 1)
+    else:
+        monkeypatch.setattr("src.integration.promotion_notes.MAX_PR_BODY_BYTES", 100)
+    # Exercise the registered boundary and real dispatch, rather than calling
+    # the mixin directly or synthesizing a handler's refusal response.
+    e.handler.orchestrator.db = e.db
+    handler = CommandHandler(e.handler.orchestrator, AppConfig())
+    handler._promotion_manifest = e.handler._promotion_manifest
+    monkeypatch.setattr("src.commands.contracts.builtin._handler", lambda: handler)
+    registration = CONTRACTS.require("promote_request")
+    before = git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/")
+    result = await registration.invoke(PromoteRequestArgs(
+        project_id="p", step_id="release", notes_reviewed=True,
+    ), None)
+    assert result.outcome == outcome, result
+    spec = next(spec for spec in registration.contract.execution.outcomes if spec.name == outcome)
+    assert spec.classification == "failure"
+    assert e.github.created == 0
+    assert git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/") == before
+    async with e.db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.id)) is None
+        assert await conn.scalar(select(integration_batches.c.id)) is None
+
+
+@pytest.mark.parametrize("command", ["request", "prepare", "prepare_older_version", "notes_input"])
 @pytest.mark.parametrize("target_moved", [False, True])
 async def test_outstanding_hotfix_refuses_before_notes_range(promote_env, command, target_moved):
     e = promote_env
@@ -494,8 +547,9 @@ async def test_outstanding_hotfix_refuses_before_notes_range(promote_env, comman
             value=json.dumps({"source_sha": hotfix, "target_ref": "refs/heads/main"}),
         ))
     args = {"project_id": "p", "step_id": "release"}
-    if command == "prepare":
-        result = await e.handler._cmd_promote_prepare({**args, "bump": "patch"})
+    if command in {"prepare", "prepare_older_version"}:
+        version_choice = {"version": "0.1.8"} if command == "prepare_older_version" else {"bump": "patch"}
+        result = await e.handler._cmd_promote_prepare({**args, **version_choice})
     elif command == "request":
         result = await request(e, notes_reviewed=True)
     else:

@@ -1431,7 +1431,7 @@
       ]
     }
   },
-  "digest": "sha256:e73e6956e9276bb430d08c2aab79308c02c40d2801850703baacf488c0b36d7b",
+  "digest": "sha256:918b6b207b24ea35468daacb641a2bcb2ec68d3ee84a5383f37909076ccf79c6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -12680,7 +12680,11 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.promote",
+        "src.commands.handler",
         "src.commands.principal",
+        "src.config",
         "src.database.tables",
         "src.git.github_contracts",
         "src.integration.promotion_notes",

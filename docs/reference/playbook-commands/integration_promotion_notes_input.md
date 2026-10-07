@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/promote.py`](../../../src/commands/contracts/promote.py) |
-| Contract fingerprint | `sha256:9756c710a86c34c1df0a90f3fe844c32157c75c650e84175a1f1e2ebfe9a1ce9` |
+| Contract fingerprint | `sha256:c26236d6dd3b4d64d45047a5bb5c7d123267a665613372c268536b442b2c8e96` |
 
 ## Parameters
 
@@ -59,9 +59,11 @@ Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id
 | `notes_input` | success | — |
 | `notes_not_reviewed` | failure | — |
 | `notes_range_invalid` | failure | — |
+| `notes_range_too_large` | failure | — |
 | `notes_source_missing` | failure | — |
 | `notes_stale` | failure | — |
 | `prepare_in_progress` | failure | — |
+| `promotion_body_too_large` | failure | — |
 | `promotion_flow_changed` | failure | — |
 | `promotion_flow_empty` | failure | — |
 | `promotion_flow_invalid` | failure | — |
