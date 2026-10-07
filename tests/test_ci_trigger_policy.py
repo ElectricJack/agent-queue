@@ -206,7 +206,7 @@ def test_tests_keeps_its_triggers_and_job_names_and_can_be_called():
     tests = workflow()
     assert list(tests['on']) == ['pull_request', 'push', 'workflow_dispatch', 'workflow_call']
     assert tests['on']['push']['branches'] == [
-        'aq/parent/**', 'aq/integration/**', 'aq/batches/**', 'aq/promote/**',
+        'aq/parent/**', 'aq/integration/**', 'aq/batches/**', 'aq/promote/**', 'aq/backmerge/**',
     ]
     assert tests['on']['workflow_call'] == ''  # No inputs or secrets: it runs as pushed.
     assert list(tests['jobs']) == ['test', 'e2e-cli', 'dashboard']
