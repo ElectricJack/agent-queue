@@ -916,6 +916,28 @@ async def test_slow_target_never_stalls_another():
     assert not any(row["running"] for row in status.values())
 
 
+async def test_status_reports_a_first_visit_in_flight_as_visiting():
+    """After a restart, a lane whose first visit is running is not 'unvisited'."""
+    slow = TrainTarget("p", "r", "refs/heads/main")
+    release = asyncio.Event()
+
+    async def blocked_fetch():
+        await release.wait()
+
+    batches = Batches({slow.key: (batch(), MEMBERS)})
+    t = train(Targets(slow), batches, {slow.key: lane(Service("delivered"), fetch=blocked_fetch)})
+    await t.tick()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    [row] = t.status()
+    assert row["state"] == "visiting" and row["running"] and row["visits"] == 0
+    assert row["progress"]["stage"]
+    release.set()
+    await t.drain()
+    [row] = t.status()
+    assert row["state"] == "delivered" and not row["running"] and "progress" not in row
+
+
 async def test_one_target_failure_is_recorded_and_others_continue():
     broken, healthy = TrainTarget("p", "r", "refs/heads/main"), TrainTarget("q", "s", "refs/heads/main")
 
