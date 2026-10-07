@@ -2378,6 +2378,83 @@
         107
       ]
     },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_abort_batch']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        119,
+        119
+      ],
+      "baseline_span": [
+        119,
+        119
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_eject']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        120,
+        120
+      ],
+      "baseline_span": [
+        120,
+        120
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_pause_batch']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        117,
+        117
+      ],
+      "baseline_span": [
+        117,
+        117
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_refresh_epic']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        115,
+        115
+      ],
+      "baseline_span": [
+        115,
+        115
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_resume_batch']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        118,
+        118
+      ],
+      "baseline_span": [
+        118,
+        118
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_retire_origin']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        116,
+        116
+      ],
+      "baseline_span": [
+        116,
+        116
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_seal_now']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter.",
+      "landing_span": [
+        109,
+        114
+      ],
+      "baseline_span": [
+        109,
+        114
+      ]
+    },
     "src/cli/client.py::_COMMAND_TIMEOUTS['integration_trust_manifest']": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -9278,7 +9355,7 @@
       "reason": "Closes an unpublished promotion PR and aborts its intent under the integration branch lock; never touches the target or tag."
     },
     "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_request": {
-      "reason": "Admits an idempotent promotion intent: retains the exact source, pushes the private request head, opens the pinned PR and freezes the promotion batch."
+      "reason": "Delegates the command boundary to the shared immutable promotion/backmerge admission mechanism."
     },
     "src/commands/promote_commands.py::PromoteCommandsMixin._promotion_cached": {
       "reason": "Reads promotion intents with cached check and PR review evidence from integration batch storage."
@@ -9327,83 +9404,6 @@
     },
     "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin._episode_completion_token": {
       "reason": "Reads a container's collection episode checkpoint and repair operation under the caller's lock to admit only a cancelled train episode to guarded completion; refuses a live episode."
-    },
-    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_abort_batch']": {
-      "reason": "Integration import, registered surface, schema, policy or adapter.",
-      "landing_span": [
-        119,
-        119
-      ],
-      "baseline_span": [
-        119,
-        119
-      ]
-    },
-    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_eject']": {
-      "reason": "Integration import, registered surface, schema, policy or adapter.",
-      "landing_span": [
-        120,
-        120
-      ],
-      "baseline_span": [
-        120,
-        120
-      ]
-    },
-    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_pause_batch']": {
-      "reason": "Integration import, registered surface, schema, policy or adapter.",
-      "landing_span": [
-        117,
-        117
-      ],
-      "baseline_span": [
-        117,
-        117
-      ]
-    },
-    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_refresh_epic']": {
-      "reason": "Integration import, registered surface, schema, policy or adapter.",
-      "landing_span": [
-        115,
-        115
-      ],
-      "baseline_span": [
-        115,
-        115
-      ]
-    },
-    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_resume_batch']": {
-      "reason": "Integration import, registered surface, schema, policy or adapter.",
-      "landing_span": [
-        118,
-        118
-      ],
-      "baseline_span": [
-        118,
-        118
-      ]
-    },
-    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_retire_origin']": {
-      "reason": "Integration import, registered surface, schema, policy or adapter.",
-      "landing_span": [
-        116,
-        116
-      ],
-      "baseline_span": [
-        116,
-        116
-      ]
-    },
-    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_seal_now']": {
-      "reason": "Integration import, registered surface, schema, policy or adapter.",
-      "landing_span": [
-        109,
-        114
-      ],
-      "baseline_span": [
-        109,
-        114
-      ]
     },
     "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_branch_owners, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
       "reason": "Claim and integration schema imports, including the active stack origin used to hold unresolved prerequisite repairs."
@@ -9467,6 +9467,81 @@
     },
     "src/orchestrator/workspace_attachments.py::detach_retained_preparation": {
       "reason": "Narrow unactivated-preparation handoff: prove exact clean HEAD durably pinned in the observer store before detach. Does not publish, reset, or waive attachment identity guards."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_integration_backmerge_source": {
+      "reason": "Authors owed lower-branch sources after freshly observing the released head; each source enters its own frozen batch and PR gate, or records configured disabled backmerge debt."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_integration_promotion_notes_input": {
+      "reason": "Assembles release notes from the exact source and task completions while enforcing outstanding backmerge obligations."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_integration_promotion_policy_input": {
+      "reason": "Returns stored step configuration, exact current or retained hotfix source, outstanding debt and active intent to the reviewed promotion policy."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_hotfix": {
+      "reason": "Files a project-scoped ordinary root task on the selected step target and records daemon-owned hotfix routing inputs; completion and publication still require fresh Git and PR gates."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_prepare": {
+      "reason": "Files a routed version and notes preparation task on the exact default head, with immutable worker inputs, and sends it through the ordinary integration train."
+    },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._request_promotion": {
+      "reason": "Admits immutable promotion or backmerge requests after exact-source CI, project authority, flow, notes, debt and source-chain checks; retains the source and freezes a separately gated batch."
+    },
+    "src/commands/promote_commands.py::_guard_backmerges": {
+      "reason": "Requires the requested source to contain each outstanding lower-branch obligation using current Git ancestry."
+    },
+    "src/commands/promote_commands.py::_hotfix_source": {
+      "reason": "Binds a completed hotfix to one live origin and its retained exact completion generation before allowing a promotion source."
+    },
+    "src/commands/promote_commands.py::_increasing_version": {
+      "reason": "Enforces increasing semver tags for the pinned promotion source."
+    },
+    "src/commands/promote_commands.py::_source_inputs": {
+      "reason": "Reads and validates the exact source version and operator-reviewed notes for promotion admission."
+    },
+    "src/commands/promote_commands.py::import from src.database.tables import integration_batch_members, integration_batches, integration_check_evidence, integration_review_evidence, projects, task_context, task_branch_origins, task_metadata, tasks": {
+      "reason": "Promotion commands use frozen batch/member evidence, designated repository configuration, task origins and daemon-owned task inputs."
+    },
+    "src/commands/promote_commands.py::import from src.integration.promotion_notes import PREPARE_CONTEXT, NotesRefusal, assemble_notes_input, authored_notes_section, draft_notes, notes_metadata, previous_tag, semver, source_version, step_has_version, step_pr_body": {
+      "reason": "Promotion preparation and admission use integration-owned exact-source version and release-notes mechanisms."
+    },
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, PromotionSourceRefusal, check_source_green, promotion_ref": {
+      "reason": "Promotion commands use retained step schema, exact-source CI refusal and private request identity contracts."
+    },
+    "src/orchestrator/events.py::EventsMixin._emit_task_event": {
+      "reason": "Persists a hotfix-completed promotion policy event before volatile task event fanout; identifies the daemon-owned hotfix task, without carrying publication authority."
+    },
+    "src/playbooks/services.py::_promotion_route": {
+      "reason": "Selects the reviewed request or continuous promotion policy from the stored step type and an enabled, healthy project-scoped activation."
+    },
+    "src/prompts/reviewed_playbooks/promotion-continuous/source.md::## Rule: advance-source": {
+      "reason": "Reviewed promotion policy reacts to durable source settlement using daemon-derived source and backmerge debt; continuous steps cancel only unpublished stale intents before requesting the newer exact source."
+    },
+    "src/prompts/reviewed_playbooks/promotion-continuous/source.md::## Rule: backmerge-delivered": {
+      "reason": "Reviewed promotion policy requests independent lower-branch backmerge sources after delivery observation; never extends or rewrites frozen batch membership."
+    },
+    "src/prompts/reviewed_playbooks/promotion-continuous/source.md::## Rule: explicit-request": {
+      "reason": "Reviewed promotion policy admits an explicit request through daemon-derived source, debt and active-intent checks, preserving the explicit notes acknowledgement."
+    },
+    "src/prompts/reviewed_playbooks/promotion-continuous/source.md::## Rule: hotfix-completed": {
+      "reason": "Reviewed promotion policy resolves a completed hotfix through its retained completion and step PR gate; missing notes acknowledgement or authority ends visibly held."
+    },
+    "src/prompts/reviewed_playbooks/promotion-continuous/source.md::## Rule: visit-intent": {
+      "reason": "Reviewed promotion policy invokes the server-owned build, gate, attestation and publication sequence; waits and refusal notifications carry no bypass authority."
+    },
+    "src/prompts/reviewed_playbooks/promotion-request/source.md::## Rule: advance-source": {
+      "reason": "Reviewed promotion policy reacts to durable source settlement using daemon-derived source and backmerge debt; continuous steps cancel only unpublished stale intents before requesting the newer exact source."
+    },
+    "src/prompts/reviewed_playbooks/promotion-request/source.md::## Rule: backmerge-delivered": {
+      "reason": "Reviewed promotion policy requests independent lower-branch backmerge sources after delivery observation; never extends or rewrites frozen batch membership."
+    },
+    "src/prompts/reviewed_playbooks/promotion-request/source.md::## Rule: explicit-request": {
+      "reason": "Reviewed promotion policy admits an explicit request through daemon-derived source, debt and active-intent checks, preserving the explicit notes acknowledgement."
+    },
+    "src/prompts/reviewed_playbooks/promotion-request/source.md::## Rule: hotfix-completed": {
+      "reason": "Reviewed promotion policy resolves a completed hotfix through its retained completion and step PR gate; missing notes acknowledgement or authority ends visibly held."
+    },
+    "src/prompts/reviewed_playbooks/promotion-request/source.md::## Rule: visit-intent": {
+      "reason": "Reviewed promotion policy invokes the server-owned build, gate, attestation and publication sequence; waits and refusal notifications carry no bypass authority."
     }
   },
   "shared_state": {
@@ -9749,14 +9824,15 @@
   },
   "storage_writer_review": {
     "counts": {
-      "ordinary": 173,
-      "retire": 20,
-      "intent": 2
+      "ordinary": 196,
+      "retire": 18,
+      "intent": 4
     },
     "sites": "tests/integration_ownership.json storage_sinks: complete reviewed call and owner AST identities.",
     "actual_audit_table": "events; op_events and operation_events are also scanned to prevent a renamed/new sink.",
     "legacy": "integration_subject_journal append calls and direct insert are retirement findings. Duplicate merged_at, PR-base delivery annotations and repair-evidence metadata also retire.",
-    "ordinary": "Task status/completion identity, claims, holds, provider intent, resume keys, job records, audit events and refusal notes retain their ordinary owners. Generic dynamic metadata/event writes require review when their enclosing code changes."
+    "ordinary": "Task status/completion identity, claims, holds, provider intent, resume keys, job records, audit events and refusal notes retain their ordinary owners. Generic dynamic metadata/event writes require review when their enclosing code changes.",
+    "count_basis": "Current source call sites at the takeover review revision; historical baseline and landing remain fixed."
   },
   "exclusions": {
     "src/agent_waits.py::TERMINAL_TASK_STATUSES['BLOCKED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
@@ -9867,5 +9943,34 @@
     "workspaces": "Ordinary repository/branch/generation identity and job pins remain workspace-owned; integration-specific adapters are separately charged.",
     "events/op_events": "The current Table is events. Ordinary immutable audit rows remain generic; no ref-operation replay or authoritative delivery lifecycle may be encoded in the payload.",
     "task_metadata": "Generic key/value mechanism remains task-owned. Every direct SQL/metadata API writer has an audited call and enclosing-code identity; duplicate delivery/repair state is marked retire."
+  },
+  "takeover_review": {
+    "reviewed_revision": "b11f80e04838efee3f76ae7774236fac0f65e1d5",
+    "owned_definition_additions": 25,
+    "refreshed_owner_fingerprints": 29,
+    "new_storage_sites": {
+      "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_hotfix::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": "ordinary",
+      "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_prepare::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": "ordinary",
+      "src/integration/delivered_close.py::DeliveredClose.record::1d2b10658739ab0587d184ca964bbeca56c51b0b984a7acb06655c1484bcb7e6": "ordinary",
+      "src/integration/delivered_close.py::DeliveredClose.record::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": "ordinary",
+      "src/integration/quiesce.py::TrainQuiesce.run::bba5a9b32fdbb8a1feca353b791766c5e46c29caa87665ba2236dd63e3be814b": "ordinary",
+      "src/integration/quiesce.py::TrainQuiesce.run::c8bd8e346bc9e9a88d824b9c32abc9bc3203c20d2c9814ad165154e2fd57968d": "retire",
+      "src/integration/train_sources.py::BackmergeAdmission.author::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": "intent",
+      "src/integration/mutation_recovery.py::ExpiredMutationRecovery.run::176aea4d5c84eb7ac1cf9fb5ee9b601fc81bea4aeb469555480653be0ecefd83": "ordinary"
+    },
+    "current_owned_groups": {
+      "shared": 47561,
+      "companions": 12482,
+      "engine": 87064,
+      "policy_sources": 1999,
+      "policy": 480,
+      "ui": 333,
+      "guards": 639
+    },
+    "current_owned_total": 150558,
+    "current_table_count": 45,
+    "unknown_definitions": [],
+    "unknown_storage_sites": [],
+    "fixed_baseline_and_caps_unchanged": true
   }
 }
