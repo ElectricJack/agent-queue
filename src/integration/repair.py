@@ -3467,12 +3467,18 @@ class RepairService:
         if batch is None or batch["lifecycle"] != "building":
             return False
         revision = (await conn.execute(
-            select(integration_candidate_revisions.c.state).where(
+            select(
+                integration_candidate_revisions.c.state,
+                integration_candidate_revisions.c.repair_parent_revision,
+            ).where(
                 integration_candidate_revisions.c.batch_id == batch["id"],
                 integration_candidate_revisions.c.revision == batch["current_revision"],
             )
-        )).scalar_one_or_none()
-        if revision != "constructing":
+        )).mappings().one_or_none()
+        # A successor rebuild inherits the existing repair deadline. It must not
+        # acquire the grace reserved for an interrupted initial construction.
+        if (revision is None or revision["state"] != "constructing"
+                or revision["repair_parent_revision"] is not None):
             return False
         event_id = (
             f"integration-construction-redrive:{operation['id']}:0:"

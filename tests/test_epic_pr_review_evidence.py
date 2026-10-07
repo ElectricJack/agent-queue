@@ -710,8 +710,9 @@ def test_conflicting_pull_request_without_checks_is_conflict_not_pending():
 
 
 @pytest.mark.parametrize("conflict_scope", ["batch", "member"])
-async def test_conflicting_source_is_admitted_under_either_conflict_scope(
-    case, conflict_scope
+@pytest.mark.parametrize("source_ci", [None, "pending", "green", "red", "cancelled", "conflict"])
+async def test_source_pr_ci_does_not_gate_candidate_admission(
+    case, conflict_scope, source_ci
 ):
     policy = await _continuous_policy(case)
     if conflict_scope == "member":
@@ -721,17 +722,18 @@ async def test_conflicting_source_is_admitted_under_either_conflict_scope(
     async with db.immediate() as conn:
         generation = (await conn.execute(select(task_integration_checkpoints.c.generation).where(
             task_integration_checkpoints.c.task_id == "e1"))).scalar_one()
-        await conn.execute(insert(integration_source_ci).values(
-            task_id="e1", repository_id="repo", source_base=case["base"],
-            source_head=case["first"], generation=generation, policy_generation=0,
-            state="conflict", evidence={}, observed_at=1000.0))
+        if source_ci is not None:
+            await conn.execute(insert(integration_source_ci).values(
+                task_id="e1", repository_id="repo", source_base=case["base"],
+                source_head=case["first"], generation=generation, policy_generation=0,
+                state=source_ci, evidence={}, observed_at=1000.0))
     assert await case["producer"].snapshot_authorized(
         "e1", reviewed_sha=case["first"], policy_generation=0)
     async with db.immediate() as conn:
         members = await TrainService(db)._eligible_members(
             conn, project_id="p", repository_id="repo", project_mode="pull_request")
-    # Member scope must admit too: no source repair is filed for a conflict,
-    # so only candidate construction's member conflict repair can recover it.
+    # Candidate construction and CI handle conflicts and failures under either
+    # scope, including sources whose PR checks are missing or still pending.
     assert {item["task_id"] for item in members} == {"e1"}
 
 

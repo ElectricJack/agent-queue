@@ -1928,3 +1928,147 @@ async def test_accepted_ci_repair_rebuilt_on_moved_main_is_pushed_before_testing
     await train.run_until(lambda: train.phase(subject.id, SubjectPhase.DONE), label="promoted")
     assert train.remote("refs/heads/main") == current.head_sha
     assert (await train.operation(batch["id"]))["active_stage"] == 0
+
+
+@pytest.mark.parametrize("revision_state", ["testing", "green", "red"])
+async def test_main_moved_member_conflict_enters_repair_from_ci_lifecycle(train, revision_state):
+    """A successor revision owns construction even when its predecessor reached CI."""
+    await train.open()
+    train.source("alpha", {"alpha.txt": "alpha\n"})
+    await train.add_source("alpha", number=1)
+    subject = await train.cutover()
+    await train.run_until(lambda: train.phase(subject.id, SubjectPhase.TESTING), label="built")
+    async with train.db.immediate() as conn:
+        await conn.execute(
+            update(t.integration_candidate_revisions)
+            .where(
+                t.integration_candidate_revisions.c.batch_id == subject.batch_id,
+                t.integration_candidate_revisions.c.revision == 0,
+            )
+            .values(state=revision_state)
+        )
+
+    _git(train.work, "switch", "-C", "main", train.base)
+    (train.work / "alpha.txt").write_text("moved\n")
+    _git(train.work, "add", "-A")
+    _git(train.work, "commit", "-m", "main overlaps member")
+    _git(train.work, "push", "origin", "HEAD:refs/heads/main")
+    moved = train.remote("refs/heads/main")
+
+    await train.run_until(
+        lambda: train.phase(subject.id, SubjectPhase.REPAIRING),
+        label="member conflict reaches repairing",
+    )
+    batch = await train.db.get_integration_batch(subject.batch_id)
+    assert (batch["current_revision"], batch["lifecycle"]) == (1, "repairing")
+    operation = await train.operation(batch["id"])
+    stage = await train.stage(operation["id"], 0)
+    assert stage["repair_task_id"]
+    async with train.db._engine.connect() as conn:
+        revisions = (await conn.execute(
+            select(t.integration_candidate_revisions)
+            .where(t.integration_candidate_revisions.c.batch_id == batch["id"])
+            .order_by(t.integration_candidate_revisions.c.revision)
+        )).mappings().all()
+        conflict = (await conn.execute(
+            select(t.integration_candidate_member_results)
+            .where(
+                t.integration_candidate_member_results.c.batch_id == batch["id"],
+                t.integration_candidate_member_results.c.revision == 1,
+                t.integration_candidate_member_results.c.result == "conflict",
+            )
+        )).mappings().one()
+        writer_status = (await conn.execute(
+            select(t.tasks.c.status).where(t.tasks.c.id == stage["repair_task_id"])
+        )).scalar_one()
+    assert revisions[0]["state"] == "superseded"
+    assert revisions[1]["construction_base_sha"] == moved
+    assert conflict["member_ordinal"] == 0
+    assert writer_status == "READY"
+
+
+async def test_main_moved_after_build_rebuild_conflict_routes_subject_to_repairing(train):
+    """Live 2026-10-04 subject d3fb5c5b: the rebuild of a moved main conflicted.
+
+    A rebuild that preserves an accepted CI repair on the new main conflicts
+    instead of answering ``built``.  That conflict names no batch member, so
+    the adapter answered ``unknown`` and the subject stayed in testing, backoff
+    after backoff, while the batch re-dispatched its repair.  The frozen
+    conflict is the durable fact, so the adapter answers ``conflict`` and the
+    subject reaches repairing with no operator edit.
+    """
+    await train.open()
+    train.source("alpha", {"feature.txt": "feature\n"})
+    await train.add_source("alpha", number=1)
+    subject = await train.cutover()
+    batch = await train.db.get_integration_batch(subject.batch_id)
+    await train.run_until(lambda: train.phase(subject.id, SubjectPhase.TESTING), label="built")
+    red = await train.subject(subject.id)
+
+    # A real red CI repair round first: its accepted commits are the history
+    # the later rebuild has to preserve.
+    train.ci.finish(red.head_sha, "failure", run=31)
+
+    async def repair_writer_filed():
+        return (await train.subject(subject.id)).writer.status is WriterStatus.FILED
+
+    await train.run_until(repair_writer_filed, label="red CI repair filed")
+    operation = await train.operation(batch["id"])
+    stage = await train.stage(operation["id"], 0)
+    writer = await train.claim(stage["repair_task_id"], batch)
+    writer.checkout(batch["integration_branch"])
+    repaired = writer.commit("repair red candidate", {"fix.txt": "fixed\n"})
+    _git(writer.path, "push", str(train.origin), "HEAD:" + batch["integration_branch"])
+    with principal_context(writer.principal()):
+        closed = await train.handler._cmd_task_close({
+            "task_id": writer.task_id, "session_id": writer.session_id, "claim_epoch": 1,
+            "outcome": "pass", "work_outcome": "shipped", "summary": "Repaired candidate",
+            "commit": repaired,
+        })
+    assert closed["success"], closed
+    await writer.stop()
+
+    async def repaired_built():
+        current = await train.subject(subject.id)
+        return current.phase is SubjectPhase.TESTING and current.head_sha == repaired
+
+    await train.run_until(repaired_built, label="closed writer's repair rebuilt")
+
+    # main moves onto the very line that repair wrote, so preserving it on the
+    # new main cannot be merged.
+    _git(train.work, "switch", "-C", "main", train.base)
+    (train.work / "fix.txt").write_text("new main\n")
+    _git(train.work, "add", "-A")
+    _git(train.work, "commit", "-m", "advance main with overlap")
+    _git(train.work, "push", "origin", "HEAD:refs/heads/main")
+    moved = train.remote("refs/heads/main")
+
+    await train.run_until(
+        lambda: train.phase(subject.id, SubjectPhase.REPAIRING),
+        label="rebuild conflict reaches repairing",
+    )
+    # The rebuild answered the conflict it filed; it never degraded to unknown.
+    answered = [
+        row
+        for row in await train.journal(subject.id)
+        if row["entry_kind"] == "action" and row["primitive"] == "git_merge_members"
+    ]
+    assert not [row for row in answered if row["outcome"] == "unknown"]
+    assert answered[-1]["outcome"] == "conflict"
+    assert answered[-1]["payload"]["result"]["detail"] == {"member": None, "files": []}
+    frozen = (await train.stage(operation["id"], 0))["dossier"]["candidate_rebuild_conflict"]
+    assert (frozen["candidate_sha"], frozen["new_base_sha"]) == (repaired, moved)
+    assert frozen["resolution"]["parents"] == [repaired, moved]
+    assert (await train.db.get_integration_batch(subject.batch_id))["lifecycle"] == "repairing"
+    # The batch re-dispatched its own delegate for the frozen conflict; nobody
+    # edited the subject, the batch or the writer to get here.
+    async with train.db._engine.connect() as conn:
+        delegate = (
+            (
+                await conn.execute(
+                    select(t.tasks.c.status).where(t.tasks.c.id == stage["repair_task_id"])
+                )
+            )
+            .scalar_one()
+        )
+    assert delegate == "READY"

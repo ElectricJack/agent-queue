@@ -29,6 +29,8 @@ from src.integration.subjects import (
     EjectArgs,
     HeadIdentity,
     JournalMode,
+    MemberRef,
+    MergeMembersArgs,
     PolicyArtifactPin,
     Primitive,
     PrimitiveOutcome,
@@ -1338,6 +1340,101 @@ async def test_never_claimed_retired_and_consumed_writers_are_no_longer_the_subj
             }
         )
     assert (await _writer_facts(db, subject)).writer == WriterLease()
+
+
+async def test_rebuild_conflict_answers_conflict_and_adopts_its_generation(root):
+    """Live 2026-10-04 d3fb5c5b: the rebuild filed the repair it reported as stale.
+
+    Rebuilding a candidate whose base is no longer main supersedes the subject's
+    revision, and a conflict in that merge is a repair the service dispatched
+    itself.  The command can only report the revision change, so the adapter
+    reads the filed member conflict and answers ``conflict``.
+    """
+    db, _, subject = root
+    subject = await activate(db, subject)
+    moved, rebuilt = "8" * 40, "9" * 40
+
+    async def execute(name, args):
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(t.integration_batches)
+                .where(t.integration_batches.c.id == "batch")
+                .values(current_revision=1, lifecycle="repairing")
+            )
+            await conn.execute(
+                insert(t.integration_candidate_revisions).values(
+                    batch_id="batch", revision=1, construction_base_sha=moved,
+                    next_member_ordinal=1, head_sha=rebuilt, state="constructing",
+                    created_at=4.0, updated_at=4.0,
+                )
+            )
+            await conn.execute(
+                insert(t.integration_candidate_member_results).values(
+                    batch_id="batch", revision=1, member_ordinal=0,
+                    input_head_sha="c" * 40, input_tree_sha="e" * 40,
+                    result="conflict", created_at=4.0, updated_at=4.0,
+                )
+            )
+        return {
+            "success": False,
+            "outcome": "stale_revision",
+            "error": "candidate revision changed during build",
+        }
+
+    observed = facts(subject).model_copy(update={"default_branch_head": moved})
+    adapters = RootPrimitiveAdapters(
+        db,
+        SimpleNamespace(execute=AsyncMock(side_effect=execute)),
+        SimpleNamespace(observe=AsyncMock(return_value=observed)),
+    )
+    args = MergeMembersArgs(
+        target_ref=subject.target_ref,
+        base_sha=moved,
+        members=(
+            MemberRef(task_id="root-0", head_sha="c" * 40, base_sha=BASE),
+            MemberRef(task_id="root-1", head_sha="d" * 40, base_sha=BASE),
+        ),
+    )
+    result = await adapters.merge(subject, args)
+    assert result.outcome == "conflict"
+    assert result.detail["member"] == "root-0"
+    assert result.detail["files"] == []
+    # The subject adopts the revision the rebuild left behind; a stale
+    # generation is unknown on every later visit.
+    assert result.detail["subject_values"] == {
+        "head_sha": rebuilt,
+        "base_sha": moved,
+        "generation": 1,
+    }
+
+
+async def test_a_rebuild_that_filed_no_repair_still_answers_unknown(root):
+    """Only a filed repair is a conflict; a bare revision change is not."""
+    db, _, subject = root
+    subject = await activate(db, subject)
+    moved = "8" * 40
+    commands = SimpleNamespace(
+        execute=AsyncMock(return_value={
+            "success": False,
+            "outcome": "stale_revision",
+            "error": "candidate revision changed during build",
+        })
+    )
+    observed = facts(subject).model_copy(update={"default_branch_head": moved})
+    adapters = RootPrimitiveAdapters(
+        db, commands, SimpleNamespace(observe=AsyncMock(return_value=observed))
+    )
+    args = MergeMembersArgs(
+        target_ref=subject.target_ref,
+        base_sha=moved,
+        members=(
+            MemberRef(task_id="root-0", head_sha="c" * 40, base_sha=BASE),
+            MemberRef(task_id="root-1", head_sha="d" * 40, base_sha=BASE),
+        ),
+    )
+    result = await adapters.merge(subject, args)
+    assert result.outcome == "unknown"
+    assert result.reason == "candidate revision changed during build"
 
 
 async def test_superseded_head_is_not_an_attempt(root):

@@ -4759,7 +4759,11 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
     }
     from src.orchestrator.workspace import WorkspaceMixin
 
-    runtime = SimpleNamespace(db=db, git=GitManager())
+    class Runtime(WorkspaceMixin):
+        pass
+
+    runtime = Runtime()
+    runtime.db, runtime.git = db, GitManager()
     project = await db.get_project("p")
     origin, fence, role = await WorkspaceMixin._hierarchy_origin_and_fence(
         runtime, debug_task, project
