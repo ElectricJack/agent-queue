@@ -1,34 +1,6 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "generated_by": "scripts/generate-cli-command-inventory.py",
-  "counts": {
-    "leaf_commands": 528,
-    "registration": {
-      "generated": 350,
-      "handwritten": 178
-    },
-    "ownership": {
-      "core": 489,
-      "external-plugin": 2,
-      "internal-plugin": 37
-    },
-    "support": {
-      "deprecated": 1,
-      "supported": 527
-    },
-    "evidence_level": {
-      "behavioral": 14,
-      "dispatch": 350,
-      "registration": 164
-    },
-    "acceptance_status": {
-      "working": 59,
-      "broken": 0,
-      "obsolete": 1,
-      "unsupported": 0,
-      "untested": 468
-    }
-  },
   "commands": [
     {
       "path": "aq agent check-profile",
