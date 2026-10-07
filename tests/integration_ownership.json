@@ -14796,19 +14796,19 @@
       "reason": "Removes the resolved needs_attention marker when the exact delivered source is recorded under task, hierarchy and branch fences. No integration lifecycle or ref replay state is stored in metadata."
     },
     "src/integration/quiesce.py::TrainQuiesce.run::bba5a9b32fdbb8a1feca353b791766c5e46c29caa87665ba2236dd63e3be814b": {
-      "line": 341,
+      "line": 346,
       "owner": "TrainQuiesce.run",
       "call": "log_event",
-      "owner_fingerprint": "2509668e799a4695baf21ab6a81f25c981451061f784f02597e345e0ebc88549",
+      "owner_fingerprint": "35cf3d0b87a92dae28a149451bf1d3346f3cd6fa23aaf678400025d9cfffedd4",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Transactional local-operator audit of a fenced idle-train quiesce and detached reservation release. The command refuses writers, frozen batches and unresolved mutations; this event is not publication or ref replay authority."
     },
     "src/integration/quiesce.py::TrainQuiesce.run::c8bd8e346bc9e9a88d824b9c32abc9bc3203c20d2c9814ad165154e2fd57968d": {
-      "line": 311,
+      "line": 316,
       "owner": "TrainQuiesce.run",
       "call": "append_integration_subject_journal_on",
-      "owner_fingerprint": "2509668e799a4695baf21ab6a81f25c981451061f784f02597e345e0ebc88549",
+      "owner_fingerprint": "35cf3d0b87a92dae28a149451bf1d3346f3cd6fa23aaf678400025d9cfffedd4",
       "integration_signal": true,
       "disposition": "retire",
       "reason": "Explicit legacy recovery appends the existing subject action journal while closing an unfrozen idle reconciler subject. This duplicate legacy lifecycle writer remains subject to retirement; it is not used by active Git-first train or promotion execution and must disappear with the legacy subject journal."

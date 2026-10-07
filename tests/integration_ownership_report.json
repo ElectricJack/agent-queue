@@ -9945,9 +9945,9 @@
     "task_metadata": "Generic key/value mechanism remains task-owned. Every direct SQL/metadata API writer has an audited call and enclosing-code identity; duplicate delivery/repair state is marked retire."
   },
   "takeover_review": {
-    "reviewed_revision": "b11f80e04838efee3f76ae7774236fac0f65e1d5",
+    "reviewed_revision": "45b76271dd81f4b55eb892864ac11debe504e804",
     "owned_definition_additions": 25,
-    "refreshed_owner_fingerprints": 29,
+    "refreshed_owner_fingerprints": 31,
     "new_storage_sites": {
       "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_hotfix::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": "ordinary",
       "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_prepare::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": "ordinary",
@@ -9959,15 +9959,15 @@
       "src/integration/mutation_recovery.py::ExpiredMutationRecovery.run::176aea4d5c84eb7ac1cf9fb5ee9b601fc81bea4aeb469555480653be0ecefd83": "ordinary"
     },
     "current_owned_groups": {
-      "shared": 47561,
-      "companions": 12482,
-      "engine": 87064,
+      "shared": 47570,
+      "companions": 12502,
+      "engine": 87079,
       "policy_sources": 1999,
       "policy": 480,
       "ui": 333,
       "guards": 639
     },
-    "current_owned_total": 150558,
+    "current_owned_total": 150602,
     "current_table_count": 45,
     "unknown_definitions": [],
     "unknown_storage_sites": [],
