@@ -185,7 +185,10 @@ Before starting a cross-epic dependent, preparation refreshes its epic from the
 default branch through a frozen train batch. Publication needs the epic's lease,
 checks on the exact candidate and attestation. Checks or an occupied lease keep
 the refresh pending; a content conflict files ordinary repair work on the epic
-branch and withholds its children. Preparation preserves the child's existing
+branch and withholds children whose prerequisites are still outside that epic.
+If the repair publishes a merge containing every required source, those children
+can start while the refresh candidate still awaits checks and attestation.
+Preparation preserves the child's existing
 commits and records its actual refreshed parent head and default head in the
 filing origin's `base_refresh` annotation. The original `base_sha` stays fixed.
 Preparation requires the epic to contain each proven cross-epic source; unrelated
@@ -205,7 +208,9 @@ An apply reports `pending` while the train checks or repairs its candidate.
 Subsequent train visits finish publication; repeating apply also advances the
 same frozen refresh. Apply and child preparation request bounded, serialized train
 visits and respect repository rate-limit pauses. Any open collection or refresh
-batch on the epic withholds its cross-epic dependents until that batch settles.
+batch on the epic withholds cross-epic dependents that still need its sources
+until that batch settles. A child whose epic already contains every required
+source needs no refresh and can start while that batch remains open.
 Repairs for failed or missing CI start from the tested refresh candidate; conflict
 repairs start from the partial candidate containing the successful merges.
 
