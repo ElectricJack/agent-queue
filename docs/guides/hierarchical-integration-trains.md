@@ -229,6 +229,14 @@ ends, a single target probes GitHub first and the rest resume once it gets
 through. The daemon log carries one warning per pause; the traceback appears
 only at DEBUG.
 
+## Controls quick reference
+
+- `aq integration seal-now --project PROJECT_ID --apply` freezes eligible root inputs immediately, bypassing cadence once.
+- `aq integration pause-batch BATCH_ID --apply` pauses publication for an unpromoted Git-first batch.
+- `aq integration resume-batch BATCH_ID --apply` resumes a paused Git-first batch.
+- `aq integration abort-batch BATCH_ID --apply --reason REASON` aborts an unpromoted Git-first batch.
+- `aq integration refresh-epic --task EPIC_ID --apply` starts or advances the attested refresh; pending checks or repairs continue through the train.
+
 The controls keyed by a task, operation, batch or reservation — `redrive-root`,
 `redrive-child`, `reopen-collection`, `reserve-owner`, `release-owner` — take no `project_id`,
 so authorization resolves their target project server-side. `record-noop` is an
