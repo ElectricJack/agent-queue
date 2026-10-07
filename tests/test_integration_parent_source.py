@@ -47,8 +47,11 @@ class _Commands(IntegrationCommandsMixin):
     def _hierarchy_integration_service(self):
         return self.completion
 
-    def _integration_promotion_service(self):
+    def _integration_repository_git(self):
         return self.promotion
+
+    def _integration_promotion_service(self):
+        raise AssertionError("train parent completion must use the retained repository Git port")
 
     async def _integration_delivery_authorized(self, *args):
         return True

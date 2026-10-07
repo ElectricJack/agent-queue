@@ -351,7 +351,7 @@ async def test_periodic_sweep_uses_real_delivery_proof_and_retries_failed_close(
     class Handler(IntegrationCommandsMixin):
         db = env.db
 
-        def _integration_promotion_service(self):
+        def _integration_repository_git(self):
             return env.control.promotion
 
         async def execute(self, command, args):
@@ -446,7 +446,7 @@ async def test_periodic_service_authority_is_named_and_limited_to_aq_prs(env):
     class Handler(IntegrationCommandsMixin):
         db = env.db
 
-        def _integration_promotion_service(self):
+        def _integration_repository_git(self):
             return env.control.promotion
 
     handler = Handler()

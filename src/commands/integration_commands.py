@@ -3051,7 +3051,7 @@ class IntegrationCommandsMixin:
                 project = await self.db.get_project(task.project_id)
                 if project.hierarchical_integration_mode == "train":
                     await ReviewEvidenceProducer(
-                        self.db, self._integration_promotion_service(),
+                        self.db, self._integration_repository_git(),
                     ).snapshot_authorized(
                         request.task_id, reviewed_sha=request.head_sha,
                         policy_generation=project.hierarchical_integration_generation,

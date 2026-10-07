@@ -83,7 +83,11 @@ async def test_hung_review_and_lost_event_do_not_stop_auditable_outbox_drain(env
         await _wait_for_pending_resolution(db, "lost-event")
 
         rows = await _outbox_rows(db)
-        assert len(rows) == 6 and all(row["delivered_at"] is not None for row in rows)
+        expected_ids = {"lost-event"} | {
+            f"noise-{ordinal}" for ordinal in range(len(UNSUBSCRIBED_EVENT_TYPES))
+        }
+        assert {row["id"] for row in rows} == expected_ids
+        assert all(row["delivered_at"] is not None for row in rows)
         assert all(row["last_error"].startswith("unsubscribed:") for row in rows
                    if row["id"].startswith("noise-"))
         [accepted] = [row for row in rows if row["id"] == "lost-event"]
