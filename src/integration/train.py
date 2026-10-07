@@ -73,9 +73,34 @@ PROMOTION_MAX_WAIT_SECONDS = 300.0
 
 TRAIN_KINDS = ("root", "epic", "development", "promotion")
 _PROGRESS: ContextVar[dict | None] = ContextVar("train_visit_progress", default=None)
+_TIMING: ContextVar[_VisitTiming | None] = ContextVar("train_visit_timing", default=None)
+
+
+class _VisitTiming:
+    """Monotonic stage durations, including time spent waiting for shared work."""
+
+    def __init__(self) -> None:
+        self.started = self.since = time.monotonic()
+        self.finished: float | None = None
+        self.stage = "lane_setup"
+        self.stages: dict[str, float] = {}
+
+    def advance(self, stage: str) -> None:
+        now = time.monotonic()
+        self.stages[self.stage] = self.stages.get(self.stage, 0.0) + now - self.since
+        self.stage, self.since = stage, now
+
+    def as_dict(self) -> dict:
+        now = self.finished if self.finished is not None else time.monotonic()
+        stages = dict(self.stages)
+        stages[self.stage] = stages.get(self.stage, 0.0) + now - self.since
+        return {"elapsed_seconds": now - self.started, "stages_seconds": stages}
 
 
 def _progress(stage: str, **facts) -> None:
+    timing = _TIMING.get()
+    if timing is not None:
+        timing.advance(stage)
     progress = _PROGRESS.get()
     if progress is not None:
         progress.update(stage=stage, **facts)
@@ -412,6 +437,7 @@ class _Lane:
     waits: int = 0
     #: The in-flight visit's progress facts (stage, batch); shown before its first result.
     progress: dict | None = None
+    timing: _VisitTiming | None = None
 
 
 @dataclass
@@ -528,6 +554,8 @@ class IntegrationTrain:
                 "state": "visiting" if running else "unvisited",
             }
             row["running"] = running
+            if lane.timing is not None:
+                row["timing"] = lane.timing.as_dict()
             if running and lane.progress:
                 row["progress"] = dict(lane.progress)
                 row["visit_started_at"] = lane.started_at
@@ -564,6 +592,8 @@ class IntegrationTrain:
         progress = {"stage": "lane_setup"}
         lane.progress = progress
         token = _PROGRESS.set(progress)
+        timing = lane.timing = _VisitTiming()
+        timing_token = _TIMING.set(timing)
         try:
             visit = await asyncio.wait_for(self.visit(target), self.visit_timeout_seconds)
         except asyncio.CancelledError:
@@ -588,8 +618,12 @@ class IntegrationTrain:
                                    observed_at=self.clock())
                 logger.exception("integration train visit failed for %s", target.key)
         finally:
+            timing.finished = time.monotonic()
+            _TIMING.reset(timing_token)
             _PROGRESS.reset(token)
             lane.progress = None
+            logging.getLogger(__name__ + ".timing").info(
+                "integration train visit timing for %s: %s", target.key, timing.as_dict())
         pause = self._pauses.get(target.key[:2])
         if (pause is not None and lane.start > pause.since
                 and (visit.detail or {}).get("reason") != "rate_limited"):
