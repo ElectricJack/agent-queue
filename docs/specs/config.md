@@ -794,6 +794,15 @@ names to positive numbers.
 value alone installs no loop into a running service, so both need `aq restart
 --no-dashboard`.
 
+The active train's shared contracts and ownership guards live in retained
+`runtime_contracts.py`, `promotion_contracts.py` and `owner_guards.py`. Shared
+parent checkpoint seeding belongs to `parent_subjects.py`, and is invoked only
+when a subject policy loader is explicitly installed. Loading gates or the
+Development adapter must not import the legacy scheduler or reconciler; their
+compatibility execution paths load those services only when invoked. The
+Development runtime factory also refuses construction under `git_first: active`,
+so a fallback caller cannot install a second publisher.
+
 `git_first` accepts only `shadow` or `active` and is read when the integration service is constructed; a change takes effect at the next daemon restart.
 It requires an operator restart to change. Its diagnostics stay outside policy bindings
 and the subject journal; failures and timeouts leave the selected policy unchanged.

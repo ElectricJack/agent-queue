@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from src.database import tables as t
 from src.integration.models import BranchKey, Fence
@@ -18,11 +17,10 @@ from src.integration.parent_adapters import (
     ParentPrimitiveAdapters,
     PendingParentPublication,
 )
-from src.integration.owner_guards import active_parent_scope, parent_lock_key
 from src.integration.parent_subjects import (
     ParentDatabaseObservationReader,
     ParentIntegrationObserver,
-    ParentSubjectAdapter,
+    ensure_parent_subject_on as ensure_parent_subject_on,
     _SnapshotReader,
 )
 from src.integration.reconciler import IntegrationReconciler, VisitTransition
@@ -31,10 +29,8 @@ from src.integration.shadow import diagnostics_for
 from src.integration.runtime_contracts import (
     JournalMode,
     MemberRef,
-    PolicyArtifactPin,
     Primitive,
     PrimitivePorts,
-    SubjectEngine,
     SubjectKind,
     SubjectSchedule,
     WriterLease,
@@ -42,7 +38,6 @@ from src.integration.runtime_contracts import (
     writer_values,
 )
 from src.integration.verifier_subject import latest_red_parent_evidence
-from src.playbooks.integration_policy import CompiledIntegrationPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -270,69 +265,6 @@ class PinnedParentPolicy(PinnedRootPolicy):
             ):
                 values["budget_deadline_at"] = now + decision.request.seconds
         return VisitTransition(schedule=transition.schedule, values=values)
-
-
-async def ensure_parent_subject_on(db, conn, task_id, loader, *, clock=time.time):
-    """The command owner calls this after updating the checkpoint's episode."""
-    if loader is None:
-        return None
-    if not active_parent_scope(db, task_id):
-        await conn.execute(
-            text("SELECT pg_advisory_xact_lock_shared(:key)"), {"key": parent_lock_key(task_id)}
-        )
-    await conn.execute(
-        select(t.task_integration_checkpoints.c.task_id)
-        .where(t.task_integration_checkpoints.c.task_id == task_id)
-        .with_for_update()
-    )
-    operation = (
-        (
-            await conn.execute(
-                select(t.integration_repair_operations)
-                .join(
-                    t.task_integration_checkpoints,
-                    t.task_integration_checkpoints.c.episode_id
-                    == t.integration_repair_operations.c.episode_id,
-                )
-                .where(
-                    t.task_integration_checkpoints.c.task_id == task_id,
-                    t.integration_repair_operations.c.parent_task_id == task_id,
-                )
-            )
-        )
-        .mappings()
-        .first()
-    )
-    if operation is None:
-        return None
-    artifact = operation["artifact_snapshot"]
-    try:
-        definition = await asyncio.to_thread(loader, artifact["artifact_sha256"])
-    except (OSError, ValueError) as exc:
-        logger.warning(
-            "Parent %s awaits a pinned artifact: %s", task_id, exc
-        )
-        return None
-    if (
-        definition.integration_policy is None
-        or SubjectKind.PARENT_EPISODE not in definition.integration_policy.tables
-    ):
-        return None
-    policy = CompiledIntegrationPolicy(definition)
-    pin = PolicyArtifactPin(
-        playbook_id=artifact["playbook_id"], artifact_sha256=artifact["artifact_sha256"]
-    )
-    if policy.pin != pin:
-        raise ValueError("parent artifact pin does not match loaded definition")
-    return await ParentSubjectAdapter(db, clock=clock).ensure_on(
-        conn,
-        task_id,
-        policy=pin,
-        max_wait_seconds=policy.policy.max_wait_seconds,
-        engine=SubjectEngine.RECONCILER,
-    )
-
-
 
 
 class ParentSubjectRuntime:

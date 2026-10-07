@@ -850,3 +850,14 @@ async def test_factory_admits_pushed_source_and_uses_subject_pinned_retained_sto
     assert ancestry.outcome == "facts", ancestry
     assert ancestry.detail["queries"][0]["is_ancestor"] is True
     assert git(remote, "rev-parse", "refs/heads/main") == base
+
+
+def test_active_train_cannot_construct_development_subject_runtime():
+    from src.integration.development_runtime import development_runtime_for
+
+    # No DB, providers or artifact loader exist: the protocol guard must win
+    # before any legacy factory wiring can be accessed.
+    orchestrator = SimpleNamespace(config=SimpleNamespace(
+        integration=SimpleNamespace(git_first="active", reconciler_active=True),
+    ))
+    assert development_runtime_for(orchestrator) is None

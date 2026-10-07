@@ -1353,7 +1353,7 @@ def development_runtime_for(orchestrator):
     durable reconciler ownership and never starts another publisher.
     """
     config = orchestrator.config.integration
-    if not config.reconciler_active:
+    if getattr(config, "git_first", "shadow") == "active" or not config.reconciler_active:
         return None
     from src.integration.observe import (
         DatabaseObservationReader,

@@ -1813,3 +1813,36 @@ def test_activation_runbook_exists_before_canary():
     assert "aq restart --no-dashboard" in text
     assert runbook.name in Path("docs/guides/README.md").read_text()
     assert runbook.name in Path("docs/concepts/integration.md").read_text()
+
+
+def test_active_train_shared_imports_work_with_retirement_modules_unavailable():
+    """Fresh imports cannot hide an eager legacy dependency already loaded by pytest."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script = '''
+import importlib
+import importlib.abc
+import sys
+legacy = {
+    "candidates", "main_promotion", "parent_engine", "parent_runtime", "promotion",
+    "reconciler", "root_adapters", "root_runtime", "scheduler", "settling",
+    "stale_schedule", "subjects", "source_delivery",
+}
+class RefuseLegacy(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.startswith("src.integration.") and fullname.split(".")[2] in legacy:
+            raise AssertionError("Retiring runtime was imported: " + fullname)
+sys.meta_path.insert(0, RefuseLegacy())
+for module in (
+    "train", "train_sources", "gates", "parent_subjects", "hierarchy",
+    "development_adapter", "development_runtime",
+):
+    importlib.import_module("src.integration." + module)
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[1],
+        capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stderr

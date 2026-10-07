@@ -264,7 +264,10 @@ async def test_batch_filing_advances_generation_once_and_concurrent_stale_writer
     assert error.code == "stale_parent"
 
 
-async def test_later_child_does_not_rewrite_earlier_child_base(db, hierarchy):
+async def test_later_child_does_not_rewrite_earlier_child_base(db, hierarchy, monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "src.integration.parent_runtime", None)
     await _create(db, "parent")
 
     first = await hierarchy.file_children("parent", [{"title": "A"}], 0)

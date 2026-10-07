@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from sqlalchemy import select
 
@@ -21,7 +21,6 @@ from src.integration.ci_producers import LocalCIProducer, LocalValidationPlan, d
 from src.integration.development_policy import PinnedDevelopmentPolicy
 from src.integration.gitops import RetainedRepository
 from src.integration.models import BranchKey, Fence
-from src.integration.reconciler import CompiledPolicyAdapter, IntegrationReconciler
 from src.integration.runtime_contracts import (
     CIState,
     JournalMode,
@@ -40,6 +39,9 @@ from src.integration.runtime_contracts import (
 )
 from src.playbooks.integration_policy import IntegrationPolicyFacts
 
+
+if TYPE_CHECKING:
+    from src.integration.reconciler import IntegrationReconciler
 
 @dataclass(frozen=True)
 class DevelopmentMember:
@@ -128,6 +130,8 @@ class _PinnedPolicyRouter:
         return (await self.load(subject.policy.artifact_sha256)).compiled.evaluate(subject, facts)
 
     async def settle(self, subject, decision, outcome, *, now):
+        from src.integration.reconciler import CompiledPolicyAdapter
+
         policy = (await self.load(subject.policy.artifact_sha256)).compiled
         return await CompiledPolicyAdapter(policy).settle(subject, decision, outcome, now=now)
 
@@ -159,6 +163,8 @@ class DevelopmentIntegrationAdapter:
     def reconciler(self, *, mode: JournalMode = JournalMode.SHADOW,
                    subject_db=None, **options) -> IntegrationReconciler:
         """Install at the existing remote-pass boundary only after rollout evidence."""
+        from src.integration.reconciler import IntegrationReconciler
+
         ports = PrimitivePorts()
         for primitive in self.shared.bound - {Primitive.SEAL, Primitive.GIT_MERGE_MEMBERS,
                                                Primitive.CI_REQUEST, Primitive.CI_OBSERVE,

@@ -46,7 +46,6 @@ from src.integration.records import (
     journal_key,
     lock_current_on,
 )
-from src.integration.scheduler import TrainService
 from src.integration.runtime_contracts import (
     ARTIFACT_PATTERN,
     EjectArgs,
@@ -591,6 +590,8 @@ class RootMemberEjection:
         policy_ejection: RootPolicyEjection | None = None,
     ) -> dict[str, Any]:
         """Eject before construction or rebuild a safely detached repair candidate."""
+        from src.integration.scheduler import TrainService
+
         if not reason.strip():
             raise ValueError("ejection reason is required")
         now = self.clock()
