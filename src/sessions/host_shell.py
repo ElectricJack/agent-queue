@@ -103,7 +103,7 @@ class HostShellManager:
     async def _is_marked(self, name: str) -> bool:
         try:
             out = await self.provider._tmux(
-                "show-options", "-qv", "-t", f"={name}", _MARKER_OPTION, timeout=2,
+                "show-options", "-qv", "-t", f"={name}:", _MARKER_OPTION, timeout=2,
             )
         except (SessionError, OSError):
             return False
@@ -162,7 +162,9 @@ class HostShellManager:
                 "new-session", "-d", "-s", name, "-c", env["HOME"],
                 "-x", "120", "-y", "32", shell_command(env), timeout=5,
             )
-            target = f"={name}"
+            # Options need a session-with-colon target: tmux 3.4 reads a bare
+            # "=name" as a pane target for set-option/show-options and fails.
+            target = f"={name}:"
             await self.provider._tmux(
                 "set-environment", "-t", target, "AQ_INSTANCE_TOKEN", token, timeout=2,
             )
