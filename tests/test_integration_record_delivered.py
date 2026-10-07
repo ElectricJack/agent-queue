@@ -661,3 +661,54 @@ async def test_expired_mutation_recovery_requires_local_operator(world, kind):
     with principal_context(ExecutionPrincipal(kind=kind, policy=DENY_ALL, elevated=True)):
         result = await handler._cmd_integration_reconcile_expired_mutation(request.model_dump())
     assert not result["success"] and "local operator" in result["error"]
+
+
+@pytest.mark.parametrize("control_name", ["quiesce", "mutation", "delivered"])
+@pytest.mark.parametrize("holder", ["detached", "retained_phase", "revivable", "unknown"])
+async def test_local_controls_distinguish_ended_claim_history_from_live_authority(
+    world, control_name, holder
+):
+    from src.integration.quiesce import TrainQuiesce
+    from src.integration.mutation_recovery import ExpiredMutationRecovery
+    from src.models import SessionRecord
+
+    if control_name == "quiesce":
+        request = await idle_train(world)
+        await source(world)
+        await world.db.transition_task("external", TaskStatus.PAUSED)
+        run = TrainQuiesce(world.db).run
+    elif control_name == "mutation":
+        request = await expired_mutation(world)
+        run = ExpiredMutationRecovery(world.db).run
+    else:
+        request = await source(world)
+        run = DeliveredClose(world.db).record
+    if holder != "unknown":
+        await world.db.create_session(
+            SessionRecord(
+                id="exact-holder",
+                project_id="p",
+                profile_id="worker-test",
+                harness="codex",
+                provider="fake",
+                name="ended-claim",
+                lifecycle="pool",
+                work_dir="/unused",
+                epoch="test",
+                instance_token="exact-instance",
+                started_at=1,
+                state="stopped",
+                desired_state="running" if holder == "revivable" else "stopped",
+                task_id="external" if holder == "retained_phase" else None,
+                claim_phase="active" if holder == "retained_phase" else None,
+            )
+        )
+    await world.db.set_task_meta("external", "claimed_by_session", "exact-holder")
+    preview = request.model_copy(update={"dry_run": True})
+    if holder in ("unknown", "revivable"):
+        with pytest.raises(ValueError):
+            await run(preview)
+    else:
+        assert (await run(preview))["outcome"] == "preview"
+    # These controls inspect the historical proof rather than erasing it.
+    assert await world.db.get_task_meta("external", "claimed_by_session") == "exact-holder"
