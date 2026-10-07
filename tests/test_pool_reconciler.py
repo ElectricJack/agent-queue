@@ -201,13 +201,15 @@ async def test_pool_diagnostics_never_fetch_hierarchy_or_stack_prerequisites(
     explained = await handler._cmd_explain_task({"task_id": "second"})
     # A retained sibling may be stacked when its current refs are already observed.
     stackable = stacked and cache_state == "warm"
+    unavailable = cache_state != "warm"
     assert ("frontier_sibling_prerequisite_not_delivered" in explained["reason_codes"]) is (
-        not stackable
+        not stackable and not unavailable
     )
-    if not stackable:
+    assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is unavailable
+    if unavailable:
         reason = next(reason for reason in explained["reasons"]
-                      if reason["code"] == "frontier_sibling_prerequisite_not_delivered")
-        assert "missing or stale evidence" in reason["detail"]
+                      if reason["code"] == "delivery_evidence_unavailable")
+        assert "has not loaded yet" in reason["detail"]
     status = await handler._cmd_pool_status({})
     row = next(row for row in status["pools"] if row["profile_id"] == "worker")
     assert row["ready"] == int(stackable)
@@ -230,7 +232,7 @@ async def test_git_first_delivery_releases_scheduler_pool_and_claim(
     env = git_first_frontier
     handler = CommandHandler(orch, orch.config)
 
-    async def frontier(expected):
+    async def frontier(expected, *, evidence_unavailable=False):
         # These are the real scheduler/reconciler and pool consumers of one tick's view.
         modes = await hierarchy_frontier_modes(db)
         env.observer.prerequisite_view = AsyncMock(wraps=env.observer.prerequisite_view)
@@ -242,7 +244,8 @@ async def test_git_first_delivery_releases_scheduler_pool_and_claim(
         assert await db.is_hierarchy_task_runnable("second") is expected
         explained = await handler._cmd_explain_task({"task_id": "second"})
         assert any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
-                   for r in explained["reasons"]) is not expected
+                   for r in explained["reasons"]) is (not expected and not evidence_unavailable)
+        assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is evidence_unavailable
         diagnosis = await _check_ready_frontier_exclusions(DoctorContext(config=orch.config, db=db))
         assert any(
             row["task_id"] == "second" and "sibling_prerequisite_not_delivered" in row["reasons"]
@@ -257,7 +260,7 @@ async def test_git_first_delivery_releases_scheduler_pool_and_claim(
 
     await _deliver_first_by_train(db, env)
     # The old advisory observation may withhold newly delivered work until expiry.
-    await frontier(False)
+    await frontier(False, evidence_unavailable=True)
     frontier_clock.return_value += env.observer.READ_MAX_AGE + 0.01
     modes = await frontier(True)
     async with db._engine.connect() as conn:
@@ -485,8 +488,15 @@ async def test_git_first_frontier_withholds_invalid_or_shadow_proof(
     assert "second" not in orch._last_scheduler_state.hierarchy_runnable_task_ids
     assert (await orch._measure_pools()).demand[PoolKey("worker")] == 0
     explained = await CommandHandler(orch, orch.config)._cmd_explain_task({"task_id": "second"})
-    assert any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
-               for r in explained["reasons"])
+    assert ("frontier_sibling_prerequisite_not_delivered" in explained["reason_codes"]) is (
+        movement not in {"rewind", "unstable"}
+    )
+    assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is (movement == "rewind")
+    if movement == "unstable":
+        # The mocked freshness failure checks no refs, so it must not poison
+        # otherwise valid cached display evidence. Decisions above still withhold.
+        assert all(snapshot._freshness.get(snapshot.target_ref, True)
+                   for _, snapshot in env.observer._recent.values())
 
 
 class _FakeSlotManager:
