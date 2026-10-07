@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/promote.py`](../../../src/commands/contracts/promote.py) |
-| Contract fingerprint | `sha256:23864213ad7635ad31dbee44659c32444e5831b15e877a7b88f1923dbca38696` |
+| Contract fingerprint | `sha256:e1dd465d0bb1ebcd2f5008f16390763989cc197fd2c69d258d9b935ec58af455` |
 
 ## Parameters
 
@@ -42,8 +42,12 @@
 | `promotions` | `object[]` | — |
 | `evidence_source` | `string \| null` | — |
 | `retry_at` | `number \| null` | — |
+| `version` | `string \| null` | — |
+| `notes_input` | `object \| null` | — |
+| `draft` | `string \| null` | — |
+| `notes` | `string \| null` | — |
 
-Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id`, `intent`, `pr_url`, `promotion`, `review`, `flow`, `promotions`, `evidence_source`, `retry_at`.
+Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id`, `intent`, `pr_url`, `promotion`, `review`, `flow`, `promotions`, `evidence_source`, `retry_at`, `version`, `notes_input`, `draft`, `notes`.
 
 ## Outcomes
 
@@ -54,6 +58,10 @@ Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id
 | `listed` | success | — |
 | `not_found` | failure | — |
 | `notes_not_reviewed` | failure | — |
+| `notes_range_invalid` | failure | — |
+| `notes_source_missing` | failure | — |
+| `notes_stale` | failure | — |
+| `prepare_in_progress` | failure | — |
 | `promotion_flow_changed` | failure | — |
 | `promotion_flow_empty` | failure | — |
 | `promotion_flow_invalid` | failure | — |
@@ -67,12 +75,18 @@ Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `task_id
 | `promotion_requester_identity_missing` | failure | — |
 | `promotion_review_invalid` | failure | — |
 | `promotion_source_not_on_chain` | failure | — |
+| `promotion_source_pending` | failure | — |
+| `promotion_source_red` | failure | — |
+| `promotion_source_unavailable` | failure | — |
+| `promotion_source_untrusted` | failure | — |
+| `promotion_train_required` | failure | — |
 | `rate_limited` | failure | — |
 | `step_not_found` | failure | — |
 | `step_not_versioned` | failure | — |
 | `tag_exists` | failure | — |
 | `unavailable` | failure | — |
 | `version_mismatch` | failure | — |
+| `version_not_increasing` | failure | — |
 
 ## Declared effects
 

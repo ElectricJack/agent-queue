@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 import re
 import time
 from datetime import UTC, datetime
@@ -31,6 +32,12 @@ from src.integration.promotion_steps import (
     PROMOTION_RESULT,
     FlowSchema,
     promotion_ref,
+    check_source_green,
+    PromotionSourceRefusal,
+)
+from src.integration.promotion_notes import (
+    PREPARE_CONTEXT, NotesRefusal, assemble_notes_input, draft_notes, notes_metadata,
+    previous_tag, semver, source_version, step_pr_body,
 )
 
 
@@ -298,6 +305,146 @@ class PromoteCommandsMixin:
                 )
         return {"identity": identity, "github_login": login}
 
+    async def _cmd_integration_promotion_notes_input(self, args):
+        """Daemon-only mechanism; workers consume their own preparation metadata."""
+        from src.commands.contracts.promote import PromotionNotesInputArgs
+
+        request = PromotionNotesInputArgs.model_validate(args)
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind not in {PrincipalKind.LOCAL, PrincipalKind.SERVICE, PrincipalKind.PLAYBOOK}:
+            return PromotionRefusal("unauthorized", "Notes input is a daemon mechanism.").response()
+        try:
+            project, repository, _, flow = await self._promotion_inputs(request.project_id, read=True)
+            step = _find_step(flow, request.step_id)
+            _, ops, repo, _ = await self._promotion_runtime(project, repository, step)
+            head = request.source_sha or await ops.remote(
+                repo, "refs/heads/" + repository.default_branch,
+            )
+            if not head:
+                raise PromotionRefusal("unavailable", "Default branch is unavailable.")
+            previous = await previous_tag(ops, repo, step)
+            async with self.db._engine.connect() as conn:
+                value = await assemble_notes_input(
+                    conn, ops, repo, project_id=project.id, repository_id=repository.id,
+                    step=step, head=head, previous=previous,
+                )
+            return {"success": True, "outcome": "notes_input", "project_id": project.id,
+                    "notes_input": value}
+        except (PromotionRefusal, NotesRefusal, PromotionSourceRefusal) as exc:
+            return {"success": False, "outcome": exc.outcome, "error": str(exc)}
+        except (GitError, GitHubAccessError, OSError, ValueError) as exc:
+            return _unavailable(exc)
+
+    async def _cmd_promote_prepare(self, args):
+        from src.commands.contracts.promote import PromotePrepareArgs
+        from src.integration.hierarchy import HierarchyIntegration
+        from src.models import Task, TaskType
+        from src.playbooks.routing import requires_routing_gate
+
+        request = PromotePrepareArgs.model_validate(args)
+        try:
+            project, repository, raw, flow = await self._promotion_inputs(
+                request.project_id, command="promote_prepare",
+            )
+            step = _find_step(flow, request.step_id)
+            if step["versioning"]["kind"] == "none" or not step["versioning"].get("source"):
+                raise PromotionRefusal("step_not_versioned", "Preparation needs a version source.")
+            if project.hierarchical_integration_mode not in {"train", "hierarchy"}:
+                raise PromotionRefusal("promotion_train_required", "Preparation needs the ordinary train.")
+            _, ops, repo, _ = await self._promotion_runtime(project, repository, step)
+            async with self.db.immediate() as conn:
+                await _admission_lock(conn, repository.id, step)
+                await _check_flow(conn, project.id, raw, repository.id)
+                head = await ops.remote(repo, "refs/heads/" + repository.default_branch)
+                if not head:
+                    raise PromotionRefusal("unavailable", "Default branch is unavailable.")
+                await _fetch_commit(ops, repo, head)
+                current = await source_version(ops, repo, step["versioning"], head)
+                version = request.version
+                if request.bump:
+                    major, minor, patch = semver(current)
+                    version = f"{major}.{minor + 1}.0" if request.bump == "minor" \
+                        else f"{major}.{minor}.{patch + 1}"
+                previous = await previous_tag(ops, repo, step)
+                _increasing_version(step, version, previous)
+                # One version source per repository: concurrent steps must not file
+                # independent workers that race to bump the same version file.
+                await conn.execute(select(func.pg_advisory_xact_lock(func.hashtext(
+                    f"aq-promote-prepare:{repository.id}:{version}",
+                ))))
+                key = f"prepare:{repository.id}:{version}"
+                existing = await conn.scalar(select(tasks.c.id).where(
+                    tasks.c.project_id == project.id, tasks.c.dedup_key == key,
+                    tasks.c.status.not_in(("COMPLETED", "FAILED", "CANCELLED")),
+                ))
+                if existing:
+                    raise PromotionRefusal("prepare_in_progress",
+                                           f"Version {version} has open preparation {existing}.")
+                if request.from_task:
+                    if not await conn.scalar(select(tasks.c.id).where(
+                        tasks.c.id == request.from_task, tasks.c.project_id == project.id,
+                    )):
+                        raise PromotionRefusal("not_found", "Originating task is outside the project.")
+                notes_input = await assemble_notes_input(
+                    conn, ops, repo, project_id=project.id, repository_id=repository.id,
+                    step=step, head=head, previous=previous,
+                )
+                draft = None if step["notes"]["kind"] == "none" else draft_notes(
+                    notes_input, kind=step["notes"]["kind"], version=version,
+                )
+                task = Task(
+                    id="", project_id=project.id, repo_id=repository.id,
+                    title=f"Prepare {step['id']} {version}", task_type=TaskType.CHORE,
+                    description=(f"Prepare version {version} on {repository.default_branch}. "
+                                 f"Bump {step['versioning']['source']}; keep mirrored versions equal, "
+                                 "draft the configured notes from metadata.notes_input "
+                                 "(aq task show <own id> --json), and regenerate "
+                                 "artifacts affected by the bump. Read only your own task. "
+                                 "Commit and publish through the ordinary PR-gated train.\n\n"
+                                 + (f"Notes path: {step['notes']['path'].format(version=version)}\n"
+                                    + (draft or "") if draft is not None else "")),
+                    dedup_key=key, created_by_kind=PREPARE_CONTEXT,
+                    created_by_id=_requester_identity(current_principal() or TRUSTED_LOCAL),
+                )
+                manager = getattr(self.orchestrator, "playbook_manager", None)
+                def routing(task):
+                    return requires_routing_gate(manager, task)
+
+                # Pin filing to the very head used for notes even if the default
+                # branch advances while this command is assembling its input.
+                configured = getattr(self.orchestrator, "hierarchy_integration", None)
+                hierarchy = HierarchyIntegration(
+                    self.db, default_head_resolver=lambda _repo, _branch: head,
+                    subject_policy_loader=getattr(configured, "subject_policy_loader", None),
+                )
+                await _check_flow(conn, project.id, raw, repository.id, lock=True)
+                edges = [(request.from_task, "discovered-from", "Release preparation origin")] \
+                    if request.from_task else None
+                await hierarchy.file_root_on(conn, task, routing_policy=routing, edges=edges)
+                metadata = {"step": step, "version": version, "source_sha": head,
+                            "default_branch": repository.default_branch, "from_task": request.from_task}
+                await conn.execute(insert(task_metadata), [
+                    {"task_id": task.id, "key": PREPARE_CONTEXT,
+                     "value": json.dumps(metadata, sort_keys=True)},
+                    {"task_id": task.id, "key": "notes_input",
+                     "value": json.dumps(notes_input, sort_keys=True)},
+                ])
+            emit = getattr(self.orchestrator, "_emit_task_event", None)
+            routing_emit = getattr(self, "_emit_admitted_routing_gates", None)
+            if routing_emit:
+                await routing_emit(task.id)
+            if emit:
+                try:
+                    await emit("task.created", task, created_by_kind=PREPARE_CONTEXT)
+                except Exception:
+                    logging.getLogger(__name__).exception("Preparation task event failed: %s", task.id)
+            return {"success": True, "outcome": "prepared", "project_id": project.id,
+                    "task_id": task.id, "version": version, "notes_input": notes_input, "draft": draft}
+        except (PromotionRefusal, NotesRefusal, PromotionSourceRefusal) as exc:
+            return {"success": False, "outcome": exc.outcome, "error": str(exc)}
+        except (GitError, GitHubAccessError, OSError, ValueError) as exc:
+            return _unavailable(exc)
+
     async def _cmd_promote_request(self, args):
         from src.commands.contracts.promote import PromoteRequestArgs
         from src.integration.ci import IntegrationTrustManifest
@@ -333,17 +480,9 @@ class PromoteCommandsMixin:
             target_ref = "refs/heads/" + step["target"]
             async with self.db.immediate() as conn:
                 # Serialize idempotency and competing versions for this target.
-                # Only promotion requests take this lock; the project row stays
+                # Preparation shares this lock; the project row stays
                 # unlocked until the provider calls are done.
-                await conn.execute(
-                    select(
-                        func.pg_advisory_xact_lock(
-                            func.hashtext(
-                                f"aq-promote-admit:{repository.id}:{step['target']}",
-                            )
-                        )
-                    )
-                )
+                await _admission_lock(conn, repository.id, step)
                 await _check_flow(conn, project.id, raw, repository.id)
                 source_tip = await ops.remote(repo, "refs/heads/" + step["source"])
                 source = request.source_sha or source_tip
@@ -356,7 +495,15 @@ class PromoteCommandsMixin:
                         "promotion_source_not_on_chain", "Source branch is missing."
                     )
                 await _fetch_commit(ops, repo, source_tip)
-                await ops.exact(repo, source)
+                try:
+                    await ops.exact(repo, source)
+                except GitError as exc:
+                    raise PromotionRefusal("promotion_source_not_on_chain",
+                                           "Pinned source is unreachable from the source branch.") from exc
+                if not await ops.is_ancestor(repo, source, source_tip):
+                    raise PromotionRefusal(
+                        "promotion_source_not_on_chain", "Source is outside the step source branch."
+                    )
                 version, notes_sha = await _source_inputs(ops, repo, step, source, request)
                 suffix = version or source[:12]
                 request_id = f"promotion:{repository.id}:{step['id']}:{suffix}"
@@ -405,10 +552,6 @@ class PromoteCommandsMixin:
                     raise PromotionRefusal(
                         "promotion_in_progress", f"Existing request: {active['request_id']}"
                     )
-                if not source_tip or not await ops.is_ancestor(repo, source, source_tip):
-                    raise PromotionRefusal(
-                        "promotion_source_not_on_chain", "Source is outside the step source branch."
-                    )
                 base = await ops.remote(repo, target_ref)
                 if base:
                     await _fetch_commit(ops, repo, base)
@@ -416,6 +559,25 @@ class PromoteCommandsMixin:
                     raise PromotionRefusal(
                         "promotion_not_fast_forward", "Target is not an ancestor of the source."
                     )
+                await check_source_green(client, trust, required, source)
+                previous = await previous_tag(ops, repo, step)
+                _increasing_version(step, version, previous)
+                notes_input = await assemble_notes_input(
+                    conn, ops, repo, project_id=project.id, repository_id=repository.id,
+                    step=step, head=source, previous=previous,
+                )
+                authored_notes = None
+                if step["notes"]["kind"] != "none":
+                    path = step["notes"]["path"].format(version=version)
+                    pinned = await ops.git.arun_git_result(
+                        ["--no-replace-objects", "show", source + ":" + path], cwd=str(repo.store),
+                    )
+                    from src.integration.promotion_notes import authored_notes_section
+
+                    authored_notes = authored_notes_section(pinned.stdout, step["notes"]["kind"], version)
+                    metadata = notes_metadata(authored_notes, step["notes"]["kind"], version)
+                    if metadata.get("source_digest") != notes_input["source_digest"]:
+                        raise PromotionRefusal("notes_stale", "Notes do not cover the pinned source set.")
                 now = time.time()
                 meta = {
                     "request_id": request_id,
@@ -431,6 +593,7 @@ class PromoteCommandsMixin:
                     "requested_at": now,
                     "requester": requester,
                     "notes_sha256": notes_sha,
+                    "notes_input": notes_input,
                 }
                 tag = _tag_name(meta)
                 if tag:
@@ -466,8 +629,7 @@ class PromoteCommandsMixin:
                     )
                 pr_url = await client.create_pull_request(
                     title=f"Promote {step['id']} {suffix}",
-                    body=f"Promote `{step['source']}` to `{step['target']}` at `{source}`.\n\n"
-                    f"AQ-Promotion-Request: {request_id}\n",
+                    body=step_pr_body(step, source, request_id, notes_input, authored_notes),
                     head=ref.removeprefix("refs/heads/"),
                     base=step["target"],
                 )
@@ -530,8 +692,8 @@ class PromoteCommandsMixin:
                     "promotion": meta,
                     "pr_url": pr_url,
                 }, project.id, repository.id, target_ref)
-        except PromotionRefusal as exc:
-            return exc.response()
+        except (PromotionRefusal, NotesRefusal, PromotionSourceRefusal) as exc:
+            return {"success": False, "outcome": exc.outcome, "error": str(exc)}
         except (GitError, GitHubAccessError, OSError, ValueError) as exc:
             return _unavailable(exc)
 
@@ -965,6 +1127,21 @@ async def _fetch_commit(ops, repo, sha):
     await ops.exact(repo, sha)
 
 
+async def _admission_lock(conn, repository_id, step):
+    await conn.execute(select(func.pg_advisory_xact_lock(func.hashtext(
+        f"aq-promote-admit:{repository_id}:{step['target']}",
+    ))))
+
+
+def _increasing_version(step, version, previous):
+    if step["versioning"]["kind"] != "semver_tag":
+        return
+    current = semver(version)
+    if previous and current <= semver(previous["version"]):
+        code = "tag_exists" if current == semver(previous["version"]) else "version_not_increasing"
+        raise NotesRefusal(code, f"Version must exceed {previous['version']} ({previous['tag']}).")
+
+
 async def _human_login(client):
     user = await client.authenticated_user()
     if user.get("type") != "User" or not isinstance(user.get("login"), str) or not user["login"]:
@@ -989,25 +1166,7 @@ async def _source_inputs(ops, repo, step, source, request):
     version = request.version
     versioning = step["versioning"]
     if versioning["kind"] == "semver_tag":
-        selector = versioning["source"]
-        if selector == "pyproject":
-            import tomllib
-
-            version_at_source = (
-                tomllib.loads(await ops.run(repo, "show", source + ":pyproject.toml"))
-                .get("project", {})
-                .get("version")
-            )
-        elif selector == "package.json":
-            version_at_source = json.loads(
-                await ops.run(repo, "show", source + ":package.json")
-            ).get("version")
-        else:
-            path, pattern = selector[5:].split(":", 1)
-            match = re.search(pattern, await ops.run(repo, "show", source + ":" + path))
-            if not match or not match.groups():
-                raise PromotionRefusal("version_mismatch", "Version source did not match.")
-            version_at_source = match.group(1)
+        version_at_source = await source_version(ops, repo, versioning, source)
         if version and version != version_at_source:
             raise PromotionRefusal(
                 "version_mismatch", "Requested version differs from the pinned source."
@@ -1032,7 +1191,7 @@ async def _source_inputs(ops, repo, step, source, request):
                 "Read the notes at the pinned source and pass --notes-reviewed.",
             )
         path = step["notes"]["path"].format(version=version)
-        result = await ops.git.arun_git_result(["show", source + ":" + path], cwd=str(repo.store))
+        result = await ops.git.arun_git_result(["--no-replace-objects", "show", source + ":" + path], cwd=str(repo.store))
         if result.returncode:
             raise PromotionRefusal("notes_not_reviewed", "Pinned notes cannot be read.")
         notes_sha = hashlib.sha256(result.stdout.encode()).hexdigest()

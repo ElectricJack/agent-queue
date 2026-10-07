@@ -102,6 +102,12 @@ class TestGitManager:
         refs = await mgr.als_remote_qualified_refs(clone, ["refs/tags/v1.2.3", "refs/tags/v1.2.3^{}"])
         assert refs["refs/tags/v1.2.3"].oid == oid
         assert refs["refs/tags/v1.2.3^{}"].oid == source
+        # Inventory is remote-authoritative, including both annotated objects
+        # and peels, with no locally created-but-unpublished tag mixed in.
+        _git(["tag", "local-only", source], cwd=clone)
+        assert await mgr.als_remote_tag_refs(clone) == {
+            "refs/tags/v1.2.3": oid, "refs/tags/v1.2.3^{}": source,
+        }
         with pytest.raises(GitError, match="absent ref"):
             await mgr.apush_qualified_ref(clone, ref="refs/tags/v1.2.3", tip_oid=oid,
                                          expected_old_oid=oid)
