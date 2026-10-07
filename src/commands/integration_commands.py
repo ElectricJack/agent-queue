@@ -112,6 +112,20 @@ class IntegrationCommandsMixin:
             return _failure("refused", str(exc))
         return {"success": result["outcome"] in {"planned", "preview", "configured"}, **result}
 
+    async def _cmd_integration_quiesce(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationQuiesceArgs
+        from src.integration.quiesce import TrainQuiesce
+
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.LOCAL:
+            return _failure("refused", "quiesce requires the local operator")
+        request = IntegrationQuiesceArgs.model_validate(args)
+        try:
+            result = await TrainQuiesce(self.db).run(request)
+        except (ValueError, HierarchyError, BranchBusy, TimeoutError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def _cmd_integration_record_delivered(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationRecordDeliveredArgs
         from src.integration.delivered_close import DeliveredClose
