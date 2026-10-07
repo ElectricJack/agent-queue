@@ -1606,7 +1606,8 @@ async def test_cross_epic_completed_policy_is_explicit_legacy_admission(world):
                 if "prerequisite" in item["code"]]
 
 
-async def test_no_change_root_releases_cross_epic_child_and_has_no_train_blocker(world):
+@pytest.mark.parametrize("changed", [False, True])
+async def test_empty_completion_root_releases_child_and_has_no_train_blocker(world, changed):
     from src.integration.delivery_truth import DeliveryState, load_delivery_requests
     from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
     from src.integration.scheduler import TrainService
@@ -1616,15 +1617,20 @@ async def test_no_change_root_releases_cross_epic_child_and_has_no_train_blocker
     db, origin = world.db, world.origin
     base = git(origin.url, "rev-parse", "main")
     await completed(world, "epic", done=False)
-    git(origin.clone, "push", "origin", f"{base}:refs/heads/aq/no-change")
-    await completed(world, "no-change", done=False, head=base, source_base=base)
+    source = base
+    if changed:
+        source = origin.work("no-change")
+        origin.land("no-change")
+    else:
+        git(origin.clone, "push", "origin", f"{base}:refs/heads/aq/no-change")
+    await completed(world, "no-change", done=False, head=source, source_base=base)
     await db.save_task_completion(TaskCompletion(
         id="close-no-change", task_id="no-change", outcome="pass", commits=[],
         completed_at=time.time(),
     ))
     await GitProvenance(world.truth.git, str(origin.clone), repository_url=origin.url
                         ).write_completion(CompletedSource(
-        CompletionIdentity("p", "r", "no-change", "close-no-change"), base,
+        CompletionIdentity("p", "r", "no-change", "close-no-change"), source,
     ))
     await db.transition_task("no-change", TaskStatus.COMPLETED)
     await completed(world, "child", parent="epic", needs=("no-change",), done=False)
@@ -1633,7 +1639,8 @@ async def test_no_change_root_releases_cross_epic_child_and_has_no_train_blocker
     requests = await load_delivery_requests(db, ["no-change"], repository_id="r",
                                              target_ref=MAIN.target_ref, reduced=True)
     proof = await (await snapshot(world)).is_delivered(requests["no-change"], source_base=base)
-    assert proof.state is DeliveryState.NO_CHANGE and proof.satisfied
+    assert proof.state is (DeliveryState.CONTAINED if changed else DeliveryState.NO_CHANGE)
+    assert proof.satisfied
     assert await db.is_hierarchy_task_runnable("child")
     assert not [item for item in await db.claim_frontier_exclusions("child")
                 if "prerequisite" in item["code"]]
@@ -1644,7 +1651,7 @@ async def test_no_change_root_releases_cross_epic_child_and_has_no_train_blocker
         repository = (await conn.execute(select(repos).where(repos.c.id == "r"))).mappings().one()
         assert await TrainService(db)._git_delivered_roots_on(conn, view, "p", repository) == {"no-change"}
     repair_proof = await prove_source_delivered(db, observer, task_id="no-change", source={
-        "project_id": "p", "repository_id": "r", "head": base, "base": base,
+        "project_id": "p", "repository_id": "r", "head": source, "base": base,
         "generation": 0,
     })
     assert repair_proof.state == "delivered"
@@ -1655,6 +1662,62 @@ async def test_no_change_root_releases_cross_epic_child_and_has_no_train_blocker
     assert (await train.visit(MAIN)).state == "idle"
     status = await IntegrationStatusService(db, git_first="active", train=train).control_status("p")
     assert not [item for item in status["blockers"] if item.get("task_id") == "no-change"]
+
+
+@pytest.mark.parametrize("relation", ["sibling", "cross_epic"])
+@pytest.mark.parametrize("artifact", ["branch", "pr", "commits", "checkpoint", "origin", "legacy"])
+async def test_prerequisite_with_delivery_identity_still_requires_proof(world, relation, artifact):
+    from src.database.tables import task_integration_checkpoints
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+    from src.integration.publishable_artifact import LEGACY_ARTIFACT_KEY
+
+    db = world.db
+    await completed(world, "epic", done=False)
+    parent = "epic" if relation == "sibling" else None
+    await db.create_task(Task(id="proof", project_id="p", title="Proof chore", description="",
+                             parent_task_id=parent, status=TaskStatus.IN_PROGRESS))
+    await completed(world, "child", parent="epic", needs=("proof",), done=False)
+    await db.transition_task("child", TaskStatus.READY)
+    base = git(world.origin.clone, "rev-parse", "main")
+    await close(db, "proof", [base] if artifact == "commits" else [])
+    if artifact == "branch":
+        await db.update_task("proof", branch_name="aq/proof")
+    elif artifact == "pr":
+        await db.update_task("proof", pr_url="https://github.com/acme/widgets/pull/1")
+    elif artifact == "checkpoint":
+        async with db._engine.begin() as conn:
+            # A checkpoint without a source yet is still a delivery request.
+            await conn.execute(insert(task_integration_checkpoints).values(
+                task_id="proof", repository_id="r", branch="aq/proof", updated_at=time.time(),
+            ))
+    elif artifact == "origin":
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(task_branch_origins).values(
+                id="proof-origin", task_id="proof", repository_id="r", branch_name="aq/proof",
+                base_sha=base, creation_generation=0, reserved=True, materialized=False,
+                created_at=time.time(),
+            ))
+    elif artifact == "legacy":
+        await db.set_task_meta("proof", LEGACY_ARTIFACT_KEY, {
+            "completion_id": "close-proof", "source_sha": base,
+            "reason": "historical source without provenance",
+        })
+    assert not await db.is_hierarchy_task_runnable("child")
+    assert await db.count_ready_by_profile("p") == {}
+    assert any("prerequisite" in item["code"]
+               for item in await db.claim_frontier_exclusions("child"))
+
+    # Neither identity nor an empty commit list is proof; retaining the exact
+    # generation lets Git prove its source on the default/parent target.
+    await GitProvenance(world.truth.git, str(world.origin.clone), repository_url=world.origin.url
+                        ).write_completion(CompletedSource(
+        CompletionIdentity("p", "r", "proof", "close-proof"), base,
+    ))
+    await db._delivery_observer.prerequisite_view("p", task_id="child")
+    assert await db.is_hierarchy_task_runnable("child")
+    assert await db.count_ready_by_profile("p") == {None: 1}
+    assert not [item for item in await db.claim_frontier_exclusions("child")
+                if "prerequisite" in item["code"]]
 
 
 async def test_epic_refresh_preview_apply_attestation_lease_and_origin(world):

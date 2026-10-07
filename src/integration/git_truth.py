@@ -501,14 +501,13 @@ async def is_delivered(
         source = record["source_oid"]
         step = "target_object"
         await provenance.exact(observed.target_oid)
-        if request.completion_commits == ():
+        if (request.completion_commits == () and request.completion_outcome == "pass"
+                and source_base is not None and source == source_base):
             # Empty descriptive commits alone prove nothing. The retained
             # generation locates its exact head; the recorded origin is its
             # base. Only their equality and exact target ancestry prove that
             # this passing completion added no work owed to the target.
             step = "no_change_completion"
-            if request.completion_outcome != "pass" or source != source_base:
-                return answer(DeliveryState.UNKNOWN, "ambiguous_no_change_completion")
             if await provenance.ancestor(source, observed.target_oid):
                 return answer(DeliveryState.NO_CHANGE, "git_no_change")
             return answer(DeliveryState.PENDING, "no_change_base_not_delivered")

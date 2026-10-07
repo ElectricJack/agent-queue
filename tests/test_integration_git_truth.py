@@ -451,12 +451,32 @@ async def test_empty_completion_requires_unambiguous_head_base_and_pass(reposito
     elif scenario == "missing_base":
         base = None
     proof = await (await repo.snapshot()).is_delivered(request, source_base=base)
-    assert not proof.satisfied
+    assert proof.state != DeliveryState.NO_CHANGE
     assert (proof.state, proof.reason) == (
         (DeliveryState.PENDING, "no_change_base_not_delivered") if scenario == "off_default" else
         (DeliveryState.UNKNOWN, "missing_git_provenance") if scenario == "missing" else
-        (DeliveryState.UNKNOWN, "ambiguous_no_change_completion")
+        (DeliveryState.PENDING, "source_not_delivered") if scenario == "changed" else
+        (DeliveryState.CONTAINED, "ancestor")
     )
+    assert proof.satisfied is (scenario in {"failed", "missing_base"})
+
+
+@pytest.mark.parametrize("contained", [False, True])
+async def test_empty_commit_list_preserves_exact_source_containment(repository, contained):
+    repo = repository
+    head = await repo.commit("real-work")
+    request = replace(await repo.retain(head), completion_outcome="pass", completion_commits=())
+    if contained:
+        await repo.publish()
+    snapshot = await repo.snapshot()
+    proof = await snapshot.is_delivered(request, source_base=repo.base)
+    assert (proof.state, proof.reason) == (
+        (DeliveryState.CONTAINED, "ancestor") if contained else
+        (DeliveryState.PENDING, "source_not_delivered")
+    )
+    assert proof.satisfied is contained
+    assert await epic_complete(snapshot, [request], green_oid=snapshot.target_oid,
+                               source_bases={"task": repo.base}) is contained
 
 
 @pytest.mark.parametrize("operation,step,exception", [

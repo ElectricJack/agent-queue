@@ -92,10 +92,12 @@ source equals its recorded branch-origin base, and whose base is an ancestor of
 the fetched target. This proves the completion added no work owed to that
 target; `COMPLETED` alone never proves it. The completion outcome and commit
 list, exact source generation, recorded base and target OID are all part of
-the observation and guarded recheck. A missing completion or provenance record,
-missing base, or different head and base remains unknown with a named blocker.
-A base absent from the target remains pending. A completion that lists commits
-still requires the existing exact whole-source delivery proof.
+the observation and guarded recheck. A missing completion or provenance record
+remains unknown with a named blocker. A no-change base absent from the target
+remains pending. Every completion that does not meet the no-change conditions,
+including an empty commit list with a different head or missing base, uses the
+existing exact whole-source delivery proof. An empty descriptive commit list
+cannot override Git containment of its retained source.
 
 Cross-epic prerequisites use this same `no_change` answer against the default
 branch in scheduler readiness, pool demand, explain and claim activation. Root

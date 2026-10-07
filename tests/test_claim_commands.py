@@ -3123,7 +3123,9 @@ async def test_conflicting_multiple_stacked_prerequisites_cannot_activate_claim(
     assert git(env.remote, "rev-parse", "refs/heads/second-prerequisite") == second
 
 
-@pytest.mark.parametrize("completion_kind", ["no_change", "commits", "changed_empty", "missing"])
+@pytest.mark.parametrize("completion_kind", [
+    "no_change", "commits", "changed_empty", "contained_empty", "missing",
+])
 async def test_cross_epic_no_change_readiness_demand_explain_and_claim_agree(
     handler, db, tmp_path, development_admission, completion_kind,
 ):
@@ -3135,7 +3137,9 @@ async def test_cross_epic_no_change_readiness_demand_explain_and_claim_agree(
     from src.scheduler import PoolKey
 
     env = development_admission
-    source = env.head if completion_kind in {"commits", "changed_empty"} else env.base
+    source = env.head if completion_kind in {
+        "commits", "changed_empty", "contained_empty",
+    } else env.base
     await db.update_project(PROJECT_ID, hierarchical_integration_mode="train")
     await db.remove_dependency("dependent", "prerequisite")
     await db.update_task("dependent", branch_name="aq/dependent")
@@ -3144,6 +3148,8 @@ async def test_cross_epic_no_change_readiness_demand_explain_and_claim_agree(
     await db.add_dependency("dependent", "no-change")
     env.git(env.source, "push", "origin", f"{source}:refs/heads/aq/no-change",
             f"{env.base}:refs/heads/aq/dependent")
+    if completion_kind == "contained_empty":
+        env.git(env.source, "push", "origin", f"{source}:refs/heads/main")
     async with db.immediate() as conn:
         await conn.execute(task_branch_origins.insert().values(
             id="origin-dependent", task_id="dependent", repository_id="repo",
@@ -3179,7 +3185,7 @@ async def test_cross_epic_no_change_readiness_demand_explain_and_claim_agree(
         db=db, git=handler.orchestrator.git, bus=handler.orchestrator.bus,
         config=handler.config.worktrees, git_mutex=handler.orchestrator._git_mutex,
     ))
-    allowed = completion_kind == "no_change"
+    allowed = completion_kind in {"no_change", "contained_empty"}
     assert await db.is_hierarchy_task_runnable("dependent") is allowed
     assert ("dependent" in await db.hierarchy_runnable_task_ids(["dependent"])) is allowed
     assert await db.count_ready_by_profile(PROJECT_ID) == ({"worker": 1} if allowed else {})
