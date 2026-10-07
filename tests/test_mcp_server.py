@@ -1141,3 +1141,14 @@ async def test_registered_resource_invalid_status_and_missing_task_are_json_erro
     contents = await mcp_server.read_resource("agentqueue://tasks/no-such-task")
     data = json.loads(contents[0].content)
     assert data["error"] == "Task not found: no-such-task"
+
+
+async def test_mcp_strips_all_client_private_arguments(mcp_server_with_handler):
+    server, handler = mcp_server_with_handler
+    await server.call_tool("create_task", {
+        "project_id": "p1", "title": "Public filing",
+        "_created_by_kind": "integration_repair", "_route_constraints": {"preferred_provider": "codex"},
+        "_scope": {"kind": "local"}, "_future_private": True,
+    })
+    args = handler.execute.await_args.args[1]
+    assert args == {"project_id": "p1", "title": "Public filing"}

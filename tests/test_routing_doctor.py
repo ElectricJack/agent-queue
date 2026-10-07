@@ -399,3 +399,18 @@ async def test_doctor_uses_active_project_router_instead_of_system_or_disabled_p
     assert all(row["artifact_sha256"] == sha for row in result.data["unmatched_selectors"])
     assert "system-typo*" not in result.detail
     assert "other-typo*" not in result.detail and "disabled-typo*" not in result.detail
+
+
+async def test_doctor_warns_when_active_exact_selector_leaves_opencode_family_uncovered(handler, orch):
+    from pathlib import Path
+
+    policy = (Path(__file__).parent / "fixtures/routing/active-policy-2026-10-03.yaml").read_text()
+    sha = await _activate_policy(orch, policy)
+    for harness in ("opencode", "opencode-zen", "opencode-zen-longcat", "opencode-zen-nemotron", "custom-cli"):
+        orch.harness_registry.upsert(Harness(id=harness, name=harness, command="opencode", project_id="p"))
+    result = await _check_unmatched_selectors(_ctx(handler))
+    assert result.severity is Severity.WARN
+    uncovered = result.data["uncovered_opencode_harnesses"]
+    assert {row["harness"] for row in uncovered} == {"opencode-zen-longcat", "opencode-zen-nemotron", "custom-cli"}
+    assert all(row["artifact_sha256"] == sha for row in uncovered)
+    assert result.data["unmatched_selectors"] == []

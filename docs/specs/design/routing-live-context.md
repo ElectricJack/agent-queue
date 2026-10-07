@@ -124,3 +124,20 @@ Verification lives in `tests/test_routing_router.py` and
 `tests/test_routing_planner.py`: supply states, stale/missing quota, provider
 degradation/disablement, caps/workspaces/quarantine, pending launch accounting,
 bounded/private output and concurrent apply freshness.
+
+
+## OpenCode family admission and private arguments
+
+Every OpenCode CLI family member is excluded from the general worker pool.
+Family recognition uses the installed harness provider and command as well as
+its id, so a custom id or an active narrow selector naming only `opencode-zen`
+cannot admit another family member to general repair, verifier or writer work.
+Explicit narrow lane admission and its task classification requirements remain
+policy controlled. `routing.unmatched_selectors` also warns about installed
+OpenCode family members that no active narrow lane selector covers, using the
+project harness scope and the active artifact's literal policy.
+
+MCP and typed HTTP routes remove every caller argument beginning with `_`
+before dispatch. Typed routes then attach their server-derived authenticated
+scope. Internal origin and routing constraints remain available to trusted
+in-process command callers only.

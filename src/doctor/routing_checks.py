@@ -38,7 +38,7 @@ from src.playbooks.artifact_store import ArtifactStore
 from src.playbooks.definition import CommandStep, granted_aq_commands
 from src.playbooks.expressions import LiteralValue
 from src.playbooks.run_state import ArtifactVerificationFailed
-from src.routing.policy import PolicyError, parse_policy
+from src.routing.policy import PolicyError, is_opencode_family, parse_policy, selector_matches
 from src.routing.readiness import (
     BINDING_MISSING,
     BINDING_NOT_READY,
@@ -331,6 +331,7 @@ async def _check_unmatched_selectors(ctx: DoctorContext) -> CheckResult:
     activations = await ctx.db.list_playbook_activations(enabled_only=True)
     loaded = {}
     unmatched = []
+    uncovered = []
     unknown = []
     checked = 0
     for project in await ctx.db.list_projects():
@@ -363,7 +364,8 @@ async def _check_unmatched_selectors(ctx: DoctorContext) -> CheckResult:
             item for item in candidates if item[0]["scope"] == "project"
             and any(rule.trigger.event_type == "task.route_needed" for rule in item[1].rules)
         ]
-        installed = {h.id for h in registry.list_for_scope(project.id)}
+        harnesses = registry.list_for_scope(project.id)
+        installed = {h.id for h in harnesses}
         seen = set()
         for row, definition in project_candidates or candidates:
             for step_id, step in definition.steps.items():
@@ -386,6 +388,16 @@ async def _check_unmatched_selectors(ctx: DoctorContext) -> CheckResult:
                     continue
                 seen.add(digest)
                 checked += 1
+                for harness in harnesses:
+                    if is_opencode_family(harness.id, harness.provider, harness.command) and not any(
+                        selector_matches(harness.id, selector)
+                        for selector in policy.narrow_harnesses()
+                    ):
+                        uncovered.append({
+                            "project_id": project.id, "router": bound,
+                            "artifact_sha256": row["active_artifact_sha256"],
+                            "policy_sha256": digest, "harness": harness.id,
+                        })
                 for selector in policy.unmatched_selectors(installed):
                     unmatched.append({
                         "project_id": project.id, "router": bound,
@@ -393,13 +405,19 @@ async def _check_unmatched_selectors(ctx: DoctorContext) -> CheckResult:
                         "policy_sha256": digest, "selector": selector,
                     })
     detail = "; ".join(f"{row['project_id']}: {row['selector']}" for row in unmatched)
+    if uncovered:
+        detail += ("; " if detail else "") + "; ".join(
+            f"{row['project_id']}: OpenCode harness {row['harness']} has no narrow selector"
+            for row in uncovered
+        )
     if unknown:
         detail = (detail + "; " if detail else "") + f"{len(unknown)} policy observation(s) unavailable"
     return CheckResult(
         id=SELECTORS_CHECK_ID,
-        severity=Severity.WARN if unmatched else Severity.INFO if unknown else Severity.OK,
+        severity=Severity.WARN if unmatched or uncovered else Severity.INFO if unknown else Severity.OK,
         detail=detail or f"{checked} active routing policy/policies; every lane selector matches",
-        data={"unmatched_selectors": unmatched, "unknown_policies": unknown,
+        data={"unmatched_selectors": unmatched, "uncovered_opencode_harnesses": uncovered,
+              "unknown_policies": unknown,
               "checked_policy_count": checked},
     )
 

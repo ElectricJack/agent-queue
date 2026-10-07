@@ -363,6 +363,7 @@ def register_command_tools(
         """Create a closure that delegates to CommandHandler.execute()."""
 
         async def handler(**kwargs):
+            kwargs = {key: value for key, value in kwargs.items() if not key.startswith("_")}
             ctx = server_ref.get_context()
             ch = ctx.request_context.lifespan_context["command_handler"]
             if cmd_name in {"question_list", "question_answer", "question_escalate"}:

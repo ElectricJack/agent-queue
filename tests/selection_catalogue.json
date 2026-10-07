@@ -2458,9 +2458,10 @@
         "api-contract"
       ],
       "default_arm": true,
-      "digest": "sha256:2e8f281fa839fd8186f426085d4d94c3827eb4e1b6172c005bc97664ca6ac6f8",
+      "digest": "sha256:0a79235b4eca65fe85a3c801c8dff4b7164c3c8673bd13e01cdb47c7b960d549",
       "imports": [
         "src.api",
+        "src.api.auth",
         "src.api.codegen",
         "src.api.dependencies",
         "src.tools"
@@ -15777,7 +15778,7 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:2c3231ebe6acda15df64b77d5db33bfc87a671da515fb68bdc3072052e07cc45",
+      "digest": "sha256:7b4a32a6989e0f5bff2b6f9a019a2d7f6a37a9c71222cd5116693d158eb25b23",
       "imports": [
         "src.config",
         "src.doctor",
@@ -15792,7 +15793,9 @@
         "src.profiles.sync",
         "src.vault_watcher"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Additive sync of shipped capabilities into the vault supervisor profile."
     },
     "tests/test_supervisor_failure_triage.py": {

@@ -257,6 +257,8 @@ class RoutingCommandsMixin:
             except Exception:  # noqa: BLE001 - a missing cap is "one slot"
                 global_cap = None
 
+        from src.routing.policy import is_opencode_family
+
         facts: list[ProfileFacts] = []
         keys: set[str] = set()
         for profile in await self.db.list_profiles(conn=conn):
@@ -279,6 +281,14 @@ class RoutingCommandsMixin:
                 id=profile.id,
                 harness=harness,
                 provider=key,
+                harness_family=(
+                    "opencode" if registry is not None and (
+                        is_opencode_family(
+                            harness, profile_provider(profile, registry, project_id),
+                            getattr(registry.get(harness, project_id), "command", ""),
+                        )
+                    ) else ""
+                ),
                 lifecycle=lifecycle,
                 default_class=str(getattr(profile, "default_class", "") or ""),
                 classes=frozenset(
