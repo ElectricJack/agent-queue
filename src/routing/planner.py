@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
+from fnmatch import fnmatchcase
 from typing import Any
 
 from src.models import TaskType
@@ -444,8 +445,8 @@ def _cells(
     return [
         profile for profile in snapshot.profiles
         if class_id in worker_classes(profile)
-        and (harnesses is None or profile.harness in harnesses)
-        and profile.harness not in exclude
+        and (harnesses is None or any(fnmatchcase(profile.harness, h) for h in harnesses))
+        and not any(fnmatchcase(profile.harness, h) for h in exclude)
     ]
 
 

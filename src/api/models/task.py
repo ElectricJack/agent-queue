@@ -896,6 +896,7 @@ class TaskRouteOverrideResponse(BaseModel):
     #: Who overrode it: ``human:local-operator`` or ``supervisor session:<id>``.
     by: str
     resolved_gate_ids: list[str] = []
+    restarted: bool = False
 
 
 # ---------------------------------------------------------------------------

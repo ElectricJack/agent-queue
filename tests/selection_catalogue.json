@@ -1429,7 +1429,7 @@
       ]
     }
   },
-  "digest": "sha256:1b4f34ad9901a527ddde5a89ae9f7497a86da41d2d6964e4e6b994475b78b614",
+  "digest": "sha256:08a5e64af22378c8bb1597acf4c0f387297b8c4adbb9ed7f7650b8adb9327353",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4774,6 +4774,8 @@
         "src.commands.principal",
         "src.config",
         "src.database",
+        "src.integration.batches",
+        "src.integration.repair",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",

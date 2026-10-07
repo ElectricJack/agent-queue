@@ -8,6 +8,32 @@ to the reviewed policy and deterministic placement.
 
 ## Routine hosted preference
 
+Lane harness selectors accept shell glob patterns. A narrow lane excludes every
+matching harness from general candidates, using the same matcher as lane
+admission. The shipped `narrow-hosted` lane selects `opencode-zen*`, including
+new preview variants. Integration and development repair origins keep
+`narrow: false` even when the task kind is `bugfix` or classification reports
+narrow, test-verified work; neither local OpenCode nor a Zen variant is eligible.
+Changing this policy requires activating the rebuilt reviewed routing artifact.
+
+Ordinary train repairs retain `created_by_kind: system` for their ordinary
+claim and managed publication lifecycle. Routing resolves their origin to
+`integration_repair` from the immutable `Repair input`, verified against the
+ordinary filing identity. This projection applies to existing filings as well
+as new ones, without reclassifying them as legacy operation delegates. A
+generic system filing with no ordinary repair input keeps its original origin.
+
+`aq task route-override --task-id <id> --profile-id <profile> --reason "..."
+--restart` installs the audited override before waking stopped work. Ordinary
+tasks commit the route, READY status and retry reset in one transaction, then
+emit frontier notifications. Projects using hierarchical integration retain
+the existing restart command's canonical branch reservation and repair delegate
+handoff checks, with the override saved before that guarded restart. If the
+handoff refuses, report that the override was saved and leave the task stopped.
+An unclaimed READY task can also be overridden without restarting it. Held
+tasks and tasks with starting, running or draining sessions remain refused;
+stop intent alone does not prove that the old worker is gone.
+
 An optional `prefer_harnesses` list on a kind (overridable by origin) favors a
 compatible hosted harness after eligible local/design lane preferences. The
 shipped implementation, fix, refactor, test, docs, chore and sync rules prefer

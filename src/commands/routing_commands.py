@@ -427,6 +427,15 @@ class RoutingCommandsMixin:
         labels = await self.db.get_task_labels(task.id)
         exclude = route_constraints(task).get("exclude_providers") or []
         task_type = getattr(task.task_type, "value", task.task_type)
+        origin = getattr(task, "created_by_kind", None)
+        if origin == "system":
+            from src.integration.repair import OrdinaryRepairService
+
+            # Ordinary train repairs are system filings, not legacy stage
+            # delegates. Their immutable, identity-checked input supplies the
+            # routing origin without changing their claim/restart lifecycle.
+            if await OrdinaryRepairService(self.db).input(task.id) is not None:
+                origin = "integration_repair"
         class_hint = (getattr(task, "class_hint", None) or "").strip() or None
         if class_hint is None and (getattr(task, "route_source", None) or UNROUTED) == UNROUTED:
             # Rows filed before creation recorded the filer's class as
@@ -441,7 +450,7 @@ class RoutingCommandsMixin:
             description=task.description or "",
             task_type=str(task_type) if task_type else None,
             class_hint=class_hint,
-            created_by_kind=getattr(task, "created_by_kind", None),
+            created_by_kind=origin,
             exclude_providers=frozenset(str(p) for p in exclude if p),
             prefer_target=getattr(task, "prefer_target", None) or None,
             prefer_mode=getattr(task, "prefer_mode", None) or PREFER_SOFT,
@@ -1021,6 +1030,9 @@ class RoutingCommandsMixin:
         ``route.override = {by, at, reason}``, resolves the task's routing
         gates, emits ``task.route_overridden`` and comments on the task.
         ``aq task route`` clears it and hands the task back to the router.
+        ``restart`` installs the route before waking stopped work. Ordinary
+        tasks become READY in the route transaction; hierarchical integration
+        retains the restart command's branch reservation and repair handoff checks.
         """
         task_id = args.get("task_id")
         profile_id = args.get("profile_id")
@@ -1146,8 +1158,15 @@ class RoutingCommandsMixin:
                 "intelligence_class": task.intelligence_class,
                 "provider_intent": getattr(task, "provider_intent", None),
             }
+        restart = args.get("restart") is True
+        fenced_restart = restart and (
+            project is not None
+            and project.hierarchical_integration_mode in {"hierarchy", "train"}
+            and task.status in {TaskStatus.BLOCKED, TaskStatus.PAUSED}
+        )
         if not await self.db.write_override_route(
             task.id, profile_id=facts.id, intelligence_class=class_id, route=route,
+            restart=restart and not fenced_restart,
         ):
             return {
                 "success": False,
@@ -1195,7 +1214,7 @@ class RoutingCommandsMixin:
             "back to the project's router.",
         )
         await self._announce_route_change(task.id)
-        return {
+        result = {
             "success": True,
             "task_id": task.id,
             "profile_id": facts.id,
@@ -1205,4 +1224,11 @@ class RoutingCommandsMixin:
             "route_source": OVERRIDE,
             "by": actor["by"],
             "resolved_gate_ids": resolved,
+            "restarted": restart,
         }
+        if fenced_restart:
+            restarted = await self._cmd_restart_task({"task_id": task.id})
+            if "error" in restarted:
+                return {**result, "success": False, "restarted": False,
+                        "error": f"Override saved, but restart refused: {restarted['error']}"}
+        return result

@@ -21,12 +21,14 @@ class TaskRouteOverrideRequest:
             task comment
         intelligence_class (None | str | Unset): Class to run at. Default: the profile's fixed class, else the task's
             class hint. Must be one the profile can run.
+        restart (bool | Unset): Install the override and restart stopped work on that route. Default: False.
     """
 
     task_id: str
     profile_id: str
     reason: str
     intelligence_class: None | str | Unset = UNSET
+    restart: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -42,6 +44,8 @@ class TaskRouteOverrideRequest:
         else:
             intelligence_class = self.intelligence_class
 
+        restart = self.restart
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -53,6 +57,8 @@ class TaskRouteOverrideRequest:
         )
         if intelligence_class is not UNSET:
             field_dict["intelligence_class"] = intelligence_class
+        if restart is not UNSET:
+            field_dict["restart"] = restart
 
         return field_dict
 
@@ -74,11 +80,14 @@ class TaskRouteOverrideRequest:
 
         intelligence_class = _parse_intelligence_class(d.pop("intelligence_class", UNSET))
 
+        restart = d.pop("restart", UNSET)
+
         task_route_override_request = cls(
             task_id=task_id,
             profile_id=profile_id,
             reason=reason,
             intelligence_class=intelligence_class,
+            restart=restart,
         )
 
         task_route_override_request.additional_properties = d

@@ -70,14 +70,16 @@ def sync_detailed(
     (10-400 characters). The task is pinned to the profile's provider (failover holds it rather than
     moving it); the override is evented (task.route_overridden) and commented on the task. Refuses
     control, stage and role profiles, profiles that are not worker candidates, and a class the profile
-    cannot run. `aq task route` clears it.
+    cannot run. With restart, install the override before waking stopped work; repair branch handoff
+    checks still apply. `aq task route` clears it.
 
      Emergency override: pin one queued task to a worker profile the router did not choose. Local
     operator and supervisor only; refused to workers, playbooks and every other token. Requires a reason
     (10-400 characters). The task is pinned to the profile's provider (failover holds it rather than
     moving it); the override is evented (task.route_overridden) and commented on the task. Refuses
     control, stage and role profiles, profiles that are not worker candidates, and a class the profile
-    cannot run. `aq task route` clears it.
+    cannot run. With restart, install the override before waking stopped work; repair branch handoff
+    checks still apply. `aq task route` clears it.
 
     Args:
         body (TaskRouteOverrideRequest):
@@ -111,14 +113,16 @@ def sync(
     (10-400 characters). The task is pinned to the profile's provider (failover holds it rather than
     moving it); the override is evented (task.route_overridden) and commented on the task. Refuses
     control, stage and role profiles, profiles that are not worker candidates, and a class the profile
-    cannot run. `aq task route` clears it.
+    cannot run. With restart, install the override before waking stopped work; repair branch handoff
+    checks still apply. `aq task route` clears it.
 
      Emergency override: pin one queued task to a worker profile the router did not choose. Local
     operator and supervisor only; refused to workers, playbooks and every other token. Requires a reason
     (10-400 characters). The task is pinned to the profile's provider (failover holds it rather than
     moving it); the override is evented (task.route_overridden) and commented on the task. Refuses
     control, stage and role profiles, profiles that are not worker candidates, and a class the profile
-    cannot run. `aq task route` clears it.
+    cannot run. With restart, install the override before waking stopped work; repair branch handoff
+    checks still apply. `aq task route` clears it.
 
     Args:
         body (TaskRouteOverrideRequest):
@@ -147,14 +151,16 @@ async def asyncio_detailed(
     (10-400 characters). The task is pinned to the profile's provider (failover holds it rather than
     moving it); the override is evented (task.route_overridden) and commented on the task. Refuses
     control, stage and role profiles, profiles that are not worker candidates, and a class the profile
-    cannot run. `aq task route` clears it.
+    cannot run. With restart, install the override before waking stopped work; repair branch handoff
+    checks still apply. `aq task route` clears it.
 
      Emergency override: pin one queued task to a worker profile the router did not choose. Local
     operator and supervisor only; refused to workers, playbooks and every other token. Requires a reason
     (10-400 characters). The task is pinned to the profile's provider (failover holds it rather than
     moving it); the override is evented (task.route_overridden) and commented on the task. Refuses
     control, stage and role profiles, profiles that are not worker candidates, and a class the profile
-    cannot run. `aq task route` clears it.
+    cannot run. With restart, install the override before waking stopped work; repair branch handoff
+    checks still apply. `aq task route` clears it.
 
     Args:
         body (TaskRouteOverrideRequest):
@@ -186,14 +192,16 @@ async def asyncio(
     (10-400 characters). The task is pinned to the profile's provider (failover holds it rather than
     moving it); the override is evented (task.route_overridden) and commented on the task. Refuses
     control, stage and role profiles, profiles that are not worker candidates, and a class the profile
-    cannot run. `aq task route` clears it.
+    cannot run. With restart, install the override before waking stopped work; repair branch handoff
+    checks still apply. `aq task route` clears it.
 
      Emergency override: pin one queued task to a worker profile the router did not choose. Local
     operator and supervisor only; refused to workers, playbooks and every other token. Requires a reason
     (10-400 characters). The task is pinned to the profile's provider (failover holds it rather than
     moving it); the override is evented (task.route_overridden) and commented on the task. Refuses
     control, stage and role profiles, profiles that are not worker candidates, and a class the profile
-    cannot run. `aq task route` clears it.
+    cannot run. With restart, install the override before waking stopped work; repair branch handoff
+    checks still apply. `aq task route` clears it.
 
     Args:
         body (TaskRouteOverrideRequest):

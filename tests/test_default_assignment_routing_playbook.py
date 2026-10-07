@@ -206,6 +206,62 @@ async def test_a_task_whose_kind_and_hint_decide_the_route_needs_no_llm(
     assert routed.route["classification"] is None
 
 
+@pytest.mark.parametrize("origin", ["integration_repair", "development_repair", "ordinary"])
+async def test_shipped_router_keeps_bugfix_repairs_off_local_and_hosted_opencode(
+    handler, monkeypatch, origin,
+):
+    for harness in (
+        "opencode", "opencode-zen", "opencode-zen-nemotron", "opencode-zen-longcat",
+        "opencode-zen-new-preview",
+    ):
+        await handler.db.create_profile(AgentProfile(
+            id=f"standard-high-{harness}", name="", lifecycle="pool", harness=harness,
+            default_class="standard-high", max_active=20,
+        ))
+        handler.orchestrator.harness_registry.upsert(Harness(
+            id=harness, name=harness, command="opencode", provider="anthropic",
+        ))
+    if origin == "ordinary":
+        from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
+        from src.integration.repair import OrdinaryRepairService
+        from src.models import RepoConfig, RepoSourceType
+
+        await handler.db.create_repo(
+            RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.LINK)
+        )
+        await BatchStore(handler.db).freeze(
+            Batch("batch", "p", "repo", "refs/heads/main"),
+            (BatchMember("source", "a" * 40, "b" * 40),), trees={"source": "c" * 40},
+        )
+        allocation = await OrdinaryRepairService(handler.db).allocate(
+            "batch", target_ref=candidate_ref("batch"), head_sha="a" * 40,
+            authorize=AsyncMock(return_value=True), intelligence_class="standard-high",
+        )
+        assert allocation["outcome"] == "filed", allocation
+        task = await handler.db.get_task(allocation["task_id"])
+        assert task.created_by_kind == "system"
+    else:
+        task = await _create(
+            handler, "repair", task_type=TaskType.BUGFIX, class_hint="standard-high",
+            created_by_kind=origin,
+        )
+    llm = _ScriptedLlm({**NARROW_DESIGN, "task_type": "bugfix", "narrow": True,
+                        "test_verified": True})
+
+    _result, runs = await _dispatch(handler, task, llm, monkeypatch)
+
+    (run,) = runs.snapshots.values()
+    assert run.lifecycle.value == "completed", run.error
+    routed = await handler.db.get_task(task.id)
+    assert routed.route_source == ROUTER
+    effective_origin = "integration_repair" if origin == "ordinary" else origin
+    assert routed.route["rule"] == f"kinds.bugfix+origins.{effective_origin}"
+    assert {c["harness"] for c in routed.route["candidates"]} == {"codex", "claude"}
+    assert routed.profile_id in {"standard-high-codex", "standard-high-claude"}
+    assert llm.prompts == []
+    assert routed.created_by_kind == task.created_by_kind
+
+
 async def test_a_filed_class_without_a_profile_is_still_honoured_as_the_hint(
     handler, monkeypatch,
 ):
