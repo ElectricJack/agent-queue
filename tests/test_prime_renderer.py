@@ -533,11 +533,11 @@ class TestMemoryPausedSlots:
 
 
 class TestStaticSections:
-    async def test_tool_guidance_mentions_cli_and_nine_tools(self, db, config, task):
+    async def test_tool_guidance_mentions_cli_and_canonical_tools(self, db, config, task):
         doc = await PrimeRenderer(db, config).render_for_task("task-1")
         body = {s.key: s.body for s in doc.sections}["tool_guidance"]
         assert "aq " in body
-        for name in ("task_show", "task_set", "memory_search"):
+        for name in ("task_show", "task_set", "aq knowledge", "aq record", "aq-knowledge"):
             assert name in body
 
     async def test_tool_guidance_authorizes_local_commits_and_guards_publication(
@@ -1057,6 +1057,11 @@ _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq message inbox": "message_inbox",
     "aq message reply": "message_reply",
     "aq message send": "message_send",
+    "aq knowledge create": "knowledge_create",
+    "aq knowledge show": "knowledge_show",
+    "aq knowledge update": "knowledge_update",
+    "aq record capabilities": "record_capabilities",
+    "aq record search": "record_search",
     "aq memory save": "memory_save",
     "aq memory search": "memory_search",
     "aq project ready": "project_ready",

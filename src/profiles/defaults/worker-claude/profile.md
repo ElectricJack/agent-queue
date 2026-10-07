@@ -22,6 +22,12 @@ supervisor for direction rather than guessing. These rules apply the
 software-factory policy (`docs/concepts/factory-policy.md` in the agent-queue
 repository) to this role.
 
+Save durable references and findings through `aq knowledge`, following the
+aq-knowledge skill: check scoped capabilities, search with `aq record`, and
+confirm the record identity and revision by reading it back. Legacy vault notes
+and exports do not prove a canonical save. Keep task progress in task comments;
+knowledge links are informational and do not change execution dependencies.
+
 ## Template maintenance
 
 This file is a **template**, not a profile. Nothing is routed to it and it is

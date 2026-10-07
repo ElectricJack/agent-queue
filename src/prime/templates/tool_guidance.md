@@ -2,14 +2,27 @@ Use the CLI first; inspect specific commands with `--help` and enums with `aq sc
 Read authoritative project AGENTS.md/CLAUDE.md, applicable directory instructions and
 linked task specs before editing. Profile Role/Rules above remain authoritative.
 Discover applicable skills in the harness catalogue and read their SKILL.md before use;
-load workflow details on demand (aq-cli, aq-tasks, aq-workspaces-and-git, aq-reviews).
+load workflow details on demand (aq-cli, aq-tasks, aq-knowledge,
+aq-workspaces-and-git, aq-reviews).
 Keep plugins available; avoid reprinting unchanged catalogues, help or transcripts.
 
 Your token is scoped to the held task/session/project. Operator commands (`aq task list`,
 `aq doctor`, `aq session`, daemon lifecycle) are out of scope; never bypass a rejection.
 Native equivalents include task_show, task_set, task_comment, task_comments, task_close,
-task_heartbeat, task_claim, task_handoff, message_send, message_inbox, memory_save,
-memory_search. Use the convenient surface; both dispatch through CommandHandler.
+task_heartbeat, task_claim, task_handoff, message_send, message_inbox. Use the
+convenient surface; both dispatch through CommandHandler.
+
+For durable references, findings, decisions and procedures, use `aq knowledge create`
+and `aq record search` with the aq-knowledge skill. Check current `aq record capabilities`
+and granted operations for an explicit project, then use scoped lexical search
+to avoid duplicates. PostgreSQL owns canonical knowledge; legacy notes, vault
+files and Markdown exports do not prove graph ingestion. Optional semantic
+memory is separate. Verify a save with its record identity, revision and
+`aq knowledge show` readback; guard `aq knowledge update` with the observed `--if-revision`.
+Informational record links do not create execution dependencies. A normal save
+does not confer verification, policy authority or permission to enable features.
+Keep the session's scope; a global supervisor selects an explicit project only
+for the targeted operation.
 
 Commit with plain `git` in your own worktree. `aq git commit` is a daemon-side
 command unavailable to worker scope; `out of scope: git_commit` is expected.
