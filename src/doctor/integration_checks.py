@@ -418,6 +418,77 @@ async def _check_promotion_flow(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_ci_source(ctx: DoctorContext) -> CheckResult:
+    """Name the runner producing each project's required checks, per target kind.
+
+    A stored ``ci`` block that no longer validates is an error: the train's
+    lanes read it as unset and gate every target on hosted checks. Read-only:
+    the policy is operator configuration, written with
+    ``aq project set <id> integration-policy``.
+    """
+    from pydantic import ValidationError
+
+    from src.database.tables import projects
+    from src.integration.models import HierarchicalIntegrationPolicy, integration_ci_sources
+
+    check_id = "integration.ci_source"
+    if ctx.db is None:
+        return CheckResult(
+            id=check_id, severity=Severity.INFO,
+            detail="CI source report unavailable without database",
+        )
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(select(
+            projects.c.id, projects.c.hierarchical_integration_policy,
+        ).where(projects.c.hierarchical_integration_policy.is_not(None))
+         .order_by(projects.c.id))).all()
+    reported, invalid, rollback = [], [], []
+    for project_id, policy in rows:
+        if isinstance(policy, dict) and policy.get("ci") is not None:
+            rollback.append(project_id)
+        sources = integration_ci_sources(policy)
+        if isinstance(policy, dict) and policy.get("ci") is not None \
+                and sources["origin"] == "default":
+            try:
+                HierarchicalIntegrationPolicy.model_validate(policy)
+                error = "ci block is not an object"
+            except ValidationError as exc:
+                first = exc.errors()[0]
+                where = ".".join(str(part) for part in first["loc"])
+                error = f"{where}: {first['msg']}" if where else first["msg"]
+            except (TypeError, ValueError) as exc:
+                error = str(exc).splitlines()[0]
+            invalid.append({"project_id": project_id, "error": error})
+        if sources["origin"] != "default":
+            reported.append({"project_id": project_id, **sources})
+    rollback_note = (
+        " Rollback hazard: older daemons reject stored ci as an unknown policy field. "
+        "Before downgrading, have the operator remove the ci block with "
+        "`aq project set <id> integration-policy` for: " + ", ".join(rollback) + "."
+        if rollback else ""
+    )
+    if invalid:
+        named = "; ".join(f"{entry['project_id']}: {entry['error']}" for entry in invalid)
+        return CheckResult(
+            id=check_id, severity=Severity.ERROR,
+            detail=(
+                f"{len(invalid)} stored ci block(s) no longer validate, so their trains "
+                f"read hosted checks everywhere ({named}). Fix the policy with "
+                "`aq project set <id> integration-policy`." + rollback_note
+            ),
+            data={"projects": reported, "invalid": invalid, "rollback_projects": rollback},
+        )
+    local = [entry for entry in reported if "local" in entry.values()
+             or "hybrid" in entry.values()]
+    return CheckResult(
+        id=check_id, severity=Severity.OK,
+        detail=(f"{len(local)} project(s) run required checks locally; every other target "
+                "reads hosted checks" if local else "every project reads hosted checks")
+               + rollback_note,
+        data={"projects": reported, "rollback_projects": rollback},
+    )
+
+
 def integration_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(id="integration.legacy_deliveries", run=_check_legacy_deliveries,
@@ -438,6 +509,9 @@ def integration_checks() -> list[DoctorCheck]:
         DoctorCheck(
             id="integration.promotion_flow", run=_check_promotion_flow, owner=OWNER,
             timeout_s=60.0,
+        ),
+        DoctorCheck(
+            id="integration.ci_source", run=_check_ci_source, owner=OWNER, timeout_s=30.0
         ),
     ]
 

@@ -1361,18 +1361,21 @@ class PromotionVisit(BatchService):
                                         detail={"reason": reason or "promotion_checks_pending"})
             if not await self.admission.eligible(batch, members):
                 raise PromotionIntentInvalid("promotion admission changed before attestation")
-            attestation = await self.attest(batch, source)
-            if attestation not in {"published", "already_published"}:
-                return BatchObservation("held", source, target, tree,
-                                        detail={"reason": "attestation_unavailable"})
+            # A step gated by local checks has no hosted proof to attest; the
+            # project's CI policy chose GitHub as just the push remote.
+            if self.attest is not None:
+                attestation = await self.attest(batch, source)
+                if attestation not in {"published", "already_published"}:
+                    return BatchObservation("held", source, target, tree,
+                                            detail={"reason": "attestation_unavailable"})
 
-            # Reobserve outside the fence after attestation so a review/head
-            # changed during its publication cannot authorize the branch write.
-            await self.checks.refresh_gate(batch, source)
-            if not await self.gate(batch, source, tree):
-                return BatchObservation("held", source, target, tree, detail={
-                    "reason": self.checks.reason(batch, source) or "promotion_checks_pending",
-                })
+                # Reobserve outside the fence after attestation so a review/head
+                # changed during its publication cannot authorize the branch write.
+                await self.checks.refresh_gate(batch, source)
+                if not await self.gate(batch, source, tree):
+                    return BatchObservation("held", source, target, tree, detail={
+                        "reason": self.checks.reason(batch, source) or "promotion_checks_pending",
+                    })
 
             async def authorize():
                 return await self._authorized(batch, members) and await self.gate(batch, source, tree)

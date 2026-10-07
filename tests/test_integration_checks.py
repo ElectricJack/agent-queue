@@ -609,6 +609,81 @@ async def test_local_cancelled_job_is_unknown_not_green(db):
     assert result.checks[0].conclusion is Conclusion.CANCELLED
 
 
+async def test_local_cached_green_is_bound_to_commands_and_boundary(db):
+    from src.integration.train_sources import _exact_head_verdict
+
+    client = JobClient()
+
+    def checks(command, scope="root"):
+        return ExactChecks(db, LocalChecks(local(client, commands=(command,)),
+            project_id="p", names=("unit",), scope=scope), clock=Clock())
+
+    root = checks("ruff check src")
+    await root.request(head())
+    client.complete(0)
+    assert (await root.refresh(head())).green
+    changed = checks("ruff check tests")
+    assert changed.required.version == root.required.version
+    assert not (await _exact_head_verdict(changed, head())).green
+    promotion = checks("ruff check src", "promotion:release")
+    await promotion.request(head())
+    client.complete(1, exit_code=1)
+    assert (await promotion.refresh(head())).state is ChecksState.RED
+    # Same SHA/name/version, separate boundary and plan cache keys.
+    assert (await root.read(head())).green
+    assert not (await changed.read(head())).green
+    async with db._engine.connect() as conn:
+        rows = (await conn.execute(select(integration_check_evidence))).mappings().all()
+    assert len(rows) == 2
+
+
+async def test_hosted_checks_ignore_green_local_rows_with_same_names_version_and_sha(db):
+    client = JobClient()
+    exact = ExactChecks(db, LocalChecks(local(client), project_id="p", names=("unit",)),
+                        clock=Clock())
+    await exact.request(head())
+    client.complete(0)
+    assert (await exact.refresh(head())).green
+    remote, trust = github(conclusion="failure", manifest=True)
+    hosted_checks = hosted(db, remote, trust, Clock())
+    assert not (await hosted_checks.read(head())).green
+    assert (await hosted_checks.refresh(head())).state is ChecksState.RED
+    assert (await exact.read(head())).green
+
+
+async def test_local_job_with_wrong_input_sha_is_refused(db):
+    client = JobClient()
+    exact = ExactChecks(db, LocalChecks(local(client), project_id="p"), clock=Clock())
+    await exact.request(head())
+    job = client.complete(0)
+    job["input_ref"] = OTHER
+    result = await exact.refresh(head())
+    assert result.state is ChecksState.UNKNOWN
+    assert result.checks[0].reason == "job_identity_mismatch"
+
+
+@pytest.mark.parametrize("remote_conclusion", ["failure", "pending", "success", "absent"])
+async def test_hybrid_requires_both_runners_even_when_local_is_green(db, remote_conclusion):
+    from src.integration.checks import HybridChecks
+    from src.integration.train_sources import _exact_head_verdict
+
+    client = JobClient()
+    local_checks = ExactChecks(db, LocalChecks(local(client), project_id="p", names=("unit",)),
+                              clock=Clock())
+    await local_checks.request(head())
+    client.complete(0)
+    await local_checks.refresh(head())
+    remote, trust = github(conclusion=remote_conclusion,
+                           manifest=True,
+                           status="in_progress" if remote_conclusion == "pending" else "completed")
+    exact = HybridChecks(local_checks, None if remote_conclusion == "absent"
+                         else hosted(db, remote, trust, Clock()))
+    assert not (await exact.read(head())).green
+    result = await _exact_head_verdict(exact, head())
+    assert result.green is (remote_conclusion == "success")
+    assert (await local_checks.read(head())).green
+
+
 async def test_pr_checks_are_separate_from_push_cache_and_share_one_listing_per_visit(db):
     from src.integration.ci import hosted_observation_scope
 

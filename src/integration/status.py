@@ -27,7 +27,7 @@ from src.database.tables import (
     tasks,
 )
 from src.integration.delivery_truth import DeliveryState
-from src.integration.models import RepairPolicy
+from src.integration.models import RepairPolicy, integration_ci_sources
 from src.integration.promotion_steps import flow_status
 from src.integration.records import ParentEpisodeRecords
 
@@ -322,6 +322,7 @@ class IntegrationStatusService:
             "subjects": subjects,
             "operator_decisions": await history_on(conn, project_id),
             "promotion_flow": await self._promotion_flow_on(conn, project),
+            "ci_source": integration_ci_sources(project["hierarchical_integration_policy"]),
         }
 
     async def _promotion_flow_on(self, conn: AsyncConnection, project) -> dict[str, Any] | None:
@@ -703,6 +704,8 @@ class IntegrationStatusService:
             "epics": epics,
             "blockers": _sorted_blockers(blockers),
             "promotion_flow": promotion_flow,
+            # Which runner produces each target kind's required checks.
+            "ci_source": integration_ci_sources(project["hierarchical_integration_policy"]),
         }
 
     async def train_task_blockers(self, task_id: str) -> dict[str, Any] | None:

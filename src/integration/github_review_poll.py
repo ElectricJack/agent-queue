@@ -124,6 +124,27 @@ class RootPullRequestGate:
             if mismatch:
                 return defer("pr_closed" if mismatch == "closed" else "awaiting_pr",
                              reason=mismatch)
+            if pull.get("draft"):
+                return defer("pr_draft")
+            from src.integration.models import integration_ci_policy
+
+            ci = integration_ci_policy(policy)
+            # Local member validation uses the trusted integration job lane.
+            # Even automatic admission cannot execute unreviewed code there, so
+            # a local or hybrid root requires the exact-head approval first.
+            local = ci is not None and ci.source_for("root") != "hosted"
+            reviewed = (policy.get("root") or {}).get("admission", "reviewed") == "reviewed"
+
+            async def review_state():
+                reviews = await client.paged_list(
+                    f"/repositories/{binding.repository_id}/pulls/{number}/reviews?per_page=100")
+                return await observe_pull_request_review_state(reviews, member.source_sha,
+                    client=client, binding=binding, requirements=self.review_requirements)
+
+            if local:
+                state = await review_state()
+                if state != "approved":
+                    return defer(state)
             exact = await self.checks(target, member, policy, binding)
             if exact is None:
                 raise ValueError("PR required checks observer is unavailable")
@@ -134,11 +155,8 @@ class RootPullRequestGate:
             if not result.green:
                 return defer("pr_checks_red" if result.state.value == "red"
                              else "awaiting_pr_checks", due_at=result.due_at)
-            if (policy.get("root") or {}).get("admission", "reviewed") == "reviewed":
-                reviews = await client.paged_list(
-                    f"/repositories/{binding.repository_id}/pulls/{number}/reviews?per_page=100")
-                state = await observe_pull_request_review_state(reviews, member.source_sha,
-                    client=client, binding=binding, requirements=self.review_requirements)
+            if reviewed and not local:
+                state = await review_state()
                 if state != "approved":
                     return defer(state)
             self._deferred.pop(key, None)

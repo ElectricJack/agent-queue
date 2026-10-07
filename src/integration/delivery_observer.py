@@ -43,7 +43,6 @@ from src.database.tables import (
     task_completion_records,
     task_branch_origins,
     tasks,
-    task_branch_origins,
 )
 from src.integration.delivery_truth import (
     DeliveryEvidence,
