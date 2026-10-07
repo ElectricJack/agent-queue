@@ -145,6 +145,9 @@ async def test_source_ci_repair_is_deduplicated_and_replaced_only_after_failure(
     assert filing.await_count == 1
     args = filing.call_args.args[0]
     assert args["repo_id"] == "repo" and args["task_type"] == "bugfix" and args["root"] is True
+    # Its origin routes it as an integration repair: never on an OpenCode lane.
+    assert args["_created_by_kind"] == "source_ci_repair"
+    assert args["_created_by_id"] == handler._integration_source_ci_identity(observation)
     assert source["head"] in args["description"] and "tests/test_source.py::test_delivery" in args["description"]
     await case["db"].transition_task(first["repair_task_id"], TaskStatus.FAILED, force=True)
     successor = await handler._cmd_observe_integration_source_ci(observation)
@@ -1565,6 +1568,14 @@ class _ReviewClient:
         self.head = head
         self.reviews = reviews
         self.moved = moved
+        self.permissions = {"reviewer": "write"}
+        self.permission_calls = []
+
+    async def request_json(self, method, path):
+        assert method == "GET" and path.endswith("/permission")
+        login = path.split("/")[-2]
+        self.permission_calls.append(login)
+        return {"permission": self.permissions.get(login, "read"), "user": {"login": login}}
 
     async def pull_request(self, _url):
         return {
@@ -1625,6 +1636,52 @@ async def test_live_review_poller_arms_window_only_for_exact_human_approval(case
     assert len(await _rows(case["db"])) == 1
 
 
+@pytest.mark.parametrize("permission,user_type,expected", [
+    ("read", "User", False), ("none", "User", False),
+    ("write", "User", True), ("admin", "User", True), ("admin", "Bot", False),
+])
+async def test_poller_only_trusted_human_reviews_authorize_epic_readiness(case, permission,
+                                                                      user_type, expected):
+    from src.integration.reviews import ReviewSubject, TreeReviews
+    from src.integration.train_sources import epic_policy_on
+
+    client = _ReviewClient(case["first"], [{
+        "id": 1, "state": "APPROVED", "commit_id": case["first"],
+        "user": {"login": "reviewer", "type": user_type}}])
+    client.permissions["reviewer"] = permission
+    await GitHubReviewPoller(case["db"], case["producer"], _ReviewGit(client)).tick(1000)
+    rows = await _rows(case["db"])
+    assert len(rows) == int(expected)
+    assert client.permission_calls == ([] if user_type == "Bot" else ["reviewer"])
+    async with case["db"]._engine.connect() as conn:
+        policy = await epic_policy_on(conn, {"id": "e1", "parent_task_id": None}, {
+            "hierarchical_integration_policy": {"root": {"admission": "reviewed"}},
+            "integration_repository_id": "repo"})
+    assert policy.reviews.reviewers == (frozenset({"github:reviewer"}) if expected else frozenset())
+    verdict = await TreeReviews(case["db"]).verdict(
+        ReviewSubject("p", "repo", "e1", case["tree"]), policy.reviews)
+    assert verdict.satisfied is expected
+
+
+@pytest.mark.parametrize("status", [404, 403])
+async def test_poller_permission_lookup_failure_never_records_or_caches_approval(case, status):
+    client = _ReviewClient(case["first"], [{
+        "id": 1, "state": "APPROVED", "commit_id": case["first"],
+        "user": {"login": "reviewer", "type": "User"}}])
+    from unittest.mock import AsyncMock
+
+    lookup = client.request_json
+    client.request_json = AsyncMock(side_effect=GitHubAccessError(
+        "permission", "permission unavailable", http_status=status))
+    poller = GitHubReviewPoller(case["db"], case["producer"], _ReviewGit(client))
+    await poller.tick(1000)
+    assert await _rows(case["db"]) == []
+    assert poller._observed["e1"].recorded == set()
+    client.request_json = lookup
+    await poller.tick(1031)
+    assert len(await _rows(case["db"])) == 1
+
+
 @pytest.mark.parametrize("moved", [True, False])
 async def test_live_review_poller_refuses_moved_pr_or_stale_review(case, moved):
     client = _ReviewClient(
@@ -1674,6 +1731,14 @@ class _PollClient:
         self.pull_error: Exception | None = None
         self.reviews_error: Exception | None = None
         self.open_error: Exception | None = None
+        self.permissions = {"reviewer": "write"}
+        self.permission_calls = []
+
+    async def request_json(self, method, path):
+        assert method == "GET" and path.endswith("/permission")
+        login = path.split("/")[-2]
+        self.permission_calls.append(login)
+        return {"permission": self.permissions.get(login, "read"), "user": {"login": login}}
 
     async def pull_request(self, _url):
         self.calls.append("pull")

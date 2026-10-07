@@ -33,13 +33,16 @@ interface FlowProps {
 const flow = vi.hoisted(() => ({ current: null as FlowProps | null }));
 const fitBounds = vi.hoisted(() => vi.fn());
 const setCenter = vi.hoisted(() => vi.fn());
+const fitView = vi.hoisted(() => vi.fn());
+const zoomIn = vi.hoisted(() => vi.fn());
+const zoomOut = vi.hoisted(() => vi.fn());
 const setViewport = vi.hoisted(() => vi.fn());
 const getViewport = vi.hoisted(() => vi.fn(() => ({ x: 0, y: 0, zoom: 1 })));
 vi.mock("@xyflow/react", () => ({
   MarkerType: { ArrowClosed: "arrowclosed" },
   Position: { Top: "top", Bottom: "bottom", Left: "left", Right: "right" },
   ReactFlowProvider: ({ children }: { children: ReactNode }) => children,
-  useReactFlow: () => ({ fitBounds, setCenter, setViewport, getViewport }),
+  useReactFlow: () => ({ fitBounds, fitView, setCenter, setViewport, getViewport, zoomIn, zoomOut }),
   ReactFlow: (props: FlowProps) => {
     flow.current = props;
     return <div>
@@ -221,6 +224,9 @@ beforeEach(() => {
   base.setFocus.mockClear();
   base.setShowCompleted.mockClear();
   fitBounds.mockReset();
+  fitView.mockReset();
+  zoomIn.mockReset();
+  zoomOut.mockReset();
   setCenter.mockReset();
   setViewport.mockReset();
   getViewport.mockReset();
@@ -254,6 +260,130 @@ describe("LayoutCanvas", () => {
     expect(flow.current?.colorMode).toBe("dark");
     await act(async () => { document.documentElement.dataset.theme = "light"; });
     expect(flow.current?.colorMode).toBe("light");
+  });
+
+  describe("viewport gestures", () => {
+    beforeEach(() => {
+      // Give the real React Flow pan/zoom engine a measurable, offset canvas.
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+        x: 100, y: 50, left: 100, top: 50, right: 900, bottom: 650, width: 800, height: 600,
+        toJSON: () => ({}),
+      });
+      vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(800);
+      vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(600);
+    });
+    afterEach(() => vi.restoreAllMocks());
+
+    async function renderViewport() {
+      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      const canvasProps = flow.current!;
+      cleanup();
+      // Replay the canvas's actual props through React Flow rather than fake
+      // wheel math in the mock. Tiles and node rendering are tested separately.
+      const { ReactFlow } = await vi.importActual<typeof import("@xyflow/react")>("@xyflow/react");
+      const onMove = vi.fn();
+      const view = render(<>
+        <ReactFlow {...canvasProps} nodes={[]} edges={[]} onMove={onMove}>{null}</ReactFlow>
+        <aside data-testid="detail-drawer">Task details</aside>
+      </>);
+      const pane = view.container.querySelector(".react-flow__pane")!;
+      return { pane, onMove };
+    }
+
+    it.each([0, 1, 2])("zooms around the cursor with wheel delta mode %s", async (deltaMode) => {
+      const { pane, onMove } = await renderViewport();
+      const wheel = new WheelEvent("wheel", {
+        bubbles: true, cancelable: true, deltaY: deltaMode === 0 ? -50 : -1,
+        deltaMode, clientX: 320, clientY: 180,
+      });
+      fireEvent(pane, wheel);
+      expect(wheel.defaultPrevented).toBe(true);
+      expect(onMove).toHaveBeenCalled();
+      const zoomed = onMove.mock.lastCall![1] as { x: number; y: number; zoom: number };
+      expect(zoomed.zoom).toBeGreaterThan(1);
+      expect(zoomed.zoom).toBeLessThanOrEqual(2);
+      // The world point beneath the cursor stays at its canvas-relative position.
+      expect(zoomed.x + 220 * zoomed.zoom).toBeCloseTo(220);
+      expect(zoomed.y + 130 * zoomed.zoom).toBeCloseTo(130);
+
+      fireEvent.wheel(pane, { deltaY: 100, clientX: 320, clientY: 180 });
+      expect(onMove.mock.lastCall![1].zoom).toBeLessThan(zoomed.zoom);
+    });
+
+    it("zooms with ctrl+wheel pinch and clamps both zoom limits", async () => {
+      const { pane, onMove } = await renderViewport();
+      fireEvent.wheel(pane, { ctrlKey: true, deltaY: -25, clientX: 320, clientY: 180 });
+      const pinch = onMove.mock.lastCall![1] as { x: number; y: number; zoom: number };
+      expect(pinch.zoom).toBeGreaterThan(1);
+      expect(pinch.x + 220 * pinch.zoom).toBeCloseTo(220);
+      expect(pinch.y + 130 * pinch.zoom).toBeCloseTo(130);
+      fireEvent.wheel(pane, { deltaY: -10000 });
+      expect(onMove.mock.lastCall![1].zoom).toBe(2);
+      fireEvent.wheel(pane, { deltaY: 10000 });
+      expect(onMove.mock.lastCall![1].zoom).toBe(0.15);
+    });
+
+    it("pans on an empty-canvas drag without changing zoom", async () => {
+      const { pane, onMove } = await renderViewport();
+      const view = pane.ownerDocument.defaultView!;
+      function mouse(target: Element | Window, type: string, init: MouseEventInit) {
+        const event = new MouseEvent(type, { bubbles: true, ...init });
+        // d3 needs event.view, but jsdom rejects Vitest's wrapped Window in
+        // the constructor's init dictionary.
+        Object.defineProperty(event, "view", { value: view });
+        fireEvent(target, event);
+      }
+      mouse(pane, "mousedown", { button: 0, clientX: 300, clientY: 200 });
+      mouse(view, "mousemove", { buttons: 1, clientX: 330, clientY: 240 });
+      mouse(view, "mouseup", { button: 0, clientX: 330, clientY: 240 });
+      expect(onMove.mock.lastCall![1]).toEqual({ x: 30, y: 40, zoom: 1 });
+    });
+
+    it("leaves wheel scrolling in the detail drawer alone", async () => {
+      const { onMove } = await renderViewport();
+      const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 100 });
+      fireEvent(screen.getByTestId("detail-drawer"), wheel);
+      expect(wheel.defaultPrevented).toBe(false);
+      expect(onMove).not.toHaveBeenCalled();
+    });
+  });
+
+  it("zooms with +/- and fits with 0 even when no cards are loaded", () => {
+    tiles.store = emptyStore();
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const canvas = screen.getByRole("region", { name: "Task graph" });
+    fireEvent.keyDown(canvas, { key: "+" });
+    fireEvent.keyDown(canvas, { key: "=" });
+    fireEvent.keyDown(canvas, { key: "-" });
+    fireEvent.keyDown(canvas, { key: "0" });
+    expect(zoomIn).toHaveBeenCalledTimes(2);
+    expect(zoomIn).toHaveBeenCalledWith({ duration: 200 });
+    expect(zoomOut).toHaveBeenCalledWith({ duration: 200 });
+    expect(fitView).toHaveBeenCalledWith({ duration: 200 });
+  });
+
+  it("leaves typing and modified browser shortcuts alone", () => {
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const canvas = screen.getByRole("region", { name: "Task graph" });
+    const input = document.createElement("input");
+    canvas.append(input);
+    for (const key of ["+", "-", "0"]) fireEvent.keyDown(input, { key });
+    fireEvent.keyDown(canvas, { key: "+", ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: "-", metaKey: true });
+    fireEvent.keyDown(canvas, { key: "0", altKey: true });
+    expect(zoomIn).not.toHaveBeenCalled();
+    expect(zoomOut).not.toHaveBeenCalled();
+    expect(fitView).not.toHaveBeenCalled();
+  });
+
+  it("keeps the zoom shortcuts available when a canvas control has focus", () => {
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const control = document.createElement("button");
+    screen.getByRole("region", { name: "Task graph" }).append(control);
+    fireEvent.keyDown(control, { key: "+" });
+    fireEvent.keyDown(control, { key: "0" });
+    expect(zoomIn).toHaveBeenCalledWith({ duration: 200 });
+    expect(fitView).toHaveBeenCalledWith({ duration: 200 });
   });
 
   it("keeps task cards at their server-owned positions without drag pinning", () => {

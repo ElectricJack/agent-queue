@@ -626,6 +626,11 @@ class Orchestrator(
         self.integration_attestation_resolver = None
         self.github_client_factory = None
         self.github_repository_binding_resolver = None
+        #: project id -> layer 1-3 problems of a stored promotion flow that
+        #: stopped validating, found at start (R17); status marks its targets
+        #: ``misconfigured``.  Nothing is written.
+        self.promotion_flow_problems: dict[str, list[dict]] = {}
+        self._promotion_flow_check = None
         self.branch_discard_service = None
         self.branch_materialization_service = None
         self.integration_release_service = None
@@ -808,6 +813,36 @@ class Orchestrator(
 
         # Last resort fallback
         return "main"
+
+    async def _recheck_promotion_flows(self) -> None:
+        """Re-run layers 1-3 on every stored promotion flow (R17, §3.11).
+
+        A flow that stopped validating marks its targets ``misconfigured`` in
+        ``aq integration status``; the train keeps promoting to the default
+        branch and ``aq doctor --check integration.promotion_flow`` names the
+        pointer.  Nothing is written.
+        """
+        handler = self._command_handler
+        if handler is None:
+            return
+        from src.integration.promotion_steps import recheck_stored_flows
+
+        try:
+            found = await recheck_stored_flows(
+                self.db,
+                lambda project_id: handler.execute("promote_validate", {"project_id": project_id}),
+            )
+        except Exception:  # pragma: no cover - never block startup on a re-check
+            logger.warning("promotion flow re-check failed", exc_info=True)
+            return
+        self.promotion_flow_problems = found
+        for project_id, problems in found.items():
+            first = problems[0]
+            logger.warning(
+                "Promotion flow of project %s no longer validates (%s at %r); its targets "
+                "are misconfigured and the train promotes to the default branch",
+                project_id, first.get("code"), first.get("pointer"),
+            )
 
     async def _warn_if_pools_disabled(self) -> None:
         """Say out loud that ``swarm.enabled=False`` strands pool profiles.
@@ -1916,7 +1951,12 @@ class Orchestrator(
         # deleting a task.  Its work is recorded on the retired origin row, so
         # it survives a restart and needs no other authority.
         self.branch_materialization_service = BranchMaterializationService(
-            self.db, hierarchy_service_factory=self._branch_materialization_hierarchy
+            self.db,
+            hierarchy_service_factory=self._branch_materialization_hierarchy,
+            # git_first: active hands every target to the train, which collects
+            # a container's children into its own branch; the legacy collector
+            # that owns a collection episode is not built at all.
+            legacy_container_collection=self.config.integration.git_first != "active",
         )
         self.branch_discard_service = BranchDiscardService(
             self.db,
@@ -1984,7 +2024,7 @@ class Orchestrator(
             if train_active else None,
             maintenance={
                 "orphaned parent operations": settle_orphaned_parents,
-                "aborted batch cleanup": self.integration_cleanup_service.reconcile_aborted,
+                "batch cleanup": self.integration_cleanup_service.reconcile,
                 "branch discard": self._drain_branch_discards,
                 "branch materialization": self._drain_branch_materializations,
                 "owner recovery": self._sweep_stranded_owners,
@@ -2005,6 +2045,8 @@ class Orchestrator(
             source_timeouts=self.config.integration.service_source_timeouts,
         )
         self.integration_service.start()
+        # Off the start path: layer 3 reads each repository's trust manifest.
+        self._promotion_flow_check = asyncio.create_task(self._recheck_promotion_flows())
 
         # Record intents have their own bounded lifecycle and concurrency.
         # No scheduling cascade, integration lease, or optional plugin owns
@@ -2825,6 +2867,9 @@ class Orchestrator(
             await self.workspace_spec_watcher.stop()
         if self.integration_service:
             await self.integration_service.stop()
+        if self._promotion_flow_check is not None and not self._promotion_flow_check.done():
+            self._promotion_flow_check.cancel()
+            await asyncio.wait({self._promotion_flow_check}, timeout=5.0)
         if self.record_outbox:
             await self.record_outbox.stop()
         if self.knowledge_generation_loop:

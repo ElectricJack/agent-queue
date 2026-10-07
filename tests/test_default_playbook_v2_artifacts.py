@@ -480,7 +480,7 @@ def test_spec_ingest_is_ensured_with_an_explicit_route() -> None:
     definition = _artifact("default-pipeline")
     ensure = definition.steps["spec-ingest-on-approve--spec_ingest_gate"]
     assert _inputs(ensure)["profile_id"] == {"type": "literal", "value": "spec-ingest"}
-    assert _inputs(ensure)["intelligence_class"] == {"type": "literal", "value": "standard-high"}
+    assert _inputs(ensure)["intelligence_class"] == {"type": "literal", "value": "deep-high"}
 
 
 def test_integration_only_bundle_is_the_reviewed_fixture() -> None:

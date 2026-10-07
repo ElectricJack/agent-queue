@@ -41,6 +41,7 @@ from src.database.tables import (
     projects,
     repos,
     task_completion_records,
+    task_branch_origins,
     tasks,
 )
 from src.integration.delivery_truth import (
@@ -211,6 +212,25 @@ async def delivery_targets(conn, task_ids: Iterable[str], *, reduced=False) -> d
                         target.project_id, target.repository_id, target.repository_url,
                         "refs/heads/" + str(parent_ref).removeprefix("refs/heads/"),
                     )
+    # A hotfix's recorded origin selects its chain target even for ordinary
+    # delivery readers. Arbitrary parent refs retain the existing routing.
+    from src.integration.promotion_routing import promotion_origin_target
+
+    origins = (await conn.execute(select(task_branch_origins).where(
+        task_branch_origins.c.task_id.in_(ids), task_branch_origins.c.retired_at.is_(None),
+    ))).mappings().all()
+    flows = dict((await conn.execute(select(projects.c.id, projects.c.promotion_flow).where(
+        projects.c.id.in_({target.project_id for target in found.values()}),
+    ))).all())
+    for origin in origins:
+        task_id = origin["task_id"]
+        target = found.get(task_id)
+        if target is None:
+            continue
+        branch = promotion_origin_target(target.target_ref, flows.get(target.project_id), origin,
+                                         target.repository_id)
+        found[task_id] = DeliveryTarget(target.project_id, target.repository_id,
+                                        target.repository_url, "refs/heads/" + branch)
     return found
 
 
@@ -280,8 +300,60 @@ class DeliveryView:
             for task_id in group:
                 evidence = self.evidence[task_id]
                 if current.get(task_id) == evidence.request:
+                    base = getattr(evidence, "source_base", None)
+                    if base is not None:
+                        current_base = await conn.scalar(select(task_branch_origins.c.base_sha).where(
+                            task_branch_origins.c.task_id == task_id,
+                            task_branch_origins.c.repository_id == target.repository_id,
+                            task_branch_origins.c.retired_at.is_(None),
+                        ))
+                        if current_base != base:
+                            continue
                     verified[task_id] = evidence
         return verified
+
+
+@dataclass
+class PrerequisiteView:
+    """Sibling delivery and default-branch delivery from the same graph read."""
+
+    siblings: DeliveryView
+    default: DeliveryView
+
+    def get(self, task_id):
+        return self.siblings.get(task_id)
+
+    def satisfied(self, task_id):
+        return self.siblings.satisfied(task_id)
+
+    @property
+    def evidence(self):
+        return self.siblings.evidence
+
+    @property
+    def targets(self):
+        return self.siblings.targets
+
+    @property
+    def all_ids(self):
+        return self.siblings.evidence.keys() | self.default.evidence.keys()
+
+    async def fresh(self):
+        return await self.siblings.fresh() and await self.default.fresh()
+
+    async def verified_on(self, conn, ids):
+        return await self.siblings.verified_on(conn, ids)
+
+    async def mode(self, mode, *, conn=None):
+        from dataclasses import replace
+
+        siblings, default = self.siblings.evidence, self.default.evidence
+        if conn is not None:
+            siblings = await self.siblings.verified_on(conn, self.all_ids)
+            default = await self.default.verified_on(conn, self.all_ids)
+        return replace(mode,
+            delivered_prerequisite_ids=frozenset(tid for tid, p in siblings.items() if p.satisfied),
+            default_prerequisite_ids=frozenset(tid for tid, p in default.items() if p.satisfied))
 
 
 _FETCH_LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
@@ -340,13 +412,20 @@ async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None):
         view = await observer.prerequisite_view(
             project.id, task_id=task_id, max_age=observer.READ_MAX_AGE,
         )
-        verified = {}
+        verified_mode = replace(mode, delivered_prerequisite_ids=frozenset())
         if await view.fresh():
             async with db._engine.connect() as conn:
-                verified = await view.verified_on(conn, view.evidence)
-        modes[project.id] = replace(mode, delivered_prerequisite_ids=frozenset(
-            tid for tid, proof in verified.items() if proof.satisfied
-        ))
+                verified_mode = await view.mode(mode, conn=conn)
+        stackable = frozenset()
+        if mode.stacked:
+            from src.integration.stacked_branches import observe_stacks
+
+            stack_view = await observe_stacks(observer, project.id, task_id=task_id,
+                                               max_age=observer.READ_MAX_AGE)
+            if await stack_view.fresh():
+                async with db._engine.connect() as conn:
+                    stackable = frozenset(await stack_view.verified_on(conn))
+        modes[project.id] = replace(verified_mode, stackable_prerequisite_ids=stackable)
     return modes
 
 
@@ -380,6 +459,7 @@ class DeliveryObserver:
         self.target_loader = partial(delivery_targets, reduced=truth is not None)
         self.data_dir = Path(data_dir) / "development-integration"
         self._recent: dict[DeliveryTarget, tuple[float, DeliverySnapshot]] = {}
+        self._stack_ref_cache: dict = {}
 
     def store_path(self, repository_id: str) -> Path:
         digest = hashlib.sha256(repository_id.encode()).hexdigest()[:20]
@@ -392,7 +472,9 @@ class DeliveryObserver:
             await self.git.acreate_checkout(target.repository_url, str(path), no_checkout=True)
         return path
 
-    async def _snapshot(self, target: DeliveryTarget, max_age: float = 0.0) -> DeliverySnapshot:
+    async def _snapshot(
+        self, target: DeliveryTarget, max_age: float = 0.0, *, cached_only: bool = False,
+    ) -> DeliverySnapshot:
         """A fetched snapshot, or an unknown one: a failure is never an empty answer.
 
         *max_age* lets a read-only caller reuse a successful snapshot of the
@@ -402,6 +484,14 @@ class DeliveryObserver:
         recent = self._recent.get(target)
         if max_age > 0 and recent is not None and time.monotonic() - recent[0] <= max_age:
             return recent[1]
+        if cached_only:
+            # Interactive graph reads must never queue behind a fetch or start
+            # one. Expired evidence is unknown, not evidence of non-delivery.
+            return DeliverySnapshot(
+                self.git, str(path), target.project_id, target.repository_id,
+                target.repository_url, target.target_ref, None, MappingProxyType({}),
+                "snapshot_unavailable",
+            )
         try:
             async with _fetch_lock(path):
                 store = await self._store(target)
@@ -441,9 +531,9 @@ class DeliveryObserver:
         return snapshot
 
     async def _evaluate(self, target: DeliveryTarget, task_ids: set[str], max_age: float = 0.0,
-                        *, snapshot=None):
+                        *, snapshot=None, cached_only: bool = False):
         if snapshot is None:
-            snapshot = await self._snapshot(target, max_age)
+            snapshot = await self._snapshot(target, max_age, cached_only=cached_only)
         snapshot = snapshot.for_request()
         requests = await self.request_loader(
             self.db, task_ids, repository_id=target.repository_id,
@@ -453,7 +543,15 @@ class DeliveryObserver:
             if self.truth is not None:
                 from src.integration.git_truth import GitTruthSnapshot
 
-                evaluated = await GitTruthSnapshot(self.truth, snapshot).evaluate_many(requests.values())
+                async with self.db._engine.connect() as conn:
+                    bases = dict((await conn.execute(select(
+                        task_branch_origins.c.task_id, task_branch_origins.c.base_sha,
+                    ).where(task_branch_origins.c.task_id.in_(task_ids),
+                            task_branch_origins.c.repository_id == target.repository_id,
+                            task_branch_origins.c.retired_at.is_(None)))).all())
+                truth = GitTruthSnapshot(self.truth, snapshot)
+                evaluated = {tid: await truth.is_delivered(request, source_base=bases.get(tid))
+                             for tid, request in requests.items()}
             else:
                 evaluated = await snapshot.evaluate_many(requests.values())
         except Exception as exc:  # noqa: BLE001 - a broken observation is unknown
@@ -469,44 +567,53 @@ class DeliveryObserver:
     async def prerequisite_view(
         self, project_id: str, *, task_id: str | None = None, max_age: float = 0.0,
     ):
-        """Current completed sibling prerequisites; only advisory readers reuse snapshots.
+        """Completed prerequisites, routed to the parent or default branch.
 
         Claims keep the default max_age=0 to fetch before revalidating under locks.
         """
         from src.database.tables import task_dependencies
 
         dependent = tasks.alias("delivery_dependent")
-        query = select(tasks.c.id).select_from(task_dependencies.join(
+        query = select(tasks.c.id, tasks.c.parent_task_id,
+                       dependent.c.parent_task_id.label("dependent_parent")).select_from(task_dependencies.join(
             tasks, tasks.c.id == task_dependencies.c.depends_on_task_id,
         ).join(dependent, dependent.c.id == task_dependencies.c.task_id)).where(
             dependent.c.project_id == project_id,
             dependent.c.status.in_(("READY", "IN_PROGRESS")),
-            dependent.c.parent_task_id.is_not(None),
-            tasks.c.parent_task_id == dependent.c.parent_task_id,
             tasks.c.status == "COMPLETED", task_dependencies.c.dep_type == "blocks",
         )
         if task_id is not None:
             query = query.where(dependent.c.id == task_id)
         async with self.db._engine.connect() as conn:
-            ids = (await conn.execute(query)).scalars().all()
-        return await self.observe(ids, max_age=max_age)
+            rows = (await conn.execute(query)).all()
+        siblings = {tid for tid, parent, child_parent in rows
+                    if parent is not None and parent == child_parent}
+        cross = {tid for tid, parent, child_parent in rows
+                 if parent is None or parent != child_parent}
+        return PrerequisiteView(
+            await self.observe(siblings, max_age=max_age),
+            await self.observe(cross, max_age=max_age, target_loader=delivery_targets),
+        )
 
-    async def observe(self, task_ids: Iterable[str], *, max_age: float = 0.0) -> DeliveryView:
+    async def observe(self, task_ids: Iterable[str], *, max_age: float = 0.0,
+                      target_loader=None, cached_only: bool = False) -> DeliveryView:
         """Evaluate each task's current completion against its project's target.
 
         A view is retaken when a target moved during evaluation; if it keeps
         moving the last view is returned and :meth:`DeliveryView.fresh` stays
         false for the caller to fail closed on.  Only a read-only surface
         passes *max_age* (see :data:`READ_MAX_AGE`); every guarded writer
-        fetches.
+        fetches. ``cached_only`` is for interactive graph reads: absent or
+        expired snapshots return unknown without fetching or waiting on Git.
         """
         ids = set(task_ids)
+        target_loader = target_loader or self.target_loader
         view = DeliveryView(self.db)
         if not ids:
             return view
         for _attempt in range(self.FRESH_ATTEMPTS):
             async with self.db._engine.connect() as conn:
-                targets = await self.target_loader(conn, ids)
+                targets = await target_loader(conn, ids)
             groups: dict[DeliveryTarget, set[str]] = {}
             for task_id, target in targets.items():
                 groups.setdefault(target, set()).add(task_id)
@@ -521,14 +628,18 @@ class DeliveryObserver:
                     key = target.project_id, target.repository_id, target.repository_url
                     if key not in repositories:
                         repositories[key] = GitTruthSnapshot(
-                            self.truth, await self._snapshot(target, max_age),
+                            self.truth, await self._snapshot(
+                                target, max_age, cached_only=cached_only,
+                            ),
                         )
                     shared = repositories[key].for_target(target.target_ref).observation
-                snapshot, found = await self._evaluate(target, group, max_age, snapshot=shared)
+                snapshot, found = await self._evaluate(
+                    target, group, max_age, snapshot=shared, cached_only=cached_only,
+                )
                 snapshots.append(snapshot)
                 evidence.update(found)
             view = DeliveryView(self.db, evidence, targets, tuple(snapshots), self.request_loader,
-                                self.target_loader)
-            if max_age > 0 or await view.fresh():
+                                target_loader)
+            if cached_only or max_age > 0 or await view.fresh():
                 return view
         return view

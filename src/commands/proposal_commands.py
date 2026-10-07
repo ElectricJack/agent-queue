@@ -8,7 +8,8 @@ Registers four CommandHandler commands:
   and no approval gate awaits the proposal yet.
 - ``task_batch_discard`` — soft-drop the proposal.
 - ``task_batch_commit`` — atomically materialize the batch into the live
-  work graph, only under a human gate that approves this exact proposal.
+  work graph under a human gate that approves this exact proposal, or
+  approved-document authority stamped by a live spec-ingest assignment.
   A replay of an already committed proposal returns the original receipt.
 """
 
@@ -17,13 +18,19 @@ from __future__ import annotations
 import json
 import logging
 import time
+from pathlib import Path
 
-from sqlalchemy import select, update, insert
+from ruamel.yaml import YAML
+from sqlalchemy import insert, select, update
 
+from src.api.auth import RequestScope
+from src.api.scope import spec_ingest_task_for_session
+from src.commands import task_changes
+from src.commands.principal import PrincipalKind, current_principal
 from src.database.queries import proposal_queries
 from src.database.tables import events, task_metadata, task_proposals, tasks
 from src.models import Task, TaskStatus
-from src.commands import task_changes
+from src.reviews.vault import spec_kind_from_content, split_frontmatter
 from src.routing.filing import choice_forbidden
 
 logger = logging.getLogger(__name__)
@@ -38,11 +45,103 @@ APPROVAL_RESOLUTIONS = frozenset({"approve", "approved"})
 #: replayed commit can report the original receipt.
 PROPOSAL_ID_META = "proposal_id"
 
+#: Server-owned payload stamp carrying a live spec-ingest assignment's
+#: approved-document authority.  ``normalize`` drops it from caller payloads.
+SPEC_INGEST_META = "spec_ingest"
+
 
 class TaskProposalCommandsMixin:
     """Mount on CommandHandler alongside the other command mixins."""
 
     # ----- helpers -------------------------------------------------------
+
+    async def _spec_ingest_context(self, project_id: str, source: str) -> dict | None:
+        principal = current_principal()
+        if (principal is None or principal.kind is not PrincipalKind.SESSION
+                or principal.profile_id != "spec-ingest"):
+            return None
+        task = await spec_ingest_task_for_session(self.db, RequestScope(
+            kind="session", session_id=principal.session_id,
+            session_instance_token=principal.session_instance_token,
+            project_id=principal.project_id, task_id=principal.task_id,
+        ))
+        if task is None or task.project_id != project_id:
+            raise ValueError("spec ingestion requires a live role assignment in this project")
+        path = Path(task.dedup_key.removeprefix("spec-ingest:")).resolve()
+        root = (Path(self.config.vault_root) / "projects" / project_id).resolve()
+        if not any(path.is_relative_to(root / directory) for directory in ("specs", "plans")):
+            raise ValueError("spec ingestion path is outside the project's specs/plans")
+        if source != f"spec:{path}":
+            raise ValueError("proposal source must match the held ingestion task's spec path")
+        raw = path.read_text(encoding="utf-8")
+        spec_kind = spec_kind_from_content(raw)
+        frontmatter, _ = split_frontmatter(raw)
+        if not frontmatter or (YAML(typ="safe").load(frontmatter) or {}).get("status") != "approved":
+            raise ValueError("spec ingestion requires an approved document")
+        return {"task_id": task.id, "spec_path": str(path), "spec_kind": spec_kind}
+
+    @staticmethod
+    def _design_spec_batch(path: str) -> tuple[list[dict], list[dict]]:
+        """Design approval schedules its implementation document, never implementation work."""
+        return ([
+            {"tempId": "implementation_spec", "title": "Implementation specification",
+             "description": f"Implementation planning for approved design {path}.",
+             "task_type": "design", "intelligence_class": "deep-high"},
+            {"tempId": "write_spec", "title": f"Write implementation spec for {Path(path).name}",
+             "task_type": "design", "intelligence_class": "deep-high",
+             "description": (
+                 f"Read approved design spec {path} and inspect the current repository. "
+                 "Write an implementation spec grounded in files, functions, tests and rollout. "
+                 "Choose defaults for open questions. Include spec_kind: implementation in "
+                 "frontmatter. File no implementation work. Submit the document to Jack with "
+                 "aq review submit --task-id <held-task> --file <draft> --kind spec --title "
+                 "<title>; do not commit the review draft. Its approval triggers ingestion."
+             ),
+             "deliverables": [{"id": "implementation_review", "kind": "review", "target": "spec"}]},
+        ], [{"from": "write_spec", "to": "implementation_spec", "dep_type": "parent-child"}])
+
+    async def _validate_ingest_graph(self, conn, payload: dict) -> None:
+        """Refuse an ingestion change set that is not epics, children and leaf edges.
+
+        Spec-ingest authority commits without a human gate, so it creates new
+        work only: no edits, edge removals or comments on existing tasks.
+        """
+        if payload["edits"] or payload["remove_edges"] or payload["comments"]:
+            raise task_changes.ChangeSetError("spec-ingest batches only create tasks and edges")
+        specs = {spec["tempId"] for spec in payload["tasks"]}
+        parents: dict[str, str] = {}
+        structural = [
+            (spec["tempId"], spec["parent_id"])
+            for spec in payload["tasks"]
+            if spec.get("parent_id")
+        ] + [
+            (edge["from"], edge["to"])
+            for edge in payload["edges"]
+            if edge.get("dep_type", "blocks") == "parent-child"
+        ]
+        for child, parent in structural:
+            if child not in specs or parent not in specs:
+                raise task_changes.ChangeSetError(
+                    "spec-ingest parents and children must be in the same batch"
+                )
+            if child in parents:
+                raise task_changes.ChangeSetError("spec-ingest child has multiple parent edges")
+            parents[child] = parent
+        containers = set(parents.values())
+        if not containers or (specs - parents.keys()) - containers:
+            raise task_changes.ChangeSetError("spec-ingest root tasks must be epics with children")
+        for edge in payload["edges"]:
+            if edge.get("dep_type", "blocks") == "parent-child":
+                continue
+            for endpoint in (edge["from"], edge["to"]):
+                if endpoint in containers:
+                    raise task_changes.ChangeSetError(
+                        "spec-ingest dependency edges must connect children, never containers"
+                    )
+                if endpoint not in specs and await self.db.is_container(endpoint, conn=conn):
+                    raise task_changes.ChangeSetError(
+                        "spec-ingest dependency edges must not connect existing containers"
+                    )
 
     async def _emit_proposal_event(self, event_type: str, payload: dict) -> None:
         bus = getattr(self.orchestrator, "bus", None)
@@ -130,10 +229,22 @@ class TaskProposalCommandsMixin:
         if not project_id or not source:
             return {"success": False, "error": "project_id and source are required"}
         try:
+            ingest = await self._spec_ingest_context(project_id, source)
+        except (ValueError, OSError) as exc:
+            return {"success": False, "error": str(exc)}
+        change_set = args
+        if ingest and ingest["spec_kind"] == "design":
+            tasks_in, edges_in = self._design_spec_batch(ingest["spec_path"])
+            change_set = {"tasks": tasks_in, "edges": edges_in}
+        try:
             async with task_changes.boundary(self.db, project_id) as conn:
-                payload = await self._prepare_change_set(conn, project_id, args, source)
+                if ingest:
+                    await self._validate_ingest_graph(conn, task_changes.normalize(change_set))
+                payload = await self._prepare_change_set(conn, project_id, change_set, source)
                 if args.get("dry_run"):
                     return {"success": True, "dry_run": True, "diff": payload["diff"]}
+                if ingest:
+                    payload[SPEC_INGEST_META] = ingest
                 proposal_id = await proposal_queries.insert_proposal(
                     self.db,
                     project_id=project_id,
@@ -144,9 +255,11 @@ class TaskProposalCommandsMixin:
                 )
         except Exception as exc:
             return self._change_set_failure(exc)
-        await self._emit_proposal_event(
-            "proposal.ready", {"project_id": project_id, "proposal_id": proposal_id}
-        )
+        # An ingestion batch already carries its authority; it awaits no gate.
+        if not ingest:
+            await self._emit_proposal_event(
+                "proposal.ready", {"project_id": project_id, "proposal_id": proposal_id}
+            )
         return {"success": True, "proposal_id": proposal_id, "diff": payload["diff"]}
 
     async def _cmd_task_batch_update(self, args: dict) -> dict:
@@ -154,6 +267,11 @@ class TaskProposalCommandsMixin:
         row = await proposal_queries.get_proposal(self.db, proposal_id)
         if row is None:
             return {"success": False, "error": f"proposal '{proposal_id}' not found"}
+        if row["payload"].get(SPEC_INGEST_META):
+            return {
+                "success": False,
+                "error": "propose a new spec-ingest batch instead of updating it",
+            }
         try:
             async with task_changes.boundary(self.db, row["project_id"]) as conn:
                 current = (
@@ -219,7 +337,7 @@ class TaskProposalCommandsMixin:
     async def _proposal_approval_error(
         self, row: dict, *, gate_id: str | None, project_id: str | None
     ) -> str | None:
-        """Why no human decision approves this exact proposal, or ``None``.
+        """Why this proposal lacks approval authority, or ``None``.
 
         Materialisation is the authority boundary.  An event filter narrows
         which resolutions reach the pipeline's commit rule, but any caller can
@@ -228,11 +346,15 @@ class TaskProposalCommandsMixin:
         proposal id, resolved with one of :data:`APPROVAL_RESOLUTIONS`.  With
         no ``gate_id`` the newest such gate is the decision of record.  The
         payload is frozen once that gate exists (``task_batch_update``), so the
-        gate approves exactly the revision being committed.
+        gate approves exactly the revision being committed.  Spec-ingest
+        authority is stamped only by ``_spec_ingest_context``, never parsed
+        from caller payloads; those immutable batches need no second decision.
         """
         proposal_id, owner = row["id"], row["project_id"]
         if project_id and project_id != owner:
             return f"proposal '{proposal_id}' belongs to project '{owner}', not '{project_id}'"
+        if row["payload"].get(SPEC_INGEST_META):
+            return None
         if gate_id:
             gate = await self.db.get_gate(str(gate_id))
             if gate is None:
@@ -314,6 +436,9 @@ class TaskProposalCommandsMixin:
                 if current["status"] != "ready":
                     raise task_changes.ChangeSetError("proposal not in 'ready' state")
                 payload = task_changes.normalize(stored)
+                ingest = stored.get(SPEC_INGEST_META)
+                if ingest:
+                    await self._validate_ingest_graph(conn, payload)
                 expected, rows, project = await task_changes.snapshot(
                     conn,
                     project_id,
@@ -331,6 +456,8 @@ class TaskProposalCommandsMixin:
                 for task_id in receipt["task_ids"]:
                     await self.db._upsert_meta(task_id, PROPOSAL_ID_META, proposal_id, conn=conn)
                 stored["receipt"] = receipt
+                if ingest:
+                    stored[SPEC_INGEST_META] = {**ingest, "task_ids": receipt["task_ids"]}
                 await conn.execute(
                     update(task_proposals)
                     .where(task_proposals.c.id == proposal_id)

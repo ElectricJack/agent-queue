@@ -877,3 +877,95 @@ async def test_tiles_focus_root_latency(perf_strict, pg):
                 median_slack=FOCUS_MEDIAN_SLACK,
                 tail_slack=FOCUS_TAIL_SLACK,
             )
+
+
+async def test_graph_initial_load_measurement(any_db, tmp_path):
+    """Report SQL/response costs at 5k-task scale; forbid network enrichment.
+
+    This is a measurement, not a wall-clock assertion on a shared host. The
+    deterministic regression guard is that even completed epics on a cold
+    observer cannot create a store/fetch. Run with -m perf -p no:xdist -s.
+    """
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import insert
+
+    from src.database.tables import archived_tasks, tasks, task_dependencies
+    from src.git.manager import GitManager
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.models import Project, RepoConfig, RepoSourceType
+
+    pg = any_db
+    await pg.create_project(Project(
+        id=PROJECT, name=PROJECT, hierarchical_integration_mode="development",
+    ))
+    await pg.create_repo(RepoConfig(
+        id="perf-repo", project_id=PROJECT, source_type=RepoSourceType.LINK,
+        url="https://example.invalid/perf.git",
+    ))
+    await pg.update_project(PROJECT, integration_repository_id="perf-repo")
+    # Bulk seed the read workload, not thousands of lifecycle/dirty-mark writes.
+    def row(task_id, parent=None):
+        return dict(id=task_id, project_id=PROJECT, title=task_id, description="x" * 4096,
+                    status="COMPLETED", parent_task_id=parent, created_at=1, updated_at=1)
+
+    roots = [row(f"epic{e}") for e in range(100)]
+    children = [row(f"epic{e}.{n}", f"epic{e}") for e in range(100) for n in range(50)]
+    async with pg._engine.begin() as conn:
+        await conn.execute(insert(tasks), roots)
+        await conn.execute(insert(tasks), children)
+        await conn.execute(insert(archived_tasks), [
+            dict(row(f"archived-{n}"), archived_at=2) for n in range(5000)
+        ])
+        await conn.execute(insert(task_dependencies), [
+            dict(task_id=f"epic{e}.{n}", depends_on_task_id=f"epic{e}.{n-1}", dep_type="blocks")
+            for e in range(100) for n in range(1, 50)
+        ])
+        await conn.exec_driver_sql("ANALYZE tasks")
+        await conn.exec_driver_sql("ANALYZE task_dependencies")
+        await conn.exec_driver_sql("ANALYZE archived_tasks")
+    await LayoutDriver(pg).full_layout(PROJECT, "all")
+    observer = DeliveryObserver(pg, git=GitManager(), data_dir=tmp_path)
+    observer._store = AsyncMock(side_effect=AssertionError("graph initiated network Git"))
+    pg.set_delivery_observer(observer)
+    queries = []
+
+    def before(conn, cursor, statement, parameters, context, executemany):
+        context.graph_started = time.perf_counter()
+
+    def after(conn, cursor, statement, parameters, context, executemany):
+        queries.append((time.perf_counter() - context.graph_started, statement, parameters))
+
+    event.listen(pg._engine.sync_engine, "before_cursor_execute", before)
+    event.listen(pg._engine.sync_engine, "after_cursor_execute", after)
+    try:
+        async with _client(pg) as ac:
+            calls = [
+                ("GET", f"/api/projects/{PROJECT}/graph/extent?variant=all", None),
+                ("GET", f"/api/projects/{PROJECT}/graph/running-target", None),
+                ("POST", _tiles(PROJECT), {
+                    "variant": "all", "rect": {"x0": 0, "y0": 0, "x1": 20, "y1": 20},
+                    "expanded": [],
+                }),
+            ]
+            for method, url, body in [*calls, calls[-1]]:
+                queries.clear()
+                start = time.perf_counter()
+                response = await ac.request(method, url, json=body)
+                elapsed = time.perf_counter() - start
+                assert response.status_code == 200, response.text
+                print(f"\n[graph-load] {method} {url}: {elapsed * 1000:.1f}ms, "
+                      f"{len(response.content)} bytes, {len(queries)} SQL statements, "
+                      f"{sum(q[0] for q in queries) * 1000:.1f}ms SQL")
+                if method == "POST":
+                    nodes = response.json()["nodes"]
+                    assert any(n.get("delivery", {}).get("state") == "unknown"
+                               for n in nodes if n.get("delivery"))
+            slowest = max(queries, key=lambda query: query[0])
+    finally:
+        event.remove(pg._engine.sync_engine, "before_cursor_execute", before)
+        event.remove(pg._engine.sync_engine, "after_cursor_execute", after)
+    observer._store.assert_not_awaited()
+    async with pg._engine.begin() as conn:
+        plan = await conn.exec_driver_sql("EXPLAIN (ANALYZE, BUFFERS) " + slowest[1], slowest[2])
+        print("\n[graph-load slowest SQL plan]\n" + "\n".join(row[0] for row in plan))

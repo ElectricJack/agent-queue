@@ -145,7 +145,10 @@ async def _deliver_first_by_train(db, env):
         batches=SimpleNamespace(open_batch=AsyncMock(return_value=BatchSelection(batch, members)),
                                 settle=AsyncMock()),
         lane_for=AsyncMock(return_value=TrainLane(snapshot, service, checks)),
-        repair=SimpleNamespace(allocate=AsyncMock(side_effect=AssertionError("unexpected repair"))),
+        repair=SimpleNamespace(
+            allocate=AsyncMock(side_effect=AssertionError("unexpected repair")),
+            settle_green=AsyncMock(),
+        ),
     )
     await train.tick()
     await train.drain()
@@ -221,6 +224,52 @@ async def test_git_first_delivery_releases_scheduler_pool_and_claim(
     result = await handler._cmd_task_claim({"next": True})
     assert result["result"] == "claimed", result
     assert result["task"]["id"] == "second"
+
+
+async def test_stacked_frontier_agrees_for_scheduler_demand_explain_and_claim(
+    orch, db, git_first_frontier,
+):
+    from src.commands.handler import CommandHandler
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+    from src.scheduler import PoolKey
+
+    env = git_first_frontier
+    handler = CommandHandler(orch, orch.config)
+    # Slot reset is mocked in this fixture; fetch still uses real Git objects.
+    for workspace in await db.list_workspaces(PROJECT_ID):
+        env.git(env.origin.clone, "clone", env.origin.url, workspace.workspace_path)
+    await db.update_project(PROJECT_ID, hierarchical_integration_policy={
+        "prerequisite_branches": "stacked",
+    })
+    modes = await hierarchy_frontier_modes(db)
+    assert modes[PROJECT_ID].stackable_prerequisite_ids == {"first"}
+    assert not modes[PROJECT_ID].delivered_prerequisite_ids
+    await orch._schedule(hierarchy_modes=modes)
+    assert "second" in orch._last_scheduler_state.hierarchy_runnable_task_ids
+    assert (await orch._measure_pools(hierarchy_modes=modes)).demand[PoolKey("worker")] == 1
+    assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 1}
+    assert await db.is_hierarchy_task_runnable("second")
+    explained = await handler._cmd_explain_task({"task_id": "second"})
+    assert not any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
+                   for r in explained["reasons"])
+    await db.update_project(PROJECT_ID, hierarchical_integration_policy={
+        "prerequisite_branches": "wait-for-parent",
+    })
+    assert not await db.is_hierarchy_task_runnable("second")
+    await db.update_project(PROJECT_ID, hierarchical_integration_policy={
+        "prerequisite_branches": "stacked",
+    })
+    await orch._reconcile_pools(hierarchy_modes=modes)
+    await orch.wait_for_pool_launches()
+    [session] = await db.list_sessions(lifecycle="pool")
+    handler._current_scope = {"kind": "session", "session_id": session.id,
+                              "project_id": PROJECT_ID, "task_id": None, "elevated": False}
+    result = await handler._cmd_task_claim({"next": True})
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "second"
+    prepare = orch._worktree_slots().reset_slot_for_task
+    assert prepare.await_args.kwargs["base_branch"] == env.source
+    assert env.git(env.origin.clone, "rev-parse", "origin/aq/epic") == env.base
 
 
 async def test_git_first_advisory_cycles_reuse_fetch_until_bound(

@@ -221,8 +221,11 @@ def test_a_rerun_never_discards_local_edits_or_someone_elses_aq() -> None:
 
     # Edits to tracked files stop the update before any reset can run.
     assert block.index("status --porcelain --untracked-files=no") < block.index("reset --hard")
-    # A contributor's own `aq` (no installer checkout) is used, never touched.
-    assert '[[ ! -d "$checkout_dir/.git" ]] && command -v aq' in block
+    # With no release selection, reuse a contributor's own aq without touching it.
+    assert (
+        '[[ ! -d "$checkout_dir/.git" && -z "${AQ_REF:-}" && -z "${AQ_TAG_GLOB:-}" ]]'
+        ' && command -v aq'
+    ) in block
     # Offline is a warning, not a failed install.
     assert "continuing with" in block
 

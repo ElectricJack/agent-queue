@@ -249,6 +249,11 @@ def project_set(
     `git-identity "Name <email>"` overrides the Git commit identity of this
     project's AQ-authored commits; `git-identity inherit` resets it to the
     installation default (`aq system get-git-identity`).
+
+    `promotion-flow <file>` activates a YAML or JSON promotion flow (local
+    operator only; `clear` removes it). It validates every layer first and
+    creates missing chain targets with create-only pushes; any refusal
+    writes nothing. Check it first with `aq promote validate --file`.
     """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
@@ -266,6 +271,7 @@ def project_set(
         "integration-review-mode": "integration_mode",
         "review-delegate-to": "review_delegate_to",
         "git-identity": "git_identity",
+        "promotion-flow": "promotion_flow",
     }
 
     field = KEY_MAP.get(key)
@@ -313,6 +319,21 @@ def project_set(
                 raise click.UsageError("integration-policy must be a valid JSON object") from exc
             if not isinstance(coerced, dict):
                 raise click.UsageError("integration-policy must be a valid JSON object")
+    elif field == "promotion_flow":
+        if value.lower() in ("none", "null", "clear"):
+            coerced = None
+        else:
+            from pathlib import Path
+
+            import yaml
+
+            try:
+                coerced = yaml.safe_load(Path(value).read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, yaml.YAMLError) as exc:
+                from .envelope import emit_error
+
+                emit_error("flow_schema_invalid", str(exc), {"pointer": "", "layer": 1})
+                raise SystemExit(1) from exc
 
     if field == "default_branch":
         cmd = "set_default_branch"
@@ -330,6 +351,7 @@ def project_set(
         "hierarchical_integration_policy",
         "hierarchical_integration_mode",
         "integration_mode",
+        "promotion_flow",
     }
     if sensitive:
         if expected_integration_generation is None:
@@ -347,6 +369,8 @@ def project_set(
     result = _run(_set())
     if sensitive:
         emit(ctx, result, entity="integration")
+        if field == "promotion_flow" and result.get("success") is False:
+            raise SystemExit(1)
         return
     emit(
         ctx,

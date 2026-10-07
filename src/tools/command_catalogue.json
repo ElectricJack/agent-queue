@@ -212,6 +212,14 @@
             ],
             "description": "LOCAL-only integration mode for new reconciler subjects."
           },
+          "promotion_flow": {
+            "type": [
+              "array",
+              "object",
+              "null"
+            ],
+            "description": "LOCAL-only promotion flow (steps list, or {promotion_flow: [...]}); validated and activated behind the integration generation CAS."
+          },
           "expected_integration_generation": {
             "type": "integer",
             "minimum": 0,
@@ -2833,7 +2841,7 @@
     },
     {
       "name": "update_and_restart",
-      "description": "Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks finish before restarting. Excluded from MCP by default for safety.",
+      "description": "Update and restart the daemon. Without deploy.tag_glob, pull the upstream and restart even when already current. With a release selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -5411,7 +5419,7 @@
     },
     {
       "name": "task_batch_propose",
-      "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard.",
+      "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved vault path may commit immediately; those batches require epics with children and leaf dependency edges.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -5663,7 +5671,7 @@
     },
     {
       "name": "task_batch_commit",
-      "description": "Atomically materialise an approved proposal into the live work graph: creates and edits tasks, changes edges and appends comments, stamping the proposal's source as provenance. Refused (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal, carries an approval resolution (``approve`` or ``approved``). Task versions and graph state are rechecked under the routing/hierarchy/write locks; two concurrent commits cannot both win. Any failure rolls back all changes, the audit and receipt in PostgreSQL, leaving the proposal in ``ready`` for a retry. A conflict requires a fresh proposal. Committing an already committed proposal returns its original task ids with ``already_committed: true``. Returns the created task ids.",
+      "description": "Atomically materialise an approved proposal into the live work graph: creates and edits tasks, changes edges and appends comments, stamping the proposal's source as provenance. Refused (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal, carries an approval resolution (``approve`` or ``approved``), or the server stamped approved-document authority from a live spec-ingest role. Task versions and graph state are rechecked under the routing/hierarchy/write locks; two concurrent commits cannot both win. Any failure rolls back all changes, the audit and receipt in PostgreSQL, leaving the proposal in ``ready`` for a retry. A conflict requires a fresh proposal. Committing an already committed proposal returns its original task ids with ``already_committed: true``. Returns the created task ids.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -10744,15 +10752,19 @@
             "type": "string"
           },
           "reason": {
-            "minLength": 1,
+            "default": "",
             "title": "Reason",
             "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
           }
         },
         "required": [
           "batch_id",
-          "task_id",
-          "reason"
+          "task_id"
         ],
         "title": "IntegrationEjectArgs",
         "type": "object"
@@ -10974,6 +10986,35 @@
         "type": "object"
       }
     },
+    "integration_pause_batch": {
+      "name": "integration_pause_batch",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationAbortBatchArgs",
+        "type": "object"
+      }
+    },
     "integration_promote_main": {
       "name": "integration_promote_main",
       "description": "Reconcile and fast-forward main to the exact trusted green candidate.",
@@ -10996,6 +11037,25 @@
           "revision"
         ],
         "title": "IntegrationPromoteMainArgs",
+        "type": "object"
+      }
+    },
+    "integration_promotion_publish": {
+      "name": "integration_promotion_publish",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationPromotionPublishArgs",
         "type": "object"
       }
     },
@@ -11702,6 +11762,30 @@
         "type": "object"
       }
     },
+    "integration_refresh_epic": {
+      "name": "integration_refresh_epic",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "IntegrationRefreshEpicArgs",
+        "type": "object"
+      }
+    },
     "integration_release": {
       "name": "integration_release",
       "description": "Release terminal root train",
@@ -12272,6 +12356,35 @@
         "type": "object"
       }
     },
+    "integration_resume_batch": {
+      "name": "integration_resume_batch",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationAbortBatchArgs",
+        "type": "object"
+      }
+    },
     "integration_retire_origin": {
       "name": "integration_retire_origin",
       "description": "Authenticated hierarchical integration operational control.",
@@ -12381,6 +12494,30 @@
           "request_id"
         ],
         "title": "IntegrationSealArgs",
+        "type": "object"
+      }
+    },
+    "integration_seal_now": {
+      "name": "integration_seal_now",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationSealNowArgs",
         "type": "object"
       }
     },
@@ -13983,6 +14120,389 @@
             "description": "Work-dir override"
           }
         }
+      }
+    },
+    "promote_approve": {
+      "name": "promote_approve",
+      "description": "Post a pinned GitHub approval using the authenticated human gh login.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "request_id": {
+            "description": "Promotion request identity returned by request.",
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "request_id"
+        ],
+        "title": "PromoteIntentArgs",
+        "type": "object"
+      }
+    },
+    "promote_cancel": {
+      "name": "promote_cancel",
+      "description": "Close an unpublished promotion PR and abort its intent.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "request_id": {
+            "description": "Promotion request identity returned by request.",
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "request_id"
+        ],
+        "title": "PromoteIntentArgs",
+        "type": "object"
+      }
+    },
+    "promote_list": {
+      "name": "promote_list",
+      "description": "List promotion history using the local evidence cache.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Restrict cached results to this step.",
+            "title": "Step Id"
+          },
+          "limit": {
+            "default": 20,
+            "description": "Maximum cached intents to return.",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "PromoteReadArgs",
+        "type": "object"
+      }
+    },
+    "promote_request": {
+      "name": "promote_request",
+      "description": "Open an idempotent promotion intent and a PR pinned to its source commit.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "description": "Configured promotion step id.",
+            "minLength": 1,
+            "title": "Step Id",
+            "type": "string"
+          },
+          "source_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Exact commit to pin; defaults to the source branch tip.",
+            "title": "Source Sha"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Version at the pinned source; required for custom tags.",
+            "title": "Version"
+          },
+          "notes_reviewed": {
+            "default": false,
+            "description": "Acknowledge reading the notes at the pinned source.",
+            "title": "Notes Reviewed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id",
+          "step_id"
+        ],
+        "title": "PromoteRequestArgs",
+        "type": "object"
+      }
+    },
+    "promote_schema": {
+      "name": "promote_schema",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "PromoteSchemaArgs",
+        "type": "object"
+      }
+    },
+    "promote_status": {
+      "name": "promote_status",
+      "description": "Read promotion intents and cached check and PR review evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Restrict cached results to this step.",
+            "title": "Step Id"
+          },
+          "limit": {
+            "default": 20,
+            "description": "Maximum cached intents to return.",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "PromoteReadArgs",
+        "type": "object"
+      }
+    },
+    "promote_validate": {
+      "name": "promote_validate",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "flow": {
+            "default": null,
+            "title": "Flow"
+          },
+          "use_stored": {
+            "default": true,
+            "title": "Use Stored",
+            "type": "boolean"
+          },
+          "remote": {
+            "default": false,
+            "title": "Remote",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "PromoteValidateArgs",
+        "type": "object"
       }
     },
     "provider_availability_notify": {

@@ -106,10 +106,12 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["scripts/regenerate-generated.sh", ".gitattributes"], areas: ["generated-artifacts"] }
   - { paths: ["scripts/gen-command-docs.py", "scripts/check-docs.py"], areas: ["docs-guards"] }
   - { paths: ["scripts/generate-config-schema-inventory.py"], areas: ["config"] }
+  - { paths: ["scripts/generate-promotion-flow-schema.py", "docs/reference/promotion-flow-schema.json", "src/commands/promote_commands.py", "src/commands/contracts/promote.py", "src/integration/promotion_steps.py", "src/integration/promotion_routing.py"], areas: ["integration-promotion"] }
   - { paths: ["scripts/generate-cli-command-inventory.py", "scripts/generate-command-catalogue.py"], areas: ["cli-framework"] }
   - { paths: ["scripts/build_release_artifact.py"], areas: ["packaging", "dashboard-server", "install"] }
   - { paths: ["scripts/check-merge-conflicts.sh"], areas: ["git-manager"] }
   - { paths: ["scripts/migrate_task_records.py"], areas: ["database"] }
+  - { paths: ["scripts/check_additive_migrations.py", "scripts/rollback_drill.py"], areas: ["database", "install"] }
   - { paths: ["scripts/migrate-legacy-playbook-worker-routes.py"], areas: ["playbook-authoring", "task-routing"] }
   - { paths: ["scripts/reap_test_databases.py"], areas: ["test-substrate"] }
   - { paths: ["scripts/reconcile-claude-usage.py"], areas: ["transcripts"] }

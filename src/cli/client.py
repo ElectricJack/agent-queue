@@ -101,6 +101,23 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     # Binding, token mint, and a bounded set of reads (variables, workflow files).
     "integration_app_verify": 180.0,
     # A page stops starting Git batches after 45s (provenance_migration).
+    # Doctor runs every check concurrently, each under its own timeout (the
+    # longest, git.stale_branches and integration.legacy_deliveries, allow 300s);
+    # the read timeout must outlast them or a
+    # full `aq doctor` reports "no complete response" while checks still run.
+    "doctor": 330.0,
+    # Train controls observe the root target first: a git fetch plus a PR
+    # check read for every pending root, which on a busy install outlasts 30s
+    # (seal-now's preview, refresh-epic --apply, retire-origin all timed out
+    # live on 2026-10-06). The daemon finishes the command either way, so a
+    # short read timeout only hides the answer from the operator.
+    "integration_seal_now": 300.0,
+    "integration_refresh_epic": 300.0,
+    "integration_retire_origin": 300.0,
+    "integration_pause_batch": 180.0,
+    "integration_resume_batch": 180.0,
+    "integration_abort_batch": 180.0,
+    "integration_eject": 180.0,
 }
 
 
@@ -544,8 +561,18 @@ class PluginClient:
     async def connect(self) -> None:
         if is_postgres_url(self._db_url):
             from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+            from src.database.migration_guard import SchemaAheadPolicy
 
-            self._db = PostgreSQLDatabaseAdapter(self._db_url, pool_min=1, pool_max=2)
+            db_config = _resolve_db_config() or {}
+            self._db = PostgreSQLDatabaseAdapter(
+                self._db_url,
+                pool_min=1,
+                pool_max=2,
+                schema_ahead_policy=SchemaAheadPolicy(
+                    db_config.get("schema_ahead_migrations", ""),
+                    db_config.get("schema_ahead_max_revisions"),
+                ),
+            )
         else:
             from src.database import Database
 

@@ -2697,8 +2697,9 @@ class TaskCommandsMixin:
         created_by_id = creator_session_id
         # An internal creator names its origin so the routing policy can match
         # it (``origins.<created_by_kind>``, mandatory-routing spec §6.3) —
-        # review dispatch is the one that files through here.  Underscore
-        # arguments never pass a command contract, so no caller can claim one.
+        # review dispatch files through here, source-CI repair through
+        # ``ensure_task``.  No playbook contract admits underscore arguments,
+        # and a worker session's filing ignores them, so no worker can claim one.
         if args.get("_created_by_kind") and filing_session is None:
             created_by_kind = str(args["_created_by_kind"])
             created_by_id = str(args.get("_created_by_id") or "") or created_by_id
@@ -6092,6 +6093,12 @@ class TaskCommandsMixin:
         # touches (or revives) a container.
         for key in ("parent_id", "root", "reason", "discovered_from", "parent_key",
                     "parent_title"):
+            if key in args:
+                create_args[key] = args[key]
+        # An internal filer's origin (source-CI repair) reaches the creation
+        # that applies ``_cmd_create_task``'s own worker-session guard, so it
+        # admits no origin that command would refuse.
+        for key in ("_created_by_kind", "_created_by_id"):
             if key in args:
                 create_args[key] = args[key]
         # Presentation tasks such as playbook-run roots must be born in their

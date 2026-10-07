@@ -22,6 +22,7 @@ from src.database.tables import (
     integration_review_evidence,
     playbook_artifacts,
     projects,
+    repos,
     task_branch_origins,
     task_completion_records,
     task_delivery_receipts,
@@ -158,6 +159,29 @@ async def _origins(db) -> list[dict]:
             )
         ).mappings().all()
     return [dict(row) for row in rows]
+
+
+@pytest.mark.parametrize("ref", ["dev", "refs/heads/dev", "main"])
+async def test_child_origin_guard_uses_repository_default_branch(db, hierarchy, ref):
+    from src.database.queries.hierarchy_queries import HierarchyError
+
+    await _create(db, "parent")
+    await _create(db, "child", parent_id="parent")
+    async with db.immediate() as conn:
+        await conn.execute(update(repos).where(repos.c.id == "repo").values(default_branch="dev"))
+        await conn.execute(update(tasks).where(tasks.c.id == "child").values(branch_name="aq/child"))
+        if ref != "main":
+            with pytest.raises(HierarchyError, match="cannot target the default branch"):
+                await hierarchy._reserve_origin(
+                    conn, task_id="child", repository_id="repo", parent_task_id="parent",
+                    parent_ref=ref, base_sha=BASE, generation=0,
+                )
+        else:
+            origin = await hierarchy._reserve_origin(
+                conn, task_id="child", repository_id="repo", parent_task_id="parent",
+                parent_ref=ref, base_sha=BASE, generation=0,
+            )
+            assert origin["parent_ref"] == "main"
 
 
 async def test_project_mode_and_designated_repository_round_trip_and_validate(tmp_path):
@@ -299,6 +323,36 @@ async def test_materialization_failures_do_not_starve_later_claimable_work(db, h
     assert len(set(calls)) > 10
     third = await service.drain_due(limit=10)
     assert third  # Wrap around and retry the earlier failures.
+
+
+async def test_container_collection_is_skipped_without_the_legacy_engine(db, hierarchy):
+    """``git_first: active``: the train collects containers, so reserve no episode.
+
+    The bootstrap is the parent runtime's own entry point.  Under
+    ``git_first: active`` that runtime is never built, so the episode it
+    reserves is cancelled by orphan reconciliation and the container it pauses
+    is stranded behind an episode nothing can advance
+    (grand-lantern-78, quick-current-13, 2026-10-07).  Branch materialization
+    itself is unaffected.
+    """
+    from src.integration.branch_materialization import BranchMaterializationService
+
+    await _create(db, "epic")
+    await hierarchy.file_children("epic", [{"title": "child"}], 0)
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).values(
+            materialized=True, materialized_at=2.0))
+
+    off = BranchMaterializationService(
+        db, hierarchy_service_factory=lambda: hierarchy, legacy_container_collection=False)
+    assert await off.drain_due(limit=10) == []
+    assert (await db.get_integration_checkpoint("epic"))["episode_id"] is None
+    assert (await db.get_task("epic")).status == TaskStatus.IN_PROGRESS
+
+    on = BranchMaterializationService(db, hierarchy_service_factory=lambda: hierarchy)
+    await on.drain_due(limit=10)
+    assert (await db.get_integration_checkpoint("epic"))["episode_id"]
+    assert (await db.get_task("epic")).status == TaskStatus.PAUSED
 
 
 async def test_checkpoint_rejects_stale_generation(db, hierarchy):

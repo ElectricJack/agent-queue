@@ -21,7 +21,11 @@ from src.database import tables as t
 from src.database.queries.blocked_state import OBSOLETE_META_KEY
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import RemoteRefState
-from src.integration.delivery_branches import delete_branches, remote_heads
+from src.integration.delivery_branches import (
+    delete_branches,
+    remote_heads,
+    repository_protected_branches,
+)
 from src.integration.development import (
     _carried_sources,
     _manifest_members,
@@ -233,7 +237,8 @@ class DevelopmentFrontierReader:
             )
             operations = await operation_rows_on(conn, [project_id])
         repository = repositories[0] if repositories else {}
-        default_ref = "refs/heads/" + str(repository.get("default_branch", "main"))
+        default_branch = repository.get("default_branch")
+        default_ref = f"refs/heads/{default_branch}" if default_branch else ""
         target_tip = await self._remote(repository, default_ref)
         dependencies: dict[str, set[str]] = {}
         for link in links:
@@ -632,13 +637,18 @@ class DevelopmentPrimitiveAdapters:
                 main_head = heads.get(repository.default_branch)
                 if main_head is None:
                     return PrimitiveOutcome.unknown(args.primitive, "target_head_unknown")
+                async with self.db._engine.connect() as conn:
+                    protected = await repository_protected_branches(
+                        conn, subject.repository_id, default_branch=repository.default_branch,
+                    )
                 targets, retained = {}, []
                 for member in manifest:
                     branch, sha = await self._branch(member["task_id"]), member["source_sha"]
                     delivered = (
                         bool(sha) and await self.git.is_ancestor(repository, sha, main_head)
                     )
-                    if not args.delete_successful_sources or not branch or not delivered:
+                    if (not args.delete_successful_sources or not branch or not delivered
+                            or branch in protected):
                         # Still parked, or not yet on the target: its branch is
                         # the only copy of that work and it stays.
                         retained.append({"task_id": member["task_id"], "branch": branch})
@@ -663,6 +673,7 @@ class DevelopmentPrimitiveAdapters:
                         backup_dir=self.backup_dir,
                         repository_id=subject.repository_id,
                         now=self.clock(),
+                        protected=protected,
                     )
                     outcomes = deletion.get("outcomes", {})
         except (OSError, ValueError, BranchOwnershipError) as exc:
@@ -1311,9 +1322,9 @@ def project_development_pin(project) -> PolicyArtifactPin | None:
 
 
 async def development_repository(
-    primitives, repo, binding: GitHubRepositoryBinding, settings
+    primitives, repo, binding: GitHubRepositoryBinding, settings, *, fetch: bool = True,
 ) -> RetainedRepository:
-    """The existing retained clone, freshly fetched, bound to the pinned rebuild.
+    """The existing retained clone, bound to the pinned rebuild.
 
     A worker checkout is never a delivery source: the store is the repository's
     own retained clone through the existing delivery path (created on first use
@@ -1322,10 +1333,12 @@ async def development_repository(
     of the validation mode: ``validation: none`` still rebuilds generated files.
     An unset policy command falls back to the project's own regenerator, exactly
     as the legacy candidate and promotion paths do.
+    The train passes ``fetch=False`` because its Git snapshot owns the fetch;
+    other callers retain the freshly fetched default.
     """
     return RetainedRepository(
         repository_id=repo.id,
-        store=await primitives.store(repo),
+        store=await primitives.store(repo, **({"fetch": False} if not fetch else {})),
         binding=binding,
         default_branch=repo.default_branch,
         regenerate=settings.regenerate or DEFAULT_REGENERATE_COMMAND,

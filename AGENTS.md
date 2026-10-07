@@ -129,10 +129,11 @@ agent on the machine. Rationale and the baseline workflow:
   failure never fails your task and never justifies weakening or skipping a test; name it
   in the close summary. Task authors specify focused and area checks, never "run the full
   suite before closing".
-- **Adding or moving a test module:** `python scripts/generate-selection-catalogue.py` and
-  commit `tests/selection_catalogue.json`; a new module must match an area in
-  `tests/selection_areas.yaml`, and a new file outside an owned path needs a rule in
-  `tests/selection_rules.yaml` (`tests/test_selection_catalogue.py` names what is missing).
+- **Adding or moving a test module, or changing its `src` imports:** run
+  `python scripts/generate-selection-catalogue.py` and commit `tests/selection_catalogue.json`;
+  a new module must match an area in `tests/selection_areas.yaml`, and a new file outside an
+  owned path needs a rule in `tests/selection_rules.yaml` (`tests/test_selection_catalogue.py`
+  names what is missing). Naming a test file whose catalogue entry is stale is a usage error.
 - **Swarm end to end:** after any change to claims, pools, formulas, the task hierarchy or
   provider failover, run `scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh` (real daemon,
   real PostgreSQL, no LLM, ~8 min) — [docs/guides/e2e-swarm.md](docs/guides/e2e-swarm.md).
@@ -187,6 +188,10 @@ only. In a worktree slot never run `alembic upgrade`, `alembic stamp` or `aq sta
   `aq doctor --check db.alembic_orphan [--fix]`.
 
 ## Restarting after an update
+
+For tag deployments, configure `deploy.tag_glob` and `deploy.target` in operator config,
+then run `aq update` (or `aq update --ref <tag>`). It validates annotated tags and records
+the detached deployment in `~/.agent-queue/deploy.json`; no selection keeps branch updates.
 
 Use `aq restart --no-dashboard`: it preserves agent sessions, the updating supervisor's
 included, so the daemon re-adopts them. **Never plain `aq stop` then `aq start` for an

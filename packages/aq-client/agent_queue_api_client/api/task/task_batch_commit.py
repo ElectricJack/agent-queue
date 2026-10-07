@@ -68,22 +68,22 @@ def sync_detailed(
     """Atomically materialise an approved proposal into the live work graph: creates and edits tasks,
     changes edges and appends comments, stamping the proposal's source as provenance. Refused
     (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal,
-    carries an approval resolution (``approve`` or ``approved``). Task versions and graph state are
-    rechecked under the routing/hierarchy/write locks; two concurrent commits cannot both win. Any
-    failure rolls back all changes, the audit and receipt in PostgreSQL, leaving the proposal in
-    ``ready`` for a retry. A conflict requires a fresh proposal. Committing an already committed
-    proposal returns its original task ids with ``already_committed: true``. Returns the created task
-    ids.
+    carries an approval resolution (``approve`` or ``approved``), or the server stamped approved-
+    document authority from a live spec-ingest role. Task versions and graph state are rechecked under
+    the routing/hierarchy/write locks; two concurrent commits cannot both win. Any failure rolls back
+    all changes, the audit and receipt in PostgreSQL, leaving the proposal in ``ready`` for a retry. A
+    conflict requires a fresh proposal. Committing an already committed proposal returns its original
+    task ids with ``already_committed: true``. Returns the created task ids.
 
      Atomically materialise an approved proposal into the live work graph: creates and edits tasks,
     changes edges and appends comments, stamping the proposal's source as provenance. Refused
     (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal,
-    carries an approval resolution (``approve`` or ``approved``). Task versions and graph state are
-    rechecked under the routing/hierarchy/write locks; two concurrent commits cannot both win. Any
-    failure rolls back all changes, the audit and receipt in PostgreSQL, leaving the proposal in
-    ``ready`` for a retry. A conflict requires a fresh proposal. Committing an already committed
-    proposal returns its original task ids with ``already_committed: true``. Returns the created task
-    ids.
+    carries an approval resolution (``approve`` or ``approved``), or the server stamped approved-
+    document authority from a live spec-ingest role. Task versions and graph state are rechecked under
+    the routing/hierarchy/write locks; two concurrent commits cannot both win. Any failure rolls back
+    all changes, the audit and receipt in PostgreSQL, leaving the proposal in ``ready`` for a retry. A
+    conflict requires a fresh proposal. Committing an already committed proposal returns its original
+    task ids with ``already_committed: true``. Returns the created task ids.
 
     Args:
         body (TaskBatchCommitRequest):
@@ -115,22 +115,22 @@ def sync(
     """Atomically materialise an approved proposal into the live work graph: creates and edits tasks,
     changes edges and appends comments, stamping the proposal's source as provenance. Refused
     (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal,
-    carries an approval resolution (``approve`` or ``approved``). Task versions and graph state are
-    rechecked under the routing/hierarchy/write locks; two concurrent commits cannot both win. Any
-    failure rolls back all changes, the audit and receipt in PostgreSQL, leaving the proposal in
-    ``ready`` for a retry. A conflict requires a fresh proposal. Committing an already committed
-    proposal returns its original task ids with ``already_committed: true``. Returns the created task
-    ids.
+    carries an approval resolution (``approve`` or ``approved``), or the server stamped approved-
+    document authority from a live spec-ingest role. Task versions and graph state are rechecked under
+    the routing/hierarchy/write locks; two concurrent commits cannot both win. Any failure rolls back
+    all changes, the audit and receipt in PostgreSQL, leaving the proposal in ``ready`` for a retry. A
+    conflict requires a fresh proposal. Committing an already committed proposal returns its original
+    task ids with ``already_committed: true``. Returns the created task ids.
 
      Atomically materialise an approved proposal into the live work graph: creates and edits tasks,
     changes edges and appends comments, stamping the proposal's source as provenance. Refused
     (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal,
-    carries an approval resolution (``approve`` or ``approved``). Task versions and graph state are
-    rechecked under the routing/hierarchy/write locks; two concurrent commits cannot both win. Any
-    failure rolls back all changes, the audit and receipt in PostgreSQL, leaving the proposal in
-    ``ready`` for a retry. A conflict requires a fresh proposal. Committing an already committed
-    proposal returns its original task ids with ``already_committed: true``. Returns the created task
-    ids.
+    carries an approval resolution (``approve`` or ``approved``), or the server stamped approved-
+    document authority from a live spec-ingest role. Task versions and graph state are rechecked under
+    the routing/hierarchy/write locks; two concurrent commits cannot both win. Any failure rolls back
+    all changes, the audit and receipt in PostgreSQL, leaving the proposal in ``ready`` for a retry. A
+    conflict requires a fresh proposal. Committing an already committed proposal returns its original
+    task ids with ``already_committed: true``. Returns the created task ids.
 
     Args:
         body (TaskBatchCommitRequest):
@@ -157,22 +157,22 @@ async def asyncio_detailed(
     """Atomically materialise an approved proposal into the live work graph: creates and edits tasks,
     changes edges and appends comments, stamping the proposal's source as provenance. Refused
     (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal,
-    carries an approval resolution (``approve`` or ``approved``). Task versions and graph state are
-    rechecked under the routing/hierarchy/write locks; two concurrent commits cannot both win. Any
-    failure rolls back all changes, the audit and receipt in PostgreSQL, leaving the proposal in
-    ``ready`` for a retry. A conflict requires a fresh proposal. Committing an already committed
-    proposal returns its original task ids with ``already_committed: true``. Returns the created task
-    ids.
+    carries an approval resolution (``approve`` or ``approved``), or the server stamped approved-
+    document authority from a live spec-ingest role. Task versions and graph state are rechecked under
+    the routing/hierarchy/write locks; two concurrent commits cannot both win. Any failure rolls back
+    all changes, the audit and receipt in PostgreSQL, leaving the proposal in ``ready`` for a retry. A
+    conflict requires a fresh proposal. Committing an already committed proposal returns its original
+    task ids with ``already_committed: true``. Returns the created task ids.
 
      Atomically materialise an approved proposal into the live work graph: creates and edits tasks,
     changes edges and appends comments, stamping the proposal's source as provenance. Refused
     (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal,
-    carries an approval resolution (``approve`` or ``approved``). Task versions and graph state are
-    rechecked under the routing/hierarchy/write locks; two concurrent commits cannot both win. Any
-    failure rolls back all changes, the audit and receipt in PostgreSQL, leaving the proposal in
-    ``ready`` for a retry. A conflict requires a fresh proposal. Committing an already committed
-    proposal returns its original task ids with ``already_committed: true``. Returns the created task
-    ids.
+    carries an approval resolution (``approve`` or ``approved``), or the server stamped approved-
+    document authority from a live spec-ingest role. Task versions and graph state are rechecked under
+    the routing/hierarchy/write locks; two concurrent commits cannot both win. Any failure rolls back
+    all changes, the audit and receipt in PostgreSQL, leaving the proposal in ``ready`` for a retry. A
+    conflict requires a fresh proposal. Committing an already committed proposal returns its original
+    task ids with ``already_committed: true``. Returns the created task ids.
 
     Args:
         body (TaskBatchCommitRequest):
@@ -202,22 +202,22 @@ async def asyncio(
     """Atomically materialise an approved proposal into the live work graph: creates and edits tasks,
     changes edges and appends comments, stamping the proposal's source as provenance. Refused
     (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal,
-    carries an approval resolution (``approve`` or ``approved``). Task versions and graph state are
-    rechecked under the routing/hierarchy/write locks; two concurrent commits cannot both win. Any
-    failure rolls back all changes, the audit and receipt in PostgreSQL, leaving the proposal in
-    ``ready`` for a retry. A conflict requires a fresh proposal. Committing an already committed
-    proposal returns its original task ids with ``already_committed: true``. Returns the created task
-    ids.
+    carries an approval resolution (``approve`` or ``approved``), or the server stamped approved-
+    document authority from a live spec-ingest role. Task versions and graph state are rechecked under
+    the routing/hierarchy/write locks; two concurrent commits cannot both win. Any failure rolls back
+    all changes, the audit and receipt in PostgreSQL, leaving the proposal in ``ready`` for a retry. A
+    conflict requires a fresh proposal. Committing an already committed proposal returns its original
+    task ids with ``already_committed: true``. Returns the created task ids.
 
      Atomically materialise an approved proposal into the live work graph: creates and edits tasks,
     changes edges and appends comments, stamping the proposal's source as provenance. Refused
     (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal,
-    carries an approval resolution (``approve`` or ``approved``). Task versions and graph state are
-    rechecked under the routing/hierarchy/write locks; two concurrent commits cannot both win. Any
-    failure rolls back all changes, the audit and receipt in PostgreSQL, leaving the proposal in
-    ``ready`` for a retry. A conflict requires a fresh proposal. Committing an already committed
-    proposal returns its original task ids with ``already_committed: true``. Returns the created task
-    ids.
+    carries an approval resolution (``approve`` or ``approved``), or the server stamped approved-
+    document authority from a live spec-ingest role. Task versions and graph state are rechecked under
+    the routing/hierarchy/write locks; two concurrent commits cannot both win. Any failure rolls back
+    all changes, the audit and receipt in PostgreSQL, leaving the proposal in ``ready`` for a retry. A
+    conflict requires a fresh proposal. Committing an already committed proposal returns its original
+    task ids with ``already_committed: true``. Returns the created task ids.
 
     Args:
         body (TaskBatchCommitRequest):

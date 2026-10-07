@@ -365,3 +365,36 @@ class TestFix:
         result = await apply_fix(_check(), ctx)
         assert result.severity is Severity.OK, result.detail
         assert result.fix_applied
+
+
+@pytest.mark.parametrize("mode", ["accepted", "too_far", "breaking", "missing"])
+async def test_retained_migrations_doctor_never_downgrades_or_stamps(
+    ctx, tmp_path, monkeypatch, mode
+):
+    import shutil
+    from sqlalchemy import text
+    from src.database.schema_key import alembic_head_revisions
+    from tests.test_additive_migrations import revision
+
+    retained = tmp_path / "retained"
+    shutil.copytree(db_checks_module._VERSIONS_DIR, retained)
+    body = "op.drop_table('tasks')" if mode == "breaking" else "pass"
+    (retained / "ahead.py").write_text(revision(ORPHAN, alembic_head_revisions()[0], body=body))
+    ctx.config.database.schema_ahead_migrations = str(
+        retained if mode != "missing" else tmp_path / "absent"
+    )
+    ctx.config.database.schema_ahead_max_revisions = 0 if mode == "too_far" else 1
+    await _stamp(ctx.config.database.url, ORPHAN)
+    monkeypatch.setenv(STAMP_ENV, "1")
+    for method in ("find_revision_source", "_downgrade_with_borrowed_file", "_stamp"):
+        monkeypatch.setattr(
+            db_checks_module, method, lambda *a: pytest.fail("must preserve retained schema")
+        )
+    checked = await _check().run(ctx)
+    fixed = await _check().fix(ctx)
+    expected = Severity.OK if mode == "accepted" else Severity.ERROR
+    assert checked.severity is expected and fixed.severity is expected
+    assert not checked.fixable and not fixed.fixable
+    assert await _stamped_at(ctx.config.database.url) == ORPHAN
+    async with ctx.db._engine.connect() as conn:
+        assert await conn.scalar(text("SELECT to_regclass('public.tasks')")) == "tasks"

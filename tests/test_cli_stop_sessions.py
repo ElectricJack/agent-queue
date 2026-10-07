@@ -22,7 +22,7 @@ def _run(returncode=0, stdout=""):
 class TestStopAgentSessions:
     def test_kills_only_daemon_owned_sessions(self):
         """Other tmux sessions on the socket belong to someone else."""
-        listing = "s-task-one\nn-supervisor--global\nmy-own-shell\ns-task-two\n"
+        listing = "s-task-one\np-worker--project--12345678\nn-supervisor--global\nmy-own-shell\ns-task-two\n"
         calls = []
 
         def fake_run(cmd, **kw):
@@ -34,9 +34,14 @@ class TestStopAgentSessions:
         with patch("subprocess.run", side_effect=fake_run):
             stopped = stop_agent_sessions(quiet=True)
 
-        assert stopped == 3
+        assert stopped == 4
         killed = [c[-1] for c in calls if "kill-session" in c]
-        assert sorted(killed) == ["n-supervisor--global", "s-task-one", "s-task-two"]
+        assert sorted(killed) == [
+            "n-supervisor--global",
+            "p-worker--project--12345678",
+            "s-task-one",
+            "s-task-two",
+        ]
         assert "my-own-shell" not in killed
 
     def test_no_tmux_server_is_not_an_error(self):
@@ -61,4 +66,4 @@ class TestStopAgentSessions:
 
     def test_prefixes_match_what_the_reconciler_adopts(self):
         """Reaping must cover exactly the names adoption scans for."""
-        assert set(_AQ_SESSION_PREFIXES) == {"s-", "n-"}
+        assert set(_AQ_SESSION_PREFIXES) == {"s-", "n-", "p-"}
