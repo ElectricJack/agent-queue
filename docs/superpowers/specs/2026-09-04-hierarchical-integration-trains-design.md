@@ -459,10 +459,12 @@ project, frozen member, operator and reason. The daemon supersedes an open batch
 whose stacked source was refreshed using the same batch-owned record, bound to
 the refreshed frozen member, service identity and supersede reason. Its inputs
 return to pending for a new exact candidate; an explicit pause still holds.
-If the refreshed member has no task row or appears in both active and archived
-tasks, supersede leaves the old batch and its inputs unchanged. The target visit
-reports `stack_member_missing` or `stack_member_ambiguous` with the task and batch
-IDs, and other targets continue. A later visit rechecks the member's identity.
+If the refreshed member has no task row, appears in both active and archived
+tasks, or belongs to another project, supersede leaves the old batch and its
+inputs unchanged. The target visit reports `stack_member_missing`,
+`stack_member_ambiguous` or `stack_member_foreign_project` with the task and batch
+IDs and the existing abort-batch command, and other targets continue. A later
+visit rechecks the member's identity. Explicit eject refusals remain unchanged.
 Task archival or deletion cannot erase that instruction; worker task metadata
 and legacy ejection markers cannot
 authorize release. An ordinary supervisor abort continues withholding its inputs.

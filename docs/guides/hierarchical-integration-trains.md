@@ -109,13 +109,14 @@ same batch-owned release record with its service identity and the supersede
 reason. The old batch aborts and its inputs return to pending for a new exact
 candidate. An explicit pause or ordinary abort still holds its inputs; task
 metadata cannot forge a supersede release.
-If the refreshed member's task row is missing or appears in both active and
-archived tasks, the old batch stays unchanged and no inputs are released. The
-target reports `stack_member_missing` or `stack_member_ambiguous`, including the
-task and batch IDs, and rechecks on later visits while other targets continue.
-Restore an unambiguous task identity to permit supersede, or use the existing
-`abort-batch` control on the old batch; an ordinary abort still withholds its
-frozen inputs.
+If the refreshed member's task row is missing, appears in both active and
+archived tasks, or belongs to another project, the old batch stays unchanged
+and no inputs are released. The target reports `stack_member_missing`,
+`stack_member_ambiguous` or `stack_member_foreign_project`, including the task
+and batch IDs, and rechecks on later visits while other targets continue.
+Restore an unambiguous task identity in the batch project to permit supersede,
+or use the existing `abort-batch` control on the old batch; an ordinary abort
+still withholds its frozen inputs.
 
 These four supervisor controls default to preview; `--dry-run` explicitly
 requests it. Applying an ejection requires a nonblank reason. Paused batches
