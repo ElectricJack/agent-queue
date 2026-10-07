@@ -82,15 +82,40 @@ def inherited_source(path, base, scenario):
     head = git(path, "rev-parse", "HEAD")
     if scenario == "conflict":
         head = commit(path, {"base.txt": "source change\n"})
+    elif scenario == "revert":
+        head = commit(path, {"base.txt": "base\n"})
     elif scenario == "generated":
         head = commit(path, {"generated.txt": "source\n"})
-    current = commit(path, {
+    current = commit(path, {"target.txt": "target moved on\n"} if scenario == "revert" else {
         "base.txt": "target moved on\n",
         **({"generated.txt": "target\n"} if scenario == "generated" else {}),
     }, base=inherited)
     assert git(path, "merge-base", current, head) == inherited
     assert git(path, "merge-base", "--is-ancestor", own, head) == ""
     return recorded, inherited, current, head
+
+
+def reserved_restoration_source(path, base):
+    """The recorded delta hides a restoration of target-deleted bookkeeping."""
+    recorded = commit(path, {".aq/claim.json": "{}\n"}, base=base)
+    git(path, "rm", ".aq/claim.json")
+    git(path, "commit", "-m", "target deletes bookkeeping")
+    inherited = git(path, "rev-parse", "HEAD")
+    commit(path, {"own.txt": "own change\n"}, base=recorded)
+    git(path, "merge", "--no-ff", "-m", "inherit target deletion", inherited)
+    head = commit(path, {".aq/claim.json": "{}\n"})
+    current = commit(path, {"target.txt": "target change\n"}, base=inherited)
+    assert git(path, "diff", "--name-only", recorded, head) == "own.txt"
+    assert ".aq/claim.json" in git(path, "diff", "--name-only", inherited, head).splitlines()
+    return recorded, inherited, current, head
+
+
+def stacked_member_sources(path, base):
+    """Child P's own delta excludes Q1; Q must subsequently land Q1 and Q2."""
+    intermediate = commit(path, {"q1.txt": "Q1\n"}, base=base)
+    child = commit(path, {"p.txt": "P\n"})
+    source = commit(path, {"q2.txt": "Q2\n"}, base=intermediate)
+    return intermediate, child, source
 
 
 class LocalGit(GitManager):
@@ -316,7 +341,7 @@ async def test_real_conflict_records_partial_head_and_paths(setup):
     assert await journal_rows(db) == []
 
 
-@pytest.mark.parametrize("scenario", ("clean", "conflict", "generated"))
+@pytest.mark.parametrize("scenario", ("clean", "conflict", "generated", "revert"))
 async def test_merge_uses_inherited_target_base_and_records_evidence(setup, scenario):
     _, ops, _, _, repo, base, *_ = setup
     recorded, inherited, current, head = inherited_source(repo.store, base, scenario)
@@ -336,7 +361,8 @@ async def test_merge_uses_inherited_target_base_and_records_evidence(setup, scen
         assert result["head"] == current
     else:
         merged = result["head"]
-        assert git(repo.store, "show", f"{merged}:base.txt") == "target moved on"
+        expected = "base" if scenario == "revert" else "target moved on"
+        assert git(repo.store, "show", f"{merged}:base.txt") == expected
         assert git(repo.store, "show", f"{merged}:own.txt") == "own change"
         assert git(repo.store, "show", "-s", "--format=%P", merged).split() == [current, head]
         message = git(repo.store, "show", "-s", "--format=%B", merged)
@@ -344,7 +370,7 @@ async def test_merge_uses_inherited_target_base_and_records_evidence(setup, scen
         assert f"Effective-merge-base: {inherited}" in message
         if scenario == "generated":
             assert git(repo.store, "show", f"{merged}:generated.txt") == "rebuilt"
-        else:
+        elif scenario == "clean":
             forced = await ops.git.arun_git_result([
                 "merge-tree", "--write-tree", f"--merge-base={recorded}", current, head,
             ], cwd=str(repo.store))
@@ -377,6 +403,38 @@ async def test_effective_base_does_not_hide_inherited_reserved_paths(setup):
     assert result["head"] == inherited
 
 
+async def test_effective_base_refuses_restored_reserved_path(setup):
+    _, ops, _, _, repo, base, *_ = setup
+    recorded, inherited, current, head = reserved_restoration_source(repo.store, base)
+    member = MemberRef(task_id="reserved-restoration", head_sha=head, base_sha=recorded)
+    result = await ops.merge_sources(repo, current, (member,), created_at=NOW)
+    assert result["outcome"] == "source_moved", result
+    assert "reserved AQ bookkeeping paths" in result["reason"]
+    assert result["head"] == current
+    assert result["source_base_sha"] == recorded
+    assert result["effective_base_sha"] == inherited
+    assert result["members"] == []
+
+
+async def test_effective_base_keeps_source_changes_after_stacked_child_lands_first(setup):
+    _, ops, _, _, repo, base, *_ = setup
+    intermediate, child, source = stacked_member_sources(repo.store, base)
+    members = (
+        MemberRef(task_id="P", head_sha=child, base_sha=intermediate),
+        MemberRef(task_id="Q", head_sha=source, base_sha=base),
+    )
+    result = await ops.merge_sources(repo, base, members, created_at=NOW)
+    assert result["outcome"] == "merged", result
+    partial = result["members"][0]["head"]
+    assert git(repo.store, "merge-base", partial, source) == intermediate
+    assert intermediate not in git(repo.store, "rev-list", "--first-parent", partial).split()
+    assert git(repo.store, "ls-tree", "--name-only", partial).splitlines() == ["base.txt", "p.txt"]
+    assert result["members"][1]["effective_base_sha"] == base
+    assert git(repo.store, "show", f"{result['head']}:q1.txt") == "Q1"
+    assert git(repo.store, "show", f"{result['head']}:q2.txt") == "Q2"
+    assert git(repo.store, "show", f"{result['head']}:p.txt") == "P"
+
+
 async def test_effective_base_keeps_real_migration_collisions(setup):
     _, ops, _, _, repo, base, *_ = setup
     inherited = commit(repo.store, {
@@ -399,12 +457,15 @@ async def test_effective_base_keeps_real_migration_collisions(setup):
     assert git(repo.store, "merge-base", "--is-ancestor", own, head) == ""
 
 
-@pytest.mark.parametrize("probe", ("merge_base", "ancestry"))
+@pytest.mark.parametrize("probe", ("merge_base", "ancestry", "first_parent"))
 async def test_effective_base_probe_error_never_becomes_an_ancestry_proof(probe):
     ok = SimpleNamespace(returncode=0, stdout="b" * 40, stderr="")
     failed = SimpleNamespace(returncode=128, stdout="", stderr="objects unavailable")
     manager = SimpleNamespace(arun_git_result=AsyncMock(
-        side_effect=[failed] if probe == "merge_base" else [ok, failed],
+        side_effect={
+            "merge_base": [failed], "ancestry": [ok, failed],
+            "first_parent": [ok, ok, ok, ok, failed],
+        }[probe],
     ))
     with pytest.raises(GitError, match="objects unavailable"):
         await effective_source_base(manager, "store", "a" * 40, "c" * 40, "d" * 40)

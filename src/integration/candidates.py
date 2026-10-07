@@ -2360,6 +2360,13 @@ class CandidateService:
                 "target_head_sha": current,
                 "merge_source_head_sha": merge_head,
             }
+            if (effective_base, merge_head) != (
+                member["source_base_sha"], member["reviewed_head_sha"]
+            ) and await self.git.areserved_paths_in_diff(str(store), effective_base, merge_head):
+                return await self._conflict(
+                    state, revision, member, current, "reserved_path", operation_id,
+                    merge_evidence=merge_evidence,
+                )
             if parent_repair is None and await self.git.ais_ancestor(
                 str(store), member["reviewed_head_sha"], current
             ):

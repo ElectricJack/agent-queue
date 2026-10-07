@@ -845,10 +845,11 @@ async def test_visit_freezes_gates_and_fast_forwards_through_the_lease(world):
     assert (await train.visit(MAIN)).state == "idle"
 
 
-async def test_train_member_with_stale_origin_and_inherited_target_needs_no_repair(world):
+@pytest.mark.parametrize("scenario", ("clean", "revert"))
+async def test_train_member_with_stale_origin_and_inherited_target_needs_no_repair(world, scenario):
     db, origin = world.db, world.origin
     base = git(origin.clone, "rev-parse", "main")
-    recorded, inherited, current, head = inherited_source(origin.clone, base, "clean")
+    recorded, inherited, current, head = inherited_source(origin.clone, base, scenario)
     git(origin.clone, "push", "origin", f"{current}:refs/heads/main",
         f"{head}:refs/heads/aq/inherited")
     await completed(world, "inherited", head=head, source_base=recorded)
@@ -858,7 +859,8 @@ async def test_train_member_with_stale_origin_and_inherited_target_needs_no_repa
     assert testing.state == "testing", testing
     assert testing.repair is None
     candidate = testing.candidate_sha
-    assert git(origin.url, "show", f"{candidate}:base.txt") == "target moved on"
+    expected = "base" if scenario == "revert" else "target moved on"
+    assert git(origin.url, "show", f"{candidate}:base.txt") == expected
     assert git(origin.url, "show", f"{candidate}:own.txt") == "own change"
     message = git(origin.url, "show", "-s", "--format=%B", candidate)
     assert f"Source-base: {recorded}" in message

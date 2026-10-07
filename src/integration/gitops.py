@@ -511,6 +511,14 @@ class GitOperations:
             )
             evidence = {"source_base_sha": member.base_sha,
                         "effective_base_sha": effective_base, "target_head_sha": current}
+            try:
+                if effective_base != member.base_sha and await self.git.areserved_paths_in_diff(
+                    str(repo.store), effective_base, member.head_sha
+                ):
+                    raise ValueError("source changes reserved AQ bookkeeping paths")
+            except (GitError, ValueError, TypeError) as exc:
+                return {"outcome": "source_moved", "head": current, "members": results,
+                        "member": member.task_id, "reason": str(exc), **evidence}
             head, regenerated = current, False
             if not await self.is_ancestor(repo, member.head_sha, current):
                 collisions = await self._migration_conflicts(repo, current, member, effective_base)
