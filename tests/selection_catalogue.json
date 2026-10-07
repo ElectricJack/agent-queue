@@ -1431,7 +1431,7 @@
       ]
     }
   },
-  "digest": "sha256:735045fae9b49b5c1561516851ec4bba97465c7bccd8b3a3ac344fb7c32bb5fd",
+  "digest": "sha256:0651e1258da61c5da1c4b58267558a7ca0ba990d5b1bc4772307520b80508ebb",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2436,11 +2436,16 @@
       "default_arm": true,
       "imports": [
         "src.api",
+        "src.api.auth",
         "src.api.codegen",
         "src.api.dependencies",
-        "src.api.execute"
+        "src.api.execute",
+        "src.api.middleware",
+        "src.commands.principal",
+        "src.models"
       ],
       "markers": [
+        "parametrize",
         "usefixtures"
       ],
       "summary": "Error-envelope parity between /api/execute and the typed routes (plan 10)."
@@ -13942,9 +13947,12 @@
         "src.doctor.runner",
         "src.models",
         "src.playbooks.artifact_ref",
+        "src.playbooks.artifact_store",
+        "src.playbooks.definition",
         "src.profiles.capabilities",
         "src.routing.readiness",
-        "src.routing.sources"
+        "src.routing.sources",
+        "src.sessions.harness_parser"
       ],
       "markers": [
         "parametrize"

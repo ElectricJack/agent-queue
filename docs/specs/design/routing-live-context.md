@@ -13,9 +13,10 @@ trailing `*`. Any other glob character makes the policy invalid, so routing
 stops with `routing.invalid_policy` instead of admitting a harness a malformed
 exclusion meant to remove. A design lane's `prefer` names exact harnesses. A
 narrow lane excludes every matching harness from general candidates, using the
-same matcher as lane admission. The route reason names any selector that
-matches no installed harness. That is a report, not a refusal: OpenCode is
-installed by the operator, so the shipped lanes can match nothing.
+same matcher as lane admission. The route reason and
+`aq doctor --check routing.unmatched_selectors` name any selector in the active
+policy that matches no installed harness. That is a report, not a refusal:
+OpenCode is installed by the operator, so the shipped lanes can match nothing.
 
 The shipped `narrow-hosted` lane selects `opencode-zen*`, including new preview
 variants. Integration and development repair origins keep `narrow: false` even
@@ -31,14 +32,21 @@ as new ones, without reclassifying them as legacy operation delegates. A
 generic system filing with no ordinary repair input keeps its original origin.
 Source-CI repairs are filed with `created_by_kind: source_ci_repair` and route
 as `integration_repair` too; a repair filed before that origin existed is
-recognised by its source-CI record. Replay reads the routed origin from the
-route's rule.
+recognised by its source-CI record. Tasks filed with
+`created_by_kind: integration_writer`, including verifier tasks of kind `test`,
+also use the integration repair origin and stay off OpenCode lanes. Replay
+reads the routed origin from the route's rule.
+
+HTTP command callers cannot supply underscore-prefixed private arguments,
+including `_created_by_kind` and `_created_by_id`; elevation does not change
+this boundary. Internal services retain those arguments when they file
+directly through `CommandHandler`.
 
 `aq task route-override` changes the route only; it never changes task status.
 It accepts a task no worker holds and no session is starting, running or
 draining, including a READY task just stopped; stop intent alone does not prove
 the old worker is gone. To run stopped work on the new route, restart a BLOCKED
-task through `task_recover` or the operator's `restart_task`, or resume a PAUSED
+task through `task_recover`, or resume a PAUSED
 one with `resume_task`; their recovery holds, retry budget and preserved-work
 handoff all apply.
 

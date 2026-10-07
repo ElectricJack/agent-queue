@@ -1148,10 +1148,10 @@ def test_replay_routes_a_projected_repair_on_its_routed_origin():
     # bugfix rule would prefer the busy Codex cell and count a false change.
     records = [
         {"task_id": f"repair-{kind}", "created_by_kind": kind, "route": result.value}
-        for kind in ("system", "source_ci_repair")
+        for kind in ("system", "source_ci_repair", "integration_writer")
     ]
     report = replay_routes(records, policy, digest)
-    assert report["after"] == {"claude": 2} and report["changed"] == 0, report
+    assert report["after"] == {"claude": 3} and report["changed"] == 0, report
 
 
 # -- the per-task preference (mandatory routing §4) -------------------------------

@@ -19,15 +19,10 @@ from pydantic import BaseModel
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.dependencies import get_command_handler
 from src.api.scope import check_request_scope
-from src.commands.principal import SERVER_OWNED_ARG_KEYS
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-#: Keys the server owns on a command's args.  Stripped here and again inside
-#: ``CommandHandler.execute`` — two independent layers.
-_SERVER_OWNED_ARG_KEYS = SERVER_OWNED_ARG_KEYS
 
 
 class ExecuteRequest(BaseModel):
@@ -57,12 +52,11 @@ async def api_execute(
             status_code=403,
         )
 
-    # aq-surface Phase S2 + Playbook V2 Package 0 §3.7: strip every
-    # server-owned key BEFORE we inject the middleware-derived ones — a
-    # client cannot spoof identity, policy, or profile.
-    args = dict(body.args)
-    for key in _SERVER_OWNED_ARG_KEYS:
-        args.pop(key, None)
+    # HTTP callers, including the local operator and elevated sessions, may
+    # never supply private command arguments (identity, filing origin, hooks,
+    # etc.). Internal services call CommandHandler directly and retain those
+    # arguments. Strip them BEFORE injecting the middleware-derived scope.
+    args = {key: value for key, value in body.args.items() if not key.startswith("_")}
 
     scope: RequestScope = (
         getattr(request.state, "scope", LOCAL_SCOPE) if request is not None else LOCAL_SCOPE
