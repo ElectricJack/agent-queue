@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 525,
+    "leaf_commands": 527,
     "registration": {
       "generated": 349,
-      "handwritten": 176
+      "handwritten": 178
     },
     "ownership": {
-      "core": 486,
+      "core": 488,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 524
+      "supported": 526
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 349,
-      "registration": 162
+      "registration": 164
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 465
+      "untested": 467
     }
   },
   "commands": [
@@ -1489,6 +1489,36 @@
       }
     },
     {
+      "path": "aq db backup",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.db.db_backup",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "destination",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq db current",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -1540,6 +1570,39 @@
         ],
         "optional": [
           "--yes",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq db restore",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.db.db_restore",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "dump"
+        ],
+        "optional": [
+          "--accept-data-loss",
+          "--force",
           "--json",
           "--brief",
           "--save-output",
@@ -18683,6 +18746,8 @@
         "optional": [
           "--check",
           "--yes",
+          "--ref",
+          "--allow-rollback",
           "--no-backup",
           "--json",
           "--brief",

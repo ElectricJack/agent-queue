@@ -544,8 +544,18 @@ class PluginClient:
     async def connect(self) -> None:
         if is_postgres_url(self._db_url):
             from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+            from src.database.migration_guard import SchemaAheadPolicy
 
-            self._db = PostgreSQLDatabaseAdapter(self._db_url, pool_min=1, pool_max=2)
+            db_config = _resolve_db_config() or {}
+            self._db = PostgreSQLDatabaseAdapter(
+                self._db_url,
+                pool_min=1,
+                pool_max=2,
+                schema_ahead_policy=SchemaAheadPolicy(
+                    db_config.get("schema_ahead_migrations", ""),
+                    db_config.get("schema_ahead_max_revisions"),
+                ),
+            )
         else:
             from src.database import Database
 

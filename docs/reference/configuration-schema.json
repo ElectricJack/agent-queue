@@ -260,6 +260,8 @@
         "pool_min_size": 2,
         "pool_recycle_seconds": 1800,
         "pre_ping": "local",
+        "schema_ahead_max_revisions": null,
+        "schema_ahead_migrations": "",
         "url": ""
       },
       "properties": {
@@ -279,6 +281,17 @@
           "default": "local",
           "type": "string"
         },
+        "schema_ahead_max_revisions": {
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "schema_ahead_migrations": {
+          "default": "",
+          "type": "string"
+        },
         "url": {
           "default": "",
           "type": "string"
@@ -291,6 +304,28 @@
       "default": "",
       "type": "string",
       "x-reload": "restart"
+    },
+    "deploy": {
+      "additionalProperties": false,
+      "default": {
+        "tag_glob": null,
+        "target": "main"
+      },
+      "properties": {
+        "tag_glob": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "default": "main",
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
     },
     "discord": {
       "additionalProperties": false,
@@ -3458,6 +3493,7 @@
       "archive",
       "auto_task",
       "dashboard_server",
+      "deploy",
       "docs",
       "git_identity",
       "global_token_budget_daily",

@@ -16505,8 +16505,8 @@
         "tags": [
           "system"
         ],
-        "summary": "Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks finish before restarting. Excluded from MCP by default for safety.",
-        "description": "Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks finish before restarting. Excluded from MCP by default for safety.",
+        "summary": "Update and restart the daemon. Without deploy.tag_glob, pull the upstream and restart even when already current. With a release selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
+        "description": "Update and restart the daemon. Without deploy.tag_glob, pull the upstream and restart even when already current. With a release selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
         "operationId": "update_and_restart",
         "requestBody": {
           "content": {
@@ -71154,6 +71154,55 @@
             "type": "string",
             "title": "Reason",
             "default": ""
+          },
+          "waited_for_tasks": {
+            "type": "boolean",
+            "title": "Waited For Tasks",
+            "default": false
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pid"
+          },
+          "log": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Log"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selector"
+          },
+          "commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commit"
           }
         },
         "type": "object",

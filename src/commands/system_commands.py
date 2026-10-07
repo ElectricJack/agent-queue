@@ -892,7 +892,7 @@ class SystemCommandsMixin:
             "waited_for_tasks": wait_for_tasks and running_count > 0,
         }
 
-    async def _cmd_update_and_restart(self, args: dict) -> dict:
+    async def _update_and_restart_legacy(self, args: dict) -> dict:
         """Pull the latest source from git and restart the daemon."""
         reason = args.get("reason", "No reason provided")
         wait_for_tasks = args.get("wait_for_tasks", False)
@@ -943,21 +943,25 @@ class SystemCommandsMixin:
             return {"error": f"TypeScript client generation failed: {stderr}"}
 
         running_count = len(orch._running_tasks)
+        was_paused = orch._paused
+        restarting = False
+        try:
+            if wait_for_tasks and running_count > 0:
+                orch._paused = True
+                await orch._emit_text_notify(
+                    f"🔄 **Daemon update & restart pending** — waiting for {running_count} "
+                    f"running task(s) to complete\n**Reason:** {reason}"
+                )
+                await orch.wait_for_running_tasks(timeout=300)
 
-        if wait_for_tasks and running_count > 0:
-            # Pause orchestrator so no new tasks are scheduled, then wait
-            orch._paused = True
-            await orch._emit_text_notify(
-                f"🔄 **Daemon update & restart pending** — waiting for {running_count} "
-                f"running task(s) to complete\n**Reason:** {reason}"
-            )
-            await orch.wait_for_running_tasks(timeout=300)
-
-        # Log the update/restart reason to the notification channel
-        await orch._emit_text_notify(f"🔄 **Daemon update & restart initiated** — {reason}")
-        # Trigger restart
-        orch._restart_requested = True
-        os.kill(os.getpid(), signal.SIGTERM)
+            await orch._emit_text_notify(f"🔄 **Daemon update & restart initiated** — {reason}")
+            orch._restart_requested = True
+            os.kill(os.getpid(), signal.SIGTERM)
+            restarting = True
+        finally:
+            if not restarting:
+                orch._paused = was_paused
+                orch._restart_requested = False
         return {
             "status": "updating",
             "message": "Update pulled and daemon restart initiated",
@@ -965,6 +969,84 @@ class SystemCommandsMixin:
             "reason": reason,
             "waited_for_tasks": wait_for_tasks and running_count > 0,
         }
+
+    async def _cmd_update_and_restart(self, args: dict) -> dict:
+        """Opt into release selection only with a configured tag family."""
+        if not self.config.deploy.tag_glob:
+            return await self._update_and_restart_legacy(args)
+        import subprocess
+        import sys
+
+        from src.install.update import UpdateRefused, plan_update
+
+        reason = args.get("reason", "No reason provided")
+        wait_for_tasks = args.get("wait_for_tasks", False)
+        orch = self.orchestrator
+        repo_dir = Path(__file__).resolve().parents[2]
+        state_dir = Path(self.config.data_dir)
+        try:
+            plan = await asyncio.to_thread(
+                plan_update, repo_dir, state_dir=state_dir,
+                tag_glob=self.config.deploy.tag_glob,
+                promotion_target=self.config.deploy.target,
+            )
+        except UpdateRefused as refused:
+            return {"success": False, "error": refused.reason, "remediation": refused.remediation}
+        if plan.up_to_date:
+            return {"success": True, "status": "up_to_date", "commit": plan.current}
+
+        running_count = len(orch._running_tasks)
+        was_paused = orch._paused
+        launched = False
+        try:
+            if wait_for_tasks and running_count > 0:
+                orch._paused = True
+                await orch._emit_text_notify(
+                    f"🔄 **Daemon update pending** — waiting for {running_count} "
+                    f"running task(s) to complete\n**Reason:** {reason}"
+                )
+                await orch.wait_for_running_tasks(timeout=300)
+
+            # The fresh updater rechecks the checkout under its own lock.
+            # It must outlive the daemon; awaiting it here deadlocks on aq stop.
+            log = state_dir / "update.log"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            env = scrub_env_from_config(
+                self.config, explicit={"AQ_INSTALL_STATE_DIR": str(state_dir)}
+            ).env
+            try:
+                with log.open("ab") as output:
+                    process = await asyncio.create_subprocess_exec(
+                        sys.executable, "-m", "src.cli.app", "update", "--yes",
+                        cwd=str(repo_dir), env=env, stdin=subprocess.DEVNULL,
+                        stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
+                    )
+            except OSError as error:
+                return {"success": False, "error": f"could not start aq update: {error}"}
+
+            async def restore_scheduling() -> None:
+                try:
+                    await process.wait()
+                finally:
+                    # If this daemon is still alive, the update did not replace
+                    # it. Refusal, up-to-date races and all failures must unpause.
+                    orch._paused = was_paused
+
+            asyncio.ensure_future(restore_scheduling())
+            launched = True
+            await orch._emit_text_notify(
+                f"🔄 **Daemon update started** — {plan.upstream} at {plan.target[:9]}\n"
+                f"**Reason:** {reason}\n**Log:** {log}"
+            )
+            return {
+                "success": True, "status": "updating", "pid": process.pid,
+                "message": "Operator updater started; read update.log for the outcome",
+                "selector": plan.upstream, "commit": plan.target, "log": str(log),
+                "reason": reason, "waited_for_tasks": wait_for_tasks and running_count > 0,
+            }
+        finally:
+            if not launched:
+                orch._paused = was_paused
 
     # -----------------------------------------------------------------------
     # File / shell commands -- sandboxed filesystem and shell access for the

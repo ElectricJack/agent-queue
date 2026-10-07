@@ -14,7 +14,7 @@ from sqlalchemy import event, exc, inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 
-from src.database.migration_guard import VERIFY, migration_decision
+from src.database.migration_guard import VERIFY, SchemaAheadPolicy, migration_decision
 from src.database.schema_key import (
     ALEMBIC_INI as _ALEMBIC_INI_SHARED,
 )
@@ -206,8 +206,10 @@ def create_postgres_engine(
 
 
 
-def _preflight_check_alembic_version(sync_connection) -> None:
-    """Fail loudly if ``alembic_version`` names a revision the code lacks.
+def _preflight_check_alembic_version(
+    sync_connection, schema_ahead_policy: SchemaAheadPolicy | None = None
+) -> bool:
+    """Return True for a proven additive ahead schema; refuse unknown revisions.
 
     The symptom this catches: ``aq restart`` bombs deep inside Alembic
     with ``Can't locate revision identified by 'X'`` — a phantom
@@ -228,6 +230,8 @@ def _preflight_check_alembic_version(sync_connection) -> None:
 
     NOTE: never auto-repair — clobbering the row loses history and
     can silently skip data migrations. A clearer error is the fix.
+    Retained newer migration sources may instead prove a safe ahead schema;
+    in that case callers must skip Alembic entirely.
     """
     from alembic.config import Config
     from alembic.migration import MigrationContext
@@ -238,10 +242,14 @@ def _preflight_check_alembic_version(sync_connection) -> None:
     script = ScriptDirectory.from_config(alembic_cfg)
     ctx = MigrationContext.configure(sync_connection)
     db_revs = ctx.get_current_heads()  # ()  if unmarked, or (rev,) / (rev, rev)
+    if schema_ahead_policy and schema_ahead_policy.accepts(
+        db_revs, _PROJECT_ROOT / "migrations" / "versions"
+    ):
+        return True
     known = {s.revision for s in script.walk_revisions()}
     unknown = [r for r in db_revs if r and r not in known]
     if unknown:
-        engine_url = str(sync_connection.engine.url)
+        engine_url = sync_connection.engine.url.render_as_string(hide_password=True)
         raise RuntimeError(
             "Alembic preflight failed: this database's alembic_version "
             f"references unknown revision(s) {unknown!r}. "
@@ -252,9 +260,10 @@ def _preflight_check_alembic_version(sync_connection) -> None:
             "this same URL (destructive to history — confirm the schema "
             "matches head first)."
         )
+    return False
 
 
-def _run_alembic_upgrade(sync_connection) -> None:
+def _run_alembic_upgrade(sync_connection, schema_ahead_policy=None) -> None:
     """Run Alembic migrations up to head using a sync connection.
 
     Called via ``conn.run_sync()`` from an async context. Preflights
@@ -264,7 +273,8 @@ def _run_alembic_upgrade(sync_connection) -> None:
     from alembic import command
     from alembic.config import Config
 
-    _preflight_check_alembic_version(sync_connection)
+    if _preflight_check_alembic_version(sync_connection, schema_ahead_policy):
+        return  # Never ask Alembic to upgrade an ahead schema with older code.
     # Close the implicit transaction those reads opened.  Alembic's
     # ``begin_transaction()`` is a no-op while the connection is already
     # in a transaction, which would defeat ``transaction_per_migration``
@@ -275,13 +285,14 @@ def _run_alembic_upgrade(sync_connection) -> None:
     command.upgrade(alembic_cfg, "head")
 
 
-def _verify_schema_at_head(sync_connection) -> None:
+def _verify_schema_at_head(sync_connection, schema_ahead_policy=None) -> None:
     """Read-only counterpart to :func:`_run_alembic_upgrade`.
 
     Used when the caller may *not* migrate the database it is pointed at
     (see :mod:`src.database.migration_guard`).  Three outcomes:
 
     * stamped at the code's head — return, the process may proceed;
+    * proven additive ahead schema within policy — return without mutation;
     * stamped at a revision this checkout does not have — the same unknown
       revision diagnostic the upgrade path raises;
     * anything else (behind head, or never stamped) — refuse and name the
@@ -293,7 +304,8 @@ def _verify_schema_at_head(sync_connection) -> None:
 
     from src.database.migration_guard import SchemaBehindCode, refusal_message
 
-    _preflight_check_alembic_version(sync_connection)
+    if _preflight_check_alembic_version(sync_connection, schema_ahead_policy):
+        return
     alembic_cfg = Config(str(_ALEMBIC_INI))
     alembic_cfg.attributes["connection"] = sync_connection
     script = ScriptDirectory.from_config(alembic_cfg)
@@ -375,11 +387,15 @@ def _reject_unstamped_legacy_database() -> None:
     )
 
 
-async def run_schema_setup(engine: AsyncEngine) -> None:
+async def run_schema_setup(
+    engine: AsyncEngine, *, schema_ahead_policy: SchemaAheadPolicy | None = None
+) -> None:
     """Create/migrate the database schema using Alembic.
 
     A database already stamped at this checkout's head returns immediately
     (see :func:`_is_stamped_at_head`); a new database runs the full chain.
+    An ahead schema proven additive by ``schema_ahead_policy`` is accepted
+    without running Alembic. Its optional distance limit defaults to disabled.
     For existing pre-Alembic databases (have tables but no
     ``alembic_version``), it refuses to guess their migration history and
     directs the operator to upgrade on the previous release first.
@@ -394,13 +410,15 @@ async def run_schema_setup(engine: AsyncEngine) -> None:
     connection unable to see the earlier revision's work.
     """
     if migration_decision(str(engine.url)) == VERIFY:
-        await verify_schema_current(engine)
+        await verify_schema_current(engine, schema_ahead_policy=schema_ahead_policy)
         return
 
-    await _run_schema_setup_without_cache(engine)
+    await _run_schema_setup_without_cache(engine, schema_ahead_policy=schema_ahead_policy)
 
 
-async def verify_schema_current(engine: AsyncEngine) -> None:
+async def verify_schema_current(
+    engine: AsyncEngine, *, schema_ahead_policy: SchemaAheadPolicy | None = None
+) -> None:
     """Assert *engine*'s schema is at this checkout's head, without migrating.
 
     The read-only path a worker session, the CLI and pytest take when they
@@ -408,10 +426,10 @@ async def verify_schema_current(engine: AsyncEngine) -> None:
     changing its schema is not.
     """
     async with engine.connect() as conn:
-        await conn.run_sync(_verify_schema_at_head)
+        await conn.run_sync(_verify_schema_at_head, schema_ahead_policy)
 
 
-async def _run_schema_setup_without_cache(engine: AsyncEngine) -> None:
+async def _run_schema_setup_without_cache(engine: AsyncEngine, *, schema_ahead_policy=None) -> None:
     """Run the Alembic path directly."""
     async with engine.connect() as conn:
         # Check if this is a pre-Alembic database (has tables but no alembic_version)
@@ -441,7 +459,7 @@ async def _run_schema_setup_without_cache(engine: AsyncEngine) -> None:
                 _reject_unstamped_legacy_database()
             else:
                 # New DB or already-Alembic DB — run migrations normally
-                _run_alembic_upgrade(sync_conn)
+                _run_alembic_upgrade(sync_conn, schema_ahead_policy)
 
         await conn.run_sync(_check_and_migrate)
         await conn.commit()

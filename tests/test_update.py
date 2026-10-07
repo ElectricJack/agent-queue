@@ -1111,3 +1111,213 @@ def test_update_is_a_top_level_command():
     from src.cli.app import cli
 
     assert "update" in cli.list_commands(click.Context(cli))
+
+
+# -- release selection: real remote tags, ancestry and detached activation ---
+
+
+def _release(repo, name, *, commit="HEAD", annotated=True):
+    args = ["tag"]
+    if annotated:
+        args += ["-a", "-m", f"Release {name}\n\nAQ-Promotion: test"]
+    _git(repo.seed, *args, name, commit)
+    _git(repo.seed, "push", "--quiet", "origin", f"refs/tags/{name}")
+
+
+def test_release_selection_uses_semver_and_pins_the_peeled_commit(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    _release(repo, "v0.9.0")
+    expected = repo.push("README.md", "released\n")
+    _release(repo, "v0.10.0")
+    repo.push("README.md", "not released\n")
+    plan = plan_update(repo.checkout, state_dir=fake.state_dir, tag_glob="v*")
+    assert plan.target == expected
+    assert plan.selection.selector == "v0.10.0"
+    assert plan.selection.tag_oid == _git(repo.seed, "rev-parse", "v0.10.0")
+    assert repo.head() == plan.current
+
+
+@pytest.mark.parametrize("tag,annotated", [("v0.2.0", False), ("v9.9.9", None)])
+def test_missing_or_lightweight_release_is_refused_before_stopping(
+    repo, fake, monkeypatch, tag, annotated
+):
+    _no_worker_scope(monkeypatch)
+    if annotated is not None:
+        _release(repo, tag, annotated=annotated)
+    with pytest.raises(UpdateRefused, match="deploy_tag_invalid"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, ref=tag)
+    assert fake.calls == [] and fake.running
+
+
+def test_a_release_off_the_promotion_target_is_refused(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    _git(repo.seed, "checkout", "--quiet", "-b", "unpromoted")
+    (repo.seed / "README.md").write_text("not on main\n")
+    _git(repo.seed, "commit", "--quiet", "-am", "unpromoted")
+    _release(repo, "v0.2.0")
+    with pytest.raises(UpdateRefused, match="not reachable from origin/main"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.2.0")
+
+
+def test_release_activation_detaches_and_records_the_selected_tag(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    expected = repo.push("README.md", "release\n")
+    _release(repo, "v0.2.0")
+    plan = plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.2.0")
+    report = apply_update(plan, fake.host())
+    assert report.outcome == OUTCOME_UPDATED
+    assert repo.head() == expected
+    assert _git(repo.checkout, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+    record = json.loads((fake.state_dir / "deploy.json").read_text())
+    assert record["selector"] == "v0.2.0"
+    assert record["commit"] == expected
+    assert record["tag_oid"] == _git(repo.seed, "rev-parse", "v0.2.0")
+    assert record["previous_commit"] == plan.current
+    assert record["installed_at"] and record["kind"] == "release"
+    assert plan_update(repo.checkout, state_dir=fake.state_dir).up_to_date
+
+
+def test_selecting_the_current_commit_still_activates_a_tag_install(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    _release(repo, "v0.1.0")
+    plan = plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.1.0")
+    assert not plan.up_to_date
+    assert apply_update(plan, fake.host()).outcome == OUTCOME_UPDATED
+    assert (fake.state_dir / "deploy.json").exists()
+
+
+def test_rollback_requires_explicit_opt_in_and_preserves_the_database(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    old = repo.head()
+    _release(repo, "v0.1.0")
+    new = repo.push("README.md", "release 2\n")
+    _release(repo, "v0.2.0")
+    apply_update(plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.2.0"), fake.host())
+    with pytest.raises(UpdateRefused, match="older"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.1.0")
+    plan = plan_update(
+        repo.checkout, state_dir=fake.state_dir, ref="v0.1.0", allow_rollback=True
+    )
+    assert plan.rollback
+    assert apply_update(plan, fake.host()).outcome == OUTCOME_UPDATED
+    assert repo.head() == old
+    record = json.loads((fake.state_dir / "deploy.json").read_text())
+    assert record["kind"] == "rollback" and record["previous_commit"] == new
+    assert not any("restore" in " ".join(call) or "downgrade" in " ".join(call)
+                   for call in fake.calls)
+
+
+def test_local_commits_on_a_detached_install_are_refused_even_during_rollback(
+    repo, fake, monkeypatch
+):
+    _no_worker_scope(monkeypatch)
+    _release(repo, "v0.1.0")
+    apply_update(plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.1.0"), fake.host())
+    (repo.checkout / "README.md").write_text("local work\n")
+    _git(repo.checkout, "commit", "--quiet", "-am", "local")
+    with pytest.raises(UpdateRefused, match="local commits"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.1.0", allow_rollback=True)
+
+
+def test_failed_release_activation_restores_the_branch_and_deploy_record(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    _release(repo, "v0.1.0")
+    apply_update(plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.1.0"), fake.host())
+    original = json.loads((fake.state_dir / "deploy.json").read_text())
+    repo.push("pyproject.toml", "changed\n")
+    _release(repo, "v0.2.0")
+    fake.fail_pip = True
+    plan = plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.2.0")
+    report = apply_update(plan, fake.host())
+    assert report.outcome == OUTCOME_FAILED  # restoring dependencies also fails
+    assert repo.head() == original["commit"]
+    assert json.loads((fake.state_dir / "deploy.json").read_text()) == original
+
+
+def test_an_explicit_branch_is_recorded_as_unreleased(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    plan = plan_update(repo.checkout, state_dir=fake.state_dir, ref="main")
+    assert apply_update(plan, fake.host()).outcome == OUTCOME_UPDATED
+    record = json.loads((fake.state_dir / "deploy.json").read_text())
+    assert record["kind"] == "unreleased" and record["tag_oid"] is None
+    expected = repo.push("README.md", "branch update\n")
+    next_plan = plan_update(repo.checkout, state_dir=fake.state_dir)
+    assert next_plan.target == expected and next_plan.selection.selector == "main"
+
+
+def test_a_shallow_branch_install_can_deploy_an_annotated_tag(tmp_path, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo = Repo(tmp_path, shallow=True)
+    expected = repo.push("README.md", "release\n")
+    _release(repo, "v0.2.0")
+    plan = plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.2.0")
+    assert plan.target == expected
+    assert _git(repo.checkout, "rev-parse", "--is-shallow-repository") == "false"
+
+
+def test_a_tag_changed_between_selection_and_fetch_is_refused(repo):
+    from src.install.deploy import DeployRefused, DeploySelector
+
+    _release(repo, "v0.2.0")
+
+    def execute(argv, **kwargs):
+        result = run_command(argv, **kwargs)
+        if "ls-remote" in argv:
+            _git(repo.seed, "tag", "-f", "-a", "-m", "moved tag", "v0.2.0")
+            _git(repo.seed, "push", "--quiet", "--force", "origin", "refs/tags/v0.2.0")
+        return result
+
+    with pytest.raises(DeployRefused, match="changed while fetching"):
+        DeploySelector(repo.checkout, execute=execute).resolve(ref="v0.2.0")
+
+
+def test_a_release_can_use_a_configured_promotion_target(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    _git(repo.seed, "checkout", "--quiet", "-b", "production")
+    (repo.seed / "README.md").write_text("production release\n")
+    _git(repo.seed, "commit", "--quiet", "-am", "release")
+    _git(repo.seed, "push", "--quiet", "origin", "production")
+    _release(repo, "production-0.2.0")
+    plan = plan_update(repo.checkout, state_dir=fake.state_dir, tag_glob="production-*",
+                       promotion_target="production")
+    assert plan.selection.selector == "production-0.2.0"
+
+
+def test_a_sideways_release_is_refused_even_when_rollback_is_allowed(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    base = repo.head()
+    repo.push("README.md", "release one\n")
+    _release(repo, "v0.1.0")
+    apply_update(plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.1.0"), fake.host())
+    _git(repo.seed, "checkout", "--quiet", "-b", "sideways", base)
+    (repo.seed / "README.md").write_text("different release\n")
+    _git(repo.seed, "commit", "--quiet", "-am", "sideways")
+    _git(repo.seed, "push", "--quiet", "origin", "sideways")
+    _release(repo, "v0.2.0")
+    with pytest.raises(UpdateRefused, match="sideways"):
+        plan_update(repo.checkout, state_dir=fake.state_dir, ref="v0.2.0",
+                    promotion_target="sideways", allow_rollback=True)
+
+
+def test_a_corrupt_deployment_record_is_refused_instead_of_following_main(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    (fake.state_dir / "deploy.json").write_text('{"selector": "v0.2.0", "commit": "invalid"}')
+    with pytest.raises(UpdateRefused, match="invalid commit"):
+        plan_update(repo.checkout, state_dir=fake.state_dir)
+
+
+def test_tag_preflight_through_the_cli_reports_the_selected_release(repo, fake, monkeypatch):
+    from click.testing import CliRunner
+    from src.cli import update as update_cli
+    from src.cli.app import cli
+
+    _no_worker_scope(monkeypatch)
+    repo.push("README.md", "release\n")
+    _release(repo, "v0.2.0")
+    monkeypatch.setattr(update_cli, "_host", fake.host)
+    monkeypatch.setattr("src.install.dashboard.source_checkout_root", lambda: repo.checkout)
+    result = CliRunner().invoke(cli, ["update", "--check", "--ref", "v0.2.0"])
+    assert result.exit_code == 0, result.output
+    assert "v0.2.0" in result.output and "release" in result.output
+    assert fake.calls == []
+    assert not (fake.state_dir / "deploy.json").exists()
