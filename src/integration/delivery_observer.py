@@ -30,7 +30,7 @@ import time
 import weakref
 from collections.abc import Iterable, Mapping
 from functools import partial
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 
@@ -319,6 +319,10 @@ class PrerequisiteView:
 
     siblings: DeliveryView
     default: DeliveryView
+    #: Dependent task id -> the cross-parent prerequisites it waits on, each
+    #: with whether its exact default-branch source is already contained in
+    #: the dependent's own parent branch (so no epic refresh is needed).
+    parent_containment: Mapping[str, Mapping[str, bool]] = field(default_factory=dict)
 
     def get(self, task_id):
         return self.siblings.get(task_id)
@@ -338,6 +342,10 @@ class PrerequisiteView:
     def all_ids(self):
         return self.siblings.evidence.keys() | self.default.evidence.keys()
 
+    @property
+    def snapshots(self):
+        return self.siblings.snapshots + self.default.snapshots
+
     async def fresh(self):
         return await self.siblings.fresh() and await self.default.fresh()
 
@@ -351,9 +359,15 @@ class PrerequisiteView:
         if conn is not None:
             siblings = await self.siblings.verified_on(conn, self.all_ids)
             default = await self.default.verified_on(conn, self.all_ids)
+        default_ids = frozenset(tid for tid, p in default.items() if p.satisfied)
         return replace(mode,
             delivered_prerequisite_ids=frozenset(tid for tid, p in siblings.items() if p.satisfied),
-            default_prerequisite_ids=frozenset(tid for tid, p in default.items() if p.satisfied))
+            default_prerequisite_ids=default_ids,
+            parent_contained_task_ids=frozenset(
+                dependent for dependent, sources in self.parent_containment.items()
+                if sources and all(contained and tid in default_ids
+                                   for tid, contained in sources.items())
+            ))
 
 
 _FETCH_LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
@@ -376,7 +390,7 @@ def prerequisite_observer(db):
     return None
 
 
-async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None):
+async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None, cached_only=False):
     """Request-scoped Git prerequisite evidence for scheduling and diagnostics.
 
     A cycle shares these modes between the scheduler and pool measurement.
@@ -384,6 +398,8 @@ async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None):
     revalidation uses a short connection without locks. Advisory readers reuse
     successful snapshots within READ_MAX_AGE, still checking target freshness.
     Claim activation fetches and revalidates its own view under the task locks.
+    ``cached_only`` pins existing evidence for interactive diagnostics without
+    fetching or checking remote freshness; database identities are still checked.
 
     Shadow observers preserve receipt admission. An unstable active view supplies
     an empty delivered set, so it cannot fall back to a stale receipt.
@@ -409,24 +425,63 @@ async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None):
         mode = ProjectIntegrationMode.of(project)
         if not mode.hierarchical:
             continue
-        view = await observer.prerequisite_view(
-            project.id, task_id=task_id, max_age=observer.READ_MAX_AGE,
-        )
-        verified_mode = replace(mode, delivered_prerequisite_ids=frozenset())
-        if await view.fresh():
-            async with db._engine.connect() as conn:
-                verified_mode = await view.mode(mode, conn=conn)
-        stackable = frozenset()
-        if mode.stacked:
-            from src.integration.stacked_branches import observe_stacks
-
-            stack_view = await observe_stacks(observer, project.id, task_id=task_id,
-                                               max_age=observer.READ_MAX_AGE)
-            if await stack_view.fresh():
-                async with db._engine.connect() as conn:
-                    stackable = frozenset(await stack_view.verified_on(conn))
-        modes[project.id] = replace(verified_mode, stackable_prerequisite_ids=stackable)
+        timeout = (FRONTIER_DISPLAY_TIMEOUT_SECONDS if cached_only
+                   else FRONTIER_MODE_TIMEOUT_SECONDS)
+        try:
+            modes[project.id] = await asyncio.wait_for(_project_frontier_mode(
+                db, observer, project, mode, task_id=task_id, cached_only=cached_only,
+            ), timeout)
+        except TimeoutError:
+            # Fail closed for this read: no Git-proven prerequisite admits work,
+            # but one slow Git view never holds the scheduler, pools or explain.
+            logger.warning(
+                "hierarchy frontier for %s%s exceeded %.0fs; withholding Git-gated work",
+                project.id, f" task {task_id}" if task_id else "", timeout,
+            )
+            modes[project.id] = replace(
+                mode, delivered_prerequisite_ids=frozenset(),
+            )
     return modes
+
+
+#: Wall-clock bound on one project's Git prerequisite view in a scheduler,
+#: pool or claim read. Exceeding it withholds Git-gated work for that read.
+FRONTIER_MODE_TIMEOUT_SECONDS = 60.0
+#: Interactive diagnostics (explain, pool display) read cached evidence only and
+#: must answer inside a CLI request.
+FRONTIER_DISPLAY_TIMEOUT_SECONDS = 10.0
+
+
+async def _project_frontier_mode(db, observer, project, mode, *, task_id, cached_only):
+    from dataclasses import replace
+
+    view = await observer.prerequisite_view(
+        project.id, task_id=task_id, max_age=observer.READ_MAX_AGE,
+        **({"cached_only": True} if cached_only else {}),
+    )
+    verified_mode = replace(mode, delivered_prerequisite_ids=frozenset())
+    if cached_only:
+        fresh = all(snapshot._freshness.get(snapshot.target_ref, True)
+                    for snapshot in view.snapshots)
+    else:
+        fresh = await view.fresh()
+        if not fresh:
+            for snapshot in view.snapshots:
+                snapshot._freshness[snapshot.target_ref] = False
+    if fresh:
+        async with db._engine.connect() as conn:
+            verified_mode = await view.mode(mode, conn=conn)
+    stackable = frozenset()
+    if mode.stacked:
+        from src.integration.stacked_branches import observe_stacks
+
+        stack_view = await observe_stacks(observer, project.id, task_id=task_id,
+                                           max_age=observer.READ_MAX_AGE,
+                                           **({"cached_only": True} if cached_only else {}))
+        if await stack_view.fresh():
+            async with db._engine.connect() as conn:
+                stackable = frozenset(await stack_view.verified_on(conn))
+    return replace(verified_mode, stackable_prerequisite_ids=stackable)
 
 
 def _fetch_lock(path: Path) -> asyncio.Lock:
@@ -482,10 +537,11 @@ class DeliveryObserver:
         """
         path = self.store_path(target.repository_id)
         recent = self._recent.get(target)
-        if max_age > 0 and recent is not None and time.monotonic() - recent[0] <= max_age:
+        if (max_age > 0 and recent is not None and time.monotonic() - recent[0] <= max_age
+            and (not cached_only or recent[1]._freshness.get(target.target_ref, True))):
             return recent[1]
         if cached_only:
-            # Interactive graph reads must never queue behind a fetch or start
+            # Interactive diagnostic reads must never queue behind a fetch or start
             # one. Expired evidence is unknown, not evidence of non-delivery.
             return DeliverySnapshot(
                 self.git, str(path), target.project_id, target.repository_id,
@@ -521,9 +577,11 @@ class DeliveryObserver:
                 f"observer_error: {type(exc).__name__}",
             )
 
-    async def snapshot(self, target: DeliveryTarget) -> DeliverySnapshot:
-        """Fetch one isolated, request-scoped snapshot for an external reader."""
-        snapshot = (await self._snapshot(target)).for_request()
+    async def snapshot(
+        self, target: DeliveryTarget, *, max_age: float = 0.0, cached_only: bool = False,
+    ) -> DeliverySnapshot:
+        """One isolated, request-scoped snapshot; diagnostics can require a cached read."""
+        snapshot = (await self._snapshot(target, max_age, cached_only=cached_only)).for_request()
         if self.truth is not None:
             from src.integration.git_truth import GitTruthSnapshot
 
@@ -566,6 +624,7 @@ class DeliveryObserver:
 
     async def prerequisite_view(
         self, project_id: str, *, task_id: str | None = None, max_age: float = 0.0,
+        cached_only: bool = False,
     ):
         """Completed prerequisites, routed to the parent or default branch.
 
@@ -574,10 +633,16 @@ class DeliveryObserver:
         from src.database.tables import task_dependencies
 
         dependent = tasks.alias("delivery_dependent")
+        dependent_parent = tasks.alias("delivery_dependent_parent")
         query = select(tasks.c.id, tasks.c.parent_task_id,
-                       dependent.c.parent_task_id.label("dependent_parent")).select_from(task_dependencies.join(
+                       dependent.c.parent_task_id.label("dependent_parent"),
+                       dependent.c.id.label("dependent_id"),
+                       dependent_parent.c.branch_name.label("parent_branch"),
+                       ).select_from(task_dependencies.join(
             tasks, tasks.c.id == task_dependencies.c.depends_on_task_id,
-        ).join(dependent, dependent.c.id == task_dependencies.c.task_id)).where(
+        ).join(dependent, dependent.c.id == task_dependencies.c.task_id).outerjoin(
+            dependent_parent, dependent_parent.c.id == dependent.c.parent_task_id,
+        )).where(
             dependent.c.project_id == project_id,
             dependent.c.status.in_(("READY", "IN_PROGRESS")),
             tasks.c.status == "COMPLETED", task_dependencies.c.dep_type == "blocks",
@@ -586,14 +651,61 @@ class DeliveryObserver:
             query = query.where(dependent.c.id == task_id)
         async with self.db._engine.connect() as conn:
             rows = (await conn.execute(query)).all()
-        siblings = {tid for tid, parent, child_parent in rows
+        siblings = {tid for tid, parent, child_parent, _dep, _branch in rows
                     if parent is not None and parent == child_parent}
-        cross = {tid for tid, parent, child_parent in rows
+        cross = {tid for tid, parent, child_parent, _dep, _branch in rows
                  if parent is None or parent != child_parent}
+        default = await self.observe(cross, max_age=max_age, target_loader=delivery_targets,
+                                     cached_only=cached_only)
         return PrerequisiteView(
-            await self.observe(siblings, max_age=max_age),
-            await self.observe(cross, max_age=max_age, target_loader=delivery_targets),
+            await self.observe(siblings, max_age=max_age, cached_only=cached_only),
+            default,
+            await self._parent_containment(rows, default),
         )
+
+    async def _parent_containment(self, rows, default) -> dict[str, dict[str, bool]]:
+        """Whether each cross-parent prerequisite is already in the dependent's epic.
+
+        A child whose epic branch already contains every cross-epic
+        prerequisite's exact default-branch source needs no epic refresh, so an
+        unrelated open batch on that epic cannot withhold it. Anything not
+        proven here stays False and keeps the refresh rule.
+        """
+        from src.integration.delivery_truth import DeliveryState
+
+        result: dict[str, dict[str, bool]] = {}
+        if self.truth is None:
+            return result
+        from src.integration.git_truth import GitTruthSnapshot
+
+        snapshots = {(s.project_id, s.repository_id): s for s in default.snapshots}
+        for tid, parent, child_parent, dependent_id, branch in rows:
+            if child_parent is None or (parent is not None and parent == child_parent):
+                continue
+            sources = result.setdefault(dependent_id, {})
+            sources[tid] = False
+            proof = default.evidence.get(tid)
+            if proof is None or not branch:
+                continue
+            if proof.state is DeliveryState.NO_ARTIFACT:
+                sources[tid] = True
+                continue
+            snapshot = snapshots.get((proof.request.project_id, proof.request.repository_id))
+            if not proof.satisfied or not proof.source_oid or snapshot is None:
+                continue
+            parent_ref = "refs/heads/" + branch.removeprefix("refs/heads/")
+            try:
+                observed = GitTruthSnapshot(self.truth, snapshot).for_target(parent_ref)
+                contained = await observed.is_delivered(
+                    replace(proof.request, target_ref=parent_ref),
+                    source_base=getattr(proof, "source_base", None),
+                )
+            except Exception as exc:  # noqa: BLE001 - unproven keeps the refresh rule
+                logger.debug("parent containment of %s for %s unknown: %s",
+                             tid, dependent_id, exc)
+                continue
+            sources[tid] = bool(contained.satisfied and contained.source_oid == proof.source_oid)
+        return result
 
     async def observe(self, task_ids: Iterable[str], *, max_age: float = 0.0,
                       target_loader=None, cached_only: bool = False) -> DeliveryView:
@@ -603,7 +715,7 @@ class DeliveryObserver:
         moving the last view is returned and :meth:`DeliveryView.fresh` stays
         false for the caller to fail closed on.  Only a read-only surface
         passes *max_age* (see :data:`READ_MAX_AGE`); every guarded writer
-        fetches. ``cached_only`` is for interactive graph reads: absent or
+        fetches. ``cached_only`` is for interactive diagnostics: absent or
         expired snapshots return unknown without fetching or waiting on Git.
         """
         ids = set(task_ids)

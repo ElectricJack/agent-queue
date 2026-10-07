@@ -10962,6 +10962,53 @@
         }
       }
     },
+    "/api/pool/rename": {
+      "post": {
+        "tags": [
+          "pool"
+        ],
+        "summary": "Rename a global pool's display name while keeping its profile ID, routing, bounds and task assignments unchanged. Saves the name to the profile source with a backup and emits pool.renamed. Backs `aq pool rename`.",
+        "description": "Rename a global pool's display name while keeping its profile ID, routing, bounds and task assignments unchanged. Saves the name to the profile source with a backup and emits pool.renamed. Backs `aq pool rename`.",
+        "operationId": "pool_rename",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PoolRenameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoolRenameResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/pool/scale": {
       "post": {
         "tags": [
@@ -51386,6 +51433,88 @@
         "title": "PoolProviderUnavailable",
         "description": "The pool's provider is unavailable, so it is sized to zero (provider-failover D13).\n\nDistinct from ``placement_starved``: nothing is wrong with the pool, its\nprojects or their workspaces -- the login it draws on is down."
       },
+      "PoolRenameRequest": {
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id",
+            "description": "Stable pool profile ID."
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Display name: 1\u2013120 characters, without control characters."
+          }
+        },
+        "type": "object",
+        "required": [
+          "profile_id",
+          "name"
+        ],
+        "title": "PoolRenameRequest"
+      },
+      "PoolRenameResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed",
+            "default": false
+          },
+          "backup_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backup Path"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "PoolRenameResponse"
+      },
       "PoolScaleRequest": {
         "properties": {
           "project_id": {
@@ -51743,6 +51872,11 @@
           "profile_id": {
             "type": "string",
             "title": "Profile Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": ""
           },
           "service_tier": {
             "anyOf": [

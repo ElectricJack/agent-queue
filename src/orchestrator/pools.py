@@ -211,17 +211,17 @@ class PoolsMixin:
     ) -> set[str]:
         return set(await self._pool_profiles(project_id, system_profiles=system_profiles))
 
-    async def _delivery_admission(self, task_ids):
+    async def _delivery_admission(self, task_ids, *, cached_only=False):
         from src.integration.admission import observe_admission
         from src.integration.development import DevelopmentPrimitives
 
         service = getattr(self, "development_integration", None)
         if service is None:
             service = DevelopmentPrimitives(self.db, data_dir=self.config.data_dir, git=self.git)
-        return await observe_admission(self.db, task_ids, service)
+        return await observe_admission(self.db, task_ids, service, cached_only=cached_only)
 
     async def _measure_pools(
-        self, project_ids: set[str] | None = None, *, hierarchy_modes=None
+        self, project_ids: set[str] | None = None, *, hierarchy_modes=None, for_display=False,
     ) -> PoolMeasurement:
         """One :class:`PoolMeasurement` for every pool profile, this tick.
 
@@ -241,12 +241,16 @@ class PoolsMixin:
         One ``list_profiles()`` and one ``list_sessions()`` serve the whole
         tick.  The same rows are available to the status endpoint, which
         needs the full pool session list even when no project is active.
+        ``for_display`` restricts Git evidence to the observer's cache; actual
+        sizing and claim admission retain their existing freshness checks.
         """
         measurement = PoolMeasurement()
         if hierarchy_modes is None:
             from src.integration.delivery_observer import hierarchy_frontier_modes
 
-            hierarchy_modes = await hierarchy_frontier_modes(self.db, project_ids=project_ids)
+            hierarchy_modes = await hierarchy_frontier_modes(
+                self.db, project_ids=project_ids, cached_only=for_display,
+            )
         # Keep this snapshot even if a launch finishes during the DB reads.
         # Its durable session is either in the rows below or counted here.
         pending_launches = tuple(getattr(self, "_pool_launches", {}).values())
@@ -289,7 +293,8 @@ class PoolsMixin:
             if project.hierarchical_integration_mode == "development":
                 from src.integration.admission import structural_candidates
                 batch = await self._delivery_admission(
-                    await structural_candidates(self.db, project.id)
+                    await structural_candidates(self.db, project.id),
+                    **({"cached_only": True} if for_display else {}),
                 )
                 allowed = batch.allowed
             # Demand is claimable work only (mandatory routing §9.1): an

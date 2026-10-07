@@ -305,7 +305,98 @@ async def test_status_and_explanations_agree_with_git(world):
         assert delivery_blockers == ([UNDELIVERED[tid]] if tid in UNDELIVERED else [])
 
 
+@pytest.mark.parametrize("cache_state", ["cold", "warm", "expired", "stale"])
+async def test_explain_and_pool_status_only_read_cached_development_delivery(
+    world, tmp_path, monkeypatch, cache_state,
+):
+    from src.commands.handler import CommandHandler
+    from src.config import AppConfig, DatabaseConfig, DiscordConfig
+    from src.integration.delivery_observer import DeliveryTarget
+    from src.models import AgentProfile
+    from src.orchestrator import Orchestrator
 
+    db, origin, observer, service = world
+    service.git = observer.git
+    service._delivery_observer = observer
+    config = AppConfig(
+        database=DatabaseConfig(url=lease_dsn("delivery-consumers.db")),
+        discord=DiscordConfig(bot_token="test", guild_id="123"), data_dir=str(tmp_path / "data"),
+    )
+    config.swarm.enabled = True
+    orch = Orchestrator(config)
+    orch.db, orch.git, orch.development_integration = db, observer.git, service
+    handler = CommandHandler(orch, config)
+    await db.create_profile(AgentProfile(
+        id="worker", name="Worker", lifecycle="pool", default_class="fast-low", harness="claude",
+    ))
+    await db.create_task(Task(
+        id="waiting", project_id="p", repo_id="r", title="waiting", description="",
+        status=TaskStatus.READY, profile_id="worker", route_source="override",
+        intelligence_class="fast-low",
+    ))
+    await db.add_dependency("waiting", "done")
+    await db.add_dependency("waiting", "reopened")
+    if cache_state != "cold":
+        await observer.observe(["done", "reopened"])
+    if cache_state == "expired":
+        observer._recent = {target: (stamp - observer.READ_MAX_AGE - 1, snapshot)
+                            for target, (stamp, snapshot) in observer._recent.items()}
+    if cache_state == "stale":
+        snapshot = await observer.snapshot(
+            DeliveryTarget("p", "r", origin.url, "refs/heads/main"),
+            max_age=observer.READ_MAX_AGE,
+        )
+        base = git(origin.clone, "rev-list", "--max-parents=0", "origin/main")
+        git(origin.clone, "push", "--force", "origin", f"{base}:main")
+        assert not await snapshot.is_fresh()
+
+    forbidden = {}
+    for name in ("afetch_origin", "acreate_checkout", "als_remote_ref", "als_remote_refs"):
+        forbidden[name] = AsyncMock(side_effect=AssertionError(f"diagnostic called {name}"))
+        monkeypatch.setattr(observer.git, name, forbidden[name])
+    result = await handler._cmd_explain_task({"task_id": "waiting"})
+    delivery = [reason for reason in result["reasons"]
+                if reason["code"] == "development_dependency_delivery"]
+    assert "awaiting_pool_session" in result["reason_codes"]
+    if cache_state == "warm":
+        assert [reason["ref"] for reason in delivery] == ["reopened"]
+        assert "pending" in delivery[0]["detail"]
+    else:
+        assert {reason["ref"] for reason in delivery} == {"done", "reopened"}
+        assert all("snapshot_unavailable" in reason["detail"] for reason in delivery)
+    status = await handler._cmd_pool_status({})
+    assert next(row for row in status["pools"] if row["profile_id"] == "worker")["ready"] == 0
+    for call in forbidden.values():
+        call.assert_not_awaited()
+
+
+async def test_cached_display_delivery_never_supplies_fresh_admission(world, monkeypatch):
+    from src.integration.admission import observe_admission
+
+    db, origin, observer, service = world
+    service.git = observer.git
+    service._delivery_observer = observer
+    await db.create_task(Task(
+        id="waiting", project_id="p", repo_id="r", title="waiting", description="",
+        status=TaskStatus.READY,
+    ))
+    await db.add_dependency("waiting", "done")
+    await observer.observe(["done"])
+    base = git(origin.clone, "rev-list", "--max-parents=0", "origin/main")
+    git(origin.clone, "push", "--force", "origin", f"{base}:main")
+
+    fetch = AsyncMock(wraps=observer.git.afetch_origin)
+    monkeypatch.setattr(observer.git, "afetch_origin", fetch)
+    display = await observe_admission(db, ["waiting"], service, cached_only=True)
+    assert "waiting" in display.allowed  # The rewind has not been observed yet.
+    fetch.assert_not_awaited()
+
+    admission = await observe_admission(db, ["waiting"], service)
+    fetch.assert_awaited_once()
+    assert "waiting" not in admission.allowed
+    assert admission.reasons["waiting"][0]["code"] == "development_dependency_delivery"
+    assert "pending" in admission.reasons["waiting"][0]["detail"]
+    assert admission.snapshots[0] is not display.snapshots[0]
 
 async def test_branch_cleanup_holds_what_git_cannot_prove(world):
     _db, _origin, _observer, service = world

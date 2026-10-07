@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import dataclasses
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -393,6 +395,141 @@ async def test_vault_write_failure_retains_db_first_command_behavior(
     assert (await handler.db.get_profile("worker")).max_active == 7
     assert path.read_text(encoding="utf-8") == markdown
     assert "changes applied to the agent_profiles row only" in caplog.text
+
+
+async def test_rename_preserves_profile_routes_assignments_and_audits_backup(handler):
+    path = Path(handler.config.data_dir) / "vault/agent-types/worker/profile.md"
+    original = path.read_bytes()
+    before = await handler.db.get_profile("worker")
+    await handler.db.create_task(Task(
+        id="held", project_id="a", title="Held", description="Work",
+        status=TaskStatus.IN_PROGRESS, profile_id="worker", route_source="override",
+    ))
+    held = await session(handler, "held-session", task_id="held")
+    events = []
+    handler.orchestrator.bus.subscribe("pool.renamed", lambda payload: events.append(payload))
+    result = await handler._cmd_pool_rename({"profile_id": "worker", "name": " Space Bunny "})
+
+    assert result["success"] and result["changed"]
+    assert result["profile_id"] == "worker"
+    assert (await handler.db.get_profile("worker")) == dataclasses.replace(before, name="Space Bunny")
+    assert (await handler.db.get_task("held")).profile_id == "worker"
+    assert (await handler.db.get_session(held.id)) == held
+    assert Path(result["backup_path"]).read_bytes() == original
+    renamed = parse_profile(path.read_text(encoding="utf-8"))
+    assert renamed.frontmatter.name == "Space Bunny"
+    assert renamed.config == parse_profile(original.decode()).config
+    payload = {
+        "profile_id": "worker", "old_name": "Worker", "name": "Space Bunny",
+        "backup_path": result["backup_path"],
+    }
+    audit = await handler.db.get_recent_events(event_type="pool.renamed")
+    assert len(audit) == 1 and json.loads(audit[0]["payload"]) == payload
+    assert len(events) == 1 and events[0]["seq"] == audit[0]["id"]
+    assert validate_payload("pool.renamed", payload) == []
+    status = await handler._cmd_pool_status({})
+    assert next(row for row in status["pools"] if row["profile_id"] == "worker")["name"] == "Space Bunny"
+    profiles = await handler._cmd_list_profiles({})
+    assert next(row for row in profiles["profiles"] if row["id"] == "worker")["name"] == "Space Bunny"
+
+
+async def test_rename_keeps_derived_stub_and_survives_vault_resync(handler):
+    root = Path(handler.config.data_dir) / "vault/agent-types"
+    path = root / "worker/profile.md"
+    template = root / "template/profile.md"
+    template.parent.mkdir()
+    template.write_bytes(path.read_bytes().replace(b"id: worker", b"id: template"))
+    markdown = '''---
+id: worker
+name: Worker
+extends: template
+tags: [derived, operator]
+custom: keep
+---
+# Authored title
+## Config
+```json
+{"default_class": "standard-high", "lifecycle": "pool", "min_active": 2, "max_active": 7}
+```
+## Operator notes
+Keep this section verbatim.
+'''
+    path.write_text(markdown, encoding="utf-8")
+    assert (await sync_profile_text_to_db(markdown, handler.db, source_path=str(path))).success
+    before = await handler.db.get_profile("worker")
+    result = await handler._cmd_pool_rename({
+        "profile_id": "worker", "name": 'OpenCode · Space Bunny: [High] "\\pilot"',
+    })
+    assert result["success"], result
+    written = path.read_text(encoding="utf-8")
+    assert written.split("---", 2)[2] == markdown.split("---", 2)[2]
+    parsed = parse_profile(written)
+    assert parsed.frontmatter.extends == "template"
+    assert parsed.frontmatter.name == result["name"]
+    assert (await handler.db.get_profile("worker")) == dataclasses.replace(before, name=result["name"])
+    assert (await sync_profile_text_to_db(written, handler.db, source_path=str(path))).success
+    assert (await handler.db.get_profile("worker")) == dataclasses.replace(before, name=result["name"])
+
+
+@pytest.mark.parametrize("name", [None, 123, "", "  ", "x" * 121, "hello\nworld", "hi\x7f"])
+async def test_invalid_rename_writes_nothing(handler, name):
+    path = Path(handler.config.data_dir) / "vault/agent-types/worker/profile.md"
+    before = await handler.db.get_profile("worker")
+    original = path.read_bytes()
+    result = await handler._cmd_pool_rename({"profile_id": "worker", "name": name})
+    assert result["success"] is False
+    assert path.read_bytes() == original
+    assert (await handler.db.get_profile("worker")) == before
+    assert list(path.parent.glob("*.bak-*")) == []
+    assert await handler.db.get_recent_events(event_type="pool.renamed") == []
+
+
+async def test_rename_requires_existing_global_pool_and_name(handler):
+    for profile_id in (None, "", "missing", "../worker", "project:a:worker"):
+        result = await handler._cmd_pool_rename({"profile_id": profile_id, "name": "New"})
+        assert result["success"] is False
+    await set_pool_lifecycle(handler, {"profile_id": "worker", "lifecycle": "task"})
+    assert (await handler._cmd_pool_rename({"profile_id": "worker", "name": "New"}))["success"] is False
+
+
+async def test_rename_database_only_profile_is_backed_up_and_unchanged_name_is_noop(handler):
+    path = Path(handler.config.data_dir) / "vault/agent-types/worker/profile.md"
+    path.unlink()
+    before = await handler.db.get_profile("worker")
+    result = await handler._cmd_pool_rename({"profile_id": "worker", "name": "x" * 120})
+    assert result["success"]
+    assert json.loads(Path(result["backup_path"]).read_text()) == dataclasses.asdict(before)
+    assert not path.exists()
+    repeated = await handler._cmd_pool_rename({"profile_id": "worker", "name": "x" * 120})
+    assert repeated["success"] and not repeated["changed"]
+    assert len(await handler.db.get_recent_events(event_type="pool.renamed")) == 1
+
+
+@pytest.mark.parametrize("failure", ["backup", "write", "audit"])
+async def test_rename_failure_keeps_original_name_and_source(handler, monkeypatch, failure):
+    from src.profiles import drift
+
+    path = Path(handler.config.data_dir) / "vault/agent-types/worker/profile.md"
+    before = await handler.db.get_profile("worker")
+    original = path.read_bytes()
+    real_write = drift._atomic_write_bytes
+
+    def refuse_write(target, data, **kwargs):
+        if (failure == "backup" and ".bak-" in target) or (
+            failure == "write" and target == str(path)
+        ):
+            raise PermissionError("read-only vault")
+        return real_write(target, data, **kwargs)
+
+    if failure == "audit":
+        monkeypatch.setattr(handler.db, "log_event", AsyncMock(side_effect=RuntimeError("audit down")))
+    else:
+        monkeypatch.setattr(drift, "_atomic_write_bytes", refuse_write)
+    result = await handler._cmd_pool_rename({"profile_id": "worker", "name": "New"})
+    assert result["success"] is False
+    assert (await handler.db.get_profile("worker")) == before
+    assert path.read_bytes() == original
+    assert await handler.db.get_recent_events(event_type="pool.renamed") == []
 
 
 @pytest.mark.parametrize(

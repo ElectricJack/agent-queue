@@ -944,6 +944,7 @@ class ProviderRerouteService:
         failover: Sequence[Decision],
         *,
         explaining_task_id: str | None = None,
+        pool_measure: Callable[[], Awaitable[Any]] | None = None,
     ) -> list[Decision]:
         """The capacity spill pass (D24 S3-S6) over one pool measurement.
 
@@ -990,7 +991,7 @@ class ProviderRerouteService:
             ]
             if not rows:
                 return []
-            measurement = await self._pool_measure()
+            measurement = await (pool_measure or self._pool_measure)()
             global_cap = self._pool_global_cap() if self._pool_global_cap is not None else None
             view = with_incoming_moves(
                 capacity_view_from_measurement(
@@ -1485,7 +1486,9 @@ class ProviderRerouteService:
 
     # -- derived answers ----------------------------------------------------------
 
-    async def spill_state(self, task: Any) -> dict[str, Any] | None:
+    async def spill_state(
+        self, task: Any, *, pool_measure: Callable[[], Awaitable[Any]] | None = None,
+    ) -> dict[str, Any] | None:
         """Read-only spill state for a READY frontier task waiting on a pool (D24 S8).
 
         Plan the same queues as an automatic sweep, including its failover
@@ -1507,7 +1510,9 @@ class ProviderRerouteService:
         if candidates:
             ctx.stats = await self.db.task_reroute_stats([c.task_id for c in candidates])
         failover = plan_sweep(candidates, ctx)
-        decisions = await self._plan_spill(ctx, failover, explaining_task_id=task.id)
+        decisions = await self._plan_spill(
+            ctx, failover, explaining_task_id=task.id, pool_measure=pool_measure,
+        )
         mine = next((d for d in decisions if d.task_id == task.id), None)
         if mine is None or mine.action == "skip":
             return None

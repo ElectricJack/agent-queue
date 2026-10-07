@@ -766,6 +766,29 @@ async def test_get_task_reports_delivery_for_an_epic_only(db, tmp_path):
     assert leaf.delivery_status is None
 
 
+async def test_get_task_cold_delivery_cache_reports_unavailable_without_network(db, tmp_path):
+    await _plain_epic(db)
+    await _close_epic(db, "close-parent-1")
+    transport = GitManager()
+    transport.afetch_origin = AsyncMock(side_effect=AssertionError("diagnostics must not fetch"))
+    transport.acreate_checkout = AsyncMock(side_effect=AssertionError("must not clone"))
+    transport.als_remote_ref = AsyncMock(side_effect=AssertionError("must not query remote"))
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "observer")
+    db.set_delivery_observer(observer)
+    orch = MagicMock(db=db)
+    orch._emit_notify = AsyncMock()
+    config = MagicMock(vault_root=str(tmp_path / "vault"))
+    handler = CommandHandler(orch, config)
+    result = await handler._cmd_get_task({"task_id": "parent"})
+    delivery = result["delivery_status"]
+    assert (delivery["state"], delivery["evidence"]) == ("unknown", "unavailable")
+    assert "Delivery evidence not loaded yet" in delivery["reason"]
+    assert "nothing is recorded" not in delivery["reason"]
+    transport.afetch_origin.assert_not_awaited()
+    transport.acreate_checkout.assert_not_awaited()
+    transport.als_remote_ref.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # The observer wiring: asked outside the read, identity rechecked after it
 # ---------------------------------------------------------------------------

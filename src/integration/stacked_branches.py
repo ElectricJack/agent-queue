@@ -115,6 +115,7 @@ class StackView:
     snapshot: object = None
     ref_cache: dict = field(default_factory=dict, repr=False)
     fresh_max_age: float = 0
+    cached_only: bool = False
 
     async def fresh(self):
         if self.snapshot is None:
@@ -138,6 +139,8 @@ class StackView:
                 refs[branch] = cached[1]
             else:
                 missing.append(branch)
+        if self.cached_only and missing:
+            return False
         try:
             if await snapshot.git.aget_remote_url(snapshot.store) != snapshot.repository_url:
                 return False
@@ -189,7 +192,8 @@ class StackView:
         return {row["task_id"] for row in self.rows if row["dependent"] == task_id}
 
 
-async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snapshot=None):
+async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snapshot=None,
+                         cached_only=False):
     async with observer.db._engine.connect() as conn:
         rows = await _inputs(conn, project_id, task_id)
         parents = dict(
@@ -216,7 +220,8 @@ async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snaps
             .one_or_none()
         )
     view = StackView(observer.db, project_id, rows,
-                     ref_cache=observer._stack_ref_cache, fresh_max_age=min(max_age, 2))
+                     ref_cache=observer._stack_ref_cache, fresh_max_age=min(max_age, 2),
+                     cached_only=cached_only)
     if not rows or repository is None:
         return view
     target = DeliveryTarget(
@@ -225,7 +230,7 @@ async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snaps
         repository["url"],
         "refs/heads/" + repository["default_branch"],
     )
-    view.snapshot = snapshot or await observer._snapshot(target, max_age)
+    view.snapshot = snapshot or await observer._snapshot(target, max_age, cached_only=cached_only)
     if (view.snapshot.project_id, view.snapshot.repository_id, view.snapshot.repository_url) != (
         project_id, repository["id"], repository["url"],
     ):
@@ -1074,10 +1079,6 @@ class EpicRefresh:
         row, target, observed, result = await self.inspect(task.parent_task_id)
         from src.integration.train_sources import DatabaseBatches
 
-        current = await DatabaseBatches(self.db).current(target)
-        if current is not None:
-            raise EpicRefreshPending(f"epic refresh pending: {current.id}")
-
         async def contains_prerequisites():
             from src.integration.delivery_truth import DeliveryState
 
@@ -1098,6 +1099,11 @@ class EpicRefresh:
 
         refreshed = {}
         if not await contains_prerequisites():
+            # Only a child that needs the refresh waits on the epic's open batch;
+            # one whose epic already holds every cross-epic source starts now.
+            current = await DatabaseBatches(self.db).current(target)
+            if current is not None:
+                raise EpicRefreshPending(f"epic refresh pending: {current.id}")
             refreshed = await self.refresh(task.parent_task_id, dry_run=False)
             if refreshed["outcome"] == "pending":
                 raise EpicRefreshPending(f"epic refresh pending: {refreshed['batch_id']}")

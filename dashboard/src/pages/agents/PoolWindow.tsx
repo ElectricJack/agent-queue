@@ -1,10 +1,12 @@
-import { useEffect, useId, useState } from "react";
+import { useId } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { CommandLineIcon, Cog6ToothIcon } from "@heroicons/react/24/outline";
 import { PoolInstanceTerminal } from "./AgentTerminal";
 import { PoolBadge, PoolOutsidePools, PoolPlacementRow, PoolQuarantine, PoolSupplyRow } from "./PoolMetadata";
 import PoolProjects from "./PoolProjects";
 import PoolScaleFields from "./PoolScaleFields";
-import { formatIdle, type PoolEntry } from "./pools";
+import PoolNameFields from "./PoolNameFields";
+import { formatIdle, poolDisplayName, type PoolEntry } from "./pools";
 import TerminalPane, { TerminalTabs } from "../../components/TerminalPane";
 
 function instanceLabel(instance: PoolEntry["instances"][number]) {
@@ -27,7 +29,7 @@ function InstancePicker({ entry, instance, onChange, compact = false }: {
   const id = useId();
   return (
     <label className={compact ? "flex w-32 min-w-11 shrink items-center" : "mt-1 flex min-w-0 items-center gap-2 text-[10px] text-gray-500"} htmlFor={id}>
-      <span className={compact ? "sr-only" : undefined}>{compact ? "Terminal for " + entry.pool.profile_id + " pool" : "Instance"}</span>
+      <span className={compact ? "sr-only" : undefined}>{compact ? "Terminal for " + poolDisplayName(entry.pool) + " pool" : "Instance"}</span>
       <select data-primary-control id={id} value={instance?.id ?? ""}
         title={instance ? instanceLabel(instance) : undefined}
         onChange={(event) => onChange(event.target.value || null)}
@@ -45,25 +47,28 @@ function InstancePicker({ entry, instance, onChange, compact = false }: {
  * user has selected. Unlike a fixed worker a pool has no single session — the
  * terminal and the instance metadata in the disclosure follow the selection.
  */
-export default function PoolWindow({ entry, instanceId, onInstanceChange, onClose, resetToken, focusRequest }: {
+export default function PoolWindow({ entry, instanceId, onInstanceChange, onClose, focusRequest }: {
   entry: PoolEntry;
   instanceId: string | null;
   onInstanceChange: (instanceId: string | null) => void;
   onClose: () => void;
-  resetToken: string | null;
   focusRequest: string | null;
 }) {
-  const [tab, setTab] = useState<"terminal" | "settings">("terminal");
+  const [params, setParams] = useSearchParams();
+  const tab = params.get("pool-view") === "settings" ? "settings" : "terminal";
+  const setTab = (next: "terminal" | "settings") => {
+    const search = new URLSearchParams(params);
+    if (next === "settings") search.set("pool-view", next);
+    else search.delete("pool-view");
+    setParams(search);
+  };
   const id = useId();
-  useEffect(() => {
-    if (resetToken || focusRequest) setTab("terminal");
-  }, [resetToken, focusRequest]);
 
   const { pool, projects, instances } = entry;
   // A pinned instance can drain away between polls; fall back to the pool's
   // oldest live session rather than blanking the view.
   const instance = instances.find((row) => row.id === instanceId) ?? instances[0] ?? null;
-  const title = pool.profile_id + " pool";
+  const title = poolDisplayName(pool) + " pool";
 
   const tabs = [
     { id: "terminal" as const, label: "Terminal", Icon: CommandLineIcon },
@@ -109,6 +114,8 @@ export default function PoolWindow({ entry, instanceId, onInstanceChange, onClos
       <div role="tabpanel" id={id + "-panel"} aria-labelledby={id + "-title"} className="min-h-0 flex-1 overflow-hidden">
         {tab === "terminal" ? <PoolInstanceTerminal instance={instance} focusRequest={focusRequest} /> : (
           <div aria-label={title + " settings"} className="h-full space-y-4 overflow-auto p-4">
+            <Link to="/agents" className="inline-block text-xs text-indigo-300 hover:underline">Back to pools</Link>
+            <PoolNameFields pool={pool} />
             <p className="text-xs leading-relaxed text-gray-400">
               Lifecycle: <span className="text-gray-200">pool</span>. The daemon sizes this pool
               between the bounds below; individual instances are started and drained
