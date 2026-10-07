@@ -420,3 +420,20 @@ When a new agent type is created (profile.md saved for the first time), the syst
 copies matching starter knowledge from `templates/knowledge/{type}/` to the agent
 type's `memory/` folder if one exists. These starter files are tagged `#starter`
 and can be updated or removed as the agent accumulates real experience.
+
+### Routine worker verification and synchronization
+
+Worker templates grant side-effect-free `dry_run_playbook`, task children/progress,
+and Git status/log/diff/changed-files/branch reads. Dry-run events are pinned to
+the live held task and project, and AI execution remains simulated. Actual
+playbook execution, activation and human decisions retain their existing gates.
+
+`git_pull` may read main or a prerequisite branch into the worker's own assigned
+worktree, only while its current branch belongs to its live task. Repository
+credentials are selected from the task's authorized repository. Pull does not
+publish anything; guarded push and integration retain ownership of publication.
+
+Worker templates, like the supervisor, receive additive shipped capability
+updates on startup/profile reload. `capability_sync: false` opts out. Custom
+operator grants and other profile content are preserved; derived rungs inherit
+the updated template without rewriting their local overrides.

@@ -14,6 +14,7 @@ SESSION = RequestScope(kind="session", session_id="s1", task_id="t1", project_id
 #: the capability gate.
 EXPECTED_AGENT_COMMANDS = {
     "prime",
+    "dry_run_playbook",
     "get_schema",
     "task_show",
     "task_set",

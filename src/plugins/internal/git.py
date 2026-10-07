@@ -1084,8 +1084,20 @@ class GitPlugin(InternalPlugin):
             return err
         branch = args.get("branch") or None
         try:
+            repository_url = project.repo_url if project else None
+            principal = _worker_principal()
+            if principal is not None:
+                # The source may be main or a dependency; the destination must
+                # remain the live task's branch in its assigned worktree.
+                current_branch = await self._git.aget_current_branch(checkout_path)
+                if not current_branch:
+                    raise GitError("Worker pull requires an attached task branch")
+                publication = await self._worker_publication(
+                    principal, checkout_path, project, current_branch
+                )
+                repository_url = publication.repository_url
             pulled = await self._git.apull_branch(
-                checkout_path, branch, repository_url=project.repo_url if project else None
+                checkout_path, branch, repository_url=repository_url
             )
         except GitError as e:
             return {"error": str(e)}

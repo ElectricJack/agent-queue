@@ -45,6 +45,13 @@ git diff <base>..HEAD --stat
 git branch --show-current
 ```
 
+## Updating your task branch
+
+Use `aq git pull --branch main` (or the required dependency branch) to bring
+remote changes into your assigned worktree using daemon-managed credentials.
+The current checkout must still be your live task branch. This updates your
+branch locally; publication remains the guarded `aq git push` workflow.
+
 ## Committing your work
 
 Every task closes with commits on its branch. The typical pattern:

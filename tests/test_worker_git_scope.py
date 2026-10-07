@@ -606,3 +606,54 @@ async def test_conflict_commands_require_live_parent_repair(env, monkeypatch, co
     lookup.assert_awaited_once_with('t1', session_id='s1')
     await db.update_task('t1', status=TaskStatus.COMPLETED)
     assert await check_request_scope(command, args, scope, db=db) is not None
+
+
+async def test_worker_pull_updates_only_its_checkout(worker_git):
+    w = worker_git
+    w.git.aget_current_branch.return_value = "aq/calm-ember-48"
+    result = await w.handler.execute("git_pull", w.scoped(branch="main"))
+    assert "error" not in result
+    w.git.apull_branch.assert_awaited_once_with(
+        w.work_dir, "main", repository_url=_REPOSITORY,
+    )
+
+
+async def test_worker_pull_cannot_change_main_checkout(worker_git):
+    w = worker_git
+    w.git.aget_current_branch.return_value = "main"
+    result = await w.handler.execute("git_pull", w.scoped(branch="main"))
+    assert "not this session's task branch" in result["error"]
+    w.git.apull_branch.assert_not_awaited()
+
+
+async def test_worker_pull_scope_is_own_workspace(env):
+    db, scope = env
+    assert await check_request_scope("git_pull", {"branch": "main"}, scope, db=db) is None
+    assert await check_request_scope(
+        "git_pull", {"workspace": "base"}, scope, db=db,
+    ) == "out of scope: workspace mismatch"
+
+
+@pytest.mark.parametrize("event,invoke_ai,allowed", [
+    ({}, False, True),
+    ({"project_id": "other"}, False, False),
+    ({"task_id": "other"}, False, False),
+    ({}, True, False),
+])
+async def test_worker_dry_run_fences_synthetic_context(worker_git, event, invoke_ai, allowed):
+    from unittest.mock import AsyncMock, patch
+
+    w = worker_git
+    w.handler.config.playbooks.enabled = True
+    with patch.object(w.handler, "_run_v2_artifact", new=AsyncMock(return_value={"dry_run": True})) as run:
+        result = await w.handler.execute("dry_run_playbook", w.scoped(
+            playbook_id="routing", event=event, invoke_ai=invoke_ai,
+        ))
+    if allowed:
+        assert result == {"dry_run": True}
+        assert run.await_args.args[1]["project_id"] == "p"
+        assert run.await_args.args[1]["task_id"] == "t1"
+        assert run.await_args.kwargs == {"dry_run": True, "invoke_ai": False}
+    else:
+        assert "error" in result
+        run.assert_not_awaited()

@@ -137,8 +137,13 @@ def test_setting_reads_booleans_and_boolean_words():
     assert capability_sync_setting(_profile("x", [])) is None
 
 
-def test_only_the_supervisor_is_synced_by_default():
-    assert DEFAULT_SYNCED_PROFILE_IDS == {"supervisor"}
+def test_supervisor_and_worker_templates_are_synced_by_default():
+    assert DEFAULT_SYNCED_PROFILE_IDS == {"supervisor", "worker-claude", "worker-codex"}
+    for name in ("worker-claude", "worker-codex"):
+        assert capability_sync_enabled(name, _profile(name, []))
+        assert not capability_sync_enabled(
+            name, _profile(name, [], frontmatter="capability_sync: false\n")
+        )
     assert capability_sync_enabled("supervisor", _profile("supervisor", []))
     assert not capability_sync_enabled("reviewer", _profile("reviewer", []))
     assert not capability_sync_enabled(

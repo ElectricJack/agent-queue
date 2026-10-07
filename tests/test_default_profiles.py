@@ -225,8 +225,15 @@ def test_seeded_workers_have_publication_grants_without_supervisor_grants(tmp_pa
         assert not supervisor.allows_plugin_tool(command)
     for profile_id in WORKER_PROFILE_IDS:
         worker = policy_for(profile_id)
-        for command in ("git_create_pr", "git_push"):
+        for command in (
+            "git_create_pr", "git_push", "git_pull", "get_git_status", "git_log",
+            "git_diff", "git_branch", "git_changed_files",
+        ):
             assert worker.allows_plugin_tool(command), (profile_id, command)
+        for command in ("dry_run_playbook", "task_children", "task_progress"):
+            assert worker.allows_aq_command(command), (profile_id, command)
+        for command in ("run_playbook", "resume_playbook", "set_playbook_enabled"):
+            assert not worker.allows_aq_command(command), (profile_id, command)
 
 
 
