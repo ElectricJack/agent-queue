@@ -2399,3 +2399,21 @@ async def test_duplicate_approval_is_idempotent(case):
     )
     assert first == second
     assert len(await _rows(case["db"])) == 1
+
+
+async def test_train_review_uses_retained_git_without_legacy_settling(case):
+    from src.integration.repository_git import RepositoryGit
+
+    old = case["producer"].promotion
+    producer = ReviewEvidenceProducer(case["db"], RepositoryGit(
+        case["db"], data_dir=old.data_dir, git_manager=old.git,
+    ), clock=lambda: 1000.0)
+    evidence = await producer.snapshot_from_pull_request(
+        "e1", verdict="approved", reviewer_login="reviewer",
+        reviewed_sha=case["first"], github_review_id=99,
+    )
+    assert evidence["reviewed_head_sha"] == case["first"]
+    async with case["db"]._engine.connect() as conn:
+        schedule = (await conn.execute(select(project_integration_schedules))).mappings().one()
+    assert schedule["settling_first_approval_at"] is None
+    assert schedule["settling_fires_at"] is None

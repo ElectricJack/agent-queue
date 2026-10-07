@@ -290,7 +290,7 @@ async def test_orchestrator_owns_single_integration_service_loop(orch):
     )
 
 
-async def test_git_first_active_runs_the_train_instead_of_subject_runtimes(tmp_path):
+async def test_git_first_active_runs_the_train_instead_of_subject_runtimes(tmp_path, monkeypatch):
     config = AppConfig(
         database=DatabaseConfig(url=lease_dsn("train.db")),
         workspace_dir=str(tmp_path / "workspaces"),
@@ -298,6 +298,14 @@ async def test_git_first_active_runs_the_train_instead_of_subject_runtimes(tmp_p
     )
     config.worktrees.enabled = False
     config.integration.git_first = "active"
+    def legacy_constructor(*args, **kwargs):
+        raise AssertionError("active train constructed a retired publisher or scheduler")
+    for cls in (
+        "src.integration.scheduler.IntegrationScheduler.__init__",
+        "src.integration.promotion.PromotionService.__init__",
+        "src.integration.main_promotion.RootPromotionService.__init__",
+    ):
+        monkeypatch.setattr(cls, legacy_constructor)
     orch = Orchestrator(config, runtimes=MockAdapterFactory())
     from src.commands.handler import CommandHandler
 
@@ -311,6 +319,10 @@ async def test_git_first_active_runs_the_train_instead_of_subject_runtimes(tmp_p
             "success": True, "started": [], "running": [], "skipped": [], "deferred": [],
         }
         assert service._subject_runtime is None
+        assert orch.integration_scheduler is None
+        assert orch.promotion_service is None
+        assert orch.root_promotion_service is None
+        assert orch.integration_outbox._before_dispatch is None
         assert orch.parent_subject_runtime is None
         assert orch.development_subject_runtime is None
         # No parent runtime means no legacy collection episode either
