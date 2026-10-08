@@ -9830,13 +9830,13 @@
   },
   "storage_writer_review": {
     "counts": {
-      "ordinary": 196,
-      "retire": 18,
+      "ordinary": 197,
+      "retire": 19,
       "intent": 4
     },
     "sites": "tests/integration_ownership.json storage_sinks: complete reviewed call and owner AST identities.",
     "actual_audit_table": "events; op_events and operation_events are also scanned to prevent a renamed/new sink.",
-    "legacy": "integration_subject_journal append calls and direct insert are retirement findings. Duplicate merged_at, PR-base delivery annotations and repair-evidence metadata also retire.",
+    "legacy": "Integration subject journal append calls and direct inserts, plus explicit historical development.operation cancellation revisions, are retirement findings. Duplicate merged_at, PR-base delivery annotations and repair-evidence metadata also retire.",
     "ordinary": "Task status/completion identity, claims, holds, provider intent, resume keys, job records, audit events and refusal notes retain their ordinary owners. Generic dynamic metadata/event writes require review when their enclosing code changes.",
     "count_basis": "Current source call sites at the takeover review revision; historical baseline and landing remain fixed."
   },
@@ -9951,7 +9951,7 @@
     "task_metadata": "Generic key/value mechanism remains task-owned. Every direct SQL/metadata API writer has an audited call and enclosing-code identity; duplicate delivery/repair state is marked retire."
   },
   "takeover_review": {
-    "reviewed_revision": "abe4debe475b802a5c2895f23d8bf70488922933",
+    "reviewed_revision": "b6c82b36d0533ee12786ac43929476d9409a2b6c",
     "owned_definition_additions": 27,
     "refreshed_owner_fingerprints": 33,
     "new_storage_sites": {
@@ -9962,18 +9962,20 @@
       "src/integration/quiesce.py::TrainQuiesce.run::bba5a9b32fdbb8a1feca353b791766c5e46c29caa87665ba2236dd63e3be814b": "ordinary",
       "src/integration/quiesce.py::TrainQuiesce.run::c8bd8e346bc9e9a88d824b9c32abc9bc3203c20d2c9814ad165154e2fd57968d": "retire",
       "src/integration/train_sources.py::BackmergeAdmission.author::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": "intent",
-      "src/integration/mutation_recovery.py::ExpiredMutationRecovery.run::176aea4d5c84eb7ac1cf9fb5ee9b601fc81bea4aeb469555480653be0ecefd83": "ordinary"
+      "src/integration/mutation_recovery.py::ExpiredMutationRecovery.run::176aea4d5c84eb7ac1cf9fb5ee9b601fc81bea4aeb469555480653be0ecefd83": "ordinary",
+      "src/integration/legacy_park_retirement.py::LegacyParkRetirement.run::44714f7cb26e83228b185710d18977e72d64ead34c438f688b00c1ec53fbcd80": "ordinary",
+      "src/integration/legacy_park_retirement.py::LegacyParkRetirement.run::57e4b544bc5e42786ac058198da2d2363fe7a6cf9142fa03ec418ec9656f1247": "retire"
     },
     "current_owned_groups": {
       "shared": 47581,
-      "companions": 12515,
-      "engine": 87278,
+      "companions": 12573,
+      "engine": 87440,
       "policy_sources": 1999,
       "policy": 480,
       "ui": 333,
       "guards": 639
     },
-    "current_owned_total": 150825,
+    "current_owned_total": 151045,
     "current_table_count": 45,
     "unknown_definitions": [],
     "unknown_storage_sites": [],
@@ -9999,6 +10001,35 @@
       "added_file_fingerprints": 3,
       "new_storage_sites": [],
       "reason": "Manifest generation, App verification and functional preflight derive promotion attestation identities from the same bound stored flow. The command reads existing configuration; the pure helper validates and orders names. No metadata writer, replay journal, duplicate lifecycle state, storage classification, baseline or cap changed."
+    },
+    "historical_park_retirement_review": {
+      "reviewed_revision": "b6c82b36d0533ee12786ac43929476d9409a2b6c",
+      "definitions": [
+        "src/commands/contracts/integration.py::DESIGN_INTEGRATION_COMMANDS",
+        "src/commands/contracts/integration.py::IntegrationRetireLegacyParkArgs",
+        "src/commands/contracts/integration.py::IntegrationRetireLegacyParkArgs.exact_abandonment",
+        "src/commands/contracts/integration.py::IntegrationRetireLegacyParkValue",
+        "src/commands/contracts/integration.py::register_integration_contracts",
+        "src/commands/integration_commands.py::IntegrationCommandsMixin",
+        "src/commands/integration_commands.py::IntegrationCommandsMixin._cmd_integration_retire_legacy_park",
+        "src/integration/legacy_park_retirement.py::LegacyParkRetirement.<header>",
+        "src/integration/legacy_park_retirement.py::LegacyParkRetirement.__init__",
+        "src/integration/legacy_park_retirement.py::LegacyParkRetirement._inactive_on",
+        "src/integration/legacy_park_retirement.py::LegacyParkRetirement.run"
+      ],
+      "files": [
+        "src/commands/contracts/integration.py",
+        "src/commands/integration_commands.py",
+        "src/integration/legacy_park_retirement.py"
+      ],
+      "added_definition_fingerprints": 10,
+      "added_file_fingerprints": 3,
+      "new_storage_sites": {
+        "src/integration/legacy_park_retirement.py::LegacyParkRetirement.run::44714f7cb26e83228b185710d18977e72d64ead34c438f688b00c1ec53fbcd80": "ordinary",
+        "src/integration/legacy_park_retirement.py::LegacyParkRetirement.run::57e4b544bc5e42786ac058198da2d2363fe7a6cf9142fa03ec418ec9656f1247": "retire"
+      },
+      "reason": "The LOCAL-only control retires exactly previewed parked legacy records whose complete selected manifest is terminal and whose project has no active integration authority. Existing repository-engine, hierarchy and per-operation exclusions fence both writes. Prior journal revisions, Git refs, completions and branch-owner fences remain intact; no new tables, retained delivery mechanism, source admission, baseline or cap changed.",
+      "escalation_sweep_review": "The same measured revision includes historical escalation sweep reads and factual rule changes in src/escalations/sweep.py. The sweep remains outside the integration-owned definitions and introduces no new metadata or event writer. Current inventory contains no unreviewed storage site."
     }
   }
 }

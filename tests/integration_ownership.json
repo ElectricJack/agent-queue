@@ -12451,7 +12451,17 @@
     "9b90640428044dce0d644ccd5c95f5402cd64cc604c1296fb4e423ab6311bc0d",
     "49d41ecd0b5ea90d2b6e9ec6a16c31a8f53a271935bda68ad4f4816f560201e5",
     "3f4bf454a3c468b9f83b590df5b64ec811748036291f56a033974437087dca02",
-    "5bfac190a71cecec65c6994324d2e2f4af91a15539c86f3c4da6b6eb33a20ed5"
+    "5bfac190a71cecec65c6994324d2e2f4af91a15539c86f3c4da6b6eb33a20ed5",
+    "ec87af22e2207d7c93265080e1d7e42f3629ea6f2cf080030c7c48f7228c5f05",
+    "bbd8037d52316f5fed2666483a2b882e476cdd209b688db93678234ea7b688a6",
+    "766ea3585c37a123d3020ffd1f4b162a5c46f8a9365acb4e78f8e2f1e60650bc",
+    "9c91f69d4aa14902ab8493ad80e7c25070a6c7f693448d2856f540d069e9e4fa",
+    "fd761519149b8172bca8decd3faa461b3e633147867baae87f37738d4dee28d8",
+    "a8074dc55dc6127fd8aa1699d392e302cb59ea3ee562bab11ac56797070f4d5a",
+    "7894579034cb31d382049e421c250c51831a842f415fecb703cac92b69eccb65",
+    "d08f815399367803989e12a4173da7bf33f9f649689630ebd3c845d01ca3f94d",
+    "3fa55eb217b8841ab22ba7d722851c01a5936049d5b164a261d4debeed158b0c",
+    "7dad23cf19f18c3a2dc4170712eeda592fb74ab6192ea785591ca29cb48d36fd"
   ],
   "owned_file_fingerprints": [
     "020e0abc4dae8c8c3a3671fab609db3a5b1308dba6bd380a94fccfb591c63c4d",
@@ -12622,7 +12632,10 @@
     "ff91ab72b816695b830aae93767148b6cbc2fe8b2e22ef7edaef174f88011b1f",
     "cdac234e733089c6d5a67f266f16b14077d8da6c4b854055ecac94d47f662e86",
     "cd148efab0025ee9334cb5498d0250b38d900bf1ccccf8074a2c80fd002b7199",
-    "c0376fde08e4201e27631d01eac26a1400c65fe58322b6808e8d30e4af09df1c"
+    "c0376fde08e4201e27631d01eac26a1400c65fe58322b6808e8d30e4af09df1c",
+    "853935ae447d64e667902ef1d3031a306c0a6a2196bfee3e83393ca6be3e9763",
+    "c79ccc1f34a34a514acba33dc5a766f05c8fab81cf13fc0149ab78b01149c595",
+    "0fd0a0a34069c2e79b5510f495eaf1c6835f7fcb0203ac05799e7f631ff82327"
   ],
   "storage_sinks": {
     "src/api/host_shell.py::audit_host_shell::d71ee6e4a340780de2532bfca9177cd80d4b0ac848427deaa9ea807392a56034": {
@@ -14847,6 +14860,24 @@
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Transactional local-operator audit of expired legacy mutation read-back after proving the operation ended, nonce and branch/lease fences, no live writer, and a stable fresh remote target observation. Existing mutation state is settled from remote truth; the event grants no new authority, retries no mutation, and cannot replay refs."
+    },
+    "src/integration/legacy_park_retirement.py::LegacyParkRetirement.run::44714f7cb26e83228b185710d18977e72d64ead34c438f688b00c1ec53fbcd80": {
+      "line": 160,
+      "owner": "LegacyParkRetirement.run",
+      "call": "log_event",
+      "owner_fingerprint": "7dad23cf19f18c3a2dc4170712eeda592fb74ab6192ea785591ca29cb48d36fd",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary immutable operator audit of an exact preview-fenced historical source abandonment. It is written in the same exclusion transaction and is not ref replay, publication, task completion or delivery authority."
+    },
+    "src/integration/legacy_park_retirement.py::LegacyParkRetirement.run::57e4b544bc5e42786ac058198da2d2363fe7a6cf9142fa03ec418ec9656f1247": {
+      "line": 156,
+      "owner": "LegacyParkRetirement.run",
+      "call": "insert",
+      "owner_fingerprint": "7dad23cf19f18c3a2dc4170712eeda592fb74ab6192ea785591ca29cb48d36fd",
+      "integration_signal": true,
+      "disposition": "retire",
+      "reason": "Explicit LOCAL abandonment appends a cancelled revision to the existing legacy development.operation lifecycle journal after exact event/hash/full-manifest and inactive-authority checks. It preserves prior revisions and makes no delivery claim. This compatibility writer retires with the legacy journal and receives no final-phase allowance."
     }
   },
   "generic_dependencies": {
