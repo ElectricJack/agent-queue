@@ -72,3 +72,19 @@ activated artifact. The reviewed policy still owns requesting and superseding
 intents; observation never publishes a branch or bypasses approval. Private PR
 heads are created under the full forty-zero absent-ref lease; publication uses
 the observed full target OID.
+
+Promotion source admission may also use the committed manifest's optional
+`check_sets.promotion-source-audit`. It explicitly lists the full check names
+produced by the delivery-branch audit, `unattested-ci / <required name>`, for
+every check in the selected step's required set. This alternative applies only
+when every canonical required name is absent from a completed push run. A
+partially present canonical set or a real canonical failure cannot be replaced
+by audit success. The complete audit set must independently pass the existing
+exact-head, push-event, producer App and workflow-attempt checks. Missing,
+pending, failed or untrusted audit evidence still refuses admission.
+
+The source audit does not authorize publication or supply candidate evidence.
+Candidate checks, promotion attestation, private pinned PR CI and release
+approvals continue to require their configured exact names. Enabling the
+alternative requires committing its full named check set to the designated
+default branch and running daemon code that understands source admission.

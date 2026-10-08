@@ -19,7 +19,9 @@ name: Tests
 # `workflow_call` is the break-glass audit: `main-attestation.yml` calls this
 # workflow for a delivery-branch push that carries no valid branch attestation.
 # Its checks are named `unattested-ci / Tests (...)`, so they never collide
-# with the required check names the train observes on a candidate.
+# with the required check names the train observes on a candidate. A committed
+# promotion-source-audit check set may trust these names for source admission;
+# candidate CI and publication attestations still require the canonical names.
 on:
   pull_request:
     branches:
