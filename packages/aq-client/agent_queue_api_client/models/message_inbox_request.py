@@ -18,12 +18,15 @@ class MessageInboxRequest:
         to_kind (str): Recipient kind
         to_id (str): Recipient id
         inject (bool | Unset): Mark the returned messages delivered Default: False.
+        include_consumed (bool | Unset): Also return already-consumed messages (read-only; never changes delivery state)
+            Default: False.
         limit (int | None | Unset): Max rows (default 50, or max_inject_per_prompt when injecting)
     """
 
     to_kind: str
     to_id: str
     inject: bool | Unset = False
+    include_consumed: bool | Unset = False
     limit: int | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -33,6 +36,8 @@ class MessageInboxRequest:
         to_id = self.to_id
 
         inject = self.inject
+
+        include_consumed = self.include_consumed
 
         limit: int | None | Unset
         if isinstance(self.limit, Unset):
@@ -50,6 +55,8 @@ class MessageInboxRequest:
         )
         if inject is not UNSET:
             field_dict["inject"] = inject
+        if include_consumed is not UNSET:
+            field_dict["include_consumed"] = include_consumed
         if limit is not UNSET:
             field_dict["limit"] = limit
 
@@ -64,6 +71,8 @@ class MessageInboxRequest:
 
         inject = d.pop("inject", UNSET)
 
+        include_consumed = d.pop("include_consumed", UNSET)
+
         def _parse_limit(data: object) -> int | None | Unset:
             if data is None:
                 return data
@@ -77,6 +86,7 @@ class MessageInboxRequest:
             to_kind=to_kind,
             to_id=to_id,
             inject=inject,
+            include_consumed=include_consumed,
             limit=limit,
         )
 

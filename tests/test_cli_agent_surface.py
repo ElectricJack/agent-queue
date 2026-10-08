@@ -535,6 +535,28 @@ class TestInboxCLI:
         assert result.exit_code == 0
         get_client.assert_not_called()
 
+    def test_bare_hook_never_asks_for_consumed_mail(self, runner):
+        """The consumed re-read is opt-in: without the flag the hook asks for
+        exactly what it always asked for, so consumed bodies cannot re-enter
+        the context on every later prompt (fair-impact-65)."""
+        from src.cli.app import cli
+
+        with patch("src.cli.messages._get_client") as get_client:
+            result = runner.invoke(cli, ["inbox", "--inject"])
+        assert result.exit_code == 0
+        assert get_client.call_count == 0
+
+    def test_include_consumed_survives_hook_safety(self, runner):
+        """The flag is accepted on the hook form and still exits 0 with no
+        recipient — a stale hook file passing it must not break the prompt."""
+        from src.cli.app import cli
+
+        with patch("src.cli.messages._get_client") as get_client:
+            result = runner.invoke(cli, ["inbox", "--include-consumed"])
+        assert result.exit_code == 0
+        assert result.output == ""
+        get_client.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # aq subagent event — the SubagentStart / SubagentStop receiver

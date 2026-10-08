@@ -5570,7 +5570,10 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "List the pending (undelivered) messages for one recipient.  With "
             "inject=true it also marks them delivered and archives any rows "
-            "flagged archive_after_inject."
+            "flagged archive_after_inject.  include_consumed additionally "
+            "returns rows already delivered to this recipient, read-only, so a "
+            "worker whose inject consumed delivery before it could render the "
+            "bodies can still read them."
         ),
         "input_schema": {
             "type": "object",
@@ -5584,6 +5587,14 @@ _ALL_TOOL_DEFINITIONS = [
                 "inject": {
                     "type": "boolean",
                     "description": "Mark the returned messages delivered",
+                    "default": False,
+                },
+                "include_consumed": {
+                    "type": "boolean",
+                    "description": (
+                        "Also return already-consumed messages (read-only; never "
+                        "changes delivery state)"
+                    ),
                     "default": False,
                 },
                 "limit": {
