@@ -1315,6 +1315,7 @@ class IntegrationCommandsMixin:
         from src.git.github_contracts import GitHubAccessError, GitHubCredentialMode
         from src.integration import trust_manifest
         from src.integration.preflight import read_committed_trust_manifest
+        from src.integration.promotion_steps import read_stored_promotion_flow
 
         refusal, inputs = await self._integration_app_inputs(args)
         if refusal is not None:
@@ -1329,13 +1330,19 @@ class IntegrationCommandsMixin:
             )
 
         try:
+            # Project DTOs omit this column; the retained reader is also used
+            # by app-verify and functional preflight. Lightweight adapters may
+            # expose it directly when they have no database engine.
+            flow = await read_stored_promotion_flow(self.db, inputs["project_id"])
+            if flow is None:
+                flow = getattr(inputs["project"], "promotion_flow", None)
             manifest = trust_manifest.manifest_for_policy(
                 inputs["policy"],
                 canonical_repository_id=inputs["repository_id"],
                 repository_id=binding.repository_id,
                 full_name=binding.full_name,
                 attestation_app_id=identity.app_id,
-                promotion_flow=getattr(inputs["project"], "promotion_flow", None) or (),
+                promotion_flow=flow or (),
             )
         except trust_manifest.TrustManifestRefusal as exc:
             return _failure(exc.code, str(exc))

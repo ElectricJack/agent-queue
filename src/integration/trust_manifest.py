@@ -178,9 +178,7 @@ def manifest_for_policy(
             attestation_app_id=attestation_app_id,
             checks=list(required.get("names") or ()),
             check_version=required.get("version"),
-            promotion_attestation_names=tuple(dict.fromkeys(
-                step["gate"]["attestation"] for step in promotion_flow
-            )),
+            promotion_attestation_names=flow_attestation_names(promotion_flow),
             check_sets=check_sets,
         )
     except ValidationError as exc:
@@ -189,6 +187,22 @@ def manifest_for_policy(
         raise TrustManifestRefusal(
             "trust_manifest_invalid", f"the manifest would not validate: {exc}"
         ) from exc
+
+
+def flow_attestation_names(flow: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+    """The bound flow's trust identities, in chain order, without consulting Git."""
+    if not isinstance(flow, Sequence) or isinstance(flow, (str, bytes)):
+        raise TrustManifestRefusal("promotion_flow_invalid", "the stored promotion flow is invalid")
+    names = []
+    for step in flow:
+        gate = step.get("gate") if isinstance(step, Mapping) else None
+        name = gate.get("attestation") if isinstance(gate, Mapping) else None
+        if not isinstance(name, str) or not name:
+            raise TrustManifestRefusal(
+                "promotion_flow_invalid", "a stored promotion step has no attestation identity"
+            )
+        names.append(name)
+    return tuple(dict.fromkeys(names))
 
 
 def canonical_text(manifest: Mapping[str, Any]) -> str:
@@ -413,6 +427,7 @@ __all__ = [
     "build_trust_manifest",
     "canonical_text",
     "compare",
+    "flow_attestation_names",
     "manifest_for_policy",
     "policy_producer_app_id",
     "text_sha256",

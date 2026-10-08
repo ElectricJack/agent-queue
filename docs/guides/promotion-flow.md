@@ -48,6 +48,12 @@ whose repository default branch is already `dev`. It does not switch the
 default branch. Its committed trust manifest must allow the named promotion
 attestation and check set before validation can pass.
 
+For a configured flow, `aq integration trust-manifest` reads its stored
+attestation names. App verification, functional preflight and
+`aq doctor --check integration.trust` compare those same identities against
+the committed manifest. Missing or different promotion names remain a trust
+failure; projects without a flow keep the original manifest format.
+
 ```yaml
 promotion_flow:
   - id: release

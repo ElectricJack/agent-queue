@@ -9486,7 +9486,7 @@
         "integration-controls"
       ],
       "default_arm": true,
-      "digest": "sha256:76c4fa278e92e3850a1dd2e0eb511dde9880091da58bf2ab3179edfcb4f2ac74",
+      "digest": "sha256:1b7e7bd42268b4ca1c6f207d6cc94de2ac2d0ad8b97d8a51e74786d70e10e599",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -9497,10 +9497,12 @@
         "src.commands.contracts.registry",
         "src.commands.integration_commands",
         "src.commands.principal",
+        "src.database.tables",
         "src.git.github_contracts",
         "src.integration",
         "src.integration.ci",
         "src.integration.trust_manifest",
+        "src.models",
         "src.profiles.capabilities"
       ],
       "markers": [

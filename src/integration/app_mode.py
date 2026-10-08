@@ -412,6 +412,15 @@ async def _manifest(
             attestation_app_id=ctx.identity.app_id,
             checks=required.names,
             check_version=required.version,
+            promotion_attestation_names=trust_manifest.flow_attestation_names(
+                ctx.promotion_flow or ()
+            ),
+        )
+    except trust_manifest.TrustManifestRefusal as exc:
+        return (
+            AppModeItem("manifest", FAIL, (exc.code,), observed={"error": str(exc)},
+                        fix="review the stored promotion flow's attestation identities"),
+            None,
         )
     except ValidationError as exc:
         # The App would be its own producer: no manifest can express the policy.

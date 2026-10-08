@@ -518,6 +518,45 @@ async def test_every_item_is_ok_with_the_anchors_in_place(protected):
     assert all(f"?ref={SHA}" in path for path in client.paths if "/contents/" in path)
 
 
+@pytest.mark.parametrize("drift", [None, "missing", "another-attestation"])
+async def test_verify_and_preflight_compare_bound_promotion_identities(protected, monkeypatch, drift):
+    steps = [
+        {"id": "staging", "source": "main", "target": "staging",
+         "gate": {"attestation": "Agent Queue Promotion Attestation (staging)"}},
+        {"id": "release", "source": "staging", "target": "production",
+         "gate": {"attestation": "Agent Queue Promotion Attestation (release)"}},
+    ]
+    names = [step["gate"]["attestation"] for step in steps]
+    stored = AsyncMock(return_value=steps)
+    monkeypatch.setattr("src.integration.promotion_steps.read_stored_promotion_flow", stored)
+    client = FakeGitHub()
+    manifest = _manifest()
+    manifest["promotion_attestation_names"] = names.copy()
+    if drift == "missing":
+        manifest.pop("promotion_attestation_names")
+    elif drift == "another-attestation":
+        manifest["promotion_attestation_names"][1] = "Unconfigured release attestation"
+    client.files[trust_manifest.TRUST_MANIFEST_PATH] = trust_manifest.canonical_text(manifest)
+    result = await _handler(client)._cmd_integration_app_verify({"project_id": "agent-queue"})
+    item = next(item for item in result["items"] if item["id"] == "manifest")
+    preflight = await daemon_functional_preflight(
+        _orchestrator(client, _policy()), "agent-queue", "agent-queue2",
+    )
+    assert stored.await_count == 2
+    assert result["expected"]["manifest"]["promotion_attestation_names"] == names
+    if drift is None:
+        assert item["status"] == "ok"
+        assert "trust_manifest_mismatch" not in result["blockers"]
+        assert "trust_manifest_mismatch" not in preflight
+    else:
+        assert item["status"] == "fail"
+        assert [change["field"] for change in item["observed"]["diff"]] == [
+            "promotion_attestation_names",
+        ]
+        assert "trust_manifest_mismatch" in result["blockers"]
+        assert "trust_manifest_mismatch" in preflight
+
+
 async def test_expected_carries_the_manifest_the_variables_and_the_ruleset(protected):
     result = await _handler(FakeGitHub())._cmd_integration_app_verify(
         {"project_id": "agent-queue"}

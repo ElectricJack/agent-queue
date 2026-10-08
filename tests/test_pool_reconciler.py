@@ -290,9 +290,6 @@ async def test_stacked_frontier_agrees_for_scheduler_demand_explain_and_claim(
 
     env = git_first_frontier
     handler = CommandHandler(orch, orch.config)
-    # Slot reset is mocked in this fixture; fetch still uses real Git objects.
-    for workspace in await db.list_workspaces(PROJECT_ID):
-        env.git(env.origin.clone, "clone", env.origin.url, workspace.workspace_path)
     await db.update_project(PROJECT_ID, hierarchical_integration_policy={
         "prerequisite_branches": "stacked",
     })

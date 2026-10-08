@@ -285,13 +285,15 @@ BINDING = GitHubRepositoryBinding(1160639300, "ElectricJack/agent-queue")
 class _Client:
     repository = BINDING
 
-    def __init__(self, identity=None, committed: str | None = AGENT_QUEUE_MANIFEST):
+    def __init__(self, identity=None, committed: str | None = AGENT_QUEUE_MANIFEST,
+                 default_branch: str = "main"):
         self.credential_identity = identity or GitHubCredentialIdentity.app(5075923, 164874645)
         self.committed = committed
         self.paths: list[str] = []
+        self.default_branch = default_branch
 
     async def exact_head_ref(self, branch):
-        assert branch == "main"
+        assert branch == self.default_branch
         return SHA
 
     async def request_json(self, method, path):
@@ -354,6 +356,38 @@ async def test_command_renders_from_the_supplied_policy_and_compares_the_committ
     assert client.paths == [
         f"/repositories/1160639300/contents/.github/agent-queue-integration.json?ref={SHA}"
     ]
+
+
+async def test_command_reads_stored_flow_when_project_dto_omits_it(reuse_database):
+    from sqlalchemy import update
+    from src.database.tables import projects
+    from src.models import Project, RepoConfig, RepoSourceType
+
+    db = await reuse_database("trust-manifest-promotion-flow.db")
+    await db.create_project(Project(id="agent-queue", name="Agent Queue",
+                                   hierarchical_integration_policy=_policy()))
+    await db.create_repo(RepoConfig(id="agent-queue2", project_id="agent-queue",
+        source_type=RepoSourceType.CLONE, url="https://github.com/ElectricJack/agent-queue.git",
+        default_branch="dev"))
+    steps = [
+        {"id": "staging", "source": "dev", "target": "staging", **FLOW[0]},
+        {"id": "release", "source": "staging", "target": "main", **FLOW[1]},
+    ]
+    async with db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "agent-queue").values(
+            integration_repository_id="agent-queue2", promotion_flow=steps,
+        ))
+    assert not hasattr(await db.get_project("agent-queue"), "promotion_flow")
+    value = _handler(_Client(default_branch="dev"), bound_policy=_policy())
+    value.db = db
+    result = await value._cmd_integration_trust_manifest({"project_id": "agent-queue"})
+    assert result["success"]
+    assert result["text"] == AGENT_QUEUE_MANIFEST
+    assert result["manifest"]["promotion_attestation_names"] == [
+        step["gate"]["attestation"] for step in steps
+    ]
+    assert result["committed"]["ref"] == "dev"
+    assert result["committed"]["identity_equal"]
 
 
 async def test_command_defaults_to_the_bound_policy_and_the_designated_repository():
