@@ -15492,6 +15492,51 @@
       }
     },
     {
+      "path": "aq system integration-retire-legacy-park",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_retire_legacy_park",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--operation-id",
+          "--task-ids",
+          "--reason"
+        ],
+        "optional": [
+          "--expected-event-id",
+          "--expected-sha256",
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--task-ids"
+        ],
+        "nullable": [
+          "--expected-event-id",
+          "--expected-sha256"
+        ]
+      }
+    },
+    {
       "path": "aq system integration-retire-origin",
       "registration": "generated",
       "owner_kind": "core",

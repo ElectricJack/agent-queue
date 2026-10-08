@@ -13179,6 +13179,77 @@
         "type": "object"
       }
     },
+    "integration_retire_legacy_park": {
+      "name": "integration_retire_legacy_park",
+      "description": "Local operator abandons every explicitly selected source under an exact journal fence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "minLength": 1,
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Task Ids",
+            "type": "array"
+          },
+          "expected_event_id": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Event Id"
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Sha256"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id",
+          "operation_id",
+          "task_ids",
+          "reason"
+        ],
+        "title": "IntegrationRetireLegacyParkArgs",
+        "type": "object"
+      }
+    },
     "integration_retire_origin": {
       "name": "integration_retire_origin",
       "description": "Authenticated hierarchical integration operational control.",
