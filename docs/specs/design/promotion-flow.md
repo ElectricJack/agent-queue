@@ -61,3 +61,14 @@ Live activation configures the default branch and reviewed project policies;
 release requests still require their configured exact-head approval. The first
 live release and cross-project rollout are tracked separately. Legacy retirement
 remains pending operator testing and the observation gate.
+
+Continuous steps also observe their source on each train visit. An enabled,
+reviewed project activation receives a durable `promotion.source_settled` event
+once the current source is ahead of the target and its exact-head push checks
+are green under committed default-branch trust. Pending checks are observed again
+on later visits, including after restart or activation without a new settlement.
+Notifications are deduplicated by repository, source, step configuration and
+activated artifact. The reviewed policy still owns requesting and superseding
+intents; observation never publishes a branch or bypasses approval. Private PR
+heads are created under the full forty-zero absent-ref lease; publication uses
+the observed full target OID.
