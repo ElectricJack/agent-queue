@@ -9560,6 +9560,9 @@
     },
     "src/tools/definitions.py::_ALL_TOOL_DEFINITIONS[bind_project_repository]": {
       "reason": "Registers the operator-only first-repository binding command and its exact expected URL and audit reason; explicitly refuses reassignment and live integration."
+    },
+    "src/commands/project_onboarding_commands.py::ProjectOnboardingCommandsMixin._execute_onboard_project": {
+      "reason": "Onboarding command adapter injects integration_app_verify as the repository access verifier before first binding and initial publication. Delegates to the existing onboarding saga; adds no storage, delivery state or publication authority."
     }
   },
   "shared_state": {
@@ -10071,5 +10074,28 @@
     "unknown_storage_sites": [],
     "fixed_baseline_and_caps_unchanged": true,
     "reason": "Review first-repository binding refusal fences, the extracted guarded publication body and registration as integration-owned definitions. The one new storage site is an ordinary atomic authorization audit. No new table, replay authority, duplicate delivery state or baseline/cap change."
+  },
+  "onboarding_repository_verifier_review": {
+    "reviewed_source_revision": "7671106776f35eb06ccfaaa2b0fde1805f6f3ee1",
+    "definitions": [
+      "src/commands/project_onboarding_commands.py::ProjectOnboardingCommandsMixin._execute_onboard_project"
+    ],
+    "added_definition_fingerprints": 1,
+    "new_storage_sites": [],
+    "current_owned_groups": {
+      "shared": 47771,
+      "companions": 12602,
+      "engine": 87440,
+      "policy_sources": 1999,
+      "policy": 480,
+      "ui": 333,
+      "guards": 639
+    },
+    "current_owned_total": 151264,
+    "current_table_count": 45,
+    "unknown_definitions": [],
+    "unknown_storage_sites": [],
+    "fixed_baseline_and_caps_unchanged": true,
+    "reason": "Onboarding command adapter injects integration_app_verify as the repository access verifier before first binding and initial publication. Delegates to the existing onboarding saga; adds no storage, delivery state or publication authority."
   }
 }

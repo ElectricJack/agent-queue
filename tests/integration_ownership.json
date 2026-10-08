@@ -8489,6 +8489,9 @@
     },
     "src/tools/definitions.py::_ALL_TOOL_DEFINITIONS[bind_project_repository]": {
       "reason": "Registers the operator-only first-repository binding command and its exact expected URL and audit reason; explicitly refuses reassignment and live integration."
+    },
+    "src/commands/project_onboarding_commands.py::ProjectOnboardingCommandsMixin._execute_onboard_project": {
+      "reason": "Onboarding command adapter injects integration_app_verify as the repository access verifier before first binding and initial publication. Delegates to the existing onboarding saga; adds no storage, delivery state or publication authority."
     }
   },
   "exclusions": {
@@ -12477,7 +12480,8 @@
     "071777c03d37289868b2cd67a5ff1601dc139e1ae5f1f3d7c7aa5b809540a566",
     "4ce87725855d74849b80dacb7673dc0bf40f20fd96692b93fd2448247fc883a8",
     "5e4e4453f229f51afe40de46fe2ebd5c828531741dbdea6a9d20a1486e4db12d",
-    "6d92e2c93414ba9b2026990b22e7548192cf331be8dc9ac3e732aa5941da7531"
+    "6d92e2c93414ba9b2026990b22e7548192cf331be8dc9ac3e732aa5941da7531",
+    "a508f9baa931f86eec405d9bbab4e2af47f68c21af89fad1d8e895e8aec8e809"
   ],
   "owned_file_fingerprints": [
     "020e0abc4dae8c8c3a3671fab609db3a5b1308dba6bd380a94fccfb591c63c4d",
