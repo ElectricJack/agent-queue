@@ -6284,7 +6284,7 @@
         "escalations"
       ],
       "default_arm": true,
-      "digest": "sha256:17669e58c837522e92d350b5fbcf9297add4063c3bd00fe5bf53125f61ef23ad",
+      "digest": "sha256:c183f0014e0e47f40a4c60d1c6b7fe7aa191b1f738f03bd1a163421bdfb0df94",
       "imports": [
         "src.config",
         "src.database",
@@ -6295,7 +6295,9 @@
         "src.escalations.sweep",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "§5.6's back-fill sweep: the pile, the dry run, and what an apply leaves behind."
     },
     "tests/test_event_bus.py": {

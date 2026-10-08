@@ -353,14 +353,25 @@ aq doctor --check escalations.pile --fix
 What the sweep does, in order:
 
 1. resolve incidents whose gate has already resolved;
+   retire unanswered review notices only when the exact bound review is withdrawn
+   and its open gate has no waiters. The gate stays open and no document is approved;
 2. obsolete `supervisor_delivery` notices (the delivery backlog behind one has
    drained, or it never reached a decision point);
 3. obsolete questions whose task reached `COMPLETED`;
+   read archived tasks as well. A supervisor request bound to an archived task
+   is retired as historical, with its actual archived status recorded. An active
+   failed or blocked task continues to need its decision;
 4. obsolete the two provable cases among the task-less questions — an incident
    in a project that is not `ACTIVE`, and one whose own source record (a gate
    row) no longer exists — and send the rest to the supervisor's inbox for
    triage. Every remaining question keeps its `sweep: triage` audit row, so a
    second run lists nothing twice.
+
+The legacy missing-worker-knowledge-grants incident can also retire after both
+installed worker templates parse successfully and contain the exact missing
+knowledge commands and harness tools. Unknown supervisor sources still require
+triage. These additional proofs are read again before the closing write; a new
+waiter, restored task, changed review revision or removed grant prevents closure.
 
 It never guesses. A source kind it cannot resolve (`core`,
 `provider_availability`) is listed for triage rather than called retired, because

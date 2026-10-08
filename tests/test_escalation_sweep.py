@@ -22,11 +22,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, insert
 
 from src.config import DiscordConfig, DiscordEscalationsConfig
 from src.database import Database
-from src.database.tables import gates
+from src.database.tables import doc_reviews, gates
 from src.doctor.escalation_checks import CHECK_ID, escalation_checks
 from src.doctor.models import DoctorContext, Severity
 from src.doctor.runner import apply_fix
@@ -243,6 +243,115 @@ async def audit_rows(world, escalation_id):
         for message in await world.db.list_escalation_messages(escalation_id)
         if message["direction"] == AUDIT_DIRECTION
     ]
+
+
+async def historical_incident(world, *, task_id=None, source_kind="supervisor", identity="old"):
+    row, _ = await world.db.create_escalation(
+        id="esc-history", project_id="p", task_id=task_id, source_kind=source_kind,
+        source_identity=identity, incident_key="history", supervisor_owner="supervisor-p",
+        summary="Historical request", investigation="Preserved evidence",
+        decision_requested="Does this still need action?", severity="medium", now=NOW,
+    )
+    return row
+
+
+async def withdrawn_gate(world, *, state="withdrawn"):
+    gate_id, _ = await world.db.create_gate("p", "review", "Historical draft", await_id="rev-old")
+    async with world.db.immediate() as conn:
+        await conn.execute(insert(doc_reviews).values(
+            id="rev-old", project_id="p", kind="other", title="Historical draft",
+            vault_path="projects/p/specs/old.md", current_revision=1, state=state,
+            gate_id=gate_id, decider="user", created_at=NOW, updated_at=NOW,
+        ))
+    await historical_incident(world, source_kind="gate", identity=gate_id)
+    return gate_id
+
+
+async def test_withdrawn_review_notice_retires_without_resolving_its_gate(world):
+    gate_id = await withdrawn_gate(world)
+    engine = sweeper(world)
+    plan = await engine.plan()
+    assert plan.counts == {"withdrawn_review": 1}
+    assert (await world.db.get_escalation("esc-history"))["state"] == "needs_human"
+    report = await engine.apply(plan)
+    assert report.closed == 1 and report.audited == 1
+    assert (await world.db.get_gate(gate_id))["status"] == "open"
+    assert (await world.db.get_review("rev-old"))["state"] == "withdrawn"
+    assert (await engine.run(apply_changes=True))[1].closed == 0
+
+
+async def test_pending_review_notice_remains_a_live_decision(world):
+    await withdrawn_gate(world, state="in_review")
+    assert (await sweeper(world).plan()).items == ()
+
+
+@pytest.mark.parametrize("attach_after_plan", [False, True])
+async def test_withdrawn_review_with_a_waiter_is_not_retired(world, attach_after_plan):
+    gate_id = await withdrawn_gate(world)
+    await world.db.create_task(Task(id="waiter", project_id="p", title="Wait", description="Wait"))
+    engine = sweeper(world)
+    plan = await engine.plan() if attach_after_plan else None
+    async with world.db.immediate() as conn:
+        await world.db.attach_gate_waiters(gate_id, ["waiter"], conn=conn)
+    report = await engine.apply(plan or await engine.plan())
+    assert report.closed == 0
+    assert (await world.db.get_escalation("esc-history"))["state"] == "needs_human"
+    assert (await world.db.get_gate(gate_id))["status"] == "open"
+
+
+@pytest.mark.parametrize("status", [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED])
+async def test_archived_supervisor_task_request_retires_with_its_actual_status(world, status):
+    await world.db.create_task(Task(
+        id="old-task", project_id="p", title="Old task", description="Old work", status=status,
+    ))
+    await historical_incident(world, task_id="old-task")
+    assert (await sweeper(world).plan()).closable == ()
+    assert await world.db.archive_task("old-task")
+    engine = sweeper(world)
+    plan = await engine.plan()
+    assert plan.counts == {"archived_task": 1}
+    assert plan.items[0].evidence["archived_status"] == status.value
+    assert "not marked delivered" in plan.items[0].terminal_outcome
+    assert (await engine.apply(plan)).closed == 1
+
+
+async def test_archived_completed_question_uses_existing_task_terminal_rule(world):
+    await world.db.create_task(Task(
+        id="old-task", project_id="p", title="Old task", description="Old work",
+        status=TaskStatus.COMPLETED,
+    ))
+    await historical_incident(world, task_id="old-task", source_kind="question")
+    assert await world.db.archive_task("old-task")
+    assert (await sweeper(world).plan()).counts == {"task_terminal": 1}
+
+
+@pytest.mark.parametrize("missing_grant", [False, True])
+async def test_legacy_worker_grants_incident_requires_both_installed_templates(
+    world, tmp_path, missing_grant,
+):
+    import json
+
+    cfg = config()
+    cfg.vault_root = str(tmp_path)
+    for profile_id in ("worker-claude", "worker-codex"):
+        path = tmp_path / "agent-types" / profile_id / "profile.md"
+        path.parent.mkdir(parents=True)
+        commands = ["knowledge_show", "knowledge_context_deliver"]
+        if missing_grant and profile_id == "worker-codex":
+            commands.remove("knowledge_show")
+        capabilities = {"harness_tools": ["Bash"], "aq_commands": commands, "plugin_tools": []}
+        path.write_text(
+            f"---\nid: {profile_id}\nname: Worker\n---\n\n## Capabilities\n\n"
+            f"```json\n{json.dumps(capabilities)}\n```\n"
+        )
+    await historical_incident(world, identity="supervisor:worker-templates-knowledge-grants")
+    plan = await sweeper(world, cfg=cfg).plan()
+    assert bool(plan.closable) is not missing_grant
+    if not missing_grant:
+        assert plan.counts == {"worker_template_grants": 1}
+        # The profile evidence can change independently of the escalation revision.
+        path.unlink()
+        assert (await sweeper(world, cfg=cfg).apply(plan)).closed == 0
 
 
 # ======================================================================

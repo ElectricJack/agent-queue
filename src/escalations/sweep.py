@@ -50,6 +50,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from src.escalations.autoresolve import (
@@ -59,6 +60,7 @@ from src.escalations.autoresolve import (
     task_terminal_rule,
 )
 from src.escalations.facts import OPEN_STATES
+from src.profiles.parser import parse_profile
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +149,7 @@ class SweepFacts:
     #: ``None`` means "this module cannot see that source table at all", which is
     #: never the same thing.
     source_found: bool | None = None
-    #: The live task's status, or ``""`` when there is no task.  The
+    #: The active or archived task's status, or ``""`` when there is no task. The
     #: ``escalations.task_status`` snapshot is deliberately not read: it is a
     #: nullable copy of a fact that changes.
     task_status: str = ""
@@ -160,6 +162,10 @@ class SweepFacts:
     #: That is what makes step 4's listing idempotent, since triage changes no
     #: column on the incident itself.
     triaged: bool = False
+    review: Mapping[str, Any] | None = None
+    gate_waiters: tuple[str, ...] = ()
+    archived_task: Mapping[str, Any] | None = None
+    worker_template_grants: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -307,6 +313,80 @@ def task_terminal(
     return _decision_item(row, decision, reason="its task finished")
 
 
+def withdrawn_review(
+    row: Mapping[str, Any], facts: SweepFacts, ctx: RuleContext
+) -> SweepItem | None:
+    """Retire an unanswered notice, preserving the withdrawn review's open gate."""
+    gate, review = facts.gate, facts.review
+    if (
+        row.get("state") != "needs_human"
+        or row.get("source_kind") != "gate"
+        or not gate or not review or facts.gate_waiters
+        or gate.get("gate_type") != "review" or gate.get("status") != "open"
+        or review.get("state") != "withdrawn"
+        or gate.get("id") != row.get("source_identity")
+        or review.get("id") != gate.get("await_id")
+        or review.get("gate_id") != gate.get("id")
+        or review.get("project_id") != row.get("project_id")
+        or gate.get("project_id") != row.get("project_id")
+    ):
+        return None
+    return _item(
+        row, rule="withdrawn_review", action=ACTION_OBSOLETE, outcome="sweep",
+        new_state="cancelled",
+        terminal_outcome="Review withdrawn with no gate waiters; no decision remains pending.",
+        evidence={"review_id": review["id"], "revision": review["current_revision"],
+                  "review_state": "withdrawn", "gate_id": gate["id"],
+                  "gate_status_preserved": "open", "gate_waiters": []},
+        reason="its review was withdrawn and no task waits on its preserved gate",
+    )
+
+
+def archived_task(
+    row: Mapping[str, Any], facts: SweepFacts, ctx: RuleContext
+) -> SweepItem | None:
+    """An archived supervisor task no longer owns an executable recovery request."""
+    task = facts.archived_task
+    if (
+        row.get("state") != "needs_human"
+        or row.get("source_kind") not in {"supervisor", "supervisor_decision"}
+        or not task or task.get("id") != row.get("task_id")
+        or task.get("project_id") != row.get("project_id")
+        or task.get("status") not in {"COMPLETED", "FAILED", "BLOCKED"}
+        or not task.get("archived_at")
+    ):
+        return None
+    return _item(
+        row, rule="archived_task", action=ACTION_OBSOLETE, outcome="sweep",
+        new_state="cancelled",
+        terminal_outcome=(f"Source task {task['id']} archived ({task['status']}); "
+                          "its historical supervisor request is retired, not marked delivered."),
+        evidence={"task_id": task["id"], "archived_status": task["status"],
+                  "archived_at": task["archived_at"]},
+        reason="its source task was archived and has no active task row",
+    )
+
+
+def worker_template_grants(
+    row: Mapping[str, Any], facts: SweepFacts, ctx: RuleContext
+) -> SweepItem | None:
+    """Read back the installed grants for the legacy missing-knowledge-grants incident."""
+    if (
+        row.get("state") != "needs_human" or row.get("task_id")
+        or row.get("source_kind") != "supervisor"
+        or row.get("source_identity") != "supervisor:worker-templates-knowledge-grants"
+        or facts.worker_template_grants != ("worker-claude", "worker-codex")
+    ):
+        return None
+    return _item(
+        row, rule="worker_template_grants", action=ACTION_OBSOLETE, outcome="sweep",
+        new_state="cancelled", terminal_outcome="Both installed worker templates have knowledge grants.",
+        evidence={"profiles": list(facts.worker_template_grants),
+                  "required_commands": ["knowledge_show", "knowledge_context_deliver"]},
+        reason="the installed worker templates now provide the missing knowledge commands",
+    )
+
+
 def notice_delivered(
     row: Mapping[str, Any], facts: SweepFacts, ctx: RuleContext
 ) -> SweepItem | None:
@@ -427,7 +507,10 @@ def triage(
 #: closes nothing.
 SWEEP_RULES: tuple[Callable[..., SweepItem | None], ...] = (
     gate_resolved,
+    withdrawn_review,
     task_terminal,
+    archived_task,
+    worker_template_grants,
     notice_delivered,
     project_inactive,
     retired_source,
@@ -536,19 +619,51 @@ class EscalationSweeper:
         kind = str(row.get("source_kind") or "")
         identity = str(row.get("source_identity") or "")
         gate: Mapping[str, Any] | None = None
+        review: Mapping[str, Any] | None = None
+        gate_waiters: tuple[str, ...] = ()
         source_found: bool | None = None
         if kind == "gate" and identity:
             gate = await self.db.get_gate(identity)
             source_found = gate is not None
+            if gate and gate.get("gate_type") == "review" and gate.get("await_id"):
+                review = await self.db.get_review(str(gate["await_id"]))
+                gate_waiters = tuple(sorted(await self.db.get_gate_waiters(identity)))
         elif kind == "question" and identity and not row.get("task_id"):
             # Only the task-less shape needs the source looked up: with a task,
             # the row's own source is proven alive by construction and
             # ``create_escalation`` copies the question's task onto it.
             source_found = await self.db.get_agent_question(identity) is not None
         task_status = ""
+        archived = None
         if row.get("task_id"):
             task = await self.db.get_task(str(row["task_id"]))
             task_status = str(getattr(getattr(task, "status", None), "value", "") or "")
+            if task is None:
+                archived = await self.db.get_archived_task(str(row["task_id"]))
+                if archived and archived.get("project_id") == row.get("project_id"):
+                    task_status = str(archived.get("status") or "")
+                else:
+                    archived = None
+        verified_grants: list[str] = []
+        if kind == "supervisor" and identity == "supervisor:worker-templates-knowledge-grants":
+            vault = getattr(self.config, "vault_root", None)
+            if not vault and getattr(self.config, "data_dir", None):
+                vault = Path(self.config.data_dir) / "vault"
+            if vault:
+                for profile_id in ("worker-claude", "worker-codex"):
+                    try:
+                        parsed = parse_profile(
+                            (Path(vault) / "agent-types" / profile_id / "profile.md").read_text()
+                        )
+                    except (OSError, ValueError):
+                        continue
+                    commands = (parsed.capabilities or {}).get("aq_commands", [])
+                    tools = (parsed.capabilities or {}).get("harness_tools", [])
+                    if (
+                        not parsed.errors and parsed.frontmatter.id == profile_id and tools
+                        and {"knowledge_show", "knowledge_context_deliver"}.issubset(commands)
+                    ):
+                        verified_grants.append(profile_id)
         project = await self.db.get_project(str(row["project_id"]))
         deliveries: tuple[str, ...] = ()
         if kind == "supervisor_delivery":
@@ -572,6 +687,10 @@ class EscalationSweeper:
             project_status=str(getattr(getattr(project, "status", None), "value", "") or ""),
             delivery_statuses=deliveries,
             triaged=triaged,
+            review=review,
+            gate_waiters=gate_waiters,
+            archived_task=archived,
+            worker_template_grants=tuple(verified_grants),
         )
 
     async def apply(self, plan: SweepPlan, *, project_id: str | None = None) -> SweepReport:
@@ -640,6 +759,15 @@ class EscalationSweeper:
         reply that landed mid-sweep is never overwritten -- and a lost race is
         not audited either, because the sweep did not close it.
         """
+        if item.rule in {
+            "withdrawn_review", "task_terminal", "archived_task", "worker_template_grants",
+        }:
+            current = await self.db.get_escalation(item.escalation_id)
+            if current is None or int(current["revision"]) != item.revision:
+                return False, False
+            fresh = self._decide(current, await self._facts(current), RuleContext(now=now))
+            if fresh is None or fresh.rule != item.rule or fresh.evidence != item.evidence:
+                return False, False
         if item.new_state == "resolved":
             closed = await self.db.resolve_escalation_on_recovery(
                 item.escalation_id,
