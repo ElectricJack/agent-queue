@@ -152,6 +152,21 @@ class SessionTokenResponse(BaseModel):
     token: str
 
 
+class SessionCleanupResponse(BaseModel):
+    """``session_cleanup`` — taskless sleeping named sessions stopped and pruned.
+
+    With ``dry_run`` only ``count`` and ``sessions`` are filled.
+    """
+
+    model_config = {"extra": "allow"}
+    success: bool = True
+    dry_run: bool = False
+    count: int = 0
+    sessions: list[dict[str, Any]] = []
+    pruned: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "supervisor_restart": SupervisorRestartResponse,
     "session_list": ListSessionsResponse,
@@ -166,4 +181,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "session_sleep": SessionDesiredStateResponse,
     "session_wake": SessionDesiredStateResponse,
     "session_token": SessionTokenResponse,
+    "session_cleanup": SessionCleanupResponse,
 }

@@ -1437,6 +1437,23 @@
       }
     },
     {
+      "name": "session_cleanup",
+      "description": "Stop and prune taskless sleeping named sessions, including those with live terminals. Dry-run lists eligible sessions without changing them.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "Optional project filter"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "List only; do not stop or prune"
+          }
+        }
+      }
+    },
+    {
       "name": "session_input",
       "description": "Type directly into a live terminal. Send exactly one literal text chunk or named key; text is not automatically submitted. Requires global admin.",
       "input_schema": {
@@ -16625,6 +16642,7 @@
     "session_logs": "system",
     "session_kill": "system",
     "session_prune": "system",
+    "session_cleanup": "system",
     "session_sleep": "system",
     "session_wake": "system",
     "supervisor_restart": "supervisor",

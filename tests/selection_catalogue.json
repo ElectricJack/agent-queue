@@ -17184,8 +17184,9 @@
         "tmux-terminals"
       ],
       "default_arm": true,
-      "digest": "sha256:2d25ba9051fb22c2ecd306b8d37428a5d0f7f870d5d8ecbdf19ecf36e18720bf",
+      "digest": "sha256:b71e15c4468371ada9bff0ec3a9c0a81a9c6567644f32a5d622c6467ebfc3543",
       "imports": [
+        "src.sessions.provider",
         "src.sessions.tmux"
       ],
       "markers": [],

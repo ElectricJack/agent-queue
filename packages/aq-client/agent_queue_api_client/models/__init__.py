@@ -1487,6 +1487,12 @@ from .select_files_for_inspection_response_weights import SelectFilesForInspecti
 from .session_attach_request import SessionAttachRequest
 from .session_attach_response import SessionAttachResponse
 from .session_attach_response_422 import SessionAttachResponse422
+from .session_cleanup_request import SessionCleanupRequest
+from .session_cleanup_response import SessionCleanupResponse
+from .session_cleanup_response_422 import SessionCleanupResponse422
+from .session_cleanup_response_pruned_item import SessionCleanupResponsePrunedItem
+from .session_cleanup_response_sessions_item import SessionCleanupResponseSessionsItem
+from .session_cleanup_response_skipped_item import SessionCleanupResponseSkippedItem
 from .session_desired_state_response import SessionDesiredStateResponse
 from .session_input_request import SessionInputRequest
 from .session_input_response import SessionInputResponse
@@ -3290,6 +3296,12 @@ __all__ = (
     "SessionAttachRequest",
     "SessionAttachResponse",
     "SessionAttachResponse422",
+    "SessionCleanupRequest",
+    "SessionCleanupResponse",
+    "SessionCleanupResponse422",
+    "SessionCleanupResponsePrunedItem",
+    "SessionCleanupResponseSessionsItem",
+    "SessionCleanupResponseSkippedItem",
     "SessionDesiredStateResponse",
     "SessionInputRequest",
     "SessionInputResponse",

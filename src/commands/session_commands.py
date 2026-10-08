@@ -517,7 +517,7 @@ class SessionCommandsMixin:
         if provider is None:
             return {"error": "Provider unavailable; cannot confirm session is inactive"}
         try:
-            if not await provider.confirm_stopped(self._session_handle(session)):
+            if not await provider.confirm_instance_stopped(self._session_handle(session)):
                 return {"error": "Session still has a live terminal; stop it before pruning"}
             from src.sessions.proctable import scan_by_env_marker
 
@@ -541,6 +541,57 @@ class SessionCommandsMixin:
             "session_id": session.id, "project_id": session.project_id,
         })
         return {"success": True, "session_id": session.id}
+
+    async def _cmd_session_cleanup(self, args: dict) -> dict:
+        """Stop and forget taskless sleeping named sessions in one operator action."""
+        project_id = (self._current_scope or {}).get("project_id")
+        requested_project = args.get("project_id")
+        if project_id is not None and requested_project not in (None, project_id):
+            return {"error": "out of scope: project mismatch"}
+        rows = await self.db.list_sessions(
+            state="sleeping", lifecycle="named", project_id=project_id or requested_project,
+        )
+        candidates = [row for row in rows if row.desired_state in {"sleeping", "stopped"}
+                      and row.task_id is None and row.claim_phase is None]
+        if args.get("dry_run"):
+            return {"success": True, "dry_run": True, "count": len(candidates),
+                    "sessions": [self._session_dict(row) for row in candidates]}
+
+        pruned = []
+        skipped = []
+        for row in candidates:
+            # The instance and stop intent are fenced before touching the terminal.
+            # A concurrent wake makes this update fail, leaving that session alone.
+            current = await self.db.get_session(row.id)
+            if (current is None or current.instance_token != row.instance_token
+                    or current.state != "sleeping" or current.task_id is not None
+                    or current.claim_phase is not None):
+                skipped.append({"session_id": row.id, "reason": "session changed"})
+                continue
+            provider = self._provider_for_session(current)
+            if provider is None:
+                skipped.append({"session_id": row.id, "reason": "provider unavailable"})
+                continue
+            changed = await self.db.update_session_instance(
+                row.id, row.instance_token, require_desired_state=current.desired_state,
+                desired_state="stopped",
+            )
+            if not changed:
+                skipped.append({"session_id": row.id, "reason": "session changed"})
+                continue
+            try:
+                await provider.stop(self._session_handle(current), grace=2.0)
+            except Exception as exc:  # noqa: BLE001 - report this row and continue the batch
+                skipped.append({"session_id": row.id, "reason": f"stop failed: {exc}"})
+                continue
+            result = await self._cmd_session_prune({"session_id": row.id})
+            if result.get("success"):
+                pruned.append(row.id)
+            else:
+                skipped.append({"session_id": row.id,
+                                "reason": result.get("error", "prune failed")})
+        return {"success": True, "count": len(candidates), "pruned": pruned,
+                "skipped": skipped}
 
     async def _cmd_session_kill(self, args: dict) -> dict:
         """Fenced kill.  The task then goes through the exit classifier.

@@ -354,6 +354,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "session_logs": "system",
     "session_kill": "system",
     "session_prune": "system",
+    "session_cleanup": "system",
     "session_sleep": "system",
     "session_wake": "system",
     "supervisor_restart": "supervisor",
@@ -2282,6 +2283,20 @@ _ALL_TOOL_DEFINITIONS = [
                 "session_id": {"type": "string", "description": "Inactive named session to forget"},
             },
             "required": ["session_id"],
+        },
+    },
+    {
+        "name": "session_cleanup",
+        "description": (
+            "Stop and prune taskless sleeping named sessions, including those with live "
+            "terminals. Dry-run lists eligible sessions without changing them."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Optional project filter"},
+                "dry_run": {"type": "boolean", "description": "List only; do not stop or prune"},
+            },
         },
     },
     {
