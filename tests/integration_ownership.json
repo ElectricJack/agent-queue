@@ -8477,6 +8477,18 @@
     },
     "src/playbooks/services.py::PROMOTION_POLICY_EVENTS": {
       "reason": "Retained promotion notification event names shared by project-scoped policy routing and healthy activation/subscriber no-consumer proofs. No storage or write authority is introduced."
+    },
+    "src/database/queries/project_queries.py::ProjectQueryMixin.bind_project_repository": {
+      "reason": "First-repository CAS rejects configured or durable integration state under the hierarchy and publication fences. Changes only project repository authorization with an atomic audit; never publishes refs or recreates integration lifecycle state."
+    },
+    "src/database/queries/project_queries.py::import from src.database.tables import archived_tasks, chat_analyzer_suggestions, events, integration_batches, project_integration_leases, project_constraints, projects, repos, task_comments, task_completion_records, task_context, task_criteria, task_dependencies, task_integration_checkpoints, task_metadata, task_results, task_subtasks, task_tools, tasks, token_ledger, workspaces": {
+      "reason": "Imports existing integration lease, batch and checkpoint tables for the first-repository binding refusal fence alongside ordinary project CRUD tables."
+    },
+    "src/plugins/internal/git.py::GitPlugin._push_authorized": {
+      "reason": "Existing guarded task publication body extracted from _push so authorization is resolved inside the first-repository binding fence. Retains delivery validation, repair publication exclusion and exact inherited source-head checks."
+    },
+    "src/tools/definitions.py::_ALL_TOOL_DEFINITIONS[bind_project_repository]": {
+      "reason": "Registers the operator-only first-repository binding command and its exact expected URL and audit reason; explicitly refuses reassignment and live integration."
     }
   },
   "exclusions": {
@@ -12461,7 +12473,11 @@
     "7894579034cb31d382049e421c250c51831a842f415fecb703cac92b69eccb65",
     "d08f815399367803989e12a4173da7bf33f9f649689630ebd3c845d01ca3f94d",
     "3fa55eb217b8841ab22ba7d722851c01a5936049d5b164a261d4debeed158b0c",
-    "7dad23cf19f18c3a2dc4170712eeda592fb74ab6192ea785591ca29cb48d36fd"
+    "7dad23cf19f18c3a2dc4170712eeda592fb74ab6192ea785591ca29cb48d36fd",
+    "071777c03d37289868b2cd67a5ff1601dc139e1ae5f1f3d7c7aa5b809540a566",
+    "4ce87725855d74849b80dacb7673dc0bf40f20fd96692b93fd2448247fc883a8",
+    "5e4e4453f229f51afe40de46fe2ebd5c828531741dbdea6a9d20a1486e4db12d",
+    "6d92e2c93414ba9b2026990b22e7548192cf331be8dc9ac3e732aa5941da7531"
   ],
   "owned_file_fingerprints": [
     "020e0abc4dae8c8c3a3671fab609db3a5b1308dba6bd380a94fccfb591c63c4d",
@@ -14878,6 +14894,15 @@
       "integration_signal": true,
       "disposition": "retire",
       "reason": "Explicit LOCAL abandonment appends a cancelled revision to the existing legacy development.operation lifecycle journal after exact event/hash/full-manifest and inactive-authority checks. It preserves prior revisions and makes no delivery claim. This compatibility writer retires with the legacy journal and receives no final-phase allowance."
+    },
+    "src/database/queries/project_queries.py::ProjectQueryMixin.bind_project_repository::21ae1cd4ddf58cf690836c6bf31c504fe7942594a23d94bcc21935941e496c96": {
+      "line": 124,
+      "owner": "ProjectQueryMixin.bind_project_repository",
+      "call": "log_event",
+      "owner_fingerprint": "6d92e2c93414ba9b2026990b22e7548192cf331be8dc9ac3e732aa5941da7531",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Immutable project.repository_bound audit in the same transaction as the first repository URL CAS. Records operator, reason and old/new authorization only; no ref-operation replay, delivery assertion or duplicate integration lifecycle."
     }
   },
   "generic_dependencies": {

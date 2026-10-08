@@ -94,6 +94,16 @@ class EditProjectResponse(BaseModel):
     fields: list[str] = []
 
 
+class BindProjectRepositoryResponse(BaseModel):
+    """First repository binding, including the audit identity when it changes."""
+
+    success: bool
+    project_id: str
+    repo_url: str
+    changed: bool
+    event_id: int | None = None
+
+
 class DeleteProjectResponse(BaseModel):
     deleted: str
     name: str
@@ -191,6 +201,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "create_project": CreateProjectResponse,
     "project_doctor": ProjectDoctorResponse,
     "edit_project": EditProjectResponse,
+    "bind_project_repository": BindProjectRepositoryResponse,
     "delete_project": DeleteProjectResponse,
     "pause_project": PauseProjectResponse,
     "resume_project": ResumeProjectResponse,

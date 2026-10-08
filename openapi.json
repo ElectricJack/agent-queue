@@ -11455,7 +11455,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/BindProjectRepositoryResponse"
+                }
               }
             }
           },
@@ -22724,6 +22726,46 @@
           "reason"
         ],
         "title": "BindProjectRepositoryRequest"
+      },
+      "BindProjectRepositoryResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "repo_url": {
+            "type": "string",
+            "title": "Repo Url"
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "project_id",
+          "repo_url",
+          "changed"
+        ],
+        "title": "BindProjectRepositoryResponse",
+        "description": "First repository binding, including the audit identity when it changes."
       },
       "Body_upload_attachment_api_tasks__task_id__attachments_post": {
         "properties": {

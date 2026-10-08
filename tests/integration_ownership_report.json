@@ -9548,6 +9548,18 @@
     },
     "src/playbooks/services.py::PROMOTION_POLICY_EVENTS": {
       "reason": "Retained promotion notification event names shared by project-scoped policy routing and healthy activation/subscriber no-consumer proofs. No storage or write authority is introduced."
+    },
+    "src/database/queries/project_queries.py::ProjectQueryMixin.bind_project_repository": {
+      "reason": "First-repository CAS rejects configured or durable integration state under the hierarchy and publication fences. Changes only project repository authorization with an atomic audit; never publishes refs or recreates integration lifecycle state."
+    },
+    "src/database/queries/project_queries.py::import from src.database.tables import archived_tasks, chat_analyzer_suggestions, events, integration_batches, project_integration_leases, project_constraints, projects, repos, task_comments, task_completion_records, task_context, task_criteria, task_dependencies, task_integration_checkpoints, task_metadata, task_results, task_subtasks, task_tools, tasks, token_ledger, workspaces": {
+      "reason": "Imports existing integration lease, batch and checkpoint tables for the first-repository binding refusal fence alongside ordinary project CRUD tables."
+    },
+    "src/plugins/internal/git.py::GitPlugin._push_authorized": {
+      "reason": "Existing guarded task publication body extracted from _push so authorization is resolved inside the first-repository binding fence. Retains delivery validation, repair publication exclusion and exact inherited source-head checks."
+    },
+    "src/tools/definitions.py::_ALL_TOOL_DEFINITIONS[bind_project_repository]": {
+      "reason": "Registers the operator-only first-repository binding command and its exact expected URL and audit reason; explicitly refuses reassignment and live integration."
     }
   },
   "shared_state": {
@@ -9830,7 +9842,7 @@
   },
   "storage_writer_review": {
     "counts": {
-      "ordinary": 197,
+      "ordinary": 198,
       "retire": 19,
       "intent": 4
     },
@@ -9838,7 +9850,7 @@
     "actual_audit_table": "events; op_events and operation_events are also scanned to prevent a renamed/new sink.",
     "legacy": "Integration subject journal append calls and direct inserts, plus explicit historical development.operation cancellation revisions, are retirement findings. Duplicate merged_at, PR-base delivery annotations and repair-evidence metadata also retire.",
     "ordinary": "Task status/completion identity, claims, holds, provider intent, resume keys, job records, audit events and refusal notes retain their ordinary owners. Generic dynamic metadata/event writes require review when their enclosing code changes.",
-    "count_basis": "Current source call sites at the takeover review revision; historical baseline and landing remain fixed."
+    "count_basis": "Current source call sites at the repository binding review revision; historical baseline and landing remain fixed."
   },
   "exclusions": {
     "src/agent_waits.py::TERMINAL_TASK_STATUSES['BLOCKED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
@@ -10031,5 +10043,33 @@
       "reason": "The LOCAL-only control retires exactly previewed parked legacy records whose complete selected manifest is terminal and whose project has no active integration authority. Existing repository-engine, hierarchy and per-operation exclusions fence both writes. Prior journal revisions, Git refs, completions and branch-owner fences remain intact; no new tables, retained delivery mechanism, source admission, baseline or cap changed.",
       "escalation_sweep_review": "The same measured revision includes historical escalation sweep reads and factual rule changes in src/escalations/sweep.py. The sweep remains outside the integration-owned definitions and introduces no new metadata or event writer. Current inventory contains no unreviewed storage site."
     }
+  },
+  "repository_binding_review": {
+    "reviewed_source_revision": "b890fb3f3ed937bde6de013eb637a4a572b31d3a",
+    "definitions": [
+      "src/database/queries/project_queries.py::ProjectQueryMixin.bind_project_repository",
+      "src/database/queries/project_queries.py::import from src.database.tables import archived_tasks, chat_analyzer_suggestions, events, integration_batches, project_integration_leases, project_constraints, projects, repos, task_comments, task_completion_records, task_context, task_criteria, task_dependencies, task_integration_checkpoints, task_metadata, task_results, task_subtasks, task_tools, tasks, token_ledger, workspaces",
+      "src/plugins/internal/git.py::GitPlugin._push_authorized",
+      "src/tools/definitions.py::_ALL_TOOL_DEFINITIONS[bind_project_repository]"
+    ],
+    "added_definition_fingerprints": 4,
+    "new_storage_sites": {
+      "src/database/queries/project_queries.py::ProjectQueryMixin.bind_project_repository::21ae1cd4ddf58cf690836c6bf31c504fe7942594a23d94bcc21935941e496c96": "ordinary"
+    },
+    "current_owned_groups": {
+      "shared": 47736,
+      "companions": 12573,
+      "engine": 87440,
+      "policy_sources": 1999,
+      "policy": 480,
+      "ui": 333,
+      "guards": 639
+    },
+    "current_owned_total": 151200,
+    "current_table_count": 45,
+    "unknown_definitions": [],
+    "unknown_storage_sites": [],
+    "fixed_baseline_and_caps_unchanged": true,
+    "reason": "Review first-repository binding refusal fences, the extracted guarded publication body and registration as integration-owned definitions. The one new storage site is an ordinary atomic authorization audit. No new table, replay authority, duplicate delivery state or baseline/cap change."
   }
 }

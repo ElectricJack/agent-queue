@@ -61,6 +61,7 @@ from .benchmark_stage_record_request import BenchmarkStageRecordRequest
 from .benchmark_stage_record_response import BenchmarkStageRecordResponse
 from .benchmark_stage_record_response_422 import BenchmarkStageRecordResponse422
 from .bind_project_repository_request import BindProjectRepositoryRequest
+from .bind_project_repository_response import BindProjectRepositoryResponse
 from .bind_project_repository_response_422 import BindProjectRepositoryResponse422
 from .body_upload_attachment_api_tasks_task_id_attachments_post import BodyUploadAttachmentApiTasksTaskIdAttachmentsPost
 from .browse_entry import BrowseEntry
@@ -1875,6 +1876,7 @@ __all__ = (
     "BenchmarkStageRecordResponse",
     "BenchmarkStageRecordResponse422",
     "BindProjectRepositoryRequest",
+    "BindProjectRepositoryResponse",
     "BindProjectRepositoryResponse422",
     "BodyUploadAttachmentApiTasksTaskIdAttachmentsPost",
     "BrowseEntry",
