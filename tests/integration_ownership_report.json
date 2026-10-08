@@ -9951,7 +9951,7 @@
     "task_metadata": "Generic key/value mechanism remains task-owned. Every direct SQL/metadata API writer has an audited call and enclosing-code identity; duplicate delivery/repair state is marked retire."
   },
   "takeover_review": {
-    "reviewed_revision": "ce219f3d96b62034251b6ab0d2e57554ce346848",
+    "reviewed_revision": "abe4debe475b802a5c2895f23d8bf70488922933",
     "owned_definition_additions": 27,
     "refreshed_owner_fingerprints": 33,
     "new_storage_sites": {
@@ -9966,19 +9966,39 @@
     },
     "current_owned_groups": {
       "shared": 47581,
-      "companions": 12508,
-      "engine": 87254,
+      "companions": 12515,
+      "engine": 87278,
       "policy_sources": 1999,
       "policy": 480,
       "ui": 333,
       "guards": 639
     },
-    "current_owned_total": 150794,
+    "current_owned_total": 150825,
     "current_table_count": 45,
     "unknown_definitions": [],
     "unknown_storage_sites": [],
     "fixed_baseline_and_caps_unchanged": true,
     "ruleset_reader_review": "Explicit LOCAL verification may supplement hidden bypass actors using the existing operator login only for the exact repository and ruleset id, after App and operator policy documents agree. App bypass observations remain App-owned; no writer, replay journal, duplicate lifecycle state, storage classification or baseline/cap changed.",
-    "published_ci_repair_review": "Train parent completion produces exact review evidence through retained RepositoryGit; its fixture rejects the legacy service hook. Promotion notification no-consumer proof retains healthy activation and loaded-rule checks. The retained promotion event names and runtime import are explicitly owned. No storage authority, baseline/cap or writer disposition changed."
+    "published_ci_repair_review": "Train parent completion produces exact review evidence through retained RepositoryGit; its fixture rejects the legacy service hook. Promotion notification no-consumer proof retains healthy activation and loaded-rule checks. The retained promotion event names and runtime import are explicitly owned. No storage authority, baseline/cap or writer disposition changed.",
+    "trust_identity_review": {
+      "reviewed_revision": "abe4debe475b802a5c2895f23d8bf70488922933",
+      "definitions": [
+        "src/commands/integration_commands.py::IntegrationCommandsMixin",
+        "src/commands/integration_commands.py::IntegrationCommandsMixin._cmd_integration_trust_manifest",
+        "src/integration/app_mode.py::_manifest",
+        "src/integration/trust_manifest.py::__all__['flow_attestation_names']",
+        "src/integration/trust_manifest.py::flow_attestation_names",
+        "src/integration/trust_manifest.py::manifest_for_policy"
+      ],
+      "files": [
+        "src/commands/integration_commands.py",
+        "src/integration/app_mode.py",
+        "src/integration/trust_manifest.py"
+      ],
+      "added_definition_fingerprints": 6,
+      "added_file_fingerprints": 3,
+      "new_storage_sites": [],
+      "reason": "Manifest generation, App verification and functional preflight derive promotion attestation identities from the same bound stored flow. The command reads existing configuration; the pure helper validates and orders names. No metadata writer, replay journal, duplicate lifecycle state, storage classification, baseline or cap changed."
+    }
   }
 }
