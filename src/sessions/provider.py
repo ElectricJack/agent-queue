@@ -498,6 +498,10 @@ class SessionProvider(ABC):
         """
         return False
 
+    async def confirm_instance_stopped(self, h: SessionHandle) -> bool:
+        """Confirm this instance is gone, allowing a different same-named successor."""
+        return await self.confirm_stopped(h)
+
     @abstractmethod
     async def process_alive(self, h: SessionHandle, process_names: tuple[str, ...]) -> bool:
         """True when the agent process itself is alive.

@@ -1487,6 +1487,8 @@ from .select_files_for_inspection_response_weights import SelectFilesForInspecti
 from .session_attach_request import SessionAttachRequest
 from .session_attach_response import SessionAttachResponse
 from .session_attach_response_422 import SessionAttachResponse422
+from .session_cleanup_request import SessionCleanupRequest
+from .session_cleanup_response_422 import SessionCleanupResponse422
 from .session_desired_state_response import SessionDesiredStateResponse
 from .session_input_request import SessionInputRequest
 from .session_input_response import SessionInputResponse
@@ -3290,6 +3292,8 @@ __all__ = (
     "SessionAttachRequest",
     "SessionAttachResponse",
     "SessionAttachResponse422",
+    "SessionCleanupRequest",
+    "SessionCleanupResponse422",
     "SessionDesiredStateResponse",
     "SessionInputRequest",
     "SessionInputResponse",

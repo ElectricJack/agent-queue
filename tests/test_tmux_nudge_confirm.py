@@ -10,10 +10,25 @@ line): unsubmitted text sits at/after it, a transcript echo sits above.
 
 from __future__ import annotations
 
+from src.sessions.provider import SessionHandle
 from src.sessions.tmux import TmuxProvider, _submit_pending
 
 NBSP = " "
 MARKER = 'Reply with `aq reply msg-1 "…"`.'
+
+
+async def test_instance_stop_proof_accepts_same_named_successor(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    provider = TmuxProvider()
+    tmux = AsyncMock(side_effect=["n-supervisor--global\n", "AQ_INSTANCE_TOKEN=new-token\n"])
+    monkeypatch.setattr(provider, "_tmux", tmux)
+    old = SessionHandle("n-supervisor--global", "tmux", "old-token")
+    assert await provider.confirm_instance_stopped(old)
+
+    tmux.reset_mock(side_effect=True)
+    tmux.side_effect = ["n-supervisor--global\n", "AQ_INSTANCE_TOKEN=old-token\n"]
+    assert not await provider.confirm_instance_stopped(old)
 
 
 class TestSubmitPending:

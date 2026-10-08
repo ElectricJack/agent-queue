@@ -281,3 +281,28 @@ def session_drain_ack(ctx: click.Context, session_id) -> None:
 def prune(ctx: click.Context, session_id: str) -> None:
     """Forget one inactive sleeping/stopped named session (never live work)."""
     emit(ctx, _call(ctx, "session_prune", {"session_id": session_id}))
+
+
+@session.command("cleanup")
+@click.option("--project-id", help="Limit cleanup to one project.")
+@click.option("--dry-run", is_flag=True, help="List eligible sessions without changing them.")
+@click.pass_context
+@_handle_errors
+def session_cleanup(ctx: click.Context, project_id: str | None, dry_run: bool) -> None:
+    """Stop terminals and prune taskless sleeping named sessions."""
+    args = {"dry_run": dry_run}
+    if project_id:
+        args["project_id"] = project_id
+    result = _call(ctx, "session_cleanup", args)
+
+    def render(data: dict) -> None:
+        if data.get("dry_run"):
+            click.echo(f"{data['count']} sleeping session(s) eligible for cleanup")
+            for row in data["sessions"]:
+                click.echo(f"  {row['id']}  {row['name']}")
+            return
+        click.echo(f"Pruned {len(data['pruned'])} of {data['count']} sleeping session(s)")
+        for row in data["skipped"]:
+            click.echo(f"  Skipped {row['session_id']}: {row['reason']}")
+
+    emit(ctx, result, render=render)

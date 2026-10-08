@@ -16171,6 +16171,51 @@
         }
       }
     },
+    "/api/system/session-cleanup": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Stop and prune taskless sleeping named sessions, including those with live terminals. Dry-run lists eligible sessions without changing them.",
+        "description": "Stop and prune taskless sleeping named sessions, including those with live terminals. Dry-run lists eligible sessions without changing them.",
+        "operationId": "session_cleanup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionCleanupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/session-input": {
       "post": {
         "tags": [
@@ -63291,6 +63336,36 @@
           "attach_command"
         ],
         "title": "SessionAttachResponse"
+      },
+      "SessionCleanupRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Optional project filter"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dry Run",
+            "description": "List only; do not stop or prune"
+          }
+        },
+        "type": "object",
+        "title": "SessionCleanupRequest"
       },
       "SessionDesiredStateResponse": {
         "properties": {

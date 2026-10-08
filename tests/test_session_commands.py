@@ -367,6 +367,48 @@ async def test_prune_query_refuses_wake_or_token_change(db, providers):
     assert await db.prune_named_session(row.id, row.instance_token)
 
 
+async def test_cleanup_stops_and_prunes_sleeping_named_terminals(handler, providers, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(return_value=[]))
+    sleeping = await _make_session(
+        handler.db, providers.create("fake"), sid="sleeping", task_id=None,
+        lifecycle="named", state="sleeping", desired_state="sleeping",
+        name="n-supervisor--old",
+    )
+    active = await _make_session(
+        handler.db, providers.create("fake"), sid="active", task_id=None,
+        lifecycle="named", state="running", name="n-supervisor--active",
+    )
+    dry_run = await handler.execute("session_cleanup", {"dry_run": True})
+    assert [row["id"] for row in dry_run["sessions"]] == [sleeping.id]
+    assert await providers.create("fake").is_running(
+        SessionHandle(sleeping.name, sleeping.provider, sleeping.instance_token)
+    )
+
+    result = await handler.execute("session_cleanup", {})
+    assert result["pruned"] == [sleeping.id]
+    assert result["skipped"] == []
+    assert await handler.db.get_session(sleeping.id) is None
+    assert await handler.db.get_session(active.id) is not None
+
+
+async def test_cleanup_skips_sleeping_session_with_task(handler, providers, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(return_value=[]))
+    row = await _make_session(
+        handler.db, providers.create("fake"), sid="taskful", task_id="t1",
+        lifecycle="named", state="sleeping", desired_state="sleeping",
+    )
+    result = await handler.execute("session_cleanup", {})
+    assert result["count"] == 0
+    assert await handler.db.get_session(row.id) is not None
+    assert await providers.create("fake").is_running(
+        SessionHandle(row.name, row.provider, row.instance_token)
+    )
+
+
 class TestSessionList:
     async def test_empty(self, handler):
         result = await handler.execute("session_list", {})

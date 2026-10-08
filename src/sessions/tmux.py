@@ -591,6 +591,20 @@ class TmuxProvider(SessionProvider):
         names = await self._tmux("list-sessions", "-F", "#{session_name}")
         return h.name not in names.splitlines()
 
+    async def confirm_instance_stopped(self, h: SessionHandle) -> bool:
+        """Fresh proof that this token no longer owns the tmux name."""
+        names = await self._tmux("list-sessions", "-F", "#{session_name}")
+        if h.name not in names.splitlines():
+            return True
+        if not h.instance_token:
+            return False
+        try:
+            observed = await self._tmux("show-environment", "-t", f"={h.name}", _META_TOKEN_KEY)
+        except TmuxCommandError:
+            return False
+        token = _parse_environment_value(observed, _META_TOKEN_KEY)
+        return token is not None and token != h.instance_token
+
     async def process_alive(self, h: SessionHandle, process_names: tuple[str, ...] = ()) -> bool:
         try:
             panes = await self._panes()
