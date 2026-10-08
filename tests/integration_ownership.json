@@ -14867,10 +14867,10 @@
       "line": 532,
       "owner": "BackmergeAdmission.author",
       "call": "insert",
-      "owner_fingerprint": "cda3358c39b2bd3c61470f8a3d0e30e626d4d80abee414c7aa404c219500182f",
+      "owner_fingerprint": "ec1cde13c4fd4b4f526e4b34eb7db6c8be282c505e0502763c641f59df56ec6e",
       "integration_signal": true,
       "disposition": "intent",
-      "reason": "Pins an owed backmerge source/base/origin/target and its ordinary source task/completion identity; disabled authorship records only debt and older unfrozen inputs may be superseded. These declarative inputs do not assert remote publication or delivery: authorship, source admission and settlement independently reobserve exact Git refs, ancestry, frozen membership and PR evidence."
+      "reason": "Pins an owed backmerge source/base/origin/target and its ordinary source task/completion identity; disabled authorship records only debt and older unfrozen inputs may be superseded. These declarative inputs do not assert remote publication or delivery: authorship, source admission and settlement independently reobserve exact Git refs, ancestry, frozen membership and PR evidence. Private-head creation uses the full forty-zero absent-ref lease; this transport correction adds no metadata or ref replay authority."
     },
     "src/integration/mutation_recovery.py::ExpiredMutationRecovery.run::176aea4d5c84eb7ac1cf9fb5ee9b601fc81bea4aeb469555480653be0ecefd83": {
       "line": 233,
