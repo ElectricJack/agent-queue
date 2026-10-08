@@ -12,7 +12,9 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import ANY, create_autospec
+from unittest.mock import ANY, AsyncMock, create_autospec
+
+import asyncio
 
 import pytest
 
@@ -264,6 +266,52 @@ async def test_a_network_origin_is_never_its_own_authority(worker_git):
     result = await w.handler.execute("git_push", w.scoped())
     assert result["error"] == "task has no authorized repository"
     _assert_no_network(w.git)
+
+
+async def test_audited_first_binding_enables_existing_worker_publication(worker_git, monkeypatch):
+    w = worker_git
+    await w.db.update_project("p", repo_url="")
+    w.git.aget_remote_url.return_value = "https://github.com/evil/other.git"
+    github = AsyncMock()
+    monkeypatch.setattr(w.handler, "_github_client", lambda: github)
+    bound = await w.handler.execute("bind_project_repository", {
+        "project_id": "p", "repo_url": _REPOSITORY, "expected_repo_url": "",
+        "reason": "authorize the repository created after init",
+    })
+    assert bound["success"]
+    result = await w.handler.execute("git_push", w.scoped())
+    assert "error" not in result
+    assert w.git.apush_validated_delivery.await_args.kwargs["repository_url"] == f"{_REPOSITORY}.git"
+
+
+async def test_binding_refuses_an_inflight_worker_push(worker_git, tmp_path, monkeypatch):
+    w = worker_git
+    await w.db.update_project("p", repo_url="")
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    w.git.aget_remote_url.return_value = str(origin)
+    github = AsyncMock()
+    monkeypatch.setattr(w.handler, "_github_client", lambda: github)
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def push(*args, **kwargs):
+        started.set()
+        await finish.wait()
+        return _TIP
+
+    w.git.apush_validated_delivery.side_effect = push
+    running = asyncio.create_task(w.handler.execute("git_push", w.scoped()))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        bound = await w.handler.execute("bind_project_repository", {
+            "project_id": "p", "repo_url": _REPOSITORY, "expected_repo_url": "",
+            "reason": "authorize repository",
+        })
+        assert bound["error_code"] == "repository_publication_busy"
+        assert (await w.db.get_project("p")).repo_url == ""
+    finally:
+        finish.set()
+        await running
 
 
 async def test_a_local_origin_may_stand_in_for_a_missing_record(worker_git, tmp_path):

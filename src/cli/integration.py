@@ -977,10 +977,13 @@ def _render_app_verify(data: dict[str, Any]) -> None:
               help="Verify against this policy JSON instead of the project's bound policy.")
 @click.option("--repository-id",
               help="Integration repository id (default: the project's designated one).")
+@click.option("--repository-access-only", is_flag=True,
+              help="Verify repository access before integration is configured.")
 @click.pass_context
 @_handle_errors
 def integration_app_verify(
-    ctx: click.Context, project_id: str, policy_path: str | None, repository_id: str | None
+    ctx: click.Context, project_id: str, policy_path: str | None, repository_id: str | None,
+    repository_access_only: bool = False,
 ) -> None:
     """Check everything PROJECT_ID's App credential mode depends on.
 
@@ -991,7 +994,10 @@ def integration_app_verify(
     name and every warn a status warning.  Read-only; exits 1 when an item
     fails.  --json carries expected.ruleset, the target ruleset JSON.
     """
-    data = _app_verify(ctx, _app_mode_args(project_id, policy_path, repository_id))
+    args = _app_mode_args(project_id, policy_path, repository_id)
+    if repository_access_only:
+        args["repository_access_only"] = True
+    data = _app_verify(ctx, args)
     emit(ctx, data, render=_render_app_verify)
     if not data.get("ready"):
         raise SystemExit(1)

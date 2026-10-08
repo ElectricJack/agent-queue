@@ -9,6 +9,21 @@
       }
     },
     {
+      "name": "project_doctor",
+      "description": "Check a project's repository authorization and offer an audited binding command.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
+    },
+    {
       "name": "create_project",
       "description": "Create a new project.",
       "input_schema": {
@@ -17,6 +32,27 @@
           "name": {
             "type": "string",
             "description": "Project name"
+          },
+          "create_repo": {
+            "type": "string",
+            "description": "Create GitHub OWNER/NAME and onboard"
+          },
+          "private": {
+            "type": "boolean",
+            "default": true,
+            "description": "New remote is private"
+          },
+          "root_id": {
+            "type": "string",
+            "description": "Configured project root"
+          },
+          "relative_path": {
+            "type": "string",
+            "description": "Destination below the root"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Durable onboarding request key"
           },
           "credit_weight": {
             "type": "number",
@@ -34,8 +70,7 @@
           },
           "default_branch": {
             "type": "string",
-            "description": "Default branch name (default: main)",
-            "default": "main"
+            "description": "Default branch name (default: main)"
           }
         },
         "required": [
@@ -233,6 +268,38 @@
         "required": [
           "project_id"
         ]
+      }
+    },
+    {
+      "name": "bind_project_repository",
+      "description": "Authorize the first GitHub repository for an existing project with an empty repo_url. Local operator or live global supervisor only. Requires the exact expected URL and audit reason; refuses reassignment and live integration.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "Existing project ID"
+          },
+          "repo_url": {
+            "type": "string",
+            "description": "GitHub repository URL to authorize"
+          },
+          "expected_repo_url": {
+            "type": "string",
+            "description": "Exact current stored URL; empty for first binding"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Nonempty operator audit reason"
+          }
+        },
+        "required": [
+          "project_id",
+          "repo_url",
+          "expected_repo_url",
+          "reason"
+        ],
+        "additionalProperties": false
       }
     },
     {
@@ -1005,6 +1072,14 @@
             "type": "string",
             "description": "Root-relative destination: the existing repository (link) or the directory to create (init, github_clone)"
           },
+          "credit_weight": {
+            "type": "number",
+            "description": "Scheduling weight (default 1)"
+          },
+          "max_concurrent_agents": {
+            "type": "integer",
+            "description": "Project agent limit (default 2)"
+          },
           "project_name": {
             "type": "string",
             "description": "Display name"
@@ -1016,6 +1091,10 @@
           "default_branch": {
             "type": "string",
             "description": "Default branch; detected for link/github_clone and `main` for init when omitted"
+          },
+          "repo_url": {
+            "type": "string",
+            "description": "init only: adopt an existing empty GitHub remote"
           },
           "create_readme": {
             "type": "boolean",
@@ -10617,6 +10696,11 @@
             "default": null,
             "title": "Repository Id"
           },
+          "repository_access_only": {
+            "default": false,
+            "title": "Repository Access Only",
+            "type": "boolean"
+          },
           "policy_path": {
             "anyOf": [
               {
@@ -16253,11 +16337,13 @@
     "discord_purge_channel": "discord",
     "list_projects": "project",
     "create_project": "project",
+    "project_doctor": "project",
     "pause_project": "project",
     "resume_project": "project",
     "set_project_constraint": "project",
     "release_project_constraint": "project",
     "edit_project": "project",
+    "bind_project_repository": "project",
     "set_default_branch": "project",
     "get_project": "project",
     "delete_project": "project",

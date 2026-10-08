@@ -796,6 +796,7 @@ areas:
     description: "Projects and onboarding: project CLI, onboarding commands, contract and saga, configured project roots and browsing, durable onboarding requests and GitHub identity normalisation."
     match:
       - tests/test_project_onboarding_*.py
+      - tests/test_project_repository_binding.py
       - tests/test_onboarding_queries.py
       - tests/test_project_roots_config.py
       - tests/test_project_github.py

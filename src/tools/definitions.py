@@ -31,11 +31,13 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "discord_purge_channel": "discord",
     "list_projects": "project",
     "create_project": "project",
+    "project_doctor": "project",
     "pause_project": "project",
     "resume_project": "project",
     "set_project_constraint": "project",
     "release_project_constraint": "project",
     "edit_project": "project",
+    "bind_project_repository": "project",
     "set_default_branch": "project",
     "get_project": "project",
     "delete_project": "project",
@@ -755,12 +757,26 @@ _ALL_TOOL_DEFINITIONS = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "project_doctor",
+        "description": "Check a project's repository authorization and offer an audited binding command.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"project_id": {"type": "string"}},
+            "required": ["project_id"],
+        },
+    },
+    {
         "name": "create_project",
         "description": "Create a new project.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Project name"},
+                "create_repo": {"type": "string", "description": "Create GitHub OWNER/NAME and onboard"},
+                "private": {"type": "boolean", "default": True, "description": "New remote is private"},
+                "root_id": {"type": "string", "description": "Configured project root"},
+                "relative_path": {"type": "string", "description": "Destination below the root"},
+                "request_id": {"type": "string", "description": "Durable onboarding request key"},
                 "credit_weight": {
                     "type": "number",
                     "description": "Scheduling weight (default 1.0)",
@@ -778,7 +794,6 @@ _ALL_TOOL_DEFINITIONS = [
                 "default_branch": {
                     "type": "string",
                     "description": "Default branch name (default: main)",
-                    "default": "main",
                 },
             },
             "required": ["name"],
@@ -967,6 +982,27 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["project_id"],
+        },
+    },
+    {
+        "name": "bind_project_repository",
+        "description": (
+            "Authorize the first GitHub repository for an existing project with an empty "
+            "repo_url. Local operator or live global supervisor only. Requires the exact "
+            "expected URL and audit reason; refuses reassignment and live integration."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Existing project ID"},
+                "repo_url": {"type": "string", "description": "GitHub repository URL to authorize"},
+                "expected_repo_url": {
+                    "type": "string", "description": "Exact current stored URL; empty for first binding",
+                },
+                "reason": {"type": "string", "description": "Nonempty operator audit reason"},
+            },
+            "required": ["project_id", "repo_url", "expected_repo_url", "reason"],
+            "additionalProperties": False,
         },
     },
     {
@@ -1907,6 +1943,8 @@ _ALL_TOOL_DEFINITIONS = [
                         "directory to create (init, github_clone)"
                     ),
                 },
+                "credit_weight": {"type": "number", "description": "Scheduling weight (default 1)"},
+                "max_concurrent_agents": {"type": "integer", "description": "Project agent limit (default 2)"},
                 "project_name": {"type": "string", "description": "Display name"},
                 "project_id": {"type": "string", "description": "URL-safe project id (slug)"},
                 "default_branch": {
@@ -1916,6 +1954,7 @@ _ALL_TOOL_DEFINITIONS = [
                         "when omitted"
                     ),
                 },
+                "repo_url": {"type": "string", "description": "init only: adopt an existing empty GitHub remote"},
                 "create_readme": {
                     "type": "boolean",
                     "description": "init only: create README.md and an initial commit (default true)",

@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:67473239d6b742fb3d01147a727eab0c0867b7238647cbd2f834efb6f1a94785` |
+| Contract fingerprint | `sha256:ba621cf6484cef429a01a4a0a0d6466e4c07ebfdbe958c50e9098a13a90634a2` |
 
 ## Parameters
 
@@ -23,6 +23,7 @@
 | `project_id` | `string` | yes | — | — |
 | `policy` | `object \| null` | no | `null` | — |
 | `repository_id` | `string \| null` | no | `null` | — |
+| `repository_access_only` | `boolean` | no | `false` | — |
 | `policy_path` | `string \| null` | no | `null` | — |
 
 ## Result

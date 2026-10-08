@@ -4177,6 +4177,7 @@
         "optional": [
           "--policy",
           "--repository-id",
+          "--repository-access-only",
           "--json",
           "--brief",
           "--save-output",
@@ -9162,6 +9163,41 @@
       }
     },
     {
+      "path": "aq project bind-repository",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "bind_project_repository",
+      "callback": "src.cli.projects.project_bind_repository",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "project_id",
+          "--repo-url",
+          "--expected-repo-url",
+          "--reason"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq project browse-root",
       "registration": "generated",
       "owner_kind": "core",
@@ -9223,6 +9259,11 @@
           "--name"
         ],
         "optional": [
+          "--create-repo",
+          "--private",
+          "--root-id",
+          "--relative-path",
+          "--request-id",
           "--credit-weight",
           "--max-concurrent-agents",
           "--repo-url",
@@ -9290,6 +9331,40 @@
       "parameters": {
         "required": [
           "project_id"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq project doctor",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "project_doctor",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
         ],
         "optional": [
           "--json",
@@ -9679,6 +9754,9 @@
           "--github-visibility",
           "--github-repository",
           "--github-url",
+          "--repo-url",
+          "--create-repo",
+          "--private",
           "--json",
           "--brief",
           "--save-output",

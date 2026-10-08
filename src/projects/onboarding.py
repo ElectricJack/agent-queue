@@ -8,6 +8,7 @@ surfaces validate their wire contracts and delegate here.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import hashlib
@@ -16,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 import stat
 from typing import Any, AsyncIterator
 from urllib.parse import urlsplit, urlunsplit
@@ -85,6 +87,10 @@ def _fingerprint(
     github_clone: tuple[GitHubRepo, str] | None = None,
 ) -> str:
     normalized = request.model_dump(mode="json", exclude_none=False)
+    # Preserve fingerprints recorded before these additive options existed.
+    for key, default in (("credit_weight", 1.0), ("max_concurrent_agents", 2), ("repo_url", None)):
+        if normalized.get(key) == default:
+            normalized.pop(key, None)
     if github_clone is not None:
         identity, clone_url = github_clone
         normalized["github_repository"] = {
@@ -125,12 +131,14 @@ class ProjectOnboardingService:
         *,
         gh_client: GhClient | None = None,
         event_bus: Any | None = None,
+        verify_repository: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         self.db = db
         self.config = config
         self.git = git_manager or GitManager()
         #: Receives ``project.created`` on a request's first success only.
         self.event_bus = event_bus
+        self.verify_repository = verify_repository
         self.gh = gh_client or GhClient(
             access=GitHubAccess.from_config(config.integration.github_app)
         )
@@ -152,6 +160,15 @@ class ProjectOnboardingService:
                         }
                     ],
                 ) from None
+        from src.commands.supervisor_authority import operator_or_supervisor
+
+        operator_id, refusal = await operator_or_supervisor(
+            self.db, None, subject="project onboarding",
+        )
+        if refusal:
+            raise ProjectOnboardingError(
+                ProjectOnboardingErrorCode.INVALID_REQUEST, refusal, phase="preflight",
+            )
         github_clone: tuple[GitHubRepo, str] | None = None
         if request.source_mode == "github_clone":
             try:
@@ -202,7 +219,7 @@ class ProjectOnboardingService:
                     raise self._stored_error(record)
 
                 await self.db.update_onboarding_phase(request.request_id, "preflight")
-                await self._preflight(request, root, destination, record or {})
+                registered = await self._preflight(request, root, destination, record or {})
                 if github_clone is not None:
                     try:
                         await self.gh.validate_repository(github_clone[0].html_url)
@@ -239,7 +256,7 @@ class ProjectOnboardingService:
                         prepared, actions = await self._prepare_init(
                             request, root, destination, default_branch, record or {}
                         )
-                    if request.create_github:
+                    if request.create_github or request.repo_url:
                         remote_url, github_actions = await self._create_github_remote(
                             request,
                             prepared,
@@ -273,6 +290,31 @@ class ProjectOnboardingService:
                     default_branch = request.default_branch or await self.git.aget_default_branch(
                         str(prepared)
                     )
+
+                initial_clone_commit = any(
+                    item.get("kind") == "initial_commit"
+                    for item in (record or {}).get("created_resources", [])
+                )
+                if request.source_mode == "github_clone" and await self.git.arev_parse(
+                    str(prepared), "HEAD",
+                ) is None:
+                    await self.db.append_onboarding_resource(
+                        request.request_id, {"kind": "initial_commit"},
+                    )
+                    await self.git._arun(
+                        ["checkout", "-b", default_branch], cwd=str(prepared),
+                    )
+                    (prepared / "README.md").write_text(
+                        f"# {request.project_name}\n", encoding="utf-8",
+                    )
+                    await self.git._arun(["add", "--", "README.md"], cwd=str(prepared))
+                    identity = self.git.resolve_commit_identity(scoped=False)
+                    await self.git._arun(
+                        [*identity.config_args(), "commit", "-m", "Initial commit"],
+                        cwd=str(prepared),
+                    )
+                    initial_clone_commit = True
+                    actions.append("readme_committed")
 
                 if request.source_mode != "link" and prepared != destination:
                     await self.db.update_onboarding_phase(request.request_id, "publish")
@@ -310,7 +352,9 @@ class ProjectOnboardingService:
                 project = Project(
                     id=request.project_id,
                     name=request.project_name,
-                    repo_url=remote_url or "",
+                    credit_weight=request.credit_weight,
+                    max_concurrent_agents=request.max_concurrent_agents,
+                    repo_url="" if remote_url and "github.com" in remote_url.lower() else remote_url or "",
                     repo_default_branch=default_branch,
                     # Bound to a router like a created project, with no
                     # default profile (routing spec §8).
@@ -331,7 +375,10 @@ class ProjectOnboardingService:
                     enabled=True,
                 )
                 try:
-                    await self.db.register_onboarded_project(project, workspace)
+                    if not registered:
+                        await self.db.register_onboarded_project(
+                            project, workspace, request_id=request.request_id,
+                        )
                 except Exception as exc:
                     raise ProjectOnboardingError(
                         ProjectOnboardingErrorCode.REGISTRATION_FAILED,
@@ -339,14 +386,44 @@ class ProjectOnboardingService:
                         phase="register",
                     ) from exc
                 registered = True
-                await self.db.append_onboarding_resource(
-                    request.request_id,
-                    {"kind": "project", "id": request.project_id},
-                )
-                await self.db.append_onboarding_resource(
-                    request.request_id,
-                    {"kind": "workspace", "id": workspace_id},
-                )
+                if remote_url and "github.com" in remote_url.lower():
+                    operator_id, refusal = await operator_or_supervisor(
+                        self.db, None, subject="repository binding",
+                    )
+                    if refusal:
+                        raise ProjectOnboardingError(
+                            ProjectOnboardingErrorCode.REGISTRATION_FAILED, refusal,
+                            phase="register",
+                        )
+                    try:
+                        identity = parse_github_repository(remote_url)
+                        await self.gh.validate_repository(identity.html_url)
+                    except GitHubError as exc:
+                        raise self._map_github_error(exc, phase="register") from exc
+                    existing = await self.db.get_project(request.project_id)
+                    binding = await self.db.bind_project_repository(
+                        request.project_id, repo_url=identity.clone_https,
+                        expected_repo_url=existing.repo_url or "", operator_id=operator_id,
+                        reason=f"Project onboarding request {request.request_id}",
+                    )
+                    if not binding.get("success"):
+                        raise ProjectOnboardingError(
+                            ProjectOnboardingErrorCode.REGISTRATION_FAILED,
+                            binding.get("error", "Repository authorization failed"),
+                            phase="register",
+                        )
+                    if self.verify_repository is not None:
+                        verification = await self.verify_repository({
+                            "project_id": request.project_id, "repository_access_only": True,
+                        })
+                        if not verification.get("ready"):
+                            raise ProjectOnboardingError(
+                                ProjectOnboardingErrorCode.GITHUB_REPOSITORY_INACCESSIBLE,
+                                verification.get("error", "Repository access verification failed"),
+                                phase="register",
+                            )
+                if (request.source_mode == "init" or initial_clone_commit) and remote_url:
+                    actions.extend(await self._push_initial_branch(published, default_branch))
 
                 storage_paths = self._new_storage_paths(request.project_id)
                 for path in storage_paths:
@@ -408,7 +485,7 @@ class ProjectOnboardingService:
                 return result
         except ProjectOnboardingError as exc:
             if exc.code != ProjectOnboardingErrorCode.REQUEST_CONFLICT.value:
-                exc = await self._with_retained_github_recovery(request.request_id, exc)
+                exc = await self._with_retained_github_recovery(request, exc)
                 await self._compensate(
                     request.request_id,
                     request.project_id,
@@ -431,7 +508,7 @@ class ProjectOnboardingService:
                 "Project onboarding failed unexpectedly",
                 phase="register" if registered else "prepare",
             )
-            error = await self._with_retained_github_recovery(request.request_id, error)
+            error = await self._with_retained_github_recovery(request, error)
             await self._compensate(
                 request.request_id,
                 request.project_id,
@@ -520,8 +597,14 @@ class ProjectOnboardingService:
 
     async def _preflight(
         self, request: Any, root: Any, destination: Path, record: dict[str, Any]
-    ) -> None:
-        if await self.db.get_project(request.project_id) is not None:
+    ) -> bool:
+        existing = await self.db.get_project(request.project_id)
+        resources = record.get("created_resources") or []
+        owns_registration = (
+            {"kind": "project", "id": request.project_id} in resources
+            and {"kind": "workspace", "id": f"{request.project_id}-primary"} in resources
+        )
+        if existing is not None and not owns_registration:
             raise ProjectOnboardingError(
                 ProjectOnboardingErrorCode.PROJECT_ID_CONFLICT,
                 f"Project id '{request.project_id}' already exists",
@@ -532,6 +615,11 @@ class ProjectOnboardingService:
         for workspace in await self.db.list_workspaces():
             registered = os.path.normcase(str(Path(workspace.workspace_path).resolve()))
             if registered == canonical:
+                if (
+                    owns_registration and workspace.id == f"{request.project_id}-primary"
+                    and workspace.project_id == request.project_id
+                ):
+                    continue
                 raise ProjectOnboardingError(
                     ProjectOnboardingErrorCode.DESTINATION_CONFLICT,
                     f"Destination is already registered to project '{workspace.project_id}'",
@@ -545,7 +633,7 @@ class ProjectOnboardingService:
                     "The selected directory is not a Git worktree root",
                     phase="preflight",
                 )
-            return
+            return existing is not None and owns_registration
 
         if destination.exists() and not self._owner_matches(
             destination,
@@ -557,6 +645,8 @@ class ProjectOnboardingService:
                 "The destination already exists",
                 phase="preflight",
             )
+
+        return existing is not None and owns_registration
 
     async def _prepare_init(
         self,
@@ -741,7 +831,7 @@ class ProjectOnboardingService:
         repository_name = request.github_repo or destination.name
         try:
             requested_identity = parse_github_repository(
-                f"{request.github_owner}/{repository_name}"
+                request.repo_url or f"{request.github_owner}/{repository_name}"
             )
         except GitHubError as exc:
             raise self._map_github_error(exc, phase="github") from exc
@@ -754,7 +844,9 @@ class ProjectOnboardingService:
                 "The durable request ledger names a different GitHub repository",
                 phase="github",
             )
-        if retained_url:
+        if request.repo_url:
+            identity = requested_identity
+        elif retained_url:
             try:
                 identity = parse_github_repository(retained_url)
             except GitHubError as exc:  # pragma: no cover - ledger writes are canonical.
@@ -819,6 +911,10 @@ class ProjectOnboardingService:
                     details=self._retained_github_details(retained_url),
                 )
 
+        try:
+            await self.gh.validate_repository(identity.html_url)
+        except GitHubError as exc:
+            raise self._map_github_error(exc, phase="github") from exc
         existing_origin = _safe_remote_url(await self.git.aget_remote_url(str(repository)))
         if existing_origin and existing_origin != identity.clone_https:
             raise ProjectOnboardingError(
@@ -826,7 +922,7 @@ class ProjectOnboardingService:
                 "The prepared repository already has a different origin remote",
                 phase="github",
             )
-        actions = ["github_repository_created"]
+        actions = [] if request.repo_url else ["github_repository_created"]
         if not existing_origin:
             try:
                 await self.git._arun(
@@ -842,6 +938,10 @@ class ProjectOnboardingService:
                 ) from None
         actions.append("remote_configured")
 
+        return identity.clone_https, actions
+
+    async def _push_initial_branch(self, repository: Path, default_branch: str) -> list[str]:
+        actions = []
         if await self.git.arev_parse(str(repository), "HEAD") is not None:
             try:
                 if (
@@ -870,7 +970,7 @@ class ProjectOnboardingService:
                     details={"subprocess_error": scrub_secrets(str(exc))},
                 ) from None
             actions.append("branch_pushed")
-        return identity.clone_https, actions
+        return actions
 
     async def _publish_staging(self, request: Any, staging: Path, destination: Path) -> Path:
         resolved = validate_relative_path(
@@ -1071,16 +1171,31 @@ class ProjectOnboardingService:
 
     async def _with_retained_github_recovery(
         self,
-        request_id: str,
+        request: Any,
         error: ProjectOnboardingError,
     ) -> ProjectOnboardingError:
-        record = await self.db.get_onboarding_request(request_id)
-        retained_url = self._recorded_url(record or {}, "github_repository")
+        record = await self.db.get_onboarding_request(request.request_id)
+        retained_url = (self._recorded_url(record or {}, "github_repository")
+                        or error.details.get("github_repository_url"))
+        if not retained_url and request.source_mode == "init" and request.repo_url:
+            try:
+                retained_url = parse_github_repository(request.repo_url).html_url
+            except GitHubError:
+                pass
+        if not retained_url and request.source_mode == "github_clone":
+            retained_url = self._github_clone_source(request)[0].html_url
         if not retained_url:
             return error
         details = {
             **error.details,
             **self._retained_github_details(retained_url),
+            "recovery_command": shlex.join([
+                "aq", "project", "onboard", "--source-mode", "github_clone",
+                "--root-id", request.root_id, "--relative-path", request.relative_path,
+                "--project-name", request.project_name, "--project-id", request.project_id,
+                "--github-url", retained_url,
+                *(["--default-branch", request.default_branch] if request.default_branch else []),
+            ]),
         }
         return ProjectOnboardingError(
             error.code,

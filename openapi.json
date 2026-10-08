@@ -11432,6 +11432,53 @@
         }
       }
     },
+    "/api/project/bind-repository": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Authorize the first GitHub repository for an existing project with an empty repo_url. Local operator or live global supervisor only. Requires the exact expected URL and audit reason; refuses reassignment and live integration.",
+        "description": "Authorize the first GitHub repository for an existing project with an empty repo_url. Local operator or live global supervisor only. Requires the exact expected URL and audit reason; refuses reassignment and live integration.",
+        "operationId": "bind_project_repository",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BindProjectRepositoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BindProjectRepositoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/browse-root": {
       "post": {
         "tags": [
@@ -12155,6 +12202,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PauseProjectResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/project/doctor": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Check a project's repository authorization and offer an audited binding command.",
+        "description": "Check a project's repository authorization and offer an audited binding command.",
+        "operationId": "project_doctor",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectDoctorRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDoctorResponse"
                 }
               }
             }
@@ -22601,6 +22695,78 @@
         ],
         "title": "BenchmarkStageRecordResponse"
       },
+      "BindProjectRepositoryRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Existing project ID"
+          },
+          "repo_url": {
+            "type": "string",
+            "title": "Repo Url",
+            "description": "GitHub repository URL to authorize"
+          },
+          "expected_repo_url": {
+            "type": "string",
+            "title": "Expected Repo Url",
+            "description": "Exact current stored URL; empty for first binding"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Nonempty operator audit reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "repo_url",
+          "expected_repo_url",
+          "reason"
+        ],
+        "title": "BindProjectRepositoryRequest"
+      },
+      "BindProjectRepositoryResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "repo_url": {
+            "type": "string",
+            "title": "Repo Url"
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "project_id",
+          "repo_url",
+          "changed"
+        ],
+        "title": "BindProjectRepositoryResponse",
+        "description": "First repository binding, including the audit identity when it changes."
+      },
       "Body_upload_attachment_api_tasks__task_id__attachments_post": {
         "properties": {
           "file": {
@@ -26246,6 +26412,60 @@
             "title": "Name",
             "description": "Project name"
           },
+          "create_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Create Repo",
+            "description": "Create GitHub OWNER/NAME and onboard"
+          },
+          "private": {
+            "type": "boolean",
+            "title": "Private",
+            "description": "New remote is private",
+            "default": true
+          },
+          "root_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Root Id",
+            "description": "Configured project root"
+          },
+          "relative_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relative Path",
+            "description": "Destination below the root"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id",
+            "description": "Durable onboarding request key"
+          },
           "credit_weight": {
             "type": "number",
             "title": "Credit Weight",
@@ -26271,10 +26491,16 @@
             "description": "Git repository URL for this project (optional)"
           },
           "default_branch": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Default Branch",
-            "description": "Default branch name (default: main)",
-            "default": "main"
+            "description": "Default branch name (default: main)"
           }
         },
         "type": "object",
@@ -47815,6 +48041,30 @@
             "title": "Relative Path",
             "description": "Root-relative destination: the existing repository (link) or the directory to create (init, github_clone)"
           },
+          "credit_weight": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credit Weight",
+            "description": "Scheduling weight (default 1)"
+          },
+          "max_concurrent_agents": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent Agents",
+            "description": "Project agent limit (default 2)"
+          },
           "project_name": {
             "type": "string",
             "title": "Project Name",
@@ -47836,6 +48086,18 @@
             ],
             "title": "Default Branch",
             "description": "Default branch; detected for link/github_clone and `main` for init when omitted"
+          },
+          "repo_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo Url",
+            "description": "init only: adopt an existing empty GitHub remote"
           },
           "create_readme": {
             "anyOf": [
@@ -53542,6 +53804,70 @@
           "name"
         ],
         "title": "ProfileSummary"
+      },
+      "ProjectDoctorRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "ProjectDoctorRequest"
+      },
+      "ProjectDoctorResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "ready": {
+            "type": "boolean",
+            "title": "Ready"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "recovery_command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recovery Command"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "ready",
+          "code"
+        ],
+        "title": "ProjectDoctorResponse"
       },
       "ProjectGraphResponse": {
         "properties": {

@@ -86,6 +86,42 @@ class ProjectCommandsMixin:
             return {"error": "'name' is required to create a project"}
         project_id = name.lower().replace(" ", "-")
 
+        if args.get("repo_url") or args.get("create_repo"):
+            if args.get("repo_url") and args.get("create_repo"):
+                return {"success": False, "error": "repo_url and create_repo are mutually exclusive"}
+            roots = self.config.project_roots
+            root_id = args.get("root_id") or (roots[0].id if len(roots) == 1 else None)
+            if not root_id:
+                return {"success": False, "error": "Choose a configured project root with --root-id"}
+            from uuid import uuid4
+            from src.projects.github import GitHubError, parse_github_repository
+
+            request = {
+                "request_id": args.get("request_id") or str(uuid4()),
+                "root_id": root_id,
+                "relative_path": args.get("relative_path") or project_id,
+                "credit_weight": args.get("credit_weight", 1.0),
+                "max_concurrent_agents": args.get("max_concurrent_agents", 2),
+                "project_name": name,
+                "project_id": project_id,
+                "default_branch": args.get("default_branch"),
+            }
+            if args.get("create_repo"):
+                try:
+                    repo = parse_github_repository(args["create_repo"])
+                except GitHubError as exc:
+                    return {"success": False, "error": exc.message}
+                request.update(source_mode="init", create_github=True,
+                               github_owner=repo.owner, github_repo=repo.name,
+                               github_visibility="private" if args.get("private", True) else "public")
+            else:
+                request.update(source_mode="github_clone", github_url=args["repo_url"])
+            result = await self._cmd_onboard_project(request)
+            if result.get("success"):
+                result.update(created=project_id, name=name,
+                              assignment_playbook_id=self.config.routing.default_router)
+            return result
+
         project = Project(
             id=project_id,
             name=name,
@@ -123,6 +159,31 @@ class ProjectCommandsMixin:
             "name": project.name,
             "assignment_playbook_id": project.assignment_playbook_id,
         }
+
+    async def _cmd_project_doctor(self, args: dict) -> dict:
+        """Diagnose the local-first project authorization gap without changing it."""
+        import shlex
+        from src.projects.github import GitHubError, parse_github_repository
+
+        project = await self.db.get_project(args["project_id"])
+        if project is None:
+            return {"success": False, "error": "Project not found"}
+        path = await self.db.get_project_workspace_path(project.id)
+        if project.repo_url or not path:
+            return {"success": True, "project_id": project.id, "ready": bool(project.repo_url),
+                    "code": "repository_bound" if project.repo_url else "workspace_missing"}
+        remote = await self.orchestrator.git.aget_remote_url(path)
+        try:
+            url = parse_github_repository(remote or "").clone_https
+        except GitHubError:
+            url = "OWNER/REPOSITORY"
+        command = shlex.join([
+            "aq", "project", "bind-repository", project.id, "--repo-url", url,
+            "--expected-repo-url", "", "--reason", "Authorize local-first project repository",
+        ])
+        return {"success": True, "project_id": project.id, "ready": False,
+                "code": "repository_authorization_missing", "recovery_command": command,
+                "message": "Local repository has no authorized remote. Review and run the binding command."}
 
     async def _cmd_pause_project(self, args: dict) -> dict:
         pid = args["project_id"]
@@ -281,11 +342,68 @@ class ProjectCommandsMixin:
         await self.orchestrator.bus.emit("constraint.released", {"project_id": pid})
         return {"project_id": pid, "constraint_released": True, "fields": "all"}
 
+    async def _cmd_bind_project_repository(self, args: dict) -> dict:
+        """Authorize an initialized project's first repository, never a reassignment."""
+        from src.commands.supervisor_authority import operator_or_supervisor
+        from src.projects.github import GitHubError, parse_github_repository
+
+        operator_id, refusal = await operator_or_supervisor(
+            self.db, None, subject="repository binding",
+        )
+        if refusal:
+            return {"success": False, "error_code": "global_operator_required", "error": refusal}
+        required = {"project_id", "repo_url", "expected_repo_url", "reason"}
+        if set(args) != required or any(not isinstance(args.get(k), str) for k in required):
+            return {"success": False, "error_code": "invalid_arguments",
+                    "error": (
+                        "Provide project_id, repo_url, expected_repo_url and reason as strings"
+                    )}
+        if not args["project_id"].strip() or not args["reason"].strip():
+            return {"success": False, "error_code": "invalid_arguments",
+                    "error": "Project ID and audit reason must be nonempty"}
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in args["repo_url"]):
+            return {"success": False, "error_code": "invalid_repository_url",
+                    "error": "Repository URL contains control characters"}
+        try:
+            repository = parse_github_repository(args["repo_url"])
+        except GitHubError as exc:
+            return {"success": False, "error_code": "invalid_repository_url", "error": exc.message}
+        project = await self.db.get_project(args["project_id"])
+        if project is None:
+            return {"success": False, "error_code": "project_not_found",
+                    "error": "Project not found"}
+        # Avoid credential selection for stale requests or a reassignment.
+        # The transactional helper repeats both checks after the network read.
+        if project.repo_url != args["expected_repo_url"]:
+            return {"success": False, "error_code": "repository_binding_stale",
+                    "error": "The expected repository URL is stale"}
+        if project.repo_url and project.repo_url != repository.clone_https:
+            return {"success": False, "error_code": "repository_already_bound",
+                    "error": "An existing repository cannot be reassigned"}
+        if not project.repo_url:
+            try:
+                await self._github_client().validate_repository(repository.html_url)
+            except GitHubError as exc:
+                return {"success": False, "error_code": exc.code.value, "error": exc.message}
+        operator_id, refusal = await operator_or_supervisor(
+            self.db, None, subject="repository binding",
+        )
+        if refusal:
+            return {"success": False, "error_code": "global_operator_required", "error": refusal}
+        return await self.db.bind_project_repository(
+            project.id, repo_url=repository.clone_https,
+            expected_repo_url=args["expected_repo_url"], reason=args["reason"].strip(),
+            operator_id=operator_id,
+        )
+
     async def _cmd_edit_project(self, args: dict) -> dict:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
             return {"error": f"Project '{pid}' not found"}
+        if "repo_url" in args or "expected_repo_url" in args:
+            return {"success": False, "error_code": "repository_binding_required",
+                    "error": "Use bind_project_repository for an audited first repository binding"}
         if "review_delegate_to" in args:
             from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 

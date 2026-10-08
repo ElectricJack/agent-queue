@@ -60,6 +60,9 @@ from .assignment_route_detail_override_type_0 import AssignmentRouteDetailOverri
 from .benchmark_stage_record_request import BenchmarkStageRecordRequest
 from .benchmark_stage_record_response import BenchmarkStageRecordResponse
 from .benchmark_stage_record_response_422 import BenchmarkStageRecordResponse422
+from .bind_project_repository_request import BindProjectRepositoryRequest
+from .bind_project_repository_response import BindProjectRepositoryResponse
+from .bind_project_repository_response_422 import BindProjectRepositoryResponse422
 from .body_upload_attachment_api_tasks_task_id_attachments_post import BodyUploadAttachmentApiTasksTaskIdAttachmentsPost
 from .browse_entry import BrowseEntry
 from .browse_project_root_request import BrowseProjectRootRequest
@@ -1157,6 +1160,9 @@ from .profile_reseed_response_422 import ProfileReseedResponse422
 from .profile_reseed_response_added_type_0 import ProfileReseedResponseAddedType0
 from .profile_subagent_rollup import ProfileSubagentRollup
 from .profile_summary import ProfileSummary
+from .project_doctor_request import ProjectDoctorRequest
+from .project_doctor_response import ProjectDoctorResponse
+from .project_doctor_response_422 import ProjectDoctorResponse422
 from .project_graph_response import ProjectGraphResponse
 from .project_ready_request import ProjectReadyRequest
 from .project_ready_response import ProjectReadyResponse
@@ -1869,6 +1875,9 @@ __all__ = (
     "BenchmarkStageRecordRequest",
     "BenchmarkStageRecordResponse",
     "BenchmarkStageRecordResponse422",
+    "BindProjectRepositoryRequest",
+    "BindProjectRepositoryResponse",
+    "BindProjectRepositoryResponse422",
     "BodyUploadAttachmentApiTasksTaskIdAttachmentsPost",
     "BrowseEntry",
     "BrowseProjectRootRequest",
@@ -2956,6 +2965,9 @@ __all__ = (
     "ProfileReseedResponseAddedType0",
     "ProfileSubagentRollup",
     "ProfileSummary",
+    "ProjectDoctorRequest",
+    "ProjectDoctorResponse",
+    "ProjectDoctorResponse422",
     "ProjectGraphResponse",
     "ProjectReadyRequest",
     "ProjectReadyResponse",
