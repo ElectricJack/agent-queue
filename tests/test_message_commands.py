@@ -632,6 +632,183 @@ class TestInbox:
         assert "Invalid to_kind" in result["error"]
 
 
+class TestInboxIncludeConsumed:
+    """The crashed-inject backstop (fair-impact-65).
+
+    ``inject`` marks rows delivered before the caller can render them, so an
+    agent whose own output dies has an empty pending queue and no way back to
+    the bodies it already burned. ``include_consumed`` is that way back, and it
+    must never move delivery state in either direction.
+    """
+
+    async def test_absent_unless_requested(self, setup):
+        """An unflagged call's envelope is unchanged — no new keys."""
+        handler, _db, _bus = setup
+        await handler._cmd_message_send(_send_args())
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1"}
+        )
+        assert "consumed" not in result
+        assert "consumed_messages" not in result
+
+    async def test_recovers_the_body_a_crashed_inject_burned(self, setup):
+        handler, _db, _bus = setup
+        sent = await handler._cmd_message_send(_send_args())
+        # Delivery consumed, bodies discarded — the worker's parser crashed.
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True}
+        )
+        assert (
+            await handler._cmd_message_inbox(
+                {"to_kind": "session", "to_id": "supervisor-p1"}
+            )
+        )["count"] == 0
+
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "include_consumed": True}
+        )
+        assert result["count"] == 0
+        assert result["consumed"] == 1
+        assert result["consumed_messages"][0]["id"] == sent["message_id"]
+        assert result["consumed_messages"][0]["body"] == _send_args()["body"]
+
+    async def test_recovers_an_archived_body(self, setup):
+        """``archive_after_inject`` sweeps rows in the same pass that delivers
+        them, so those bodies are invisible to every other read."""
+        handler, db, _bus = setup
+        sent = await handler._cmd_message_send(_send_args(archive_after_inject=True))
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True}
+        )
+        assert (await db.get_message(sent["message_id"])).archived_at is not None
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "include_consumed": True}
+        )
+        assert [m["id"] for m in result["consumed_messages"]] == [sent["message_id"]]
+
+    async def test_reported_on_the_inject_path_too(self, setup):
+        """A worker recovering mid-turn runs the same command with both flags."""
+        handler, _db, _bus = setup
+        sent = await handler._cmd_message_send(_send_args())
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True}
+        )
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True,
+             "include_consumed": True}
+        )
+        assert result["injected"] == 0
+        assert [m["id"] for m in result["consumed_messages"]] == [sent["message_id"]]
+
+    async def test_does_not_re_claim_or_re_emit(self, setup):
+        handler, _db, bus = setup
+        await handler._cmd_message_send(_send_args())
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True}
+        )
+        before = bus.of_type("message.delivered")
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True,
+             "include_consumed": True}
+        )
+        assert result["injected"] == 0
+        assert result["archived"] == 0
+        assert bus.of_type("message.delivered") == before
+
+    async def test_pending_and_consumed_are_disjoint(self, setup):
+        handler, _db, _bus = setup
+        old = await handler._cmd_message_send(_send_args(body="old"))
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True}
+        )
+        new = await handler._cmd_message_send(_send_args(body="new"))
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "include_consumed": True}
+        )
+        assert [m["id"] for m in result["messages"]] == [new["message_id"]]
+        assert [m["id"] for m in result["consumed_messages"]] == [old["message_id"]]
+
+    async def test_read_only_never_mutates(self, setup):
+        """A plain consumed re-read leaves both stamps exactly as they were."""
+        handler, db, _bus = setup
+        sent = await handler._cmd_message_send(_send_args())
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True}
+        )
+        before = await db.get_message(sent["message_id"])
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "include_consumed": True}
+        )
+        after = await db.get_message(sent["message_id"])
+        assert (after.delivered_at, after.read_at, after.archived_at, after.via) == (
+            before.delivered_at, before.read_at, before.archived_at, before.via,
+        )
+
+    async def test_scoped_to_the_recipient(self, setup):
+        handler, _db, _bus = setup
+        mine = await handler._cmd_message_send(_send_args(body="mine"))
+        other = await handler._cmd_message_send(
+            _send_args(to_kind="task", to_id="task-9", body="theirs")
+        )
+        for args in ({"inject": True},):
+            await handler._cmd_message_inbox({"to_kind": "session", "to_id": "supervisor-p1", **args})
+            await handler._cmd_message_inbox({"to_kind": "task", "to_id": "task-9", **args})
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "include_consumed": True}
+        )
+        assert [m["id"] for m in result["consumed_messages"]] == [mine["message_id"]]
+        assert other["message_id"] not in {m["id"] for m in result["consumed_messages"]}
+
+    async def test_limit_applies_to_each_half(self, setup):
+        handler, _db, _bus = setup
+        for index in range(4):
+            await handler._cmd_message_send(_send_args(body=f"old{index}"))
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True, "limit": 4}
+        )
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1",
+             "include_consumed": True, "limit": 2}
+        )
+        assert result["consumed"] == 2
+
+    async def test_foreign_mailbox_still_refused(self, setup):
+        """The re-read is not a way around the fence."""
+        handler, db, _bus = setup
+        worker = await _create_live_worker(db, project_id="p1", suffix="w1")
+        handler._current_scope = {
+            "kind": "session", "session_id": worker.id, "project_id": "p1",
+            "task_id": worker.task_id, "elevated": False,
+        }
+        await handler._cmd_message_send(_send_args(body="not yours"))
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "inject": True}
+        )
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-p1", "include_consumed": True}
+        )
+        handler._current_scope = None
+        assert "out of scope" in result["error"]
+
+    async def test_system_records_stay_admin_only(self, setup):
+        handler, _db, _bus = setup
+        handler._current_scope = {
+            "kind": "session", "session_id": "sess-x", "project_id": "p1",
+            "task_id": None, "elevated": False,
+        }
+        await handler._cmd_message_send(
+            _send_args(project_id=None, to_id="supervisor-global", body="system row")
+        )
+        await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-global", "inject": True}
+        )
+        result = await handler._cmd_message_inbox(
+            {"to_kind": "session", "to_id": "supervisor-global", "include_consumed": True}
+        )
+        handler._current_scope = None
+        assert "global admin" in result["error"]
+
+
 # ---------------------------------------------------------------------------
 # message_inbox mailbox fence — a non-elevated session token may only read
 # (and, with inject, consume) the mailboxes it owns.

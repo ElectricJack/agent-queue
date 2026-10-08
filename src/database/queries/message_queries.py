@@ -159,6 +159,48 @@ class MessageQueriesMixin:
             result = await conn.execute(stmt)
             return [_row_to_message(r) for r in result.mappings().fetchall()]
 
+    async def get_consumed_messages(
+        self,
+        to_kind: str,
+        to_id: str,
+        *,
+        limit: int = 50,
+    ) -> list[Message]:
+        """Rows this recipient already consumed — the re-read path.
+
+        :meth:`get_pending_messages` is the delivery queue: it answers "what
+        has not been handed over yet".  A worker whose inject consumed
+        delivery before its own output rendered (a crashed harness parser, a
+        truncated pane, a killed turn) has a pending queue of zero and no way
+        back to the bodies it already burned.  This is that way back.
+
+        A row counts as consumed once ``delivered_at`` or ``archived_at`` is
+        set.  Archived rows are included deliberately: ``archive_after_inject``
+        sweeps them in the same pass that marks them delivered, so those are
+        precisely the bodies a crashed inject hides from every other read.
+
+        Ordered like the pending queue (``priority`` then ``created_at``) so a
+        re-read reads in the same order the worker would have seen them.
+        """
+        stmt = (
+            select(messages)
+            .where(
+                and_(
+                    messages.c.to_kind == to_kind,
+                    messages.c.to_id == to_id,
+                    or_(
+                        messages.c.delivered_at.is_not(None),
+                        messages.c.archived_at.is_not(None),
+                    ),
+                )
+            )
+            .order_by(messages.c.priority.asc(), messages.c.created_at.asc())
+            .limit(limit)
+        )
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+            return [_row_to_message(r) for r in result.mappings().fetchall()]
+
     async def get_pending_recipients(self) -> list[tuple[str, str, str | None]]:
         """Distinct ``(to_kind, to_id, project_id)`` with pending messages.
 

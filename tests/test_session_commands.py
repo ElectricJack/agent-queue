@@ -1073,6 +1073,78 @@ class TestTaskClose:
         assert (await handler.execute("task_close", args))["success"] is True
         assert len(orch.closed_calls) == 1
 
+    @pytest.mark.parametrize("recipient_kind,recipient_id", [("task", "t1"), ("session", "sess-1")])
+    async def test_consumed_body_stays_readable_after_a_crashed_inject(
+        self, handler, db, provider, orch, recipient_kind, recipient_id
+    ):
+        """fair-impact-65: the reviewer's body must not be lost to a dead parser.
+
+        The worker ran the injected read the refusal names, the daemon consumed
+        delivery, and the worker's own output died before it printed anything.
+        Its pending queue is now empty and — before this fix — nothing anywhere
+        still held the body, so it could neither handle the feedback nor tell
+        anyone what it had been told.
+        """
+        task = await _make_task(db)
+        await _make_session(db, provider)
+        message = await db.create_message(
+            project_id="p1", from_kind="system", from_id="review:rev-bold-vault",
+            to_kind=recipient_kind, to_id=recipient_id,
+            body="Spec review rev-bold-vault: revise section 3 before merging.",
+        )
+        scope = {"kind": "session", "session_id": "sess-1", "project_id": "p1",
+                 "task_id": "t1", "elevated": False}
+        args = {
+            "task_id": "t1", "outcome": "pass", "summary": "Done.",
+            "claim_epoch": task.claim_epoch, "_scope": scope,
+        }
+
+        assert (await handler.execute("task_close", dict(args)))["code"] == (
+            "messages.pending_before_close"
+        )
+
+        # The injected read: delivery consumed, response discarded unread.
+        injected = await handler.execute("message_inbox", {
+            "to_kind": recipient_kind, "to_id": recipient_id,
+            "inject": True, "limit": 50, "_scope": scope,
+        })
+        assert injected["injected"] == 1
+        # A plain re-read is empty — the queue really is drained.
+        assert (await handler.execute("message_inbox", {
+            "to_kind": recipient_kind, "to_id": recipient_id, "_scope": scope,
+        }))["count"] == 0
+
+        # The body is still reachable, read-only, through the consumed re-read.
+        recovered = await handler.execute("message_inbox", {
+            "to_kind": recipient_kind, "to_id": recipient_id,
+            "include_consumed": True, "limit": 50, "_scope": scope,
+        })
+        assert recovered["count"] == 0
+        assert [m["body"] for m in recovered["consumed_messages"]] == [message.body]
+
+        # Recovering the body is not itself a delivery event, and the close
+        # that was refused for unread feedback now proceeds on its own merits.
+        args["summary"] = "Revised section 3 per review rev-bold-vault."
+        assert (await handler.execute("task_close", dict(args)))["success"] is True
+        assert len(orch.closed_calls) == 1
+
+    async def test_refusal_names_the_consumed_re_read(self, handler, db, provider):
+        """The recovery is discoverable from the refusal itself."""
+        task = await _make_task(db)
+        await _make_session(db, provider)
+        await db.create_message(
+            project_id="p1", from_kind="user", from_id="operator",
+            to_kind="session", to_id="sess-1", body="A correction.",
+        )
+        result = await handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "summary": "Done.",
+            "claim_epoch": task.claim_epoch,
+            "_scope": {"kind": "session", "session_id": "sess-1", "project_id": "p1",
+                       "task_id": "t1", "elevated": False},
+        })
+        assert result["code"] == "messages.pending_before_close"
+        assert "--include-consumed" in result["error"]
+
     @pytest.mark.parametrize("bypass", ["operator", "disabled", "other_recipient", "delivered"])
     async def test_feedback_check_does_not_gate_unrelated_or_consumed_messages(
         self, handler, db, provider, config, bypass

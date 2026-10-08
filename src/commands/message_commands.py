@@ -554,7 +554,14 @@ class MessageCommandsMixin:
         }
 
     async def _cmd_message_inbox(self, args: dict) -> dict:
-        """List a recipient's pending messages, optionally marking them delivered."""
+        """List a recipient's pending messages, optionally marking them delivered.
+
+        ``include_consumed`` additionally returns rows this recipient already
+        consumed, so a worker whose inject consumed delivery before it could
+        render the bodies can read them again.  It never changes delivery
+        state: the extra rows are read-only, and ``inject`` still claims only
+        the pending ones.
+        """
         disabled = self._messages_disabled_error()
         if disabled:
             return disabled
@@ -579,6 +586,7 @@ class MessageCommandsMixin:
             return mailbox_error
 
         inject = bool(args.get("inject", False))
+        include_consumed = bool(args.get("include_consumed", False))
         limit = args.get("limit")
         if limit is None:
             limit = self.config.messages.max_inject_per_prompt if inject else 50
@@ -608,12 +616,42 @@ class MessageCommandsMixin:
             scope_error = self._system_message_scope_error()
             if scope_error:
                 return scope_error
+
+        # Read-only backstop for a crashed inject. Fetched before the branch
+        # below so both the plain read and the inject path report it, and it
+        # never joins ``pending``: injecting must keep claiming exactly the
+        # undelivered rows it would have claimed before this option existed.
+        consumed: list[Message] = []
+        if include_consumed:
+            claimed_ids = {m.id for m in pending}
+            for recipient in recipients:
+                for msg in await self.db.get_consumed_messages(
+                    to_kind, recipient, limit=limit
+                ):
+                    if msg.id not in claimed_ids:
+                        consumed.append(msg)
+                        claimed_ids.add(msg.id)
+            consumed.sort(key=lambda message: (message.priority, message.created_at, message.id))
+            consumed = consumed[:limit]
+            if any(message.project_id is None for message in consumed):
+                scope_error = self._system_message_scope_error()
+                if scope_error:
+                    return scope_error
+
         if not inject:
             return {
                 "to_kind": to_kind,
                 "to_id": to_id,
                 "count": len(pending),
                 "messages": [message_to_dict(m) for m in pending],
+                **(
+                    {
+                        "consumed": len(consumed),
+                        "consumed_messages": [message_to_dict(m) for m in consumed],
+                    }
+                    if include_consumed
+                    else {}
+                ),
             }
 
         # Inject path: compare-and-set each row so a racing nudge (Phase 3)
@@ -648,6 +686,14 @@ class MessageCommandsMixin:
             "injected": len(rendered),
             "archived": archived,
             "messages": rendered,
+            **(
+                {
+                    "consumed": len(consumed),
+                    "consumed_messages": [message_to_dict(m) for m in consumed],
+                }
+                if include_consumed
+                else {}
+            ),
         }
 
     async def _cmd_message_list(self, args: dict) -> dict:

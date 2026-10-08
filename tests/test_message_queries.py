@@ -158,6 +158,76 @@ class TestMarkDeliveredArchived:
         assert (await db.get_message(msg.id)).delivered_at is None
 
 
+class TestGetConsumedMessages:
+    """The re-read path for a worker whose inject consumed what it never read."""
+
+    async def test_pending_rows_are_not_consumed(self, db):
+        await _send(db)
+        assert await db.get_consumed_messages("session", "supervisor-p1") == []
+
+    async def test_delivered_row_is_returned(self, db):
+        msg = await _send(db)
+        await db.mark_delivered(msg.id, via="inject")
+        [row] = await db.get_consumed_messages("session", "supervisor-p1")
+        assert row.id == msg.id
+        assert row.body == "hello"
+
+    async def test_archived_row_is_returned(self, db):
+        """``archive_after_inject`` hides these from every other read, so a
+        crashed inject would lose them outright without this."""
+        msg = await _send(db, archive_after_inject=True)
+        await db.mark_delivered(msg.id, via="inject")
+        await db.archive_messages([msg.id])
+        [row] = await db.get_consumed_messages("session", "supervisor-p1")
+        assert row.id == msg.id
+
+    async def test_archived_without_delivery_still_counts(self, db):
+        """Parking archives a row it could not deliver; the body is still
+        readable by the recipient that never got it."""
+        msg = await _send(db)
+        await db.archive_messages([msg.id])
+        [row] = await db.get_consumed_messages("session", "supervisor-p1")
+        assert row.id == msg.id
+
+    async def test_scoped_to_one_recipient(self, db):
+        other = await _send(db, to_kind="task", to_id="task-1")
+        await db.mark_delivered(other.id, via="inject")
+        mine = await _send(db, to_kind="task", to_id="task-1")
+        await db.mark_delivered(mine.id, via="inject")
+        rows = await db.get_consumed_messages("task", "task-2")
+        assert rows == []
+        rows = await db.get_consumed_messages("task", "task-1")
+        assert {r.id for r in rows} == {mine.id, other.id}
+
+    async def test_scoped_to_one_recipient_kind(self, db):
+        msg = await _send(db, to_kind="task", to_id="supervisor-p1")
+        await db.mark_delivered(msg.id, via="inject")
+        assert await db.get_consumed_messages("session", "supervisor-p1") == []
+
+    async def test_orders_like_the_pending_queue(self, db):
+        low = await _send(db, body="low", priority=10)
+        high = await _send(db, body="high", priority=1)
+        await db.mark_delivered(low.id, via="inject")
+        await db.mark_delivered(high.id, via="inject")
+        rows = await db.get_consumed_messages("session", "supervisor-p1")
+        assert [r.body for r in rows] == ["high", "low"]
+
+    async def test_limit_bounds_the_re_read(self, db):
+        for index in range(4):
+            msg = await _send(db, body=f"m{index}")
+            await db.mark_delivered(msg.id, via="inject")
+        rows = await db.get_consumed_messages("session", "supervisor-p1", limit=2)
+        assert len(rows) == 2
+
+    async def test_does_not_change_delivery_state(self, db):
+        msg = await _send(db)
+        await db.mark_delivered(msg.id, via="inject")
+        await db.get_consumed_messages("session", "supervisor-p1")
+        fresh = await db.get_message(msg.id)
+        assert fresh.delivered_at == (await db.get_message(msg.id)).delivered_at
+        assert fresh.via == "inject"
+
+
 class TestPendingRecipients:
     async def test_distinct_recipients(self, db):
         await _send(db, to_kind="session", to_id="supervisor-p1")

@@ -1050,7 +1050,9 @@ class SessionCommandsMixin:
                         "claim remain open. Read and handle the messages before closing: "
                         + "; ".join(inbox_commands)
                         + ". Recheck any affected evidence, then retry close with the "
-                        "same claim and an updated summary."
+                        "same claim and an updated summary. If an earlier "
+                        "`--inject` consumed a body you never got to read, "
+                        "`--include-consumed` on the same mailbox returns it."
                     ),
                 }
 
