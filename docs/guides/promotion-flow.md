@@ -60,6 +60,25 @@ attestation names. App verification, functional preflight and
 the committed manifest. Missing or different promotion names remain a trust
 failure; projects without a flow keep the original manifest format.
 
+A delivery-branch push validated by the fallback reusable workflow produces
+checks named `unattested-ci / <required name>`. To allow that evidence when
+requesting a promotion, commit `check_sets.promotion-source-audit` in
+`.github/agent-queue-integration.json`, listing the full prefixed name of every
+required check. Agent-queue's manifest includes this set for all sixteen checks.
+The manifest renderer preserves committed named sets when writing a fresh copy.
+
+Source admission uses this alternative only when all canonical check names are
+missing from a completed push run. The complete configured audit set must pass
+on the exact source commit under the trusted CI App and workflow attempt.
+Partial canonical evidence and real failures still block the request. The
+private promotion ref, candidate checks and promotion attestation continue to
+use the step's canonical names.
+
+Activation requires this configuration on the designated default branch and
+the updated source-admission code in the running daemon. After delivery, an
+authorized operator verifies `aq promote request --project agent-queue --step
+staging` opens a PR whose private head is pinned to the selected dev commit.
+
 ```yaml
 promotion_flow:
   - id: release

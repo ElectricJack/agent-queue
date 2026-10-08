@@ -6,6 +6,7 @@ import asyncio
 import copy
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, call
 
@@ -25,7 +26,12 @@ from src.database.tables import (
 from src.git.github_contracts import GitHubAccessError, GitHubCredentialIdentity
 from src.git.manager import GitManager
 from src.integration.batches import BatchStore
-from src.integration.ci import ATTESTATION_CHECK_NAME, IntegrationTrustManifest
+from src.integration.ci import (
+    ATTESTATION_CHECK_NAME,
+    AuthenticatedGitHubObserver,
+    FailedCIObservation,
+    IntegrationTrustManifest,
+)
 from src.integration.delivery_observer import delivery_targets
 from src.integration.promotion_steps import cache_promotion_review, promotion_ref
 from src.integration.train import TrainLane
@@ -156,6 +162,132 @@ async def promote_env(promotion):
 
 async def request(e, **kwargs):
     return await e.handler._cmd_promote_request({"project_id": "p", "step_id": "release", **kwargs})
+
+
+@pytest.fixture
+async def source_audit(promote_env):
+    """The reported green delivery push: 16 prefixed tests and one audit check."""
+    e = promote_env
+    committed = json.loads(
+        (Path(__file__).resolve().parents[1] / ".github/agent-queue-integration.json").read_text()
+    )
+    raw = e.trust.model_dump(mode="json", by_alias=True)
+    raw.update(required_checks=committed["required_checks"], check_sets=committed["check_sets"])
+    raw["promotion_attestation_names"] = ["Agent Queue Promotion Attestation (staging)"]
+    e.trust = IntegrationTrustManifest.model_validate(raw)
+    e.handler._promotion_manifest = AsyncMock(return_value=raw)
+    step = copy.deepcopy(e.meta["step"])
+    step.update(id="staging", target="staging", type="continuous",
+                versioning={"kind": "none"}, notes={"kind": "none"})
+    step["gate"].update(attestation=raw["promotion_attestation_names"][0], approval="none")
+    async with e.db._engine.begin() as conn:
+        await conn.execute(update(projects).values(promotion_flow=[step]))
+    git(e.repo.store, "push", "origin", e.base + ":refs/heads/staging")
+    check, workflow, _job = e.github._rows(e.source)
+    e.audit_checks = [
+        {**check, "id": 1000 + index, "name": name}
+        for index, name in enumerate(raw["check_sets"]["promotion-source-audit"])
+    ] + [{**check, "id": 2000, "name": "Main attestation"}]
+    e.audit_workflows = [workflow]
+    listing = e.github.paged_items
+
+    async def audit_listing(path, *, key):
+        if e.source in path:
+            if key == "check_runs":
+                return copy.deepcopy(e.audit_checks)
+            if key == "workflow_runs":
+                return copy.deepcopy(e.audit_workflows)
+        return await listing(path, key=key)
+
+    e.github.paged_items = audit_listing
+    return e
+
+
+@pytest.mark.parametrize("pin_source", [False, True])
+async def test_staging_request_accepts_configured_green_push_audit_and_pins_pr(source_audit, pin_source):
+    e = source_audit
+    args = {"project_id": "p", "step_id": "staging"}
+    if pin_source:
+        args["source_sha"] = e.source
+    opened = await e.handler._cmd_promote_request(args)
+    assert opened["outcome"] == "requested", opened
+    meta = opened["promotion"]
+    assert meta["source_sha"] == e.source and meta["base_sha"] == e.base
+    assert meta["check_names"] == list(e.trust.required_checks.names)
+    assert e.github.created == 1
+    assert e.github.pull["head"]["sha"] == e.source
+    assert e.github.pull["base"]["ref"] == "staging"
+    assert git(e.ops.git.remote_path, "rev-parse", promotion_ref(meta["step"], meta)) == e.source
+    assert git(e.ops.git.remote_path, "rev-parse", "staging") == e.base
+
+
+@pytest.mark.parametrize("condition,outcome", [
+    ("unconfigured", "promotion_source_red"),
+    ("wrong_prefix", "promotion_source_red"),
+    ("incomplete_config", "promotion_source_red"),
+    ("missing", "promotion_source_red"),
+    ("failed", "promotion_source_red"),
+    ("pending", "promotion_source_pending"),
+    ("workflow_failed", "promotion_source_red"),
+    ("pr_only", "promotion_source_pending"),
+    ("foreign_app", "promotion_source_red"),
+    ("wrong_head", "promotion_source_untrusted"),
+    ("ambiguous_workflow", "promotion_source_untrusted"),
+    ("canonical_failed", "promotion_source_red"),
+    ("canonical_partial", "promotion_source_red"),
+    ("newer_failed_audit", "promotion_source_red"),
+])
+async def test_staging_source_audit_refuses_invalid_evidence_before_writes(source_audit, condition, outcome):
+    e = source_audit
+    raw = e.trust.model_dump(mode="json", by_alias=True)
+    if condition == "unconfigured":
+        raw["check_sets"] = {}
+    elif condition == "wrong_prefix":
+        raw["check_sets"]["promotion-source-audit"] = [
+            "other-ci / " + name for name in raw["required_checks"]["names"]
+        ]
+    elif condition == "incomplete_config":
+        raw["check_sets"]["promotion-source-audit"].pop()
+    elif condition == "missing":
+        e.audit_checks.pop(0)
+    elif condition == "failed":
+        e.audit_checks[0]["conclusion"] = "failure"
+    elif condition == "pending":
+        e.audit_checks[0].update(status="in_progress", conclusion=None)
+    elif condition == "workflow_failed":
+        e.audit_workflows[0]["conclusion"] = "failure"
+    elif condition == "pr_only":
+        e.audit_workflows[0]["event"] = "pull_request"
+    elif condition == "foreign_app":
+        e.audit_checks[0]["app"] = {"id": 999}
+    elif condition == "wrong_head":
+        e.audit_checks[0]["head_sha"] = e.base
+    elif condition == "ambiguous_workflow":
+        e.audit_workflows[0]["run_attempt"] = None
+    elif condition in {"canonical_failed", "canonical_partial"}:
+        e.audit_checks.append({**e.audit_checks[0], "id": 3000,
+                              "name": e.trust.required_checks.names[0],
+                              "conclusion": "failure" if condition == "canonical_failed" else "success"})
+    elif condition == "newer_failed_audit":
+        e.audit_checks.append({**e.audit_checks[0], "id": 3000, "conclusion": "failure"})
+    e.trust = IntegrationTrustManifest.model_validate(raw)
+    e.handler._promotion_manifest = AsyncMock(return_value=raw)
+    before = git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/")
+    result = await e.handler._cmd_promote_request({"project_id": "p", "step_id": "staging"})
+    assert result["outcome"] == outcome, result
+    assert e.github.created == 0
+    assert git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/") == before
+    async with e.db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.id)) is None
+        assert await conn.scalar(select(integration_batches.c.id)) is None
+
+
+async def test_source_audit_configuration_does_not_replace_exact_candidate_checks(source_audit):
+    e = source_audit
+    observed = await AuthenticatedGitHubObserver(e.github, expected_event="push").observe(e.trust, e.source)
+    assert isinstance(observed, FailedCIObservation)
+    assert {check["conclusion"] for check in observed.checks} == {"missing"}
+    assert tuple(check["name"] for check in observed.checks) == e.trust.required_checks.names
 
 
 @pytest.fixture

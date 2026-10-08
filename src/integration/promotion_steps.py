@@ -1777,13 +1777,28 @@ async def check_source_green(client, trust, required, source):
         AuthenticatedGitHubObserver,
         CIObservationDeferred,
         FailedCIObservation,
+        RequiredChecksManifest,
     )
 
     selected = trust.model_copy(update={"required_checks": required})
     try:
-        observed = await AuthenticatedGitHubObserver(client, expected_event="push").observe(
-            selected, source,
-        )
+        observer = AuthenticatedGitHubObserver(client, expected_event="push")
+        observed = await observer.observe(selected, source)
+        # Delivery-branch fallback CI is a reusable workflow whose check names
+        # include the caller job. Only source admission may use its explicitly
+        # trusted full names; canonical candidate/attestation names stay exact.
+        audit_names = tuple(f"unattested-ci / {name}" for name in required.names)
+        configured = trust.check_sets.get("promotion-source-audit", ())
+        if (
+            isinstance(observed, FailedCIObservation)
+            and observed.checks
+            and all(check["conclusion"] == "missing" for check in observed.checks)
+            and set(audit_names).issubset(configured)
+        ):
+            audit_required = RequiredChecksManifest(version=required.version, names=audit_names)
+            observed = await observer.observe(
+                trust.model_copy(update={"required_checks": audit_required}), source,
+            )
     except CIObservationDeferred as exc:
         reason = "promotion_source_pending" if exc.classification in {"pending", "none"} \
             else "promotion_source_unavailable"

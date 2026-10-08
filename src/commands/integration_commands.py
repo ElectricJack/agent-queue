@@ -1377,6 +1377,20 @@ class IntegrationCommandsMixin:
                 error=f"the default-branch copy could not be read: {exc}",
             )
         else:
+            # Named sets are authored in committed trust, not in the routing
+            # policy. Preserve them when rendering so --write cannot erase a
+            # configured promotion source audit or step-specific check set.
+            if raw is not None:
+                try:
+                    committed_trust = trust_manifest.IntegrationTrustManifest.model_validate_json(raw)
+                except ValueError:
+                    pass
+                else:
+                    if committed_trust.check_sets:
+                        manifest["check_sets"] = {
+                            name: list(checks) for name, checks in committed_trust.check_sets.items()
+                        }
+                        text = trust_manifest.canonical_text(manifest)
             committed.update(sha=sha, **trust_manifest.compare(manifest, raw).as_dict())
         return {
             "success": True,

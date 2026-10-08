@@ -50,13 +50,17 @@ def _policy() -> dict:
 
 
 def _agent_queue_manifest(policy=None, *, promotion_flow=FLOW) -> dict:
+    policy = policy or _policy()
     return trust_manifest.manifest_for_policy(
-        policy or _policy(),
+        policy,
         canonical_repository_id="agent-queue2",
         repository_id=1160639300,
         full_name="ElectricJack/agent-queue",
         attestation_app_id=5075923,
         promotion_flow=promotion_flow,
+        check_sets={"promotion-source-audit": [
+            "unattested-ci / " + name for name in policy["root"]["required_checks"]["names"]
+        ]},
     )
 
 
@@ -89,7 +93,10 @@ def test_the_committed_manifest_is_the_builder_output_for_the_reviewed_policy():
 
 
 def test_promotion_trust_is_explicit_without_changing_existing_manifests():
-    original = _agent_queue_manifest(promotion_flow=())
+    original = trust_manifest.manifest_for_policy(
+        _policy(), canonical_repository_id="agent-queue2", repository_id=1160639300,
+        full_name="ElectricJack/agent-queue", attestation_app_id=5075923,
+    )
     assert "promotion_attestation_names" not in original
     assert "check_sets" not in original
     original_text = trust_manifest.canonical_text(original)
