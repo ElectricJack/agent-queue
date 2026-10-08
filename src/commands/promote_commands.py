@@ -836,7 +836,7 @@ class PromoteCommandsMixin:
                 remote = await ops.remote(repo, ref)
                 if remote is None:
                     try:
-                        await ops.push(repo, ref, source, "")
+                        await ops.push(repo, ref, source, "0" * 40)
                     except GitError:
                         if await ops.remote(repo, ref) != source:
                             raise
