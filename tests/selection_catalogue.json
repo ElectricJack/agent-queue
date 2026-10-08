@@ -9414,9 +9414,11 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:485085619ae367d86ca9458b6033e56612a47bfa0fd47ad6a4499f1584afac63",
+      "digest": "sha256:d73888b346b86776c1c9c33eb13504e25d2cc5678960550b85cf46b9ed9e789d",
       "imports": [
         "src.database.tables",
+        "src.integration.ci",
+        "src.integration.promotion_steps",
         "src.integration.train",
         "src.integration.train_sources"
       ],
@@ -13502,7 +13504,7 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:ae514dbeaedeff91414c38d71cdbb0ac3365d34fc863762b59382352cdc20a93",
+      "digest": "sha256:7addf5dccf6208210bc37e8291730e19c9cd79c6b77d41cbc5001040ef1ac7d6",
       "imports": [
         "src.cli.app",
         "src.commands.contracts",
@@ -13511,6 +13513,7 @@
         "src.commands.promote_commands",
         "src.database.tables",
         "src.git.github_contracts",
+        "src.git.manager",
         "src.integration.batches",
         "src.integration.ci",
         "src.integration.delivery_observer",

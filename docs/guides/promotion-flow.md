@@ -3,6 +3,12 @@
 A promotion flow moves one tested commit through an ordered branch chain,
 using a pull request for each promotion and the integration train to publish it.
 
+For an activated continuous step, each train visit observes the current source.
+Pending push CI is checked again on later visits. Once the exact source is green
+and still needs promotion, the train sends the reviewed project policy a durable
+notification to request its pinned PR. This also recovers an already-green source
+after daemon restart or policy activation, without requiring new completed work.
+
 > The mechanisms below are implemented. Each project activates its own flow and
 > reviewed policy bundles; shipping these files does not switch a live project.
 

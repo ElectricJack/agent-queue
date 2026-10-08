@@ -426,6 +426,7 @@ class TrainLane:
         [Batch, GitTruthSnapshot, str, tuple[str, ...]], Awaitable[dict[str, Any] | None]
     ] | None = None
     sync_closed_epic: Callable[[GitTruthSnapshot], Awaitable[BatchSelection | None]] | None = None
+    observe_source: Callable[[GitTruthSnapshot], Awaitable[None]] | None = None
 
 
 @dataclass(frozen=True)
@@ -733,6 +734,9 @@ class IntegrationTrain:
         lane = await self.lane_for(target)
         _progress("fetch_snapshot")
         snapshot = await lane.snapshot()
+        if lane.observe_source:
+            _progress("observe_promotion_source")
+            await lane.observe_source(snapshot)
         _progress("select_batch", target_sha=snapshot.target_oid)
         opened = await self.batches.open_batch(
             target, snapshot, lane.service, **({"seal_now": True} if seal_now else {}),
