@@ -86,6 +86,42 @@ class ProjectCommandsMixin:
             return {"error": "'name' is required to create a project"}
         project_id = name.lower().replace(" ", "-")
 
+        if args.get("repo_url") or args.get("create_repo"):
+            if args.get("repo_url") and args.get("create_repo"):
+                return {"success": False, "error": "repo_url and create_repo are mutually exclusive"}
+            roots = self.config.project_roots
+            root_id = args.get("root_id") or (roots[0].id if len(roots) == 1 else None)
+            if not root_id:
+                return {"success": False, "error": "Choose a configured project root with --root-id"}
+            from uuid import uuid4
+            from src.projects.github import GitHubError, parse_github_repository
+
+            request = {
+                "request_id": args.get("request_id") or str(uuid4()),
+                "root_id": root_id,
+                "relative_path": args.get("relative_path") or project_id,
+                "credit_weight": args.get("credit_weight", 1.0),
+                "max_concurrent_agents": args.get("max_concurrent_agents", 2),
+                "project_name": name,
+                "project_id": project_id,
+                "default_branch": args.get("default_branch"),
+            }
+            if args.get("create_repo"):
+                try:
+                    repo = parse_github_repository(args["create_repo"])
+                except GitHubError as exc:
+                    return {"success": False, "error": exc.message}
+                request.update(source_mode="init", create_github=True,
+                               github_owner=repo.owner, github_repo=repo.name,
+                               github_visibility="private" if args.get("private", True) else "public")
+            else:
+                request.update(source_mode="github_clone", github_url=args["repo_url"])
+            result = await self._cmd_onboard_project(request)
+            if result.get("success"):
+                result.update(created=project_id, name=name,
+                              assignment_playbook_id=self.config.routing.default_router)
+            return result
+
         project = Project(
             id=project_id,
             name=name,
@@ -123,6 +159,31 @@ class ProjectCommandsMixin:
             "name": project.name,
             "assignment_playbook_id": project.assignment_playbook_id,
         }
+
+    async def _cmd_project_doctor(self, args: dict) -> dict:
+        """Diagnose the local-first project authorization gap without changing it."""
+        import shlex
+        from src.projects.github import GitHubError, parse_github_repository
+
+        project = await self.db.get_project(args["project_id"])
+        if project is None:
+            return {"success": False, "error": "Project not found"}
+        path = await self.db.get_project_workspace_path(project.id)
+        if project.repo_url or not path:
+            return {"success": True, "project_id": project.id, "ready": bool(project.repo_url),
+                    "code": "repository_bound" if project.repo_url else "workspace_missing"}
+        remote = await self.orchestrator.git.aget_remote_url(path)
+        try:
+            url = parse_github_repository(remote or "").clone_https
+        except GitHubError:
+            url = "OWNER/REPOSITORY"
+        command = shlex.join([
+            "aq", "project", "bind-repository", project.id, "--repo-url", url,
+            "--expected-repo-url", "", "--reason", "Authorize local-first project repository",
+        ])
+        return {"success": True, "project_id": project.id, "ready": False,
+                "code": "repository_authorization_missing", "recovery_command": command,
+                "message": "Local repository has no authorized remote. Review and run the binding command."}
 
     async def _cmd_pause_project(self, args: dict) -> dict:
         pid = args["project_id"]

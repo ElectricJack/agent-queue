@@ -1403,6 +1403,28 @@ class IntegrationCommandsMixin:
         cannot disagree.  Existing-login credentials are reported as the
         ``credential`` item's ``not_app_mode``, not refused.
         """
+        if args.get("repository_access_only"):
+            from src.projects.github import GitHubError
+
+            project_id = args.get("project_id", "")
+            _, refusal = await integration_operator(self.db, project_id)
+            if refusal:
+                return _failure("unauthorized", refusal)
+            project = await self.db.get_project(project_id)
+            if project is None:
+                return _failure("not_found", "Project not found")
+            try:
+                binding = await self._github_client().validate_repository(project.repo_url)
+            except GitHubError as exc:
+                return _failure("repository_binding_failed", exc.message)
+            return {
+                "success": True, "outcome": "verified", "project_id": project_id,
+                "github_repository_id": binding.repository_id, "full_name": binding.full_name,
+                "default_branch": project.repo_default_branch, "ready": True,
+                "items": [{"id": "repository", "status": "ok", "code": "repository_accessible",
+                           "observed": {"full_name": binding.full_name}, "expected": {}, "fix": ""}],
+            }
+
         from src.integration import app_mode
 
         refusal, inputs = await self._integration_app_inputs(args)

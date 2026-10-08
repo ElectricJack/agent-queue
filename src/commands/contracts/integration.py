@@ -250,6 +250,7 @@ class IntegrationTrustManifestValue(CommandValue):
 
 
 class IntegrationAppVerifyArgs(IntegrationTrustManifestArgs):
+    repository_access_only: bool = False
     #: Where the caller read ``policy`` from; only repeated in fix commands.
     policy_path: str | None = Field(default=None, min_length=1)
 

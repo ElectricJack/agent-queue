@@ -788,6 +788,7 @@ async def test_contract_is_a_typed_read():
             assert command == "integration_app_verify"
             assert payload == {
                 "project_id": "p", "policy": None, "repository_id": None, "policy_path": None,
+                "repository_access_only": False,
             }
             return report
 

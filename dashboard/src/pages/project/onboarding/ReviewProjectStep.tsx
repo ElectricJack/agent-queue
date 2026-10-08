@@ -6,10 +6,11 @@ export function ReviewProjectStep() {
   const { source, identity } = state;
   const actions: string[] = [];
   if (source.mode === "link") actions.push(`Link the existing repository at ${source.relativePath ?? "the selected path"}.`);
-  if (source.mode === "github_clone") actions.push(`Clone the selected GitHub repository into the selected destination.`);
+  if (source.mode === "github_clone") actions.push(`Clone the selected GitHub repository into the selected destination. If it is empty, create and push an initial README commit.`);
   if (source.mode === "init") {
     actions.push(`Create a new Git repository at ${source.directoryName || "the selected destination"}.`);
     if (source.createReadme) actions.push("Create README.md and make the initial commit.");
+    if (source.repoUrl?.trim()) actions.push(`Verify access to ${source.repoUrl.trim()}, authorize it, and push the initial commit.`);
     if (source.createGithub) actions.push(`Create the ${source.githubVisibility} GitHub repository ${source.githubOwner ? `${source.githubOwner}/` : ""}${source.githubRepo || source.directoryName}.`);
   }
   actions.push(`Register project ${identity.projectName || identity.projectId || "(unnamed project)"} and its primary workspace.`);

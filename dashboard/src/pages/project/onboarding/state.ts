@@ -39,6 +39,7 @@ export interface InitSource {
   directoryName: string;
   createReadme: boolean;
   createGithub: boolean;
+  repoUrl?: string;
   githubOwner: string | null;
   githubRepo: string;
   githubVisibility: GithubVisibility;
@@ -127,6 +128,7 @@ export function defaultSource(mode: SourceMode): SourceState {
         directoryName: "",
         createReadme: true,
         createGithub: false,
+        repoUrl: "",
         githubOwner: null,
         githubRepo: "",
         githubVisibility: "private",

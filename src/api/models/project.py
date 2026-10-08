@@ -74,6 +74,15 @@ class ListProjectsResponse(BaseModel):
     projects: list[ProjectSummary] = []
 
 
+class ProjectDoctorResponse(BaseModel):
+    success: bool = True
+    project_id: str
+    ready: bool
+    code: str
+    recovery_command: str | None = None
+    message: str | None = None
+
+
 class CreateProjectResponse(BaseModel):
     created: str
     name: str
@@ -180,6 +189,7 @@ class SetActiveProjectResponse(BaseModel):
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "list_projects": ListProjectsResponse,
     "create_project": CreateProjectResponse,
+    "project_doctor": ProjectDoctorResponse,
     "edit_project": EditProjectResponse,
     "delete_project": DeleteProjectResponse,
     "pause_project": PauseProjectResponse,
