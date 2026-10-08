@@ -12848,109 +12848,109 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::2000800a19f07b12dcfd441b364b958149789c935756a56406678e50d5d7e2c8": {
-      "line": 1263,
+      "line": 1265,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "19309eb55f11126095f70cd787d0908f5975627b10f588aa2ba6f20214ba6080",
+      "owner_fingerprint": "9c032db096849b76a9334772a40e5d1e4551c3d5a2b8e8f8cd4f816692887502",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'failure_class'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::4440a33c54ab4fa4c809666198358bb0499a892c5fc60e199b16f28357f6a517": {
-      "line": 1273,
+      "line": 1275,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "19309eb55f11126095f70cd787d0908f5975627b10f588aa2ba6f20214ba6080",
+      "owner_fingerprint": "9c032db096849b76a9334772a40e5d1e4551c3d5a2b8e8f8cd4f816692887502",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_notes'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::56578aa26104563e627d6920b6ab71ed75c43b52451419defe2a62b353044c31": {
-      "line": 1277,
+      "line": 1279,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "19309eb55f11126095f70cd787d0908f5975627b10f588aa2ba6f20214ba6080",
+      "owner_fingerprint": "9c032db096849b76a9334772a40e5d1e4551c3d5a2b8e8f8cd4f816692887502",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_session_id'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::660e646c2bc73a87acbd9635c6d7c2d7bfb27bc207880247753c79164914ad87": {
-      "line": 1659,
+      "line": 1661,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "19309eb55f11126095f70cd787d0908f5975627b10f588aa2ba6f20214ba6080",
+      "owner_fingerprint": "9c032db096849b76a9334772a40e5d1e4551c3d5a2b8e8f8cd4f816692887502",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::ae11c6bd4fb43bd6de75c4c48200714e0e53b8fabfe707dbbd4107030938735a": {
-      "line": 1265,
+      "line": 1267,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "19309eb55f11126095f70cd787d0908f5975627b10f588aa2ba6f20214ba6080",
+      "owner_fingerprint": "9c032db096849b76a9334772a40e5d1e4551c3d5a2b8e8f8cd4f816692887502",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_outcome'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::be73c4ceb2c880e944a4b02d2f545fec23c5e2b042151119ccb55a6a109bcd41": {
-      "line": 1267,
+      "line": 1269,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "19309eb55f11126095f70cd787d0908f5975627b10f588aa2ba6f20214ba6080",
+      "owner_fingerprint": "9c032db096849b76a9334772a40e5d1e4551c3d5a2b8e8f8cd4f816692887502",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::ca3f2cdcd35a7a2089869aaff868b1ed242d5a4dc3a16c2f22bbee657ab3d40f": {
-      "line": 1533,
+      "line": 1535,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "19309eb55f11126095f70cd787d0908f5975627b10f588aa2ba6f20214ba6080",
+      "owner_fingerprint": "9c032db096849b76a9334772a40e5d1e4551c3d5a2b8e8f8cd4f816692887502",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'summary'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::da4a85ceaecac9a0a1152f3e0883f7f88015afbe1b94fb6f5e36892a01f386b4": {
-      "line": 1261,
+      "line": 1263,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "19309eb55f11126095f70cd787d0908f5975627b10f588aa2ba6f20214ba6080",
+      "owner_fingerprint": "9c032db096849b76a9334772a40e5d1e4551c3d5a2b8e8f8cd4f816692887502",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'outcome'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::dc542d68e996f280c4f1a0ad5174d7f358d5e33051a34bae65de5a76b92faf40": {
-      "line": 1275,
+      "line": 1277,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "19309eb55f11126095f70cd787d0908f5975627b10f588aa2ba6f20214ba6080",
+      "owner_fingerprint": "9c032db096849b76a9334772a40e5d1e4551c3d5a2b8e8f8cd4f816692887502",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'verification'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::e6420f7ac1c540cf49ce31f733f1e46efaca47d04099608408916ce1c06433ab": {
-      "line": 1333,
+      "line": 1335,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "19309eb55f11126095f70cd787d0908f5975627b10f588aa2ba6f20214ba6080",
+      "owner_fingerprint": "9c032db096849b76a9334772a40e5d1e4551c3d5a2b8e8f8cd4f816692887502",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: PENDING_COMPLETION_KEY"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::f27f9aaff90d2f291ca36b29a447e4ecbd3822acfd900bbda99ee4792c8e586f": {
-      "line": 1271,
+      "line": 1273,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "19309eb55f11126095f70cd787d0908f5975627b10f588aa2ba6f20214ba6080",
+      "owner_fingerprint": "9c032db096849b76a9334772a40e5d1e4551c3d5a2b8e8f8cd4f816692887502",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_branch'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::f3b4697bfd97ba0305066ae8ff852bfbb7c8f4a9737eb15f0d6b36946b634acd": {
-      "line": 1515,
+      "line": 1517,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "19309eb55f11126095f70cd787d0908f5975627b10f588aa2ba6f20214ba6080",
+      "owner_fingerprint": "9c032db096849b76a9334772a40e5d1e4551c3d5a2b8e8f8cd4f816692887502",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit_auto'"
