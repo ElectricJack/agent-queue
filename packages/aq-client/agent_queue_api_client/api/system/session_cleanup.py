@@ -6,6 +6,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.session_cleanup_request import SessionCleanupRequest
+from ...models.session_cleanup_response import SessionCleanupResponse
 from ...models.session_cleanup_response_422 import SessionCleanupResponse422
 from ...types import Response
 
@@ -31,9 +32,10 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | SessionCleanupResponse422 | None:
+) -> SessionCleanupResponse | SessionCleanupResponse422 | None:
     if response.status_code == 200:
-        response_200 = response.json()
+        response_200 = SessionCleanupResponse.from_dict(response.json())
+
         return response_200
 
     if response.status_code == 422:
@@ -49,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | SessionCleanupResponse422]:
+) -> Response[SessionCleanupResponse | SessionCleanupResponse422]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,7 +64,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: SessionCleanupRequest,
-) -> Response[Any | SessionCleanupResponse422]:
+) -> Response[SessionCleanupResponse | SessionCleanupResponse422]:
     """Stop and prune taskless sleeping named sessions, including those with live terminals. Dry-run lists
     eligible sessions without changing them.
 
@@ -77,7 +79,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | SessionCleanupResponse422]
+        Response[SessionCleanupResponse | SessionCleanupResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -95,7 +97,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: SessionCleanupRequest,
-) -> Any | SessionCleanupResponse422 | None:
+) -> SessionCleanupResponse | SessionCleanupResponse422 | None:
     """Stop and prune taskless sleeping named sessions, including those with live terminals. Dry-run lists
     eligible sessions without changing them.
 
@@ -110,7 +112,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | SessionCleanupResponse422
+        SessionCleanupResponse | SessionCleanupResponse422
     """
 
     return sync_detailed(
@@ -123,7 +125,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: SessionCleanupRequest,
-) -> Response[Any | SessionCleanupResponse422]:
+) -> Response[SessionCleanupResponse | SessionCleanupResponse422]:
     """Stop and prune taskless sleeping named sessions, including those with live terminals. Dry-run lists
     eligible sessions without changing them.
 
@@ -138,7 +140,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | SessionCleanupResponse422]
+        Response[SessionCleanupResponse | SessionCleanupResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -154,7 +156,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: SessionCleanupRequest,
-) -> Any | SessionCleanupResponse422 | None:
+) -> SessionCleanupResponse | SessionCleanupResponse422 | None:
     """Stop and prune taskless sleeping named sessions, including those with live terminals. Dry-run lists
     eligible sessions without changing them.
 
@@ -169,7 +171,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | SessionCleanupResponse422
+        SessionCleanupResponse | SessionCleanupResponse422
     """
 
     return (

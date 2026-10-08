@@ -16194,7 +16194,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/SessionCleanupResponse"
+                }
               }
             }
           },
@@ -63366,6 +63368,56 @@
         },
         "type": "object",
         "title": "SessionCleanupRequest"
+      },
+      "SessionCleanupResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": false
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          },
+          "sessions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Sessions",
+            "default": []
+          },
+          "pruned": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Pruned",
+            "default": []
+          },
+          "skipped": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Skipped",
+            "default": []
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "SessionCleanupResponse",
+        "description": "``session_cleanup`` \u2014 taskless sleeping named sessions stopped and pruned.\n\nWith ``dry_run`` only ``count`` and ``sessions`` are filled."
       },
       "SessionDesiredStateResponse": {
         "properties": {

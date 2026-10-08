@@ -397,6 +397,7 @@ async def test_cleanup_skips_sleeping_session_with_task(handler, providers, monk
     from unittest.mock import AsyncMock
 
     monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(return_value=[]))
+    await _make_task(handler.db)
     row = await _make_session(
         handler.db, providers.create("fake"), sid="taskful", task_id="t1",
         lifecycle="named", state="sleeping", desired_state="sleeping",
