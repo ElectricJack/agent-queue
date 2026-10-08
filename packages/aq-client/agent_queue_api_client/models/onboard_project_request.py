@@ -26,8 +26,11 @@ class OnboardProjectRequest:
             github_clone)
         project_name (str): Display name
         project_id (str): URL-safe project id (slug)
+        credit_weight (float | None | Unset): Scheduling weight (default 1)
+        max_concurrent_agents (int | None | Unset): Project agent limit (default 2)
         default_branch (None | str | Unset): Default branch; detected for link/github_clone and `main` for init when
             omitted
+        repo_url (None | str | Unset): init only: adopt an existing empty GitHub remote
         create_readme (bool | None | Unset): init only: create README.md and an initial commit (default true)
         create_github (bool | None | Unset): init only: also create a GitHub repository (default false)
         github_owner (None | str | Unset): init with create_github: owner to create the repository under
@@ -45,7 +48,10 @@ class OnboardProjectRequest:
     relative_path: str
     project_name: str
     project_id: str
+    credit_weight: float | None | Unset = UNSET
+    max_concurrent_agents: int | None | Unset = UNSET
     default_branch: None | str | Unset = UNSET
+    repo_url: None | str | Unset = UNSET
     create_readme: bool | None | Unset = UNSET
     create_github: bool | None | Unset = UNSET
     github_owner: None | str | Unset = UNSET
@@ -70,11 +76,29 @@ class OnboardProjectRequest:
 
         project_id = self.project_id
 
+        credit_weight: float | None | Unset
+        if isinstance(self.credit_weight, Unset):
+            credit_weight = UNSET
+        else:
+            credit_weight = self.credit_weight
+
+        max_concurrent_agents: int | None | Unset
+        if isinstance(self.max_concurrent_agents, Unset):
+            max_concurrent_agents = UNSET
+        else:
+            max_concurrent_agents = self.max_concurrent_agents
+
         default_branch: None | str | Unset
         if isinstance(self.default_branch, Unset):
             default_branch = UNSET
         else:
             default_branch = self.default_branch
+
+        repo_url: None | str | Unset
+        if isinstance(self.repo_url, Unset):
+            repo_url = UNSET
+        else:
+            repo_url = self.repo_url
 
         create_readme: bool | None | Unset
         if isinstance(self.create_readme, Unset):
@@ -132,8 +156,14 @@ class OnboardProjectRequest:
                 "project_id": project_id,
             }
         )
+        if credit_weight is not UNSET:
+            field_dict["credit_weight"] = credit_weight
+        if max_concurrent_agents is not UNSET:
+            field_dict["max_concurrent_agents"] = max_concurrent_agents
         if default_branch is not UNSET:
             field_dict["default_branch"] = default_branch
+        if repo_url is not UNSET:
+            field_dict["repo_url"] = repo_url
         if create_readme is not UNSET:
             field_dict["create_readme"] = create_readme
         if create_github is not UNSET:
@@ -168,6 +198,24 @@ class OnboardProjectRequest:
 
         project_id = d.pop("project_id")
 
+        def _parse_credit_weight(data: object) -> float | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(float | None | Unset, data)
+
+        credit_weight = _parse_credit_weight(d.pop("credit_weight", UNSET))
+
+        def _parse_max_concurrent_agents(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        max_concurrent_agents = _parse_max_concurrent_agents(d.pop("max_concurrent_agents", UNSET))
+
         def _parse_default_branch(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -176,6 +224,15 @@ class OnboardProjectRequest:
             return cast(None | str | Unset, data)
 
         default_branch = _parse_default_branch(d.pop("default_branch", UNSET))
+
+        def _parse_repo_url(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        repo_url = _parse_repo_url(d.pop("repo_url", UNSET))
 
         def _parse_create_readme(data: object) -> bool | None | Unset:
             if data is None:
@@ -255,7 +312,10 @@ class OnboardProjectRequest:
             relative_path=relative_path,
             project_name=project_name,
             project_id=project_id,
+            credit_weight=credit_weight,
+            max_concurrent_agents=max_concurrent_agents,
             default_branch=default_branch,
+            repo_url=repo_url,
             create_readme=create_readme,
             create_github=create_github,
             github_owner=github_owner,

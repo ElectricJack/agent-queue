@@ -2113,3 +2113,23 @@ vault watcher pick the change up.
 
 ### Deprecated Analyzer Commands (return error stubs)
 - `analyzer_status`, `analyzer_toggle`, `analyzer_history`
+
+### Authorized project creation
+
+`create_project` with `repo_url` or `create_repo` delegates to the same durable
+onboarding saga as the dashboard. `root_id` selects a configured project root
+(required when more than one exists); `relative_path` defaults to the project
+slug, and `request_id` identifies retries. The two remote choices are exclusive.
+Existing repositories are cloned; new repositories are created through the
+configured GitHub access provider. App mode never falls back to personal credentials.
+Onboarding init also accepts `repo_url` for an existing empty remote.
+
+Before publishing the initial commit, verify repository access with the configured
+provider and record the audited first binding using `bind_project_repository`.
+Register with an empty authorization first, then bind; never overwrite an existing
+authorization. On failure roll back request-owned local resources and registration;
+retain external repositories and return an exact clone/adoption command with a new
+request ID. Completed requests replay without repeated side effects.
+`integration_app_verify(repository_access_only=true)` verifies access without
+requiring an integration policy or enabling integration. `project_doctor` reports
+a primary local repository missing authorization and offers `bind-repository`.

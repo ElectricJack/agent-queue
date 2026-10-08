@@ -971,10 +971,12 @@ class CommandHandler(
                 if name == "review_attachment_add"
                 else args
             )
-            if name == "bind_project_repository":
+            if name in {"bind_project_repository", "create_project", "onboard_project"}:
                 log_args = {
-                    **args, "repo_url": "<redacted repository URL>",
-                    "expected_repo_url": "<redacted repository URL>",
+                    key: "<redacted repository URL>"
+                    if key in {"repo_url", "expected_repo_url", "github_url", "create_repo"}
+                    else value
+                    for key, value in args.items()
                 }
             if mutating:
                 logger.info("cmd %s args=%s", name, self._preview(log_args))
@@ -986,7 +988,7 @@ class CommandHandler(
             # never appear on the bus regardless.
             _emit_started_at = time.monotonic()
             _emit_args_snapshot = dict(args) if isinstance(args, dict) else {}
-            if name == "bind_project_repository":
+            if name in {"bind_project_repository", "create_project", "onboard_project"}:
                 _emit_args_snapshot = dict(log_args)
             _emit_ok: bool = False
             _emit_error: str | None = None

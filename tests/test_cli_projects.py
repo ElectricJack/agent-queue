@@ -416,3 +416,46 @@ def test_project_onboard_forwards_request_fields_and_prints_result(
     assert "example" in result.output
     assert "example-primary" in result.output
     assert "/srv/dev/example" in result.output
+
+
+@pytest.mark.parametrize("remote_flags,expected", [
+    (["--repo-url", "acme/widgets"], {"repo_url": "acme/widgets", "create_github": False}),
+    (["--create-repo", "acme/widgets", "--private"], {
+        "github_owner": "acme", "github_repo": "widgets", "github_visibility": "private",
+        "create_github": True,
+    }),
+])
+def test_project_onboard_remote_options(runner, remote_flags, expected):
+    from src.cli.app import cli
+
+    client = _client({"onboard_project": {"success": True, "project_id": "widgets"}})
+    with patch("src.cli.projects._get_client", return_value=client):
+        result = runner.invoke(cli, [
+            "--json", "project", "onboard", "--source-mode", "init", "--root-id", "dev",
+            "--relative-path", "widgets", "--project-name", "Widgets", "--project-id", "widgets",
+            *remote_flags,
+        ])
+    assert result.exit_code == 0, result.output
+    actual = client.execute.await_args.args[1]
+    assert expected.items() <= actual.items()
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("--repo-url", "https://github.com/acme/widgets"),
+    ("--create-repo", "acme/widgets"),
+])
+def test_project_create_remote_flags_reach_server(runner, flag, value):
+    from src.cli.app import cli
+
+    client = _client({"create_project": {"success": True, "created": "widgets", "name": "Widgets"}})
+    with patch("src.cli.app._get_client", return_value=client):
+        result = runner.invoke(cli, [
+            "--json", "project", "create", "--name", "Widgets", flag, value,
+            "--private", "--root-id", "dev", "--request-id", "widgets-create",
+        ])
+    assert result.exit_code == 0, result.output
+    args = client.execute.await_args.args[1]
+    assert args[flag[2:].replace("-", "_")] == value
+    assert args["private"] is True
+    assert args["request_id"] == "widgets-create"
+    assert "default_branch" not in args
