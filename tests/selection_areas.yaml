@@ -462,6 +462,7 @@ areas:
   - id: integration-controls
     description: "Integration operator controls: rollout and operational controls, supervisor authority over them, the integration CLI, integration doctor alarms and the troubleshooting guide."
     match:
+      - tests/test_integration_legacy_park_retirement.py
       - tests/test_integration_controls.py
       - tests/test_integration_operational_controls.py
       - tests/test_integration_operator_controls.py

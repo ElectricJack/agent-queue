@@ -39,6 +39,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_record_root_noop",
         "integration_record_delivered",
         "integration_quiesce",
+        "integration_retire_legacy_park",
         "integration_reconcile_expired_mutation",
         "integration_parent_verify",
         "integration_complete_parent",
@@ -1021,6 +1022,35 @@ class IntegrationReconcileExpiredMutationValue(CommandValue):
 class IntegrationQuiesceOwner(CommandArgs):
     owner_row_id: str = Field(min_length=1)
     fence_token: StrictInt = Field(ge=0)
+
+
+class IntegrationRetireLegacyParkArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    operation_id: str = Field(min_length=1)
+    task_ids: list[str] = Field(min_length=1)
+    expected_event_id: StrictInt | None = Field(default=None, ge=1)
+    expected_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    reason: str = Field(min_length=1)
+    dry_run: bool = True
+
+    @model_validator(mode="after")
+    def exact_abandonment(self):
+        if not self.reason.strip() or any(not task_id.strip() for task_id in self.task_ids):
+            raise ValueError("reason and task ids must be nonblank")
+        if len(set(self.task_ids)) != len(self.task_ids):
+            raise ValueError("task ids must be unique")
+        if not self.dry_run and (self.expected_event_id is None or self.expected_sha256 is None):
+            raise ValueError("apply requires the previewed event id and SHA256")
+        return self
+
+
+class IntegrationRetireLegacyParkValue(CommandValue):
+    project_id: str | None = None
+    operation_id: str | None = None
+    task_ids: list[str] = Field(default_factory=list)
+    event_id: int | None = None
+    sha256: str | None = None
+    dry_run: bool = True
 
 
 class IntegrationQuiesceArgs(CommandArgs):
@@ -3137,6 +3167,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         registry.register(CommandRegistration(
             name, contract, cutover_control, None if read_only else cutover_preview))
     for name, args_model, applied, value_model in (
+        ("integration_retire_legacy_park", IntegrationRetireLegacyParkArgs, "retired",
+         IntegrationRetireLegacyParkValue),
         ("integration_quiesce", IntegrationQuiesceArgs, "quiesced", IntegrationQuiesceValue),
         ("integration_record_delivered", IntegrationRecordDeliveredArgs, "recorded",
          IntegrationRecordDeliveredValue),
@@ -3164,6 +3196,18 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             side_effect=SideEffectClass.COMPOSITE, result_model=value_model,
             supports_preview=True,
         )
+        if name == "integration_retire_legacy_park":
+            contract = contract.model_copy(update={
+                "execution": contract.execution.model_copy(update={"effects": (
+                    ReadClause(subject=EffectSubject.INTEGRATION_OPERATION),
+                    UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION,
+                                 when=ClausePredicate(arg_equals=("dry_run", False))),
+                )}),
+                "presentation": CommandPresentation(
+                    title="Retire a historical parked operation",
+                    summary="Local operator abandons every explicitly selected source under an exact journal fence.",
+                ),
+            })
         if name in {"integration_record_root_noop", "integration_record_delivered"}:
             applying = ClausePredicate(arg_equals=("dry_run", False))
             contract = contract.model_copy(update={

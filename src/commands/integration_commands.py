@@ -63,6 +63,20 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_retire_legacy_park(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationRetireLegacyParkArgs
+        from src.integration.legacy_park_retirement import LegacyParkRetirement
+
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.LOCAL:
+            return _failure("refused", "historical park retirement requires the local operator")
+        request = IntegrationRetireLegacyParkArgs.model_validate(args)
+        try:
+            result = await LegacyParkRetirement(self.db).run(request)
+        except (ValueError, HierarchyError, BranchBusy, TimeoutError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def _cmd_integration_reconcile_expired_mutation(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationReconcileExpiredMutationArgs
         from src.integration.mutation_recovery import ExpiredMutationRecovery

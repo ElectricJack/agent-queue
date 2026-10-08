@@ -522,6 +522,7 @@
         "tests/test_cli_integration.py",
         "tests/test_doctor_integration_checks.py",
         "tests/test_integration_app_mode.py",
+        "tests/test_integration_legacy_park_retirement.py",
         "tests/test_integration_protection.py",
         "tests/test_integration_troubleshooting_doc.py",
         "tests/test_integration_trust_manifest.py"
@@ -553,6 +554,7 @@
         "tests/test_integration_delivered_parent_adoption.py",
         "tests/test_integration_epics.py",
         "tests/test_integration_legacy_backfill.py",
+        "tests/test_integration_legacy_park_retirement.py",
         "tests/test_integration_main_promotion.py",
         "tests/test_integration_parent_completion.py",
         "tests/test_integration_parent_source.py",
@@ -8294,6 +8296,30 @@
         "parametrize"
       ],
       "summary": "Git-proven backfill of pre-provenance completions (src/integration/legacy_backfill.py)."
+    },
+    "tests/test_integration_legacy_park_retirement.py": {
+      "areas": [
+        "integration-controls",
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "digest": "sha256:f88aadd015316353ea565bcb9246d327cc7d8a2295f640ef47d1cdf8a38a4e57",
+      "imports": [
+        "src.commands.contracts.integration",
+        "src.commands.handler",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.queries.hierarchy_queries",
+        "src.database.tables",
+        "src.integration.legacy_park_retirement",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Explicit historical abandonment retains its journal, completions and fences."
     },
     "tests/test_integration_lock.py": {
       "areas": [
