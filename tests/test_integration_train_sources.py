@@ -1664,7 +1664,8 @@ async def test_promoted_train_cleanup_honors_retention_and_live_epic_target(worl
     assert git(world.origin.url, "rev-parse", "refs/heads/aq/epic") == head
     assert (await world.db.get_integration_batch(batch.id))["cleanup_state"] == "pending"
 
-    # A retained source is omitted, while private candidate refs still retire.
+    # Epic delivery refs retire after settlement even when the generic
+    # successful-source policy retains ordinary task branches.
     await world.db.transition_task("epic", TaskStatus.COMPLETED)
     async with world.db.immediate() as conn:
         await conn.execute(update(projects).where(projects.c.id == "p").values(
@@ -1673,7 +1674,8 @@ async def test_promoted_train_cleanup_honors_retention_and_live_epic_target(worl
     retained = await freeze_cleanup_batch(world, "train-retained", {"epic": head})
     await publish_cleanup_candidate(world, retained, promoted, cleanup=cleanup)
     assert {r.outcome for r in await cleanup.advance(retained.id)} == {"complete"}
-    assert git(world.origin.url, "rev-parse", "refs/heads/aq/epic") == head
+    assert not git(world.origin.url, "for-each-ref", "--format=%(refname)",
+                   "refs/heads/aq/epic")
 
 
 async def test_epic_refresh_cleanup_never_schedules_its_own_epic_target(world, tmp_path):

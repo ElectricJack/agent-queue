@@ -215,10 +215,9 @@ class TestReapSlot:
 
 
 class TestPruneBranchesRetainFailedDays:
-    """Finding #4: prune unmerged aq/* branches whose task is terminal-FAILED
-    and whose last commit is older than ``retain_failed_days``."""
+    """Terminal status and commit age do not prove unique work is disposable."""
 
-    async def test_failed_old_pruned_recent_and_active_kept(
+    async def test_failed_old_recent_and_active_unique_branches_are_kept(
         self, tmp_path, base_repo,
     ):
         from src.models import TaskStatus
@@ -291,10 +290,11 @@ class TestPruneBranchesRetainFailedDays:
             pruned = await mgr.prune_branches(base_ws, default_branch="main")
 
             branches = _git(["branch", "--list"], cwd=base_repo)
-            assert "aq/failed-old" not in branches
+            assert "aq/failed-old" in branches
             assert "aq/failed-recent" in branches
             assert "aq/active" in branches
-            assert "aq/failed-old" in pruned
+            assert "aq/failed-old" not in pruned
+            assert pruned == []
         finally:
             await o.shutdown()
 

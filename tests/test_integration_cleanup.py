@@ -17,6 +17,7 @@ from src.database.tables import (
     integration_branch_owners,
     integration_candidate_member_results,
     integration_candidate_publications,
+    integration_candidate_resolutions,
     integration_candidate_ref_mutations,
     integration_candidate_revisions,
     integration_check_evidence,
@@ -25,17 +26,20 @@ from src.database.tables import (
     integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
+    integration_owner_recoveries,
     integration_review_evidence,
     integration_root_intent_members,
     project_integration_leases,
     project_integration_schedules,
     projects,
     repos,
+    sessions,
     task_delivery_receipts,
     tasks,
     workspaces,
 )
 from src.integration.cleanup import CleanupExecutionResult, IntegrationCleanupService
+from src.integration.batches import candidate_ref
 from src.integration.release import IntegrationReleaseService
 from src.integration.scheduler import IntegrationScheduler
 from src.integration.settling import note_approval
@@ -140,6 +144,7 @@ async def release_db(tmp_path, request, reuse_database):
                 pr_url="https://github.com/acme/widgets/pull/1",
                 repository_id="repo",
                 source_base_sha=BASE,
+                source_sha=SOURCE,
                 reviewed_head_sha=SOURCE,
                 reviewed_tree_sha=TREE,
                 review_evidence_id="review",
@@ -147,7 +152,11 @@ async def release_db(tmp_path, request, reuse_database):
                 source_ref=(
                     None
                     if "legacy_source_identity" in request.node.name
-                    else "refs/heads/aq/root"
+                    else (
+                        "refs/heads/aq/epic/root"
+                        if "epic_repair_and_recovered_preserved_refs" in request.node.name
+                        else "refs/heads/aq/root"
+                    )
                 ),
                 source_ref_retention=(
                     None
@@ -155,6 +164,8 @@ async def release_db(tmp_path, request, reuse_database):
                     else (
                         "retain" if "retains_source_ref" in request.node.name else "delete"
                     )
+                    if "epic_repair_and_recovered_preserved_refs" not in request.node.name
+                    else "retain"
                 ),
             )
         )
@@ -838,6 +849,77 @@ async def test_cleanup_retains_source_ref_from_frozen_policy(release_db):
         ).scalars().all()
     assert result.item_count == 4
     assert refs == [BRANCH]
+
+
+async def test_train_cleanup_materializes_epic_repair_and_recovered_preserved_refs(release_db):
+    db, _scheduler = release_db
+    repair_ref = "refs/heads/aq/integration-repairs/resolution"
+    preserved_ref = "refs/heads/aq/preserved/owner-root"
+    preserved_sha = "f" * 40
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch"
+        ).values(
+            target_ref="refs/heads/main", lifecycle="promoted", final_main_sha=HEAD,
+        ))
+        await conn.execute(insert(sessions).values(
+            id="repair-session", profile_id="standard-high-claude", harness="claude",
+            provider="test", name="n-repair", lifecycle="task", state="stopped",
+            desired_state="stopped", claims=0, work_dir="/tmp/repair", epoch="0",
+            instance_token="token", started_at=1.0, restarts=0, hooks_provisioned=False,
+        ))
+        await conn.execute(insert(workspaces).values(
+            id="repair-workspace", project_id="p", workspace_path="/tmp/repair-workspace",
+            source_type="link", enabled=True, created_at=1.0,
+        ))
+        await conn.execute(insert(integration_candidate_resolutions).values(
+            id="resolution", batch_id="batch", revision=0, member_ordinal=0,
+            operation_id="op", operation_episode_id="batch", stage_ordinal=0,
+            stage_deadline_at=1000.0, project_id="p", repair_task_id="repair-task",
+            repair_session_id="repair-session", repair_session_instance_token="token",
+            repair_workspace_id="repair-workspace", repair_workspace_path="/tmp/repair-workspace",
+            repository_id="repo", branch="refs/heads/aq/repair-task",
+            target_branch=repair_ref, target_kind="qualified", fence_owner_id="owner-root",
+            fence_token=1, partial_head_sha="a" * 40, source_base_sha=BASE,
+            source_head_sha=SOURCE, resolved_head_sha=preserved_sha,
+            resolved_tree_sha=TREE, repair_commit_shas=[preserved_sha],
+            push_evidence={"accepted": True}, state="accepted", created_at=2.0,
+            updated_at=3.0,
+        ))
+        await conn.execute(insert(integration_branch_owners).values(
+            id="owner-root", repository_id="repo", ref="refs/heads/aq/root",
+            owner_id="root", owner_role="producer", fence_token=4,
+            handoff_state="released", created_at=1.0, updated_at=4.0,
+        ))
+        await conn.execute(insert(integration_owner_recoveries).values(
+            id="recovery", owner_row_id="owner-root", repository_id="repo",
+            ref="refs/heads/aq/root", task_id="root", outcome="preserved_and_released",
+            evidence={"preserved_ref": preserved_ref, "preserved_sha": preserved_sha,
+                      "released_fence_token": 4},
+            principal="operator", created_at=4.0,
+        ))
+
+    service = IntegrationCleanupService(
+        db,
+        data_dir="/daemon",
+        binding_resolver=AsyncMock(
+            return_value=GitHubRepositoryBinding(99, "acme/widgets")
+        ),
+    )
+    result = await service.materialize("batch", now=30.0)
+    async with db._engine.connect() as conn:
+        refs = set((await conn.execute(select(integration_cleanup_items.c.target_ref).where(
+            integration_cleanup_items.c.batch_id == "batch",
+            integration_cleanup_items.c.kind == "remote_ref",
+        ))).scalars())
+    assert result.outcome == "materialized"
+    assert refs == {
+        "refs/heads/aq/epic/root",
+        "refs/heads/aq/integration-repairs/resolution",
+        "refs/heads/aq/preserved/owner-root",
+        BRANCH,
+        candidate_ref("batch"),
+    }
 
 
 async def test_cleanup_legacy_source_identity_is_visible_conflict(release_db):

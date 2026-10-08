@@ -25,8 +25,10 @@ from src.database.tables import (
     integration_batches,
     integration_branch_owners,
     integration_candidate_publications,
+    integration_candidate_resolutions,
     integration_candidate_ref_mutations,
     integration_cleanup_items,
+    integration_owner_recoveries,
     integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
@@ -1009,6 +1011,11 @@ class IntegrationCleanupService:
             )
             items = []
 
+            default_target = (
+                batch["target_ref"]
+                == "refs/heads/" + repository.default_branch.removeprefix("refs/heads/")
+            )
+
             def item(kind, identity, **values):
                 items.append(common | dict(kind=kind, identity=identity,
                     domain_key=f"cleanup:{batch['id']}:{kind}:{identity}", **values))
@@ -1035,7 +1042,15 @@ class IntegrationCleanupService:
                     continue
                 pr_url = member["pr_url"] or (task["pr_url"] if task else None)
                 retention = member["source_ref_retention"] or cleanup.successful_source_refs
-                if retention == "delete":
+                short_ref = self._short_head(ref)
+                # Epic branches are disposable delivery refs once a batch to
+                # the repository default branch has settled. Active or
+                # unique work is still protected by the execution-time hold
+                # and ancestry checks below.
+                retire_epic = default_target and (
+                    short_ref == "aq/epic" or short_ref.startswith("aq/epic/")
+                )
+                if retention == "delete" or retire_epic:
                     item("remote_ref", ref, member_ordinal=member["ordinal"], target_ref=ref,
                          expected_sha=member["source_sha"])
                 if pr_url:
@@ -1047,6 +1062,71 @@ class IntegrationCleanupService:
             candidate_sha = batch["tested_candidate_sha"] or batch["final_main_sha"]
             item("remote_ref", candidate_ref(batch["id"]), target_ref=candidate_ref(batch["id"]),
                  expected_sha=candidate_sha)
+            integration_ref = batch["integration_branch"]
+            if default_target and integration_ref and integration_ref != batch["target_ref"]:
+                item("remote_ref", integration_ref, target_ref=integration_ref,
+                     expected_sha=candidate_sha)
+
+            if default_target:
+                # Qualified repair branches are only retired after an
+                # accepted reservation was included in this settled
+                # revision. Exact SHA and reachability are rechecked by the
+                # normal remote-ref executor before deletion.
+                repair_refs = (await conn.execute(
+                    select(
+                        integration_candidate_resolutions.c.target_branch,
+                        integration_candidate_resolutions.c.resolved_head_sha,
+                    ).where(
+                        integration_candidate_resolutions.c.batch_id == batch["id"],
+                        integration_candidate_resolutions.c.revision == batch["current_revision"],
+                        integration_candidate_resolutions.c.target_kind == "qualified",
+                        integration_candidate_resolutions.c.state == "accepted",
+                    ).order_by(integration_candidate_resolutions.c.id)
+                )).all()
+                for repair_ref, repair_sha in repair_refs:
+                    if repair_ref != batch["target_ref"]:
+                        item("remote_ref", repair_ref, target_ref=repair_ref,
+                             expected_sha=repair_sha)
+
+                # A preserved tip becomes eligible only after owner recovery
+                # recorded a successful release and the same owner fence is
+                # still released. It is still kept and bundled if its exact
+                # tip is not reachable from the promoted default target.
+                member_ids = [member["task_id"] for member in members]
+                owners = (await conn.execute(select(integration_branch_owners).where(
+                    integration_branch_owners.c.repository_id == batch["repository_id"],
+                    integration_branch_owners.c.owner_id.in_(member_ids),
+                    integration_branch_owners.c.handoff_state == "released",
+                    integration_branch_owners.c.session_id.is_(None),
+                    integration_branch_owners.c.workspace_id.is_(None),
+                ))).mappings().all()
+                for owner in owners:
+                    recovery = (await conn.execute(
+                        select(integration_owner_recoveries).where(
+                            integration_owner_recoveries.c.owner_row_id == owner["id"],
+                            integration_owner_recoveries.c.outcome == "preserved_and_released",
+                        ).order_by(
+                            integration_owner_recoveries.c.created_at.desc(),
+                            integration_owner_recoveries.c.id.desc(),
+                        ).limit(1)
+                    )).mappings().one_or_none()
+                    evidence = (recovery or {}).get("evidence") or {}
+                    preserved_ref = evidence.get("preserved_ref")
+                    preserved_sha = evidence.get("preserved_sha")
+                    if (
+                        not recovery
+                        or evidence.get("released_fence_token") != owner["fence_token"]
+                        or not isinstance(preserved_ref, str)
+                        or not preserved_ref
+                        or not isinstance(preserved_sha, str)
+                        or len(preserved_sha) != 40
+                    ):
+                        continue
+                    if not preserved_ref.startswith("refs/heads/"):
+                        preserved_ref = "refs/heads/" + preserved_ref
+                    if preserved_ref != batch["target_ref"]:
+                        item("remote_ref", preserved_ref, target_ref=preserved_ref,
+                             expected_sha=preserved_sha)
             retained = RETAINED_CANDIDATE_PREFIX + batch["id"]
             item("local_ref", retained, target_ref=retained, expected_sha=candidate_sha)
             for values in items:

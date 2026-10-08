@@ -346,6 +346,8 @@ class Orchestrator(
         # Playbook V2 retention sweep, interval-limited by configuration.
         self._last_playbook_retention_sweep: float = 0.0
         self._last_worktree_reaper: float = 0.0
+        self._last_git_branch_sweep_date: str | None = None
+        self._git_branch_sweep_task: asyncio.Task | None = None
         self._last_auto_archive: float = 0.0
         self._last_memory_compact: float = 0.0  # TODO: remove once v2 compaction is wired
         self._last_failed_blocked_report: float = 0.0
@@ -2888,6 +2890,11 @@ class Orchestrator(
         await self.provider_availability.close()
         await self.wait_for_pool_launches(cancel=True)
         await self.wait_for_running_tasks(timeout=10)
+        if self._git_branch_sweep_task is not None and not self._git_branch_sweep_task.done():
+            _, pending = await asyncio.wait({self._git_branch_sweep_task}, timeout=30)
+            if pending:
+                self._git_branch_sweep_task.cancel()
+                await asyncio.gather(self._git_branch_sweep_task, return_exceptions=True)
         # A layout publish is one transaction; let an in-flight step land
         # rather than cancelling it mid-write.  Marks are durable either way.
         await self.wait_for_layout_step(timeout=30)
@@ -3243,6 +3250,7 @@ class Orchestrator(
             # called up there, not here.)
             # See docs/analysis/execution-plan.md §1.1.
             await self._reap_worktree_slots()
+            self._schedule_daily_git_branch_sweep()
             sessions_attempted = True
             await self._reconcile_sessions()
             await self._deliver_messages()
@@ -3614,6 +3622,176 @@ class Orchestrator(
                     await mgr.prune_branches(ws, default_branch=default_branch)
                 except Exception as e:
                     logger.debug("prune_branches(%s) failed: %s", ws.id, e)
+
+    def _schedule_daily_git_branch_sweep(self) -> None:
+        """Run the fleet branch audit once daily while Git-first is active."""
+        from datetime import UTC, datetime
+
+        if getattr(self.config.integration, "git_first", "shadow") != "active":
+            return
+        if self._git_branch_sweep_task is not None and not self._git_branch_sweep_task.done():
+            return
+        today = datetime.now(UTC).date().isoformat()
+        if self._last_git_branch_sweep_date == today:
+            return
+        marker = Path(self.config.data_dir) / "maintenance" / "git-branch-sweep-last-date"
+        try:
+            if marker.read_text(encoding="ascii").strip() == today:
+                self._last_git_branch_sweep_date = today
+                return
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning("Could not read daily Git sweep marker %s", marker, exc_info=True)
+        self._last_git_branch_sweep_date = today
+        self._git_branch_sweep_task = asyncio.create_task(
+            self._run_daily_git_branch_sweep(today), name="daily-git-branch-sweep"
+        )
+
+    async def _run_daily_git_branch_sweep(self, scheduled_date: str | None = None) -> None:
+        """Sweep exact Git-proven refs across registered git-first checkouts."""
+        from datetime import UTC, datetime
+
+        from src.integration.branch_sweep import BranchSweepReport, sweep_checkout
+        from src.integration.delivery_branches import live_branch_references
+
+        try:
+            async with self.db._engine.connect() as conn:
+                holds = await live_branch_references(conn)
+            projects = await self.db.list_projects()
+        except Exception:
+            self._last_git_branch_sweep_date = None
+            logger.exception("Daily Git branch sweep could not read project state")
+            return
+
+        reports: list[BranchSweepReport] = []
+        failures: list[str] = []
+        seen_common_dirs: set[str] = set()
+        for project in projects:
+            try:
+                workspaces = await self.db.list_workspaces(project_id=project.id)
+            except Exception as exc:
+                failures.append(f"{project.name}: workspace list failed ({exc})")
+                continue
+            # Process base checkouts before their linked slots; the common-dir
+            # set makes each shared worktree repository run exactly once.
+            workspaces.sort(key=lambda ws: bool(getattr(ws, "is_slot", False)))
+            for workspace in workspaces:
+                checkout = workspace.workspace_path
+                if not Path(checkout).is_dir():
+                    continue
+                kind = None
+                if workspace.kind_id:
+                    try:
+                        kind = await self.db.resolve_workspace_kind(project.id, workspace.kind_id)
+                    except Exception:
+                        kind = None
+                if kind is not None and not getattr(kind, "is_git_repo", True):
+                    continue
+                try:
+                    common = await self.git._arun(
+                        ["rev-parse", "--git-common-dir"], cwd=checkout
+                    )
+                    common_path = str((Path(checkout) / common).resolve())
+                except Exception:
+                    continue
+                if common_path in seen_common_dirs:
+                    continue
+                seen_common_dirs.add(common_path)
+
+                repository_url = (
+                    getattr(kind, "repo_url", None)
+                    or getattr(project, "repo_url", None)
+                )
+                if not repository_url:
+                    try:
+                        repository_url = await self.git._arun(
+                            ["config", "--get", "remote.origin.url"], cwd=checkout
+                        )
+                    except Exception as exc:
+                        failures.append(f"{project.name} ({checkout}): origin unavailable ({exc})")
+                        continue
+                slug = self.git.slugify(project.name) or str(project.id)
+                backup = (
+                    Path(self.config.vault_projects)
+                    / slug
+                    / "notes"
+                    / f"git-branch-sweep-{datetime.now(UTC):%Y-%m-%d}.tsv"
+                )
+                try:
+                    report = await sweep_checkout(
+                        self.git,
+                        checkout,
+                        repository_url=repository_url,
+                        default_branch=getattr(project, "repo_default_branch", None) or "main",
+                        holds=holds,
+                        backup_path=backup,
+                    )
+                    reports.append(report)
+                    for branch, sha in report.unique_unmerged:
+                        logger.info(
+                            "Daily Git sweep kept unique ref project=%s checkout=%s ref=%s sha=%s",
+                            project.name, checkout, branch, sha,
+                        )
+                    for stash in report.stashes:
+                        logger.info(
+                            "Daily Git sweep stash audit project=%s checkout=%s stash=%s",
+                            project.name, checkout, stash,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Daily Git branch sweep skipped %s (%s): %s",
+                        project.name, checkout, exc,
+                    )
+                    failures.append(f"{project.name} ({checkout}): {exc}")
+
+        local_before = sum(row.local_before for row in reports)
+        local_after = sum(row.local_after for row in reports)
+        remote_before = sum(row.remote_before for row in reports)
+        remote_after = sum(row.remote_after for row in reports)
+        local_deleted = sum(len(row.local_deleted) for row in reports)
+        remote_deleted = sum(len(row.remote_deleted) for row in reports)
+        unique = {(row.checkout, branch, sha) for row in reports
+                  for branch, sha in row.unique_unmerged}
+        preserved = {(row.checkout, branch, sha) for row in reports
+                     for branch, sha in row.preserved_kept}
+        stash_rows = [(row.checkout, stash) for row in reports for stash in row.stashes]
+        stale_worktrees = sum(row.stale_worktrees_pruned for row in reports)
+        date = scheduled_date or datetime.now(UTC).date().isoformat()
+        lines = [
+            f"Daily Git-first branch sweep ({date} UTC)",
+            f"Checkouts: {len(reports)}; local heads {local_before} → {local_after}; "
+            f"deleted {local_deleted} Git-proven local refs.",
+            f"Remote heads {remote_before} → {remote_after}; "
+            f"deleted {remote_deleted} Git-proven remote refs.",
+            f"Kept {len(unique)} unique unmerged refs, including {len(preserved)} preserved refs; "
+            f"pruned {stale_worktrees} stale worktree registrations.",
+            f"Stash audit: {len(stash_rows)} stash(es) found in "
+            f"{sum(bool(r.stashes) for r in reports)} checkout(s); none were changed.",
+        ]
+        for checkout, stash in stash_rows[:20]:
+            lines.append(f"  stash {checkout}: {stash}")
+        if len(stash_rows) > 20:
+            lines.append(f"  ... {len(stash_rows) - 20} more stash record(s) in daemon logs")
+        if failures:
+            lines.append(f"Skipped {len(failures)} checkout(s): " + "; ".join(failures[:10]))
+            if len(failures) > 10:
+                lines.append(f"  ... {len(failures) - 10} more checkout error(s)")
+        try:
+            await self._emit_text_notify("\n".join(lines), project_id=None)
+        except Exception:
+            logger.exception("Daily Git branch sweep report notification failed")
+        marker = Path(self.config.data_dir) / "maintenance" / "git-branch-sweep-last-date"
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            temporary = marker.with_name(marker.name + ".tmp")
+            with temporary.open("w", encoding="ascii") as handle:
+                handle.write(date + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, marker)
+        except OSError:
+            logger.exception("Could not persist daily Git sweep marker %s", marker)
 
     async def _reconcile_sessions(self) -> None:
         """Reconcile desired vs. actual agent sessions — one reconciler tick.
