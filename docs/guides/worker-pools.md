@@ -693,6 +693,22 @@ This check prevents a worker from draining before it reads a correction sent
 while it was busy. Messages arriving after the check can still race completion;
 the check is not an atomic delivery guarantee.
 
+`--inject` consumes delivery before the agent has seen anything, so a worker
+whose own output dies mid-turn — a crashed parser, a truncated pane, a killed
+turn — is left with an empty pending queue and no copy of the bodies it burned.
+Add `--include-consumed` to re-read what this recipient already consumed:
+
+```bash
+aq message inbox --to task:<id> --include-consumed --json
+```
+
+It is read-only and never re-claims or re-archives a row, so it is safe to run
+after any read; it is fenced to the caller's own mailboxes exactly like a plain
+inbox read. Rows are returned newest-last in delivery order, so a recovered body
+reads in the order the worker would have seen it. The bare `aq inbox` hook form
+never asks for it — consumed mail would otherwise re-enter the context on every
+later prompt — so a worker that consumed a body it never read has to ask for it.
+
 Zero measured workspace capacity prevents placement without a backoff. If
 capacity was advertised but acquisition fails, the key backs off for 60 seconds
 so another project can use the next launch opportunity. Disabled worktree slots
