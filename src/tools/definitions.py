@@ -36,6 +36,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "set_project_constraint": "project",
     "release_project_constraint": "project",
     "edit_project": "project",
+    "bind_project_repository": "project",
     "set_default_branch": "project",
     "get_project": "project",
     "delete_project": "project",
@@ -967,6 +968,27 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["project_id"],
+        },
+    },
+    {
+        "name": "bind_project_repository",
+        "description": (
+            "Authorize the first GitHub repository for an existing project with an empty "
+            "repo_url. Local operator or live global supervisor only. Requires the exact "
+            "expected URL and audit reason; refuses reassignment and live integration."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Existing project ID"},
+                "repo_url": {"type": "string", "description": "GitHub repository URL to authorize"},
+                "expected_repo_url": {
+                    "type": "string", "description": "Exact current stored URL; empty for first binding",
+                },
+                "reason": {"type": "string", "description": "Nonempty operator audit reason"},
+            },
+            "required": ["project_id", "repo_url", "expected_repo_url", "reason"],
+            "additionalProperties": False,
         },
     },
     {

@@ -102,6 +102,28 @@ def test_project_details_and_set_forward_correct_args_and_render_client_errors(r
     assert envelope["data"] is None
 
 
+def test_project_bind_repository_requires_and_forwards_exact_cas(runner):
+    from src.cli.app import cli
+
+    client = _client({"bind_project_repository": {
+        "success": True, "project_id": "p1", "repo_url": "https://github.com/acme/widgets.git",
+        "changed": True, "event_id": 17,
+    }})
+    argv = ["--json", "project", "bind-repository", "p1", "--repo-url",
+            "https://github.com/acme/widgets.git", "--reason", "authorize created repository"]
+    with patch("src.cli.projects._get_client", return_value=client):
+        missing = runner.invoke(cli, argv)
+        assert missing.exit_code == 2 and "--expected-repo-url" in missing.output
+        client.execute.assert_not_awaited()
+        result = runner.invoke(cli, [*argv, "--expected-repo-url", ""])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["data"]["event_id"] == 17
+    client.execute.assert_awaited_once_with("bind_project_repository", {
+        "project_id": "p1", "repo_url": "https://github.com/acme/widgets.git",
+        "expected_repo_url": "", "reason": "authorize created repository",
+    })
+
+
 def test_project_set_forwards_guarded_integration_configuration(runner):
     from src.cli.app import cli
 

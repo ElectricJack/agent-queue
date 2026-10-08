@@ -1020,6 +1020,7 @@
         "tests/test_project_onboarding_contract.py",
         "tests/test_project_onboarding_service.py",
         "tests/test_project_paths.py",
+        "tests/test_project_repository_binding.py",
         "tests/test_project_roots_config.py"
       ]
     },
@@ -13453,6 +13454,26 @@
         "parametrize"
       ],
       "summary": "Tests for ``src.projects.paths`` — root-relative path validation and safe listing."
+    },
+    "tests/test_project_repository_binding.py": {
+      "areas": [
+        "projects"
+      ],
+      "default_arm": true,
+      "digest": "sha256:85d6b57ff318f5dee8f80e8104cbafad174066a27a06d1e0ffa64523dab9ced3",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.projects.github"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Audited first repository binding preserves worker publication authorization."
     },
     "tests/test_project_roots_config.py": {
       "areas": [

@@ -253,6 +253,38 @@ choices are refused with `routing.choice_forbidden`: a project has no default pr
 
 ---
 
+#### `bind_project_repository`
+
+Authorizes the first GitHub repository for an existing project whose `repo_url`
+is empty. Available to the local operator or a live named global supervisor with
+the command capability; workers, project supervisors, services and playbooks are
+refused, including through direct command dispatch.
+
+Required parameters are `project_id`, `repo_url`, `expected_repo_url` (the exact
+stored string, including `""`), and a nonempty audit `reason`. The daemon validates
+the URL using the onboarding GitHub parser, checks repository access with its
+configured credentials, and stores canonical HTTPS. Credentials in URLs, local
+paths, other hosts, query strings and fragments are refused without echoing them.
+
+The project row CAS and `project.repository_bound` audit event commit in one
+transaction. The event records the operator identity, reason, old/new URL and
+project ID. A matching nonempty binding is an unchanged success only when the
+expected value matches; a different nonempty binding cannot be reassigned or
+cleared. Stale expectations and missing projects write nothing.
+
+Binding is refused while a project Git push holds the publication fence, or
+when integration is enabled, draining, designated, or has durable publication
+state. Concurrent project pushes share a PostgreSQL advisory fence; first
+binding takes its exclusive counterpart without waiting. The push resolves the
+project again inside the fence. Pending task implementations and approval gates
+are preserved. This operation changes only the project URL: it never pushes,
+changes a checkout remote, creates a repository, or releases a gate.
+
+CLI: `aq project bind-repository <project> --repo-url <url>
+--expected-repo-url '' --reason '<authorization and repair reason>'`.
+
+---
+
 #### `delete_project`
 
 Deletes a project and all associated database records (cascade).

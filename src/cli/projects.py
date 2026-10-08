@@ -123,6 +123,34 @@ def project_onboard(
     )
 
 
+@project.command("bind-repository")
+@click.argument("project_id")
+@click.option("--repo-url", required=True, help="GitHub repository to authorize.")
+@click.option(
+    "--expected-repo-url", required=True, help="Exact stored URL; use '' for first binding.",
+)
+@click.option("--reason", required=True, help="Operator authorization and audit reason.")
+@click.pass_context
+@_handle_errors
+def project_bind_repository(
+    ctx: click.Context, project_id: str, repo_url: str, expected_repo_url: str, reason: str,
+) -> None:
+    """Bind an initialized project's first repository (operator/global supervisor only)."""
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    async def _bind():
+        async with _get_client(api_url) as client:
+            return await client.execute("bind_project_repository", {
+                "project_id": project_id, "repo_url": repo_url,
+                "expected_repo_url": expected_repo_url, "reason": reason,
+            })
+
+    emit(ctx, _run(_bind()), render=lambda data: console.print(
+        f"[green]Repository authorized[/] for [bold cyan]{_getval(data, 'project_id')}[/]: "
+        f"{_getval(data, 'repo_url')}"
+    ))
+
+
 @project.command("details")
 @click.argument("project_id")
 @click.pass_context

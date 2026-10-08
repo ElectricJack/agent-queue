@@ -334,6 +334,10 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         scope.elevated and scope.project_id is None
     ):
         return PROJECT_ONBOARDING_SCOPE_ERROR
+    if command == "bind_project_repository" and not (
+        scope.elevated and scope.project_id is None
+    ):
+        return "out of scope: repository binding requires global admin"
     # Projectless messages are system records, not an omitted project filter.
     # Null project scope alone must never grant access to the global supervisor.
     system_message = args.get("system_only") or (

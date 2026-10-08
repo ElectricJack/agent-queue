@@ -11432,6 +11432,53 @@
         }
       }
     },
+    "/api/project/bind-repository": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Authorize the first GitHub repository for an existing project with an empty repo_url. Local operator or live global supervisor only. Requires the exact expected URL and audit reason; refuses reassignment and live integration.",
+        "description": "Authorize the first GitHub repository for an existing project with an empty repo_url. Local operator or live global supervisor only. Requires the exact expected URL and audit reason; refuses reassignment and live integration.",
+        "operationId": "bind_project_repository",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BindProjectRepositoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BindProjectRepositoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/browse-root": {
       "post": {
         "tags": [
@@ -22600,6 +22647,78 @@
           "stage"
         ],
         "title": "BenchmarkStageRecordResponse"
+      },
+      "BindProjectRepositoryRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Existing project ID"
+          },
+          "repo_url": {
+            "type": "string",
+            "title": "Repo Url",
+            "description": "GitHub repository URL to authorize"
+          },
+          "expected_repo_url": {
+            "type": "string",
+            "title": "Expected Repo Url",
+            "description": "Exact current stored URL; empty for first binding"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Nonempty operator audit reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "repo_url",
+          "expected_repo_url",
+          "reason"
+        ],
+        "title": "BindProjectRepositoryRequest"
+      },
+      "BindProjectRepositoryResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "repo_url": {
+            "type": "string",
+            "title": "Repo Url"
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "project_id",
+          "repo_url",
+          "changed"
+        ],
+        "title": "BindProjectRepositoryResponse",
+        "description": "First repository binding, including the audit identity when it changes."
       },
       "Body_upload_attachment_api_tasks__task_id__attachments_post": {
         "properties": {

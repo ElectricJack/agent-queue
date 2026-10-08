@@ -174,6 +174,7 @@ start code work, tests or QA from a digest author turn.
     "doctor",
     "edit_task",
     "edit_project",
+    "bind_project_repository",
     "digest_facts",
     "digest_post",
     "escalation_apply_reply",
