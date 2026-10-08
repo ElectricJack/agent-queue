@@ -23,6 +23,7 @@ from src.database.tables import (
     tasks,
 )
 from src.git.github_contracts import GitHubAccessError, GitHubCredentialIdentity
+from src.git.manager import GitManager
 from src.integration.batches import BatchStore
 from src.integration.ci import ATTESTATION_CHECK_NAME, IntegrationTrustManifest
 from src.integration.delivery_observer import delivery_targets
@@ -155,6 +156,36 @@ async def promote_env(promotion):
 
 async def request(e, **kwargs):
     return await e.handler._cmd_promote_request({"project_id": "p", "step_id": "release", **kwargs})
+
+
+@pytest.fixture
+def production_push(promote_env, monkeypatch):
+    """Keep production OID validation and isolated Git transport; substitute its URL."""
+    e = promote_env
+    manager = e.ops.git
+    transfer = manager._apush_oid_with_app_auth_to_url
+    e.exact_pushes = []
+
+    async def local_transfer(path, **kwargs):
+        e.exact_pushes.append((kwargs["branch"], kwargs["expected_old_oid"]))
+        return await transfer(path, **{**kwargs, "destination_url": manager.remote_path.as_uri()})
+
+    monkeypatch.setattr(manager, "_atoken_for_repository", AsyncMock(return_value=None))
+    monkeypatch.setattr(manager, "_apush_oid_with_app_auth_to_url", local_transfer)
+    monkeypatch.setattr(manager, "apush_repository_oid",
+                        GitManager.apush_repository_oid.__get__(manager))
+    return e
+
+
+async def test_request_existing_target_uses_full_create_only_lease(production_push):
+    e = production_push
+    opened = await request(e)
+    assert opened["outcome"] == "requested", opened
+    assert opened["promotion"]["base_sha"] == e.base
+    ref = promotion_ref(opened["promotion"]["step"], opened["promotion"])
+    assert e.exact_pushes == [(ref.removeprefix("refs/heads/"), "0" * 40)]
+    assert git(e.ops.git.remote_path, "rev-parse", ref) == e.source
+    assert git(e.ops.git.remote_path, "rev-parse", "main") == e.base
 
 
 async def test_request_freezes_identity_retains_source_and_replays(promote_env):

@@ -540,7 +540,7 @@ class BackmergeAdmission:
         # deterministic identities. No provider request holds a DB transaction.
         remote = await self.gitops.remote(repo, "refs/heads/" + branch)
         if remote is None:
-            await self.gitops.push(repo, "refs/heads/" + branch, source, "")
+            await self.gitops.push(repo, "refs/heads/" + branch, source, "0" * 40)
         elif remote != source:
             raise ValueError("backmerge source ref changed")
         await GitProvenance(self.gitops.git, str(repo.store),
@@ -2310,7 +2310,66 @@ class DaemonLanes:
             attest=None if local else attest, snapshot=snapshot, clock=self.clock,
         )
         await service.reconcile_cleanup(target)
-        return TrainLane(snapshot=snapshot, service=service, checks=checks)
+
+        async def observe_source(observed):
+            await self._observe_promotion_source(target, retained, gitops, observed)
+
+        return TrainLane(snapshot=snapshot, service=service, checks=checks,
+                         observe_source=observe_source if target.step["type"] == "continuous" else None)
+
+    async def _observe_promotion_source(self, target, retained, gitops, snapshot):
+        """Notify reviewed continuous policy when exact source push CI becomes green."""
+        from src.integration.promotion_steps import (
+            FlowSchema, PromotionSourceRefusal, check_source_green, promotion_policy_event,
+            step_required_checks,
+        )
+        from src.playbooks.services import resolve_integration_route
+
+        if snapshot.error or not snapshot.target_oid:
+            return
+        source = snapshot.observation.source_heads.get(
+            "refs/remotes/origin/" + target.step["source"])
+        if not is_valid_git_oid(source):
+            return
+        if await gitops.is_ancestor(retained, source, snapshot.target_oid):
+            return
+        route = await resolve_integration_route(self.db, "promotion.source_settled", {
+            "project_id": target.project_id, "step_id": target.step["id"],
+        })
+        if route is None:
+            return
+        digest = hashlib.sha256(json.dumps(
+            [target.step, route.artifact_sha256], sort_keys=True).encode()).hexdigest()
+        identity = f"source-ready:{target.repository_id}:{source}:{digest}"
+        async with self.db._engine.connect() as conn:
+            flow = await conn.scalar(select(projects.c.promotion_flow).where(
+                projects.c.id == target.project_id,
+                projects.c.integration_repository_id == target.repository_id))
+        # The source cannot supply its own trust anchors or check set.
+        default = snapshot.observation.source_heads.get(
+            "refs/remotes/origin/" + retained.default_branch)
+        trust = await self._retained_manifest(
+            retained, default, binding=retained.binding, policy=None)
+        validated = FlowSchema.validate(flow, default_branch=retained.default_branch,
+                                        manifest=trust.model_dump(mode="json", by_alias=True))
+        if not validated.valid or target.step not in validated.flow:
+            return
+        client = self.git._github_client(retained.binding)
+        try:
+            await check_source_green(client, trust, step_required_checks(trust, target.step), source)
+        except PromotionSourceRefusal:
+            # A one-shot settlement can precede push CI. Leave it eligible for
+            # the next level-triggered visit instead of consuming its retry.
+            return
+        async with self.db.immediate() as conn:
+            current = await conn.scalar(select(projects.c.promotion_flow).where(
+                projects.c.id == target.project_id,
+                projects.c.integration_repository_id == target.repository_id).with_for_update())
+            if current != flow:
+                return
+            await promotion_policy_event(conn, project_id=target.project_id,
+                step_id=target.step["id"], kind="source_settled", identity=identity,
+                now=self.clock(), source_sha=source)
 
     async def _promotion_trust(self, attestation, batch, state):
         """The visit's subject trust, reused while S, revision and policy are unchanged."""
@@ -2374,7 +2433,11 @@ class DaemonLanes:
         return pinned.settings, sha
 
     async def _retained_manifest(self, retained, sha, *, binding, policy):
-        """The trust manifest in *sha*'s tree, read from the retained store."""
+        """Read bound trust at SHA; policy=None is the trusted default branch.
+
+        Candidate trees must match the boundary's configured CI producer. The
+        default branch itself supplies promotion trust, as in promote_request.
+        """
         from src.integration.attestation import _MAX_TRUST_BYTES, _parse_trust_manifest
         from src.integration.ci import TRUST_MANIFEST_PATH
         from src.git.github_contracts import GitHubCredentialMode, credential_identity_from_client
@@ -2399,9 +2462,10 @@ class DaemonLanes:
             "canonical_repository_id": retained.repository_id,
             "repository_id": binding.repository_id,
             "full_name": binding.full_name,
-            "ci_producer_app_id": str((policy.get("root") or {}).get("required_checks", {})
-                                      .get("producer_id") or ""),
         }
+        if policy is not None:
+            expected["ci_producer_app_id"] = str(
+                (policy.get("root") or {}).get("required_checks", {}).get("producer_id") or "")
         if identity.mode is GitHubCredentialMode.APP:
             expected["attestation_app_id"] = identity.app_id
         mismatched = tuple(field for field, value in expected.items()
