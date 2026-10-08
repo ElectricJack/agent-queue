@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import asynccontextmanager
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, func, insert, select, update
 
 from src.database.tables import (
     archived_tasks,
     chat_analyzer_suggestions,
     events,
+    integration_batches,
+    project_integration_leases,
     project_constraints,
     projects,
     repos,
@@ -19,6 +22,7 @@ from src.database.tables import (
     task_context,
     task_criteria,
     task_dependencies,
+    task_integration_checkpoints,
     task_metadata,
     task_results,
     task_subtasks,
@@ -30,9 +34,99 @@ from src.database.tables import (
 from src.models import Project, ProjectConstraint, ProjectStatus
 from src.routing.sources import DEFAULT_ROUTER_PLAYBOOK_ID
 
+# Separate from hierarchy/integration writer locks; held before those locks.
+REPOSITORY_BINDING_LOCK_NAMESPACE = 0x41515242  # AQRB
+
 
 class ProjectQueryMixin:
     """Query mixin for project operations.  Expects ``self._engine``."""
+
+    @asynccontextmanager
+    async def project_repository_publication(self, project_id: str):
+        """Keep a first binding from overlapping a project Git push."""
+        async with self._engine.begin() as conn:
+            await conn.execute(select(func.pg_advisory_xact_lock_shared(
+                REPOSITORY_BINDING_LOCK_NAMESPACE, func.hashtext(project_id),
+            )))
+            yield
+
+    async def bind_project_repository(
+        self, project_id: str, *, repo_url: str, expected_repo_url: str,
+        reason: str, operator_id: str,
+    ) -> dict:
+        """First-binding CAS with publication exclusion and atomic audit.
+
+        CommandHandler owns identity, URL and credential validation. This
+        primitive never reassigns an existing authorization or integration.
+        """
+        if not repo_url or not reason.strip() or not operator_id.strip():
+            raise ValueError("repository binding requires a URL, reason and operator identity")
+
+        def refused(code: str, message: str) -> dict:
+            return {"success": False, "error_code": code, "error": message}
+
+        async with self._engine.begin() as conn:
+            available = (await conn.execute(select(func.pg_try_advisory_xact_lock(
+                REPOSITORY_BINDING_LOCK_NAMESPACE, func.hashtext(project_id),
+            )))).scalar_one()
+            if not available:
+                return refused("repository_publication_busy", "A project Git push is in progress")
+            await self.lock_hierarchy_project(conn, project_id)
+            current = (await conn.execute(select(projects).where(
+                projects.c.id == project_id,
+            ).with_for_update())).mappings().one_or_none()
+            if current is None:
+                return refused("project_not_found", "Project not found")
+            old_url = current["repo_url"] or ""
+            if old_url != expected_repo_url:
+                return refused("repository_binding_stale", "The expected repository URL is stale")
+            if old_url:
+                if old_url == repo_url:
+                    return {"success": True, "project_id": project_id,
+                            "repo_url": old_url, "changed": False}
+                return refused("repository_already_bound",
+                               "An existing repository cannot be reassigned")
+            configured = (
+                current["hierarchical_integration_mode"] != "disabled"
+                or current["hierarchical_integration_desired_mode"] != "disabled"
+                or current["hierarchical_integration_draining"]
+                or current["integration_repository_id"] is not None
+            )
+            durable = []
+            for stmt in (
+                select(project_integration_leases.c.project_id).where(
+                    project_integration_leases.c.project_id == project_id,
+                ),
+                select(integration_batches.c.id).where(
+                    integration_batches.c.project_id == project_id,
+                ),
+                select(task_integration_checkpoints.c.task_id).join(
+                    tasks, tasks.c.id == task_integration_checkpoints.c.task_id,
+                ).where(tasks.c.project_id == project_id),
+            ):
+                durable.append((await conn.execute(stmt.limit(1))).first() is not None)
+            if configured or any(durable):
+                return refused(
+                    "repository_integration_active",
+                    "Repository binding requires disabled integration without publication state",
+                )
+            expected = (
+                projects.c.repo_url.is_(None) if current["repo_url"] is None
+                else projects.c.repo_url == expected_repo_url
+            )
+            written = await conn.execute(update(projects).where(
+                projects.c.id == project_id, expected,
+            ).values(repo_url=repo_url))
+            if written.rowcount != 1:
+                return refused("repository_binding_stale", "The expected repository URL is stale")
+            payload = {"project_id": project_id, "old_repo_url": old_url,
+                       "repo_url": repo_url, "reason": reason, "operator_id": operator_id}
+            event_id = await self.log_event(
+                "project.repository_bound", project_id=project_id,
+                payload=json.dumps(payload, sort_keys=True), conn=conn,
+            )
+            return {"success": True, "project_id": project_id, "repo_url": repo_url,
+                    "changed": True, "event_id": event_id}
 
     async def create_project(self, project: Project) -> None:
         """Insert a new project row."""

@@ -281,11 +281,68 @@ class ProjectCommandsMixin:
         await self.orchestrator.bus.emit("constraint.released", {"project_id": pid})
         return {"project_id": pid, "constraint_released": True, "fields": "all"}
 
+    async def _cmd_bind_project_repository(self, args: dict) -> dict:
+        """Authorize an initialized project's first repository, never a reassignment."""
+        from src.commands.supervisor_authority import operator_or_supervisor
+        from src.projects.github import GitHubError, parse_github_repository
+
+        operator_id, refusal = await operator_or_supervisor(
+            self.db, None, subject="repository binding",
+        )
+        if refusal:
+            return {"success": False, "error_code": "global_operator_required", "error": refusal}
+        required = {"project_id", "repo_url", "expected_repo_url", "reason"}
+        if set(args) != required or any(not isinstance(args.get(k), str) for k in required):
+            return {"success": False, "error_code": "invalid_arguments",
+                    "error": (
+                        "Provide project_id, repo_url, expected_repo_url and reason as strings"
+                    )}
+        if not args["project_id"].strip() or not args["reason"].strip():
+            return {"success": False, "error_code": "invalid_arguments",
+                    "error": "Project ID and audit reason must be nonempty"}
+        if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in args["repo_url"]):
+            return {"success": False, "error_code": "invalid_repository_url",
+                    "error": "Repository URL contains control characters"}
+        try:
+            repository = parse_github_repository(args["repo_url"])
+        except GitHubError as exc:
+            return {"success": False, "error_code": "invalid_repository_url", "error": exc.message}
+        project = await self.db.get_project(args["project_id"])
+        if project is None:
+            return {"success": False, "error_code": "project_not_found",
+                    "error": "Project not found"}
+        # Avoid credential selection for stale requests or a reassignment.
+        # The transactional helper repeats both checks after the network read.
+        if project.repo_url != args["expected_repo_url"]:
+            return {"success": False, "error_code": "repository_binding_stale",
+                    "error": "The expected repository URL is stale"}
+        if project.repo_url and project.repo_url != repository.clone_https:
+            return {"success": False, "error_code": "repository_already_bound",
+                    "error": "An existing repository cannot be reassigned"}
+        if not project.repo_url:
+            try:
+                await self._github_client().validate_repository(repository.html_url)
+            except GitHubError as exc:
+                return {"success": False, "error_code": exc.code.value, "error": exc.message}
+        operator_id, refusal = await operator_or_supervisor(
+            self.db, None, subject="repository binding",
+        )
+        if refusal:
+            return {"success": False, "error_code": "global_operator_required", "error": refusal}
+        return await self.db.bind_project_repository(
+            project.id, repo_url=repository.clone_https,
+            expected_repo_url=args["expected_repo_url"], reason=args["reason"].strip(),
+            operator_id=operator_id,
+        )
+
     async def _cmd_edit_project(self, args: dict) -> dict:
         pid = args["project_id"]
         project = await self.db.get_project(pid)
         if not project:
             return {"error": f"Project '{pid}' not found"}
+        if "repo_url" in args or "expected_repo_url" in args:
+            return {"success": False, "error_code": "repository_binding_required",
+                    "error": "Use bind_project_repository for an audited first repository binding"}
         if "review_delegate_to" in args:
             from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 

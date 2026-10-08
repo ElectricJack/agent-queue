@@ -136,6 +136,7 @@ HANDCRAFTED_COVERAGE = {
     "edit_project",
     "set_default_branch",
     "onboard_project",
+    "bind_project_repository",
     # integration.py — positional identities and explicit rollout CAS fences.
     "integration_release_held_gate",
     "integration_status",

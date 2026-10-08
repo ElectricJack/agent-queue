@@ -60,6 +60,8 @@ from .assignment_route_detail_override_type_0 import AssignmentRouteDetailOverri
 from .benchmark_stage_record_request import BenchmarkStageRecordRequest
 from .benchmark_stage_record_response import BenchmarkStageRecordResponse
 from .benchmark_stage_record_response_422 import BenchmarkStageRecordResponse422
+from .bind_project_repository_request import BindProjectRepositoryRequest
+from .bind_project_repository_response_422 import BindProjectRepositoryResponse422
 from .body_upload_attachment_api_tasks_task_id_attachments_post import BodyUploadAttachmentApiTasksTaskIdAttachmentsPost
 from .browse_entry import BrowseEntry
 from .browse_project_root_request import BrowseProjectRootRequest
@@ -1869,6 +1871,8 @@ __all__ = (
     "BenchmarkStageRecordRequest",
     "BenchmarkStageRecordResponse",
     "BenchmarkStageRecordResponse422",
+    "BindProjectRepositoryRequest",
+    "BindProjectRepositoryResponse422",
     "BodyUploadAttachmentApiTasksTaskIdAttachmentsPost",
     "BrowseEntry",
     "BrowseProjectRootRequest",

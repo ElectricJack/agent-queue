@@ -127,6 +127,41 @@ Use a new request ID when starting a distinct operation. Repeating the same
 request ID with the same normalized input is safe and returns the existing
 result or progress; reusing it with different input is rejected.
 
+## Bind a repository created after initialization
+
+If a project was initialized without a remote and its GitHub repository was
+created later, the local operator or live global supervisor can authorize that
+repository explicitly. An origin configured in a checkout alone does not
+authorize worker publication. Use the exact current project URL as the expected
+value; `''` means the project has no repository binding:
+
+```bash
+aq project bind-repository agent-q-sprint-eval \
+  --repo-url https://github.com/ElectricJack/agent-q-sprint-eval.git \
+  --expected-repo-url '' \
+  --reason 'User-authorized Agent Q Sprint Eval: bind the repository created after init'
+```
+
+Run this against a daemon containing the binding command, after the normal
+authorized delivery of its implementation. Worker tokens cannot perform this
+repair. The daemon validates GitHub access with its configured credentials,
+then commits the project URL and an operator/reason audit event atomically.
+No checkout, pending commit, task assignment or human approval gate changes.
+Resume the existing worker's guarded `aq git push` after successful binding;
+retain its implementation at `6dda504577f2e21e183d211d2eb2c7c4ef2f7590`.
+
+The command refuses a changed expectation, reassignment of a nonempty URL,
+active Git pushes, and configured or durable integration publication state.
+Retry `repository_publication_busy` after the push finishes. A stale response
+requires reading the current project again. Repeating a successful first-bind
+request with the old empty expectation returns stale; a readback followed by
+the same canonical URL and matching expected URL returns unchanged success
+without a second audit event. This command does not deploy AQ, restart its
+daemon, push project code, or release a gate.
+
+Existing supervisor profiles receive the new command capability additively on
+normal profile reload/start unless `capability_sync: false` was configured.
+
 ## Recover from errors
 
 The wizard preserves non-secret form values, highlights field errors, identifies
