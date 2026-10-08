@@ -28,7 +28,9 @@ not *has this work been delivered* but *does my bound source generation still
 have the head it was filed against*. :func:`superseded_source_repairs_on`
 answers that for the whole lineage, including repairs of repairs, and lives here
 rather than in :mod:`src.integration.source_delivery` so the reduced train can
-ask it without importing a module it outlives.
+ask it without importing a module it outlives. :func:`undeliverable_repairs_on`
+is the admission answer that adds a repair's own terminal failure to it, so a
+repair whose purpose is gone cannot be admitted into, or keep, a batch.
 """
 
 from __future__ import annotations
@@ -721,6 +723,8 @@ def settlement_fields(value):
 RETIREMENT_KEY = "source_ci_retirement"
 #: The blocker code this fence reports to train admission and publication.
 SUPERSEDED = "source_ci_repair_superseded"
+#: The blocker code a terminal repair reports to the same two places.
+FAILED_REPAIR = "source_ci_repair_failed"
 #: The only retirement disposition that revokes a repair's purpose.
 REOPEN_DISPOSITION = "superseded_by_reopen"
 
@@ -813,6 +817,61 @@ async def superseded_source_repairs_on(db, conn, ids, *, repository_id) -> dict[
                 })
         if set(blocked) == before:
             return {task_id: blocked[task_id] for task_id in sorted(candidates & blocked.keys())}
+
+
+async def failed_source_repairs_on(conn, ids, *, repository_id) -> dict[str, dict]:
+    """Repair tasks among *ids* whose own task is a terminal failure.
+
+    Every publication gate rechecks the exact ``COMPLETED`` identity, so a
+    FAILED delegate owes nothing to any target and can never be delivered: it
+    is not pending work in any sense. Only repairs are reported. An ordinary
+    failed task is not this predicate's business, and an id that is no repair
+    at all is simply absent, because a caller reads a named repair as a reason
+    to withhold exactly that repair.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import tasks
+
+    ids = set(ids)
+    if not ids:
+        return {}
+    records = await repair_bindings_on(conn, ids, repository_id=repository_id)
+    repairs = set()
+    for row in records:
+        repairs |= repair_ids(row) & ids
+    if not repairs:
+        return {}
+    failed = set((await conn.execute(
+        select(tasks.c.id).where(tasks.c.id.in_(sorted(repairs)), tasks.c.status == "FAILED")
+    )).scalars())
+    return {
+        repair_id: {
+            "code": FAILED_REPAIR, "ref": repair_id, "task_id": repair_id,
+            "detail": f"Source CI repair {repair_id} is FAILED; it owes this target no "
+                      f"delivery and cannot be admitted to a batch",
+        }
+        for repair_id in sorted(failed)
+    }
+
+
+async def undeliverable_repairs_on(db, conn, ids, *, repository_id) -> dict[str, dict]:
+    """Repairs among *ids* that no batch may admit and no lane may wait for.
+
+    Two independent answers, both observed fresh. Supersession
+    (:func:`superseded_source_repairs_on`) revokes a repair's purpose: the
+    bound source generation no longer has the head it was filed against. A
+    terminal delegate (:func:`failed_source_repairs_on`) owes nothing at all and
+    never will. Either one keeps a repair out of admission and out of a frozen
+    batch, so a superseded repair cannot hold a target open while the corrected
+    source it was filed against waits behind it.
+    """
+    ids = set(ids)
+    blocked = dict(await superseded_source_repairs_on(
+        db, conn, ids, repository_id=repository_id))
+    blocked.update(await failed_source_repairs_on(
+        conn, ids - set(blocked), repository_id=repository_id))
+    return blocked
 
 
 async def delivery_snapshot(git, store, *, project_id, repository_id, repository_url,

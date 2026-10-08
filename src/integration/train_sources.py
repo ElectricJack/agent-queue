@@ -66,6 +66,7 @@ from src.integration.delivery_truth import (
     DeliveryState,
     load_delivery_requests,
     superseded_source_repairs_on,
+    undeliverable_repairs_on,
 )
 from src.integration.epics import EpicGraphReader, EpicPolicy, EpicReadinessEvaluator, HeadChecks
 from src.integration.git_truth import GitTruth, GitTruthSnapshot
@@ -745,15 +746,34 @@ class DatabaseBatches:
                     {**blocker, "batch_id": current.id} for blocker in blockers
                 ))
             # Retired members disappear from the pending frontier but remain
-            # in a frozen batch. Explain why its publication is now refused.
+            # in a frozen batch. Explain why its publication is now refused,
+            # and release the target rather than hold it until an operator
+            # aborts a batch that can never publish.
             async with self.db._engine.connect() as conn:
-                superseded = await superseded_source_repairs_on(
+                undeliverable = await undeliverable_repairs_on(
                     self.db, conn, [member.task_id for member in members],
                     repository_id=target.repository_id,
                 )
             reported = {(blocker["code"], blocker.get("task_id")) for blocker in blockers}
-            blockers.extend(blocker for task_id, blocker in sorted(superseded.items())
+            blockers.extend(blocker for task_id, blocker in sorted(undeliverable.items())
                             if (blocker["code"], task_id) not in reported)
+            if undeliverable:
+                # An explicitly paused batch is never released here: it falls
+                # through to the ordinary held visit with its blocker named.
+                released = await self._release_undeliverable_batch(
+                    service, current, undeliverable,
+                )
+                if released:
+                    # One report per cause: the release supersedes the naming
+                    # that admission already gave the same repair.
+                    named = {(blocker["code"], blocker.get("task_id"))
+                             for blocker in released}
+                    blockers = [blocker for blocker in blockers
+                                if (blocker["code"], blocker.get("task_id")) not in named]
+                    blockers.extend(released)
+                    return BatchSelection(blockers=tuple(
+                        {**blocker, "batch_id": current.id} for blocker in blockers
+                    ))
             # Old frozen inputs also stay out of duplicate epic publication.
             if target.kind == "epic" and not (current.epic_sync or current.epic_refresh):
                 delivered = await self.delivered(target, snapshot, [m.task_id for m in members])
@@ -811,6 +831,43 @@ class DatabaseBatches:
     async def current(self, target: TrainTarget) -> Batch | None:
         return next((batch for batch, refreshed in await self._open_batches(target)
                      if refreshed is None), None)
+
+    async def _release_undeliverable_batch(
+        self, service: BatchService, batch: Batch, undeliverable: dict[str, dict],
+    ) -> list[dict[str, Any]]:
+        """Release a batch a superseded or failed repair can never publish.
+
+        Publication is already refused for such a member, so an open batch only
+        holds its target against every other source.  On the box where this was
+        found, a superseded source-CI repair kept a development lane for fifty
+        minutes while the corrected source it was filed against waited behind
+        it, and only an operator abort freed the target.  Aborting returns the
+        frozen inputs to admission through the same instruction a refreshed
+        stack uses, so the next visit selects without the dead member.  A task
+        identity that cannot be resolved to exactly one project is never
+        released automatically and names the operator command instead.
+        """
+        refusals = []
+        for task_id, blocker in sorted(undeliverable.items()):
+            try:
+                released = await service.store.supersede(batch, task_id, reason=(
+                    f"source-CI repair {task_id} can no longer be delivered: "
+                    f"{blocker['detail']}"))
+            except SupersedeMemberUnavailable as exc:
+                refusals.append({"code": exc.code, "ref": exc.task_id,
+                                 "task_id": exc.task_id, "batch_id": batch.id,
+                                 "detail": f"{exc}; restore an unambiguous task identity in "
+                                           f"the batch project or have an operator use aq "
+                                           f"integration abort-batch {batch.id} --reason "
+                                           f"<reason> --apply; an ordinary abort keeps the "
+                                           f"batch's frozen inputs withheld"})
+                continue
+            if released:
+                refusals.append({**blocker, "released": True,
+                                 "detail": f"{blocker['detail']}; the batch released this "
+                                           f"target and a new one replaces it"})
+                break
+        return refusals
 
     async def supersede_refreshed(
         self, target: TrainTarget, service: BatchService,
@@ -989,6 +1046,19 @@ class DatabaseBatches:
         async with self.db._engine.connect() as conn:
             if not ids:
                 return None
+            # Admission withholds a superseded or terminal repair however the
+            # ids arrived: a frozen member that lost its purpose is not
+            # pending work again, and re-admitting it would publish work the
+            # reopen already discarded.
+            undeliverable = await undeliverable_repairs_on(
+                self.db, conn, ids, repository_id=target.repository_id,
+            )
+            if undeliverable:
+                if blockers is not None:
+                    blockers.extend(undeliverable.values())
+                ids = [task_id for task_id in ids if task_id not in undeliverable]
+                if not ids:
+                    return None
             epics = await _epic_branches_on(conn, ids)
             withheld = set((await conn.execute(
                 select(integration_batch_members.c.task_id, integration_batch_members.c.source_sha)

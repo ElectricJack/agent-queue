@@ -56,7 +56,11 @@ including the full lineage of repairs of repairs: that recheck is
 :func:`~src.integration.delivery_truth.superseded_source_repairs_on`, which
 lives beside the delivery requests it reads in
 :mod:`src.integration.delivery_truth` because the reduced train must not
-import this module. Only the write side stays here.
+import this module. Admission asks the wider
+:func:`~src.integration.delivery_truth.undeliverable_repairs_on`, which also
+withholds a repair whose own task is terminal, and the train releases an open
+batch carrying one rather than let it hold a target against the very source it
+was filed for. Only the write side stays here.
 """
 
 from __future__ import annotations

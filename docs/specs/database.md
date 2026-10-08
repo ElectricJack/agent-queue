@@ -2108,6 +2108,17 @@ head before admission and publication; otherwise it reports
 `source_ci_repair_superseded`. A repair of the current head remains deliverable,
 including when that source has already delivered.
 
+Admission withholds a repair that is superseded *or* terminal — it reports
+`source_ci_repair_failed` for a repair whose own task is FAILED, which owes no
+target any delivery — however the repair reached it, including as a frozen batch
+member re-added to the candidate window. A repair that cannot publish therefore
+never holds a batch, and never holds a target: the open batch carrying one is
+released by the same automatic supersession a refreshed stack uses, so the
+corrected source the repair was filed against is admitted on the next visit
+instead of waiting behind it. An explicitly paused batch is never released this
+way, and a member whose task identity cannot be resolved to exactly one project
+names the operator abort instead.
+
 Only `red` files a repair. `cancelled` — every non-success required check
 cancelled, nothing pending, no required check failed — is infrastructure: the
 observation waits, re-requests the cancelled check suites of that exact head

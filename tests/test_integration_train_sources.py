@@ -476,7 +476,15 @@ async def test_current_source_ci_repair_still_delivers(world, source_delivered):
     git(world.origin.url, "merge-base", "--is-ancestor", repair, tip)
 
 
-async def test_reopen_refuses_frozen_source_ci_repair_publication_with_named_blocker(world):
+async def test_reopen_releases_frozen_source_ci_repair_batch_for_the_corrected_source(world):
+    """A repair the reopen superseded must not hold the lane for its own source.
+
+    2026-10-08: ``fleet-glacier-45`` closed green and sealed into
+    ``train-29a4e91b``; reopening ``clear-ember-42`` with feedback superseded it
+    and forced it to FAILED, but the sealed batch kept exclusive ownership of
+    the target until an operator aborted it fifty minutes later. The corrected
+    source waited behind a delegate that could never publish.
+    """
     source = await completed(world, "source", land=True)
     repair = await completed_source_ci_repair(world, source)
     await source_ci_binding(world, "source", "repair", source)
@@ -493,11 +501,110 @@ async def test_reopen_refuses_frozen_source_ci_repair_publication_with_named_blo
     before = git(world.origin.url, "rev-parse", "main")
 
     await world.db.transition_task("source", TaskStatus.READY, context="reopen_with_feedback")
-    refused = await train.visit(MAIN)
-    assert refused.state == "held", refused
-    assert any(blocker["code"] == "source_ci_repair_superseded" and
-               blocker["task_id"] == "repair" for blocker in refused.detail["blockers"])
+    released = await train.visit(MAIN)
+    assert released.state == "blocked", released
+    blocker = next(b for b in released.detail["blockers"] if b.get("task_id") == "repair")
+    assert blocker["code"] == "source_ci_repair_superseded"
+    assert blocker["batch_id"] == "repair-only"
+    assert blocker["released"] is True
     assert git(world.origin.url, "rev-parse", "main") == before
+    async with world.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.lifecycle).where(
+            integration_batches.c.id == "repair-only")) == "aborted"
+        assert await conn.scalar(select(integration_batches.c.intent).where(
+            integration_batches.c.id == "repair-only")) == "aborted"
+
+    # The corrected source is admitted on the next visit, not behind the
+    # superseded repair it was repaired for.
+    corrected = world.origin.work("source", "corrected")
+    await close(world.db, "source", [corrected], close_id="close-source-2",
+                origin=world.origin)
+    reselected = await train.visit(MAIN)
+    assert reselected.state == "testing", reselected
+    assert reselected.batch_id != "repair-only"
+    assert [member.task_id for member in
+            await BatchStore(world.db).members(reselected.batch_id)] == ["source"]
+    checks.green.add(reselected.candidate_sha)
+    delivered = await train.visit(MAIN)
+    assert delivered.state == "delivered", delivered
+    git(world.origin.url, "merge-base", "--is-ancestor", corrected,
+        git(world.origin.url, "rev-parse", "main"))
+
+
+async def test_admission_withholds_a_failed_source_ci_repair_and_releases_its_batch(world):
+    """A terminal delegate is not pending work, however it reached admission."""
+    source = await completed(world, "source", land=True)
+    repair = await completed_source_ci_repair(world, source)
+    await source_ci_binding(world, "source", "repair", source)
+    await BatchStore(world.db).freeze(
+        Batch("repair-only", "p", "r", MAIN.target_ref),
+        (BatchMember("repair", repair, source),), trees={"repair": tree(world, repair)},
+    )
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)))
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing", testing
+    checks.green.add(testing.candidate_sha)
+    before = git(world.origin.url, "rev-parse", "main")
+
+    # A terminal delegate, with no reopen record: withhold it on its own status,
+    # the way a force-failed repair or a stale frontier row looks.
+    async with world.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "repair").values(
+            status=TaskStatus.FAILED.value))
+    assert await world.db.get_task_meta("repair", "source_ci_retirement") is None
+    from src.integration.delivery_truth import undeliverable_repairs_on
+
+    async with world.db._engine.connect() as conn:
+        withheld = await undeliverable_repairs_on(
+            world.db, conn, ["repair", "source"], repository_id="r")
+    assert list(withheld) == ["repair"]
+    assert withheld["repair"]["code"] == "source_ci_repair_failed"
+
+    # Admission withholds it even as a frozen member of the open batch, which is
+    # how a superseded delegate reaches a batch at all: the visit's own fast path
+    # re-adds the frozen members to the candidate window.
+    blockers = []
+    assert await fixture_batches(world.db).pending(
+        MAIN, await snapshot(world), blockers=blockers,
+        candidate_ids=["source"], include_ids={"repair"}) is None
+    assert [blocker["code"] for blocker in blockers] == ["source_ci_repair_failed"]
+    assert blockers[0]["task_id"] == "repair"
+
+    released = await train.visit(MAIN)
+    assert released.state == "blocked", released
+    blocker = next(b for b in released.detail["blockers"] if b.get("task_id") == "repair")
+    assert blocker["code"] == "source_ci_repair_failed"
+    assert blocker["released"] is True
+    assert git(world.origin.url, "rev-parse", "main") == before
+
+    # An ordinary failed task is not this predicate's business.
+    await completed(world, "ordinary", land=False)
+    async with world.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "ordinary").values(
+            status=TaskStatus.FAILED.value))
+        assert await undeliverable_repairs_on(
+            world.db, conn, ["ordinary"], repository_id="r") == {}
+
+
+async def test_paused_batch_is_not_released_for_a_superseded_repair(world):
+    source = await completed(world, "source", land=True)
+    repair = await completed_source_ci_repair(world, source)
+    await source_ci_binding(world, "source", "repair", source)
+    store = BatchStore(world.db)
+    await store.freeze(
+        Batch("repair-only", "p", "r", MAIN.target_ref),
+        (BatchMember("repair", repair, source),), trees={"repair": tree(world, repair)},
+    )
+    await store.set_intent("repair-only", "paused", reason="operator hold")
+    await world.db.transition_task("source", TaskStatus.READY, context="reopen_with_feedback")
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)))
+    held = await train.visit(MAIN)
+    assert held.state == "held", held
+    assert any(blocker["code"] == "source_ci_repair_superseded" and
+               blocker["task_id"] == "repair" for blocker in held.detail["blockers"])
+    async with world.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.intent).where(
+            integration_batches.c.id == "repair-only")) == "paused"
 
 
 def tree(world, sha):
