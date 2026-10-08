@@ -493,6 +493,14 @@ already sealed healthy batch can pass checks and publish on the same target.
 
 ## Source CI: red versus infrastructure
 
+The root PR admission gate automatically reopens a completed leaf when a
+required check genuinely fails on its exact head. Reopen feedback includes
+the failing jobs, links and reported test names. The same head can reopen once;
+`root.repair.primary_attempts` bounds changed-head attempts (default three).
+An unchanged failing head, exhausted recovery or a container root instead
+notifies the supervisor with a named blocker. Existing source-CI repairs keep
+their paired admission path. See [root PR check recovery](../specs/design/root-pr-check-recovery.md).
+
 Source CI observation of a train root's exact PR head files a repair only when
 at least one required check genuinely failed (`failure`, `timed_out`,
 `action_required`). A run whose non-success required checks are *all* cancelled
