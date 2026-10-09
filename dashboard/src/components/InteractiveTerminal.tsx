@@ -5,6 +5,7 @@ import "@xterm/xterm/css/xterm.css";
 import { connectTerminal, terminalDimensions, type TerminalConnection, type TerminalConnectionState } from "../ws/terminalSocket";
 import { canFocusTerminal } from "./terminalFocus";
 import { TerminalToolbar, TERMINAL_TOOL } from "./TerminalPane";
+import { guardUntrustedOutput, TERMINAL_FONT_FAMILY, TERMINAL_LINE_HEIGHT, TERMINAL_THEME } from "./terminalSetup";
 
 const encoder = new TextEncoder();
 
@@ -24,25 +25,20 @@ export default function InteractiveTerminal({ sessionId, name, focusRequest }: {
     let disposed = false;
     let frame: number | null = null;
     const terminal = new Terminal({
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+      fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: 12,
-      lineHeight: 1.2,
+      lineHeight: TERMINAL_LINE_HEIGHT,
       cursorBlink: true,
       scrollback: 2000,
       disableStdin: true,
       logLevel: "off",
-      theme: { background: "#0d1117", foreground: "#d1d5db", cursor: "#e5e7eb", selectionBackground: "#6366f14d" },
+      theme: TERMINAL_THEME,
     });
     terminalRef.current = terminal;
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
 
-    // Terminal output is untrusted. Keep manual copy/paste, but never let
-    // escape sequences access the clipboard or activate remote hyperlinks.
-    const disposables = [
-      terminal.parser.registerOscHandler(52, () => true),
-      terminal.parser.registerOscHandler(8, () => true),
-    ];
+    const disposables = guardUntrustedOutput(terminal);
     terminal.open(host);
     terminal.textarea?.setAttribute("aria-label", name + " terminal input");
     terminal.textarea?.setAttribute("aria-describedby", hintId);
@@ -150,7 +146,7 @@ export default function InteractiveTerminal({ sessionId, name, focusRequest }: {
       </>} />
       <div className="min-h-0 min-w-0 flex-1 overflow-hidden bg-[#0d1117] p-2">
         <div ref={hostRef} data-interactive-terminal title={disabled ? "Keyboard input unavailable until the terminal connects" : "Click to type · Ctrl+M releases keyboard"}
-          onKeyDown={(event) => event.stopPropagation()} className="h-full w-full [&_.xterm]:h-full" />
+          onKeyDown={(event) => event.stopPropagation()} className="h-full w-full [&_.xterm]:h-full [&_.xterm-viewport]:bg-[#0d1117]!" />
       </div>
     </div>
   );

@@ -18,7 +18,7 @@ import type { SessionSummary } from "../api/client";
 import { AttemptTime } from "../components/TaskSessions";
 import { useTranscriptStream } from "../ws/useTranscriptStream";
 import InteractiveTerminal from "../components/InteractiveTerminal";
-import WatchTerminal from "../components/WatchTerminal";
+import PhoneTerminal from "../components/PhoneTerminal";
 import { useCompactViewport } from "../hooks/useCompactViewport";
 import { focusSessionHref } from "./focus/routes";
 import { workspaceHref } from "../shell/projectNavigation";
@@ -259,9 +259,9 @@ function SessionDetailContent({ session, attempt, interactive }: { session: Sess
         {!showingPane && error && <p className="px-3 py-1 text-xs text-amber-400">{error}</p>}
         {showingPane ? (
           <div className="h-[60vh] min-h-80">
-            {/* Below 768 px the pane is never attached; typing uses the input-only socket (AgentTerminal). */}
+            {/* Below 768 px, the phone terminal (AgentTerminal). */}
             {compact ? (
-              <WatchTerminal key={sessionId} sessionId={sessionId} name={session.name}
+              <PhoneTerminal key={sessionId} sessionId={sessionId} name={session.name}
                 focusHref={focusSessionHref(sessionId, { started: attempt?.session_started_at ?? session.started_at })} />
             ) : (
               <InteractiveTerminal key={sessionId} sessionId={sessionId} name={session.name}

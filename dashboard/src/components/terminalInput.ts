@@ -1,8 +1,7 @@
 /**
- * What a phone types into an agent's terminal (mobile interactive terminal
- * spec, docs/superpowers/specs/2026-09-26-mobile-interactive-terminal-design.md).
- * Bytes only: the input-only terminal socket carries them, behind the same
- * gates as a desktop terminal.
+ * What a phone types into an agent's terminal (mobile terminal spec,
+ * docs/superpowers/specs/2026-10-08-mobile-terminal-design.md). Bytes only: the
+ * phone's attach socket carries them, as keystrokes into its own tmux client.
  */
 
 /** One entry, as the daemon's direct-input path limits a paste. */
@@ -51,13 +50,13 @@ export function entryText(text: string): string {
 }
 
 /**
- * One line is sent as typed; several lines as one bracketed paste, which the
- * daemon hands to tmux's `paste-buffer -p` (brackets only if the app asked for
- * them, LF as CR), like a desktop paste.
+ * One line is sent as typed; several lines as one bracketed paste with CR line
+ * endings, exactly as xterm.js sends a desktop paste. tmux passes the brackets
+ * on only to an app that asked for them.
  */
 export function encodeEntry(text: string): Uint8Array {
   const clean = entryText(text);
-  return encoder.encode(clean.includes("\n") ? PASTE_START + clean + PASTE_END : clean);
+  return encoder.encode(clean.includes("\n") ? PASTE_START + clean.replace(/\n/g, ENTER) + PASTE_END : clean);
 }
 
 export function encodeKey(key: TerminalKey | string): Uint8Array {

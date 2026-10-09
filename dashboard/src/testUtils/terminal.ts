@@ -49,7 +49,14 @@ export class TerminalMock {
   resizeHandlers = new Set<(size: { cols: number; rows: number }) => void>();
   keyHandler?: (event: KeyboardEvent) => boolean;
   pendingWrites: (() => void)[] = [];
-  parser = { registerOscHandler: vi.fn(() => ({ dispose: vi.fn() })) };
+  parser = {
+    registerOscHandler: vi.fn(() => ({ dispose: vi.fn() })),
+    registerCsiHandler: vi.fn(() => ({ dispose: vi.fn() })),
+  };
+  /** Scrollback position: `viewportY < baseY` means scrolled back. */
+  buffer = { active: { viewportY: 0, baseY: 0 } };
+  scrollHandlers = new Set<(y: number) => void>();
+  writeParsedHandlers = new Set<() => void>();
   constructor(options: ITerminalOptions) { this.options = options; TerminalMock.instances.push(this); }
   loadAddon(addon: FitAddonMock) { addon.activate(this); }
   open(host: HTMLElement) {
@@ -71,12 +78,26 @@ export class TerminalMock {
     this.resizeHandlers.add(handler);
     return { dispose: () => this.resizeHandlers.delete(handler) };
   }
+  onScroll(handler: (y: number) => void) {
+    this.scrollHandlers.add(handler);
+    return { dispose: () => this.scrollHandlers.delete(handler) };
+  }
+  onWriteParsed(handler: () => void) {
+    this.writeParsedHandlers.add(handler);
+    return { dispose: () => this.writeParsedHandlers.delete(handler) };
+  }
+  scrollLines = vi.fn((lines: number) => {
+    const active = this.buffer.active;
+    active.viewportY = Math.max(0, Math.min(active.baseY, active.viewportY + lines));
+    this.scrollHandlers.forEach((handler) => handler(active.viewportY));
+  });
+  scrollToBottom = vi.fn(() => this.scrollLines(this.buffer.active.baseY));
   attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) { this.keyHandler = handler; }
   emitData(data: string) { this.dataHandlers.forEach((handler) => handler(data)); }
   emitBinary(data: string) { this.binaryHandlers.forEach((handler) => handler(data)); }
-  write = vi.fn((data: Uint8Array, processed: () => void) => {
-    if (this.output) this.output.textContent += new TextDecoder().decode(data);
-    this.pendingWrites.push(processed);
+  write = vi.fn((data: Uint8Array | string, processed?: () => void) => {
+    if (this.output) this.output.textContent += typeof data === "string" ? data : new TextDecoder().decode(data);
+    if (processed) this.pendingWrites.push(processed);
   });
   flushWrites() { this.pendingWrites.splice(0).forEach((done) => done()); }
   resize(cols: number, rows: number) {
@@ -88,6 +109,7 @@ export class TerminalMock {
   dispose = vi.fn(() => {
     this.disposed = true; this.element?.remove();
     this.dataHandlers.clear(); this.binaryHandlers.clear(); this.resizeHandlers.clear();
+    this.scrollHandlers.clear(); this.writeParsedHandlers.clear();
   });
 }
 

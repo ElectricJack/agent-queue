@@ -15,8 +15,8 @@ vi.mock("../../ws/useTranscriptStream", () => ({ useTranscriptStream: () => ({
   entries: [{ _idx: 0, type: "assistant", text: "Saved transcript" }], status: "open", clear: vi.fn(),
 }) }));
 vi.mock("../../ws/usePaneStream", () => ({ usePaneStream: () => ({ screen: null, status: "connecting" }) }));
-vi.mock("../../components/WatchTerminal", () => ({
-  default: ({ sessionId, focusHref }: { sessionId: string; focusHref?: string }) => <p>Watching {sessionId} → {focusHref}</p>,
+vi.mock("../../components/PhoneTerminal", () => ({
+  default: ({ sessionId, focusHref }: { sessionId: string; focusHref?: string }) => <p>Phone {sessionId} → {focusHref}</p>,
 }));
 vi.mock("@xterm/xterm", async () => ({ Terminal: (await import("../../testUtils/terminal")).TerminalMock }));
 vi.mock("@xterm/addon-fit", async () => ({ FitAddon: (await import("../../testUtils/terminal")).FitAddonMock }));
@@ -121,7 +121,7 @@ describe("Session terminal below 768 px", () => {
 
   it("the pane view watches and opens no terminal socket", async () => {
     render(page({ pathname: "/sessions/session-a", state: { terminalFocus: true } }));
-    expect(await screen.findByText("Watching session-a → /focus/sessions/session-a")).toBeInTheDocument();
+    expect(await screen.findByText("Phone session-a → /focus/sessions/session-a")).toBeInTheDocument();
     expect(TerminalSocketMock.instances).toHaveLength(0);
   });
 });

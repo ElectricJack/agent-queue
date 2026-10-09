@@ -1,7 +1,8 @@
-// The watch-only terminal: geometry at every profile, zero terminal sockets and
-// frames, font changes send nothing, full screen is a trapped sheet that
-// survives rotation and Back, the stream's stale state and Retry, restart,
-// ended and missing sessions.
+// A viewer the daemon refuses an attach watches the pane stream in the phone
+// terminal: geometry at every profile, refused attaches that send no frames,
+// font changes send nothing, full screen is a trapped sheet that survives
+// rotation and Back, the stream's stale state and Retry, restart, ended and
+// missing sessions. phone-terminal covers the attached terminal.
 import assert from "node:assert/strict";
 import { expectLayout, rect, waitForText } from "../probes.mjs";
 import { SESSION } from "../fixtures/base.mjs";
@@ -18,6 +19,12 @@ const terminalFrames = (t) => t.sockets.sent.filter((s) => s.url?.includes("/ws/
 const statusMatches = (t, pattern, timeout = 15_000) => t.page.waitForFunction(
   (source) => new RegExp(source).test(document.querySelector('[aria-label$="terminal status"]')?.textContent ?? ""),
   { timeout }, pattern.source);
+const WATCHING = /^Watch only — typing is not available/;
+// The terminal refits on the frame after a resize; wait for it before probing.
+const refitted = (t) => t.page.waitForFunction(() => {
+  const frame = document.querySelector("[data-phone-terminal]")?.parentElement;
+  return !!frame && frame.scrollWidth <= frame.clientWidth;
+});
 const paneRequests = (t) => t.stub.requests.filter((r) => r.path === `/api/sessions/${SESSION}/pane`).length;
 
 async function until(predicate, timeout, message) {
@@ -30,21 +37,38 @@ async function until(predicate, timeout, message) {
 export async function run(t) {
   await t.page.goto(t.url(`/focus/sessions/${SESSION}`), { waitUntil: "domcontentloaded" });
   await waitForText(t.page, SCREEN_TEXT);
+  await statusMatches(t, WATCHING);
   await expectLayout(t, { primary: [...HEADER, ...TOOLS] });
-  const console_ = await rect(t.page, "[data-allow-overflow-x]");
+  assert.equal(await t.page.$('[aria-label$=" terminal input"], [aria-label$=" terminal keys"]'), null, "a refused viewer is offered typing");
+  // The screen's frame (terminal background) runs edge to edge.
+  const frame = await t.page.$eval("[data-phone-terminal]", (el) => {
+    const r = el.parentElement.getBoundingClientRect();
+    return { left: r.left, right: r.right };
+  });
   const vp = t.page.viewport();
-  assert.ok(console_.left <= 1 && console_.right >= vp.width - 1, `the pane is not edge to edge (${console_.left}–${console_.right})`);
+  assert.ok(frame.left <= 1 && frame.right >= vp.width - 1, `the pane is not edge to edge (${frame.left}–${frame.right})`);
 
   // Font: rendering only — no request, no socket, no new stream.
   await t.page.click('[aria-label^="Details for "]');
   await expectLayout(t, { primary: FONTS });
   const before = t.stub.requests.length;
-  const fontBefore = await t.page.$eval("[data-allow-overflow-x]", (el) => getComputedStyle(el).fontSize);
-  await t.page.click('[aria-label="Larger text"]');
-  await t.page.click('[aria-label="Larger text"]');
-  assert.equal(await t.page.$eval('[aria-label="Text size"]', (el) => el.textContent), "16px");
-  assert.equal(await t.page.$eval("[data-allow-overflow-x]", (el) => getComputedStyle(el).fontSize), "16px");
-  assert.equal(fontBefore, "12px");
+  const shownFont = () => t.page.$eval('[aria-label="Text size"]', (el) => el.textContent);
+  const drawnFont = () => t.page.$eval("[data-phone-terminal] .xterm-rows", (el) => getComputedStyle(el).fontSize);
+  assert.equal(await shownFont(), "12px");
+  assert.equal(await drawnFont(), "12px");
+  for (let i = 0; i < 2; i++) {
+    if (await t.page.$eval('[aria-label="Larger text"]', (el) => el.disabled)) break;
+    await t.page.click('[aria-label="Larger text"]');
+  }
+  // Settles at 16 px, unless a narrow screen capped it to keep MIN_COLUMNS
+  // (Larger then disabled); the drawn size matches the shown one either way.
+  await t.page.waitForFunction(() => {
+    const shown = document.querySelector('[aria-label="Text size"]')?.textContent;
+    const rows = document.querySelector("[data-phone-terminal] .xterm-rows");
+    const larger = document.querySelector('[aria-label="Larger text"]');
+    return !!rows && shown === getComputedStyle(rows).fontSize && (shown === "16px" || larger.disabled);
+  }, { timeout: 5_000 }).catch(async () => assert.fail(`text stopped at ${await shownFont()} with room to grow`));
+  if (vp.width >= 768) assert.equal(await shownFont(), "16px");
   assert.deepEqual(t.stub.requests.slice(before), [], "a font change sent a request");
   await expectLayout(t, { primary: TOOLS });
   await t.shot("font-details");
@@ -63,12 +87,14 @@ export async function run(t) {
   if (t.isPhone) {
     const rotated = { ...vp, width: vp.height, height: vp.width, isLandscape: vp.width < vp.height };
     await t.page.setViewport(rotated);
+    await refitted(t);
     const turned = await rect(t.page, "[role=dialog]");
     assert.ok(turned.width >= rotated.width - 1 && turned.height >= rotated.height - 1, "full screen lost on rotation");
     await expectLayout(t, { primary: ['[aria-label="Exit full screen"]'] });
     await t.shot("full-screen-rotated");
     await t.page.setViewport(vp);
     await t.page.waitForSelector('[role=dialog][aria-label$="full screen"]');
+    await refitted(t);
   }
   await t.page.goBack();
   await t.page.waitForFunction(() => !document.querySelector("[role=dialog]"));
@@ -83,15 +109,15 @@ export async function run(t) {
 
   // Network loss: the stream reconnects on its own; the screen stays, marked stale.
   t.stub.dropPane(SESSION);
-  await statusMatches(t, /^Reconnecting/);
+  await statusMatches(t, /^Watch only — reconnecting/);
   await waitForText(t.page, SCREEN_TEXT);
-  await statusMatches(t, /^Live$/);
+  await statusMatches(t, WATCHING);
   // Refused reconnects back off, the last screen still on show; Retry
   // reconnects at once instead of waiting out the backoff.
   t.stub.failPane(SESSION, 503);
   const refusedFrom = paneRequests(t);
   t.stub.dropPane(SESSION);
-  await statusMatches(t, /^Reconnecting · screen from /);
+  await statusMatches(t, /^Watch only — reconnecting · screen from /);
   await waitForText(t.page, SCREEN_TEXT);
   await t.page.click('[aria-label^="Details for "]');
   await expectLayout(t, { primary: [RETRY] });
@@ -101,7 +127,7 @@ export async function run(t) {
   await until(() => paneRequests(t) >= refusedFrom + 3, 20_000, "the stream stopped retrying a refused reconnect");
   t.stub.failPane(SESSION, null);
   await t.page.click(RETRY);
-  await statusMatches(t, /^Live$/, 1_500);
+  await statusMatches(t, WATCHING, 1_500);
   assert.equal(await t.page.$(RETRY), null, "Retry stayed after the stream came back");
   await t.page.keyboard.press("Escape");
 
@@ -133,8 +159,14 @@ export async function run(t) {
     await expectLayout(t, { primary: ["xpath/.//button[normalize-space()='Retry']", "xpath/.//button[normalize-space()='Go back']"] });
   }
 
-  assert.deepEqual(t.sockets.terminal(), [], "a terminal WebSocket was opened");
-  assert.deepEqual(terminalFrames(t), [], "frames were sent on a terminal socket");
-  assert.deepEqual(t.stub.terminalUpgrades, []);
+  // The phone tried to attach (asking for history and its size back), was
+  // refused, and sent nothing.
+  assert.ok(t.stub.terminalUpgrades.length > 0, "the phone never tried to attach");
+  for (const raw of t.stub.terminalUpgrades) {
+    const url = new URL(raw, "http://stub.invalid");
+    assert.equal(url.searchParams.get("history"), "2000", `an attach asks for no history: ${raw}`);
+    assert.equal(url.searchParams.get("restore_size"), "1", `an attach keeps the phone's size: ${raw}`);
+  }
+  assert.deepEqual(terminalFrames(t), [], "frames were sent on a refused terminal socket");
   assert.deepEqual(t.stub.statePuts(), [], "a focus route wrote roaming preferences");
 }

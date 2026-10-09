@@ -66,7 +66,7 @@ export default function TerminalInputBar({ name, connected, onSubmit, inputRef, 
           aria-label={`${name} terminal input`}
           aria-describedby={hintId}
           aria-invalid={tooLong || undefined}
-          placeholder={connected ? `Type to ${name}…` : "Connecting…"}
+          placeholder={connected ? "Type to the agent…" : "Connecting…"}
           className="min-h-11 min-w-0 flex-1 resize-none overflow-y-auto rounded border border-gray-700 bg-black px-2 py-2 font-mono text-base leading-snug text-gray-100 placeholder:text-gray-600 focus:border-indigo-500 focus:outline-none"
         />
         <button

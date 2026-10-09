@@ -9,6 +9,16 @@ const DETAILS = '[data-terminal-header] [aria-label^="Details for "]';
 const DIALOG = "[data-terminal-details]";
 const PICKER = '[data-terminal-header] select';
 
+/** Every phone attach asks for scrollback and for the agent's own size back. */
+function phoneAttaches(t) {
+  assert.ok(t.stub.terminalUpgrades.length > 0, "the phone never attached");
+  for (const raw of t.stub.terminalUpgrades) {
+    const url = new URL(raw, "http://stub.invalid");
+    assert.equal(url.searchParams.get("history"), "2000", `a phone attach asks for no history: ${raw}`);
+    assert.equal(url.searchParams.get("restore_size"), "1", `a phone attach keeps the phone's size: ${raw}`);
+  }
+}
+
 async function oneRow(t) {
   const geometry = await terminalHeaderGeometry(t.page);
   assert.equal(geometry.length, 3);
@@ -38,8 +48,12 @@ export async function run(t) {
     await t.page.waitForFunction(() => document.querySelector('[aria-label$="terminal connection"]')?.textContent.includes("connected"));
     await t.page.waitForFunction(() => document.querySelector('[aria-label="Supervisor terminal connection"]')?.textContent.includes("error"));
   } else {
+    // Phones attach too, asking for history and the agent's size back; the
+    // refused supervisor watches its pane stream in the same terminal.
     await t.page.waitForFunction(() => document.querySelector('[aria-label$="terminal status"]')?.textContent === "Live");
-    assert.deepEqual(t.stub.terminalUpgrades, [], "a phone attached a PTY");
+    await t.page.waitForFunction(() => document.querySelector('[aria-label="Supervisor terminal status"]')?.textContent.startsWith("Watch only"));
+    assert.equal(await t.page.$("[data-interactive-terminal]"), null, "a phone mounted the desktop terminal");
+    phoneAttaches(t);
   }
   await oneRow(t);
   await t.shot("three-panes");
@@ -114,8 +128,9 @@ export async function run(t) {
     await t.page.waitForFunction(() => document.querySelector('[aria-label="Second worker terminal connection"]')?.textContent.includes("connected"));
     assert.equal(t.stub.terminalViewers.filter((row) => row.sessionId === SECOND_POOL_SESSION).length, 1);
   } else {
-    await t.page.waitForSelector('[aria-label="Second worker terminal status"]');
-    assert.deepEqual(t.stub.terminalUpgrades, []);
+    await t.page.waitForFunction(() => document.querySelector('[aria-label="Second worker terminal status"]')?.textContent === "Live");
+    assert.equal(t.stub.terminalViewers.filter((row) => row.sessionId === SECOND_POOL_SESSION).length, 1);
+    phoneAttaches(t);
   }
   await oneRow(t);
   await t.shot("pool-header-selection");
@@ -129,7 +144,8 @@ export async function run(t) {
     await t.page.waitForFunction(() => document.querySelector('[aria-label="Pool worker with a long session name terminal connection"]')?.textContent.includes("connected"));
     assert.equal(t.stub.terminalViewers.filter((row) => row.sessionId === POOL_SESSION).length, 2);
   } else {
-    await t.page.waitForSelector('[aria-label="Pool worker with a long session name terminal status"]');
+    await t.page.waitForFunction(() => document.querySelector('[aria-label="Pool worker with a long session name terminal status"]')?.textContent === "Live");
+    assert.equal(t.stub.terminalViewers.filter((row) => row.sessionId === POOL_SESSION).length, 2);
   }
   assert.equal(await t.page.$(DIALOG), null);
   // The one remaining instance still has its existing picker in details.

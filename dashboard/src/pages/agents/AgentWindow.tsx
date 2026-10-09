@@ -28,7 +28,7 @@ export default function AgentWindow({ agent, onClose, resetToken, focusRequest }
 
   return (
     <section aria-label={agent.name + " agent window"}
-      className="flex min-h-80 min-w-0 flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-900/40 lg:min-h-0">
+      className="flex min-h-96 min-w-0 flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-900/40 lg:min-h-0">
       <TerminalPane title={agent.name} status={<AgentState agent={agent} />} onClose={onClose} titleId={id + "-title"}
         tabs={<TerminalTabs label={agent.name + " view"} idPrefix={id} tabs={tabs} value={tab} onChange={setTab} />} details={<>
         <div className="space-y-1">

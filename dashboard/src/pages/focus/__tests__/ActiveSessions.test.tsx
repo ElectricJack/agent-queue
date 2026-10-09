@@ -15,15 +15,16 @@ vi.mock("../../../api/agents", () => ({
 }));
 vi.mock("../../agents/pools", () => ({
   usePoolFlock: () => ({
-    entries: [{ profileId: "deep-high-claude", instances: [
+    entries: [{ profileId: "deep-high-claude", pool: { profile_id: "deep-high-claude", name: "" }, instances: [
       { id: "p-1", name: "pool-1", state: "running", provider: "tmux", started_at: 1790000000 },
       { id: "s-a", name: "dup", state: "running", provider: "tmux", started_at: 1 },
     ] }],
   }),
+  poolDisplayName: (pool: { name?: string; profile_id: string }) => pool.name || pool.profile_id,
 }));
 
 describe("ActiveSessions", () => {
-  it("lists live tmux sessions once each, linking the watch-only view", () => {
+  it("lists live tmux sessions once each, linking the phone terminal", () => {
     render(<MemoryRouter><ActiveSessions /></MemoryRouter>);
     const links = screen.getAllByRole("link");
     expect(links.map((l) => l.getAttribute("href"))).toEqual([

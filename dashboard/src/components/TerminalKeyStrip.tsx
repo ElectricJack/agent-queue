@@ -1,7 +1,7 @@
 import { TERMINAL_KEYS, type TerminalKey } from "./terminalInput";
 
 const KEY =
-  "inline-flex h-10 min-w-10 flex-1 shrink-0 items-center justify-center whitespace-nowrap rounded border border-gray-700 bg-gray-900 px-2 font-mono text-sm text-gray-100 hover:bg-gray-800 active:bg-gray-700 disabled:opacity-40";
+  "inline-flex h-10 min-w-10 flex-auto shrink-0 items-center justify-center whitespace-nowrap rounded border border-gray-700 bg-gray-900 px-2 font-mono text-sm text-gray-100 hover:bg-gray-800 active:bg-gray-700 disabled:opacity-40";
 
 /**
  * The keys a phone keyboard lacks: Esc, Tab, Ctrl-C, arrows, Enter, and 1–3

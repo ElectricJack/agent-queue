@@ -85,15 +85,15 @@ describe("TerminalInputBar", () => {
 });
 
 describe("terminal input encoding", () => {
-  it("sends one line as typed and several lines as one bracketed paste", () => {
+  it("sends one line as typed and several lines as one bracketed paste, with CR line ends as a terminal paste", () => {
     expect(decode(encodeEntry("ls -la"))).toBe("ls -la");
-    expect(decode(encodeEntry("a\nb"))).toBe("\x1b[200~a\nb\x1b[201~");
-    expect(decode(encodeEntry("a\r\nb\rc"))).toBe("\x1b[200~a\nb\nc\x1b[201~");
+    expect(decode(encodeEntry("a\nb"))).toBe("\x1b[200~a\rb\x1b[201~");
+    expect(decode(encodeEntry("a\r\nb\rc"))).toBe("\x1b[200~a\rb\rc\x1b[201~");
   });
 
   it("drops control characters so pasted text cannot end the paste early or type keys", () => {
     expect(entryText("safe\x1b[201~\x03rm\ttab\x7f")).toBe("safe[201~rm\ttab");
-    expect(decode(encodeEntry("x\x1b[201~\ny"))).toBe("\x1b[200~x[201~\ny\x1b[201~");
+    expect(decode(encodeEntry("x\x1b[201~\ny"))).toBe("\x1b[200~x[201~\ry\x1b[201~");
   });
 
   it("key strip bytes: Esc, Tab, Ctrl-C, arrows, Enter and 1-3", () => {

@@ -5,8 +5,8 @@ import AgentTerminal, { PoolInstanceTerminal } from "../AgentTerminal";
 import type { FlockAgent } from "../../../api/agents";
 
 vi.mock("../../../components/InteractiveTerminal", () => ({ default: ({ sessionId }: { sessionId: string }) => <p>Interactive {sessionId}</p> }));
-vi.mock("../../../components/WatchTerminal", () => ({
-  default: ({ sessionId, focusHref }: { sessionId: string; focusHref?: string }) => <p>Watching {sessionId} → {focusHref}</p>,
+vi.mock("../../../components/PhoneTerminal", () => ({
+  default: ({ sessionId, focusHref }: { sessionId: string; focusHref?: string }) => <p>Phone {sessionId} → {focusHref}</p>,
 }));
 vi.mock("../../../api/agents", () => ({ useStartAgentTerminal: () => ({ mutate: vi.fn(), isPending: false, error: null }) }));
 vi.mock("../../../api/hooks", () => ({ useProjects: () => ({ data: [] }) }));
@@ -23,17 +23,17 @@ function setCompact(compact: boolean) {
 afterEach(() => Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: original }));
 
 describe("agent terminals below 768 px", () => {
-  it("watch instead of attaching", () => {
+  it("open the phone terminal, which attaches at phone size", () => {
     setCompact(true);
     render(<MemoryRouter><AgentTerminal agent={agent} /></MemoryRouter>);
-    expect(screen.getByText("Watching s1 → /focus/sessions/s1")).toBeInTheDocument();
+    expect(screen.getByText("Phone s1 → /focus/sessions/s1")).toBeInTheDocument();
     expect(screen.queryByText(/Interactive/)).toBeNull();
   });
 
   it("pin a pool instance's process in the focus link", () => {
     setCompact(true);
     render(<MemoryRouter><PoolInstanceTerminal instance={{ id: "p1", name: "pool-1", state: "running", provider: "tmux", started_at: 1790000000 }} /></MemoryRouter>);
-    expect(screen.getByText("Watching p1 → /focus/sessions/p1?started=1790000000")).toBeInTheDocument();
+    expect(screen.getByText("Phone p1 → /focus/sessions/p1?started=1790000000")).toBeInTheDocument();
     expect(screen.queryByText(/Interactive/)).toBeNull();
   });
 
@@ -43,6 +43,6 @@ describe("agent terminals below 768 px", () => {
     expect(screen.getByText("Interactive s1")).toBeInTheDocument();
     render(<MemoryRouter><PoolInstanceTerminal instance={{ id: "p1", name: "pool-1", state: "running", provider: "tmux", started_at: 1790000000 }} /></MemoryRouter>);
     expect(screen.getByText("Interactive p1")).toBeInTheDocument();
-    expect(screen.queryByText(/Watching/)).toBeNull();
+    expect(screen.queryByText(/Phone /)).toBeNull();
   });
 });
