@@ -4285,6 +4285,17 @@ class GitManager:
             raise GitError("invalid expected target OID")
         await self._arun(["update-ref", "-d", ref, expected_old_oid], cwd=checkout_path)
 
+    async def adelete_remote_tracking_ref_exact(
+        self, checkout_path: str, *, ref: str, expected_old_oid: str
+    ) -> None:
+        """Remove an audited origin observation only when its tip is unchanged."""
+        ref = _validate_ref(ref, field="ref")
+        if not ref.startswith("refs/remotes/origin/"):
+            raise GitError("cleanup tracking ref must belong to origin")
+        if _OID_RE.fullmatch(expected_old_oid) is None:
+            raise GitError("invalid expected target OID")
+        await self._arun(["update-ref", "-d", ref, expected_old_oid], cwd=checkout_path)
+
     async def afetch_exact_oid_with_app_auth(
         self,
         destination_git_dir: str,

@@ -2415,6 +2415,12 @@ class HierarchyQueryMixin:
             # waiting ``task_claim`` long-poll (I2).
             result.ready.extend(res.ready)
             result.abandoned.append(tid)
+            from src.integration.branch_retirement import request_task_retirement_on
+
+            await request_task_retirement_on(
+                conn, tid, request_id=f"abandon:{task_id}:{tid}:{time.time()}",
+                reason=f"abandoned by container {task_id}",
+            )
         return result
 
     async def _upsert_meta(self, task_id: str, key: str, value, *, conn) -> None:

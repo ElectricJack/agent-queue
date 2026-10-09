@@ -7,7 +7,7 @@ import time
 import pytest
 from sqlalchemy import insert, select
 
-from src.database.tables import integration_legacy_deliveries, task_branch_origins
+from src.database.tables import branch_retirements, integration_legacy_deliveries, task_branch_origins
 from src.integration.legacy_backfill import (
     CONTAINED_PROOF,
     EQUIVALENT_PROOF,
@@ -258,6 +258,9 @@ async def test_abandon_completed_epic_records_decision_for_epic_and_children(wor
         rows = {r.task_id: r.proof for r in
                 (await conn.execute(select(integration_legacy_deliveries))).all()}
     assert rows == {"old": "abandoned", "kid": "abandoned"}
+    async with db._engine.connect() as conn:
+        retired = set((await conn.execute(select(branch_retirements.c.branch))).scalars())
+    assert retired == {"aq/old", "aq/old-wip", "aq/kid", "aq/kid-wip"}
     assert not {"old", "kid"} & set(await blocker_codes(world))
     with pytest.raises(ValueError, match="completed epic"):
         await abandon_epic(db, "p", "kid")

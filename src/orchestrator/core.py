@@ -638,6 +638,7 @@ class Orchestrator(
         self.promotion_flow_problems: dict[str, list[dict]] = {}
         self._promotion_flow_check = None
         self.branch_discard_service = None
+        self.branch_retirement_service = None
         self.branch_materialization_service = None
         self.integration_release_service = None
         self.integration_cleanup_service = None
@@ -1355,6 +1356,9 @@ class Orchestrator(
         if service is None:
             return
         await service.drain_due(now=now)
+        retirements = getattr(self, "branch_retirement_service", None)
+        if retirements is not None:
+            await retirements.drain_due(now=now)
 
     async def _sweep_stranded_owners(self, now: float) -> None:
         """Release quiet, provably abandoned branch owners every five minutes."""
@@ -1990,13 +1994,23 @@ class Orchestrator(
             # that owns a collection episode is not built at all.
             legacy_container_collection=self.config.integration.git_first != "active",
         )
-        self.branch_discard_service = BranchDiscardService(
+        from src.integration.branch_retirement import BranchRetirementService
+
+        self.branch_retirement_service = BranchRetirementService(
             self.db,
             data_dir=self.config.data_dir,
             git_manager=self.git,
             github_client_factory=self.github_client_factory,
             github_repository_binding_resolver=self.github_repository_binding_resolver,
+            candidate_store=lambda repo: self.development_integration._store_path(repo),
         )
+        self.branch_discard_service = BranchDiscardService(
+            self.db,
+            data_dir=self.config.data_dir,
+            git_manager=self.git,
+            retirement_service=self.branch_retirement_service,
+        )
+        self.integration_cleanup_service.retirement_service = self.branch_retirement_service
         from src.integration.parent_ci import ParentCIService
 
         parent_ci = ParentCIService(

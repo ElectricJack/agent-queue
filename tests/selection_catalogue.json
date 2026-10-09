@@ -221,6 +221,7 @@
       "description": "Development delivery: the development integration path on real git, validation outcomes, delivery preconditions and end-to-end delivery, delivering a blocked task's pushed branch by hand, branch discard and the push-before-close rule for unpushed work.",
       "modules": [
         "tests/test_branch_discard.py",
+        "tests/test_branch_retirement.py",
         "tests/test_close_unpushed_work.py",
         "tests/test_delivery_consumers.py",
         "tests/test_delivery_integration.py",
@@ -2994,6 +2995,29 @@
       ],
       "markers": [],
       "summary": "Tests for branch-isolated workspace mode (Roadmap 7.4.4)."
+    },
+    "tests/test_branch_retirement.py": {
+      "areas": [
+        "development-delivery"
+      ],
+      "default_arm": true,
+      "digest": "sha256:5380253282498d18518588bd2b5719f60177ffcc0ace0003aec2958671dff1de",
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.branch_retirement",
+        "src.integration.cleanup",
+        "src.integration.train_sources",
+        "src.models",
+        "src.sessions.obsolete"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Explicit decisions delete real Git refs only after a durable SHA audit."
     },
     "tests/test_branch_sweep.py": {
       "areas": [

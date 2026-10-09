@@ -463,6 +463,13 @@ async def _record(db, request, target, target_oid, verdict, *, operator_id, reas
             reason=f"{reason.strip()} [via {verdict.via} {verdict.delivered_sha}]",
             created_at=now,
         ).on_conflict_do_nothing(index_elements=[integration_legacy_deliveries.c.task_id]))
+        if verdict.proof == "abandoned":
+            from src.integration.branch_retirement import request_task_retirement_on
+
+            await request_task_retirement_on(
+                conn, request.task_id, request_id=f"legacy-abandon:{request.task_id}",
+                reason=reason, now=now,
+            )
     return "recorded"
 
 
