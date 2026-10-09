@@ -206,7 +206,9 @@ async def test_open_epic_child_on_epic_branch_gets_retained_provenance(world):
     applied = await backfill_legacy_deliveries(db, "p", dry_run=False, operator_id="op",
                                                reason="r")
     assert [r["outcome"] for r in applied["results"] if r["task_id"] == "child"] == ["recorded"]
-    git(world.origin.clone, "fetch", "-q", "origin")
+    # Provenance lives outside refs/heads; fetch its namespace explicitly.
+    git(world.origin.clone, "fetch", "-q", "origin",
+        "+refs/aq/provenance/*:refs/aq/provenance/*")
     record = await GitProvenance(GitManager(), str(world.origin.clone),
                                  repository_url=world.origin.url).read_completion(
         CompletionIdentity("p", "r", "child", "close-child"))

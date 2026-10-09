@@ -1296,6 +1296,9 @@
         100
       ]
     },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_migrate_provenance_refs']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
     "src/cli/client.py::_COMMAND_TIMEOUTS['integration_migrate_provenance']": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
