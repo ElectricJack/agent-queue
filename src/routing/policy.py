@@ -16,7 +16,16 @@ Two kinds of lane share the ``lanes`` map:
   a ``class`` and is named by a kind or an origin (``lane: code-design``);
 * a **narrow lane** (``narrow``, ``narrow-unverified-model``) has a
   ``classes`` map and ``requires`` flags, and is reached only through a kind
-  marked ``narrow: true`` whose classification satisfies every flag.
+  marked ``narrow: true`` whose classification satisfies every flag.  It may
+  also cap the classified risk (``max_risk``) and the task's priority
+  (``below_priority``); an unknown risk does not meet the cap.
+
+The optional ``risk`` map (keyed by :data:`RISK_LEVELS`) is a safety floor
+for a classified risk: ``min_class`` raises the task's class (``relax`` names
+a lower floor for a classification with every flag it ``requires``), and
+``harnesses`` restricts every candidate to those selectors.  A policy that
+uses none of these keys plans, and digests, exactly as it did before they
+existed.
 
 A harness a narrow lane matches is reachable only through a narrow lane: the
 general candidates of a task never include it.  That is what keeps an
@@ -35,15 +44,31 @@ import hashlib
 import json
 import re
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, ClassVar
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    model_serializer,
+    model_validator,
+)
 
 #: The classification flags a narrow lane may require (§6.5).
 CLASSIFICATION_FLAGS: frozenset[str] = frozenset(
     {"narrow", "test_verified", "independent_verifier"}
 )
+
+#: The risk levels a classification may answer, least to most risky.
+RISK_LEVELS: tuple[str, ...] = ("low", "medium", "high", "very_high")
+
+
+def risk_rank(level: str) -> int:
+    """Position on :data:`RISK_LEVELS`; a higher rank is a riskier task."""
+    return RISK_LEVELS.index(level)
 
 
 #: A lane's harness selector: an exact harness id, optionally ending in one ``*``.
@@ -63,6 +88,19 @@ def selector_matches(harness: str, selector: str) -> bool:
 
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    #: Optional keys a dump omits while they hold their default (``None`` or
+    #: empty), so a policy that does not use them keeps the canonical JSON, and
+    #: so the digest, it had before they existed.
+    _OMIT_AT_DEFAULT: ClassVar[tuple[str, ...]] = ()
+
+    @model_serializer(mode="wrap")
+    def _omit_unused(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        for key in self._OMIT_AT_DEFAULT:
+            if key in data and data[key] in (None, {}):
+                del data[key]
+        return data
 
 
 class KindRule(_Strict):
@@ -85,6 +123,15 @@ class OriginRule(_Strict):
     prefer_harnesses: tuple[str, ...] | None = None
 
 
+def _check_selectors(selectors: Iterable[str]) -> None:
+    bad = [selector for selector in selectors if not _SELECTOR.fullmatch(selector)]
+    if bad:
+        raise ValueError(
+            f"harness selectors {bad} are not an exact harness id or one with a "
+            "single trailing '*'"
+        )
+
+
 class Lane(_Strict):
     """``lanes.<name>``: a design lane (``class``) or a narrow lane (``classes``)."""
 
@@ -99,6 +146,14 @@ class Lane(_Strict):
     #: Narrow lanes only: task class -> the class the lane runs it at.
     classes: dict[str, str] | None = None
     requires: tuple[str, ...] = ()
+    #: Narrow lanes only: the riskiest classified risk the lane admits.  An
+    #: unknown risk does not meet it, exactly like a missing flag.
+    max_risk: str | None = None
+    #: Narrow lanes only: the lane admits a task whose priority is below this
+    #: (an unknown priority is admitted, as by ``local_models``).
+    below_priority: int | None = Field(default=None, ge=1)
+
+    _OMIT_AT_DEFAULT: ClassVar[tuple[str, ...]] = ("max_risk", "below_priority")
 
     @property
     def narrow(self) -> bool:
@@ -113,12 +168,7 @@ class Lane(_Strict):
 
     @model_validator(mode="after")
     def _shape(self) -> Lane:
-        bad = [selector for selector in self.harnesses if not _SELECTOR.fullmatch(selector)]
-        if bad:
-            raise ValueError(
-                f"harness selectors {bad} are not an exact harness id or one with a "
-                "single trailing '*'"
-            )
+        _check_selectors(self.harnesses)
         if self.narrow:
             if self.class_ is not None:
                 raise ValueError("a narrow lane maps classes; it takes no 'class'")
@@ -133,6 +183,10 @@ class Lane(_Strict):
                 raise ValueError("'requires' belongs to a narrow lane")
             if self.prefer is True:
                 raise ValueError("a design lane's 'prefer' lists harnesses")
+            if self.max_risk is not None:
+                raise ValueError("'max_risk' belongs to a narrow lane")
+            if self.below_priority is not None:
+                raise ValueError("'below_priority' belongs to a narrow lane")
             unknown = {
                 harness for harness in self.preferred_harnesses
                 if harness.endswith("*") or not self.admits(harness)
@@ -142,7 +196,47 @@ class Lane(_Strict):
         unknown_flags = set(self.requires) - CLASSIFICATION_FLAGS
         if unknown_flags:
             raise ValueError(f"unknown 'requires' flags: {sorted(unknown_flags)}")
+        if self.max_risk is not None and self.max_risk not in RISK_LEVELS:
+            raise ValueError(
+                f"max_risk '{self.max_risk}' is not a risk level {list(RISK_LEVELS)}"
+            )
         return self
+
+
+class RiskRelax(_Strict):
+    """``risk.<level>.relax``: the lower floor for a classification with every flag."""
+
+    class_: str = Field(alias="class")
+    requires: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _flags(self) -> RiskRelax:
+        unknown = set(self.requires) - CLASSIFICATION_FLAGS
+        if unknown:
+            raise ValueError(f"unknown 'requires' flags: {sorted(unknown)}")
+        return self
+
+
+class RiskRule(_Strict):
+    """``risk.<level>``: the class floor and harness restriction for a classified risk."""
+
+    #: The lowest class a task of this risk runs at; it beats a class hint and
+    #: ``max_class`` (an operator who wants otherwise overrides the route).
+    min_class: str
+    #: Harness selectors every candidate must match; empty restricts nothing.
+    harnesses: tuple[str, ...] = ()
+    relax: RiskRelax | None = None
+
+    @model_validator(mode="after")
+    def _selectors(self) -> RiskRule:
+        _check_selectors(self.harnesses)
+        return self
+
+    def floor(self, flags: Iterable[str]) -> str:
+        """The class floor for a classification with *flags*."""
+        if self.relax is not None and set(self.relax.requires) <= set(flags):
+            return self.relax.class_
+        return self.min_class
 
 
 class Reserved(_Strict):
@@ -213,6 +307,10 @@ class RoutingPolicy(_Strict):
     benchmark_arms: dict[str, BenchmarkArm] = Field(default_factory=dict)
     balance: Balance = Field(default_factory=Balance)
     local_models: LocalModels = Field(default_factory=LocalModels)
+    #: Risk level -> the floor and harness restriction a classified risk gets.
+    risk: dict[str, RiskRule] = Field(default_factory=dict)
+
+    _OMIT_AT_DEFAULT: ClassVar[tuple[str, ...]] = ("risk",)
 
     @model_validator(mode="after")
     def _references(self) -> RoutingPolicy:
@@ -264,11 +362,26 @@ class RoutingPolicy(_Strict):
             if not name or not name.strip() or ":" in name:
                 raise ValueError(f"invalid benchmark arm name {name!r}")
             check_class(f"benchmark_arms.{name}.class", arm.class_)
+        for level, rule in self.risk.items():
+            if level not in RISK_LEVELS:
+                raise ValueError(
+                    f"risk names '{level}', which is not a risk level {list(RISK_LEVELS)}"
+                )
+            check_class(f"risk.{level}.min_class", rule.min_class)
+            if rule.relax is not None:
+                check_class(f"risk.{level}.relax.class", rule.relax.class_)
+                if self.rank(rule.relax.class_) > self.rank(rule.min_class):
+                    raise ValueError(f"risk.{level}: relax.class ranks above min_class")
         return self
 
     def rank(self, class_id: str) -> int:
         """Position on ``class_order``; a higher rank is a more capable class."""
         return self.class_order.index(class_id)
+
+    @property
+    def uses_risk(self) -> bool:
+        """The policy reads a classified risk: a ``risk`` rule or a lane's ``max_risk``."""
+        return bool(self.risk) or any(lane.max_risk is not None for lane in self.lanes.values())
 
     def narrow_lanes(self) -> list[tuple[str, Lane]]:
         """Every narrow lane, in declaration order."""
@@ -327,6 +440,7 @@ def parse_policy(text: Any) -> tuple[RoutingPolicy, str]:
 
 __all__ = [
     "CLASSIFICATION_FLAGS",
+    "RISK_LEVELS",
     "Balance",
     "KindRule",
     "Lane",
@@ -334,9 +448,12 @@ __all__ = [
     "OriginRule",
     "PolicyError",
     "Reserved",
+    "RiskRelax",
+    "RiskRule",
     "RoutingPolicy",
     "parse_policy",
     "policy_digest",
+    "risk_rank",
     "selector_matches",
 ]
 
