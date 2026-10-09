@@ -109,13 +109,18 @@ _SCREEN_RE = re.compile(rf"^{_GUTTER}(?:{'|'.join(USAGE_LIMIT_PATTERNS)})")
 # than a Claude/Codex gutter. Only callers that resolved the CLI may use this
 # matcher. Require its retry status as well as an error prefix: quoting a
 # limit string, a diff, a grep hit or text in the composer is not this screen.
+# The status is always the end of the retry text (``<message>[ (click to
+# expand)] [retrying [in <duration> ]attempt #N]``); the same terminal row
+# then carries right-aligned chrome: the ``esc interrupt`` hint and, in
+# 1.18.x, a ``• OpenCode <version>`` badge.  An anchor at the bracket's
+# close missed the four workers parked on fresh-rapids-73's incident.
 _OPENCODE_RE = re.compile(
     r"^[ \t\u00a0]{0,3}(?:(?:[▀-▟⠁-⣿⋯■⬝·]{1,16}|\[⋯\])[ \t]+)?"
     r"(?P<message>(?:Free limit reached|Free usage exceeded|"
     r"Usage limit reached|(?:Rate limit|Quota) (?:reached|exceeded)|"
     r"Too many requests|Internal server error|Bad gateway|Service unavailable)\b[^\n]*?)"
-    r"\s+\[retrying in (?P<duration>~?\d+\s*(?:days?|weeks?)\s*|(?:\d+\s*[dhms]\s*)+)"
-    r"(?:attempt #\d+)?\](?:\s+esc (?:again to )?interrupt)?\s*$",
+    r"\s+\[retrying (?:in (?P<duration>~?\d+\s*(?:days?|weeks?)\s*|(?:\d+\s*[dhms]\s*)+))?"
+    r"(?:attempt #\d+)?(?P<status_end>\])(?:\s[^\n]*)?$",
     re.IGNORECASE,
 )
 _DURATION_RE = re.compile(r"(\d+)\s*(days?|weeks?|[dhms])", re.IGNORECASE)
@@ -149,13 +154,14 @@ def detect_usage_limit_screen(
         seconds = float(
             sum(
                 int(value) * _DURATION_SECONDS[unit.lower()]
-                for value, unit in _DURATION_RE.findall(match["duration"])
+                for value, unit in _DURATION_RE.findall(match["duration"] or "")
             )
         )
         exhausted = _FREE_EXHAUSTED_RE.match(match["message"]) is not None
         if not exhausted and seconds < 3600:
             continue  # A normal brief server retry is still working.
-        return UsageLimitScreen(line[match.span("message")[0] :].rstrip(), seconds, exhausted)
+        status = line[match.start("message") : match.end("status_end")]
+        return UsageLimitScreen(status, seconds or None, exhausted)
     return None
 
 
