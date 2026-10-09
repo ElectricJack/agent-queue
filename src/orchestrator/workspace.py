@@ -1688,6 +1688,7 @@ class WorkspaceMixin:
                 workspace.workspace_path,
                 str(owner["ref"]),
                 save_wip_reason,
+                repository_url=repository.url,
                 event_bus=self.bus,
                 project_id=task.project_id,
             )

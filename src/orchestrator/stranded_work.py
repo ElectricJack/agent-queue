@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from src.git.manager import GitError
+from src.git.manager import GitError, RemoteRefState
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +204,7 @@ async def save_wip_to_task_branch(
     branch: str,
     reason: str,
     *,
+    repository_url: str | None = None,
     event_bus=None,
     project_id: str | None = None,
 ) -> StrandedWork:
@@ -218,8 +219,11 @@ async def save_wip_to_task_branch(
     checkout fenced, and owner recovery's ``aq/preserved/<row>`` snapshot is
     what remains for the case that cannot fast-forward.
 
-    The caller must have stopped the writer first; committing under a live
-    agent races its next edit.  Never raises.
+    ``repository_url`` confines the save to that authorized repository: a
+    checkout whose ``origin`` names another one is ``push_failed`` before
+    anything is committed or pushed.  The caller must have stopped the
+    writer first; committing under a live agent races its next edit.  Never
+    raises.
     """
     branch = branch.removeprefix("refs/heads/")
     if not workspace or not branch:
@@ -234,6 +238,14 @@ async def save_wip_to_task_branch(
                 branch=branch,
                 error=f"checkout is on {current or 'an unknown ref'}, not {branch}",
             )
+        remote = await git.als_remote_ref(workspace, branch, repository_url=repository_url)
+        if remote.state is RemoteRefState.ERROR:
+            return StrandedWork(
+                status="push_failed",
+                branch=branch,
+                error=f"could not read origin/{branch}: {remote.error}",
+            )
+        remote_sha = remote.oid if remote.state is RemoteRefState.PRESENT else None
         committed = False
         if await git.ahas_uncommitted_changes(workspace, strict=True):
             committed = bool(
@@ -246,7 +258,6 @@ async def save_wip_to_task_branch(
                 )
             )
         head = await git.arev_parse(workspace, "HEAD")
-        remote_sha = await git.als_remote_sha(workspace, branch)
         if remote_sha == head:
             return StrandedWork(status="clean", branch=branch, commit=head)
         if remote_sha and not await git.ais_ancestor(workspace, remote_sha, "HEAD"):

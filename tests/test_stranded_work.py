@@ -258,3 +258,27 @@ async def test_wip_save_refuses_a_checkout_on_another_branch(clone, origin, git)
     assert result.status == "push_failed"
     assert "not aq/task-mine" in result.error
     assert _git(["status", "--porcelain"], cwd=clone) == "?? mine.py"
+
+
+async def test_wip_save_refuses_an_origin_outside_the_authorized_repository(
+    clone, origin, tmp_path, git
+):
+    """The save never pushes to a remote the task's repository binding does not name."""
+    _git(["checkout", "-b", "aq/task-elsewhere"], cwd=clone)
+    _commit(clone, "base.py")
+    _git(["push", "origin", "aq/task-elsewhere"], cwd=clone)
+    tip = _git(["rev-parse", "refs/heads/aq/task-elsewhere"], cwd=origin)
+    pathlib.Path(clone, "mine.py").write_text("mine")
+
+    result = await save_wip_to_task_branch(
+        git,
+        clone,
+        "aq/task-elsewhere",
+        "stopped",
+        repository_url="https://github.com/example/other-repo.git",
+    )
+
+    assert result.status == "push_failed"
+    assert "could not read origin/aq/task-elsewhere" in result.error
+    assert _git(["rev-parse", "refs/heads/aq/task-elsewhere"], cwd=origin) == tip
+    assert _git(["status", "--porcelain"], cwd=clone) == "?? mine.py"
