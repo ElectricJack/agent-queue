@@ -571,13 +571,15 @@ async def test_live_opencode_exhaustion_preserves_work_and_releases_or_holds_tas
     orch.git = mock_git
 
 
-async def test_a_train_writer_on_a_usage_limit_screen_saves_wip_onto_its_own_branch(
-    orch, tmp_path
-):
-    """fresh-rapids-73: a hierarchy/train worker parked on a usage-limit retry
-    screen is stopped, its WIP is committed and fast-forwarded onto its own task
-    branch -- no ``aq/preserved`` snapshot -- and the hand-off names the saved
-    commit and quotes the stopped screen."""
+async def _attach_train_owner(
+    orch, origin: pathlib.Path, work: pathlib.Path, *, session_id: str, workspace_id: str
+) -> None:
+    """Make p-1 a train project whose writer of t0 is *session_id* in *workspace_id*.
+
+    A train writer works on its recorded (fenced) branch: materialized from
+    its origin and held, by its integration owner row, attached to that
+    session and slot.
+    """
     from sqlalchemy import insert
 
     from src.database.tables import (
@@ -587,21 +589,14 @@ async def test_a_train_writer_on_a_usage_limit_screen_saves_wip_onto_its_own_bra
     )
     from src.models import RepoConfig
 
-    session, workspace, origin = await _launch_on_codex(
-        orch, git_root=tmp_path / "git", harness="opencode-zen"
-    )
-    committed = _do_some_work(workspace)
     await orch.db.create_repo(
         RepoConfig(id="r-1", project_id="p-1", source_type=RepoSourceType.LINK, url=str(origin))
     )
     await orch.db.update_project(
         "p-1", hierarchical_integration_mode="train", integration_repository_id="r-1"
     )
-    # A train writer works on its recorded (fenced) branch: materialized from
-    # its origin and held, by its integration owner row, attached to this
-    # session and slot.
     await orch.db.update_task("t0", repo_id="r-1", branch_name="aq/t0")
-    base = _git(["rev-parse", "HEAD~1"], workspace)
+    base = _git(["rev-parse", "main"], work)
     async with orch.db.immediate() as conn:
         await conn.execute(
             insert(task_branch_origins).values(
@@ -620,10 +615,24 @@ async def test_a_train_writer_on_a_usage_limit_screen_saves_wip_onto_its_own_bra
             insert(integration_branch_owners).values(
                 id="owner-t0", repository_id="r-1", ref="aq/t0", owner_id="t0",
                 owner_role="worker", fence_token=1, handoff_state="attached",
-                session_id=session.id, workspace_id="ws-p-1",
+                session_id=session_id, workspace_id=workspace_id,
                 created_at=time.time(), updated_at=time.time(),
             )
         )
+
+
+async def test_a_train_writer_on_a_usage_limit_screen_saves_wip_onto_its_own_branch(
+    orch, tmp_path
+):
+    """fresh-rapids-73: a hierarchy/train worker parked on a usage-limit retry
+    screen is stopped, its WIP is committed and fast-forwarded onto its own task
+    branch -- no ``aq/preserved`` snapshot -- and the hand-off names the saved
+    commit and quotes the stopped screen."""
+    session, workspace, origin = await _launch_on_codex(
+        orch, git_root=tmp_path / "git", harness="opencode-zen"
+    )
+    committed = _do_some_work(workspace)
+    await _attach_train_owner(orch, origin, workspace, session_id=session.id, workspace_id="ws-p-1")
     mock_git, orch.git = orch.git, GitManager()
     events: list[dict] = []
     orch.bus.subscribe(inflight.HANDOFF_EVENT, events.append)
@@ -935,6 +944,61 @@ async def test_open_pool_claim_on_opencode_exhaustion_is_preserved_then_released
 
     measurement = await orch._measure_pools()
     assert measurement.bounds[PoolKey("standard-high-codex")] == (0, 0)
+    orch.git = mock_git
+
+
+async def test_a_pool_train_writer_on_a_usage_limit_screen_hands_its_owner_back(
+    orch, tmp_path
+):
+    """fresh-rapids-73, the pool half: an attached integration owner retains a
+    pool claim until it is handed back.  Once the WIP is on the task branch the
+    checkout is clean and pushed -- the pool handoff's proof -- so the stop hands
+    the owner back at once, and the task is released with its hand-off note
+    instead of waiting for owner recovery."""
+    from sqlalchemy import select
+
+    from src.database.tables import integration_branch_owners
+
+    orch.harness_registry.upsert(Harness(id="opencode-zen", name="Zen", command="opencode"))
+    await orch.db.update_profile(
+        "standard-high-codex", lifecycle="pool", max_active=2, harness="opencode-zen"
+    )
+    row = await _claimed_pool_session(orch, tmp_path, "t0", 1)
+    await orch.db.update_session(row.id, harness="opencode-zen")
+    origin, work = _make_repo(tmp_path / "git", work=pathlib.Path(row.work_dir))
+    committed = _do_some_work(work)
+    await _attach_train_owner(orch, origin, work, session_id=row.id, workspace_id="pool-ws-1")
+    mock_git, orch.git = orch.git, GitManager()
+    events: list[dict] = []
+    orch.bus.subscribe(inflight.HANDOFF_EVENT, events.append)
+    _fake(orch).feed_output(row.name, OPENCODE_LIMIT_PANE)
+
+    await orch.session_reconciler.tick()
+
+    tip = _git(["rev-parse", "refs/heads/aq/t0"], origin)
+    assert _git(["log", "-1", "--format=%s", tip], origin).startswith("WIP saved by AQ: ")
+    assert _git(["merge-base", "--is-ancestor", committed, tip], origin) == ""
+    refs = _git(["for-each-ref", "--format=%(refname)"], origin).splitlines()
+    assert not [ref for ref in refs if "preserved" in ref]
+    async with orch.db._engine.connect() as conn:
+        owner = (
+            await conn.execute(
+                select(integration_branch_owners).where(integration_branch_owners.c.id == "owner-t0")
+            )
+        ).mappings().one()
+    assert owner["handoff_state"] != "attached" and owner["session_id"] is None
+    task = await orch.db.get_task("t0")
+    assert task.status == TaskStatus.READY and task.assigned_agent_id is None
+    assert task.retry_count == 0 and task.branch_name == "aq/t0"
+    stopped = await orch.db.get_session(row.id)
+    assert stopped.state == "stopped" and stopped.task_id is None
+    assert await orch.db.get_workspace_for_task("t0") is None
+    handoff = await orch.db.get_task_meta("t0", inflight.HANDOFF_META)
+    assert handoff["checkpoint"] == "pushed" and handoff["head"] == tip
+    assert handoff["screen_tail"] == OPENCODE_LIMIT_PANE
+    assert [(e["task_id"], e["head"]) for e in events] == [("t0", tip)]
+    resume = await orch.db.get_task_meta("t0", "failover_resume_checkpoint")
+    assert resume["sha"] == tip and resume["branch"] == "aq/t0"
     orch.git = mock_git
 
 

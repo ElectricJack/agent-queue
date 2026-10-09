@@ -1483,6 +1483,8 @@ class SessionReconciler:
             context, resume_after, meta = inflight.CONTEXT_UNAVAILABLE, None, {}
 
         if pool:
+            if checkpoint.status in ("pushed", "clean"):
+                await self._hand_back_pool_integration_owner(task, reason=context)
             if pause:
                 await orch._terminate_pool_session(
                     row,
@@ -1544,6 +1546,28 @@ class SessionReconciler:
             f"paused until {resume_after:.0f}" if pause else "back in the queue for re-routing",
         )
         return True
+
+    async def _hand_back_pool_integration_owner(self, task, *, reason: str) -> None:
+        """Release a stopped pool writer's train/hierarchy owner before its teardown.
+
+        An attached integration owner retains a pool claim through
+        ``terminate_pool_session``, leaving the task to owner recovery.  The
+        checkpoint just left the checkout clean and on ``origin`` -- the pool
+        handoff's proof -- so hand the owner back now, as a failed claim
+        preparation does; the teardown then releases the claim.  Refused or
+        unmanaged, nothing changes and the claim stays retained.
+        """
+        release = getattr(self.orchestrator, "arelease_integration_writer_for_retry", None)
+        if release is None:
+            return
+        try:
+            await release(task, reason=reason, pool=True)
+        except Exception:
+            logger.warning(
+                "Task %s: integration owner hand-back after provider failover failed",
+                task.id,
+                exc_info=True,
+            )
 
     async def _record_exit_incident(
         self,
