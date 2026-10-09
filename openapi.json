@@ -53034,8 +53034,8 @@
           "method": {
             "type": "string",
             "title": "Method",
-            "description": "Merge strategy (default: squash).",
-            "default": "squash"
+            "description": "Merge strategy (default: merge).",
+            "default": "merge"
           },
           "force": {
             "type": "boolean",
