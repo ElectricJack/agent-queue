@@ -9584,6 +9584,12 @@
     },
     "src/commands/project_onboarding_commands.py::ProjectOnboardingCommandsMixin._execute_onboard_project": {
       "reason": "Onboarding command adapter injects integration_app_verify as the repository access verifier before first binding and initial publication. Delegates to the existing onboarding saga; adds no storage, delivery state or publication authority."
+    },
+    "src/policy_profiles/service.py::validate_payload": {
+      "reason": "Portable policy validation adapter: checks a promotion-flow draft against the existing src.integration.promotion_steps FlowSchema with a read-only JSON Schema pass, beside profile, playbook, routing and formula validation. Adds no storage, delivery, promotion or trust authority."
+    },
+    "src/policy_profiles/service.py::PolicyFiles.read_local": {
+      "reason": "Portable policy export reads the workspace .github/agent-queue-integration.json CI trust projection and the copied ci-checks policy as typed settings beside other vault policy files. Read-only; never writes integration state, publishes refs or changes trust."
     }
   },
   "shared_state": {

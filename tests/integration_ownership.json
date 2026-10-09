@@ -8513,6 +8513,12 @@
     },
     "src/commands/project_onboarding_commands.py::ProjectOnboardingCommandsMixin._execute_onboard_project": {
       "reason": "Onboarding command adapter injects integration_app_verify as the repository access verifier before first binding and initial publication. Delegates to the existing onboarding saga; adds no storage, delivery state or publication authority."
+    },
+    "src/policy_profiles/service.py::validate_payload": {
+      "reason": "Portable policy validation adapter: checks a promotion-flow draft against the existing src.integration.promotion_steps FlowSchema with a read-only JSON Schema pass, beside profile, playbook, routing and formula validation. Adds no storage, delivery, promotion or trust authority."
+    },
+    "src/policy_profiles/service.py::PolicyFiles.read_local": {
+      "reason": "Portable policy export reads the workspace .github/agent-queue-integration.json CI trust projection and the copied ci-checks policy as typed settings beside other vault policy files. Read-only; never writes integration state, publishes refs or changes trust."
     }
   },
   "exclusions": {
@@ -15767,7 +15773,12 @@
     "src/commands/authorization.py::denial_result": "Generic capability refusal payload with no integration state or authority.",
     "src/commands/principal.py::_principal_var": "Generic request principal context storage; integration dispatch and object scope checks are charged independently.",
     "src/routing/filing.py::routing_choice_refusal": "Generic task filing provider/profile choice policy; no integration delivery or Git authority.",
-    "src/routing/filing.py::without_inert_choices": "Generic task filing argument normalization; no integration delivery or Git authority."
+    "src/routing/filing.py::without_inert_choices": "Generic task filing argument normalization; no integration delivery or Git authority.",
+    "src/policy_profiles/models.py::PAYLOAD": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/profiles/parser.py::parse_frontmatter": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/profiles/parser.py::parse_profile": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/routing/policy.py::parse_policy": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/formulas.py::parse_formula": "Generic dependency; integration-specific definitions in this file are charged independently."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",
