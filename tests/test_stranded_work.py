@@ -282,3 +282,37 @@ async def test_wip_save_refuses_an_origin_outside_the_authorized_repository(
     assert "could not read origin/aq/task-elsewhere" in result.error
     assert _git(["rev-parse", "refs/heads/aq/task-elsewhere"], cwd=origin) == tip
     assert _git(["status", "--porcelain"], cwd=clone) == "?? mine.py"
+
+
+@pytest.mark.parametrize("rewound", [False, True])
+async def test_the_next_worker_resumes_from_the_branch_while_it_holds_the_saved_wip(
+    clone, origin, git, rewound
+):
+    """A rewound branch is someone else's decision: start from the filing base."""
+    from types import SimpleNamespace
+
+    from src.orchestrator.workspace import WorkspaceMixin
+
+    _git(["checkout", "-b", "aq/task-resume"], cwd=clone)
+    base = _commit(clone, "base.py")
+    _git(["push", "origin", "aq/task-resume"], cwd=clone)
+    pathlib.Path(clone, "wip.py").write_text("wip")
+    saved = await save_wip_to_task_branch(git, clone, "aq/task-resume", "usage exhausted")
+    assert saved.status == "pushed"
+    if rewound:
+        _git(["push", "--force", "origin", f"{base}:refs/heads/aq/task-resume"], cwd=clone)
+        expected = base
+    else:
+        expected = _commit(clone, "later.py")
+        _git(["push", "origin", "aq/task-resume"], cwd=clone)
+    _git(["reset", "--hard", base], cwd=clone)
+
+    start = await WorkspaceMixin._resume_point_start(
+        SimpleNamespace(git=git),
+        clone,
+        {"base_sha": base, "resume_point": {"sha": saved.commit}},
+        SimpleNamespace(target=SimpleNamespace(branch="refs/heads/aq/task-resume")),
+        repository_url=origin,
+    )
+
+    assert start == expected

@@ -629,8 +629,12 @@ async def test_a_train_writer_on_a_usage_limit_screen_saves_wip_onto_its_own_bra
     orch.bus.subscribe(inflight.HANDOFF_EVENT, events.append)
 
     _fake(orch).feed_output(session.name, OPENCODE_LIMIT_PANE)
-    await orch.session_reconciler.tick(now=time.time())
+    now = time.time()
+    await orch.session_reconciler.tick(now=now)
 
+    # The provider is out until the parsed reset, so routing skips it.
+    assert orch.provider_availability.effective_state("opencode-zen") == EXHAUSTED
+    assert orch.provider_availability.row("opencode-zen").until == pytest.approx(now + 54120)
     tip = _git(["rev-parse", "refs/heads/aq/t0"], origin)
     subject = _git(["log", "-1", "--format=%s", tip], origin)
     assert subject.startswith("WIP saved by AQ: usage-limit screen on a stalled session")

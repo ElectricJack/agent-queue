@@ -1756,14 +1756,21 @@ class WorkspaceMixin:
             and owner.get("owner_id") == task.id
         ):
             # The next worker continues from the saved (or already pushed)
-            # head instead of restarting at the branch's filing base.
+            # head instead of restarting at the branch's filing base.  The
+            # writer is already stopped: a missing resume point only costs
+            # the next worker its start, never this handoff.
             from src.orchestrator.stranded_work import record_resume_point
 
-            head = (
-                saved.commit if not probed
-                else await self.git.arev_parse(workspace.workspace_path, "HEAD")
-            )
-            await record_resume_point(self.db, task.id, repository.id, str(owner["ref"]), head)
+            try:
+                head = (
+                    saved.commit if not probed
+                    else await self.git.arev_parse(workspace.workspace_path, "HEAD")
+                )
+                await record_resume_point(
+                    self.db, task.id, repository.id, str(owner["ref"]), head
+                )
+            except Exception:
+                logger.warning("Task %s: resume point not recorded", task.id, exc_info=True)
 
         try:
             from src.orchestrator.workspace_attachments import (

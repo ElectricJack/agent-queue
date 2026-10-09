@@ -292,7 +292,9 @@ async def test_dirty_slot_is_not_detached_or_released(
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
 
 
-def _saving_git(events: list[str], monkeypatch, *, status: str = "pushed"):
+def _saving_git(
+    events: list[str], monkeypatch, *, status: str = "pushed", commit: str | None = None
+):
     """A dirty checkout that becomes clean and pushed once AQ saves its WIP."""
     saved: list[tuple] = []
     current_branch, dirty_run = _clean_git(events, dirty=True)
@@ -306,7 +308,7 @@ def _saving_git(events: list[str], monkeypatch, *, status: str = "pushed"):
 
         events.append("save")
         saved.append((workspace, branch, reason))
-        return StrandedWork(status=status, branch=branch, error="diverged")
+        return StrandedWork(status=status, branch=branch, commit=commit, error="diverged")
 
     from src.orchestrator import stranded_work
 
@@ -345,6 +347,66 @@ async def test_save_wip_handoff_stops_the_writer_before_saving_then_detaches(
     assert saved == [(str(tmp_path / "slot"), "aq/parent", "usage exhausted on opencode")]
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id is None
     assert (await orchestrator.db.get_session("session")).state == "stopped"
+
+
+@pytest.mark.parametrize("origin_recorded", [True, False])
+async def test_saved_wip_handoff_records_where_the_next_worker_resumes(
+    orchestrator_factory, tmp_path, monkeypatch, origin_recorded
+):
+    """The next exact-origin preparation continues from the saved commit,
+    pinned to the canonical origin; with no origin there is nothing to pin."""
+    from src.orchestrator.stranded_work import RESUME_POINT_META
+
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    if origin_recorded:
+        async with orchestrator.db.immediate() as conn:
+            await conn.execute(
+                insert(task_branch_origins).values(
+                    id="origin", task_id="task", repository_id="repo",
+                    branch_name="aq/parent", base_sha="b" * 40, creation_generation=0,
+                    reserved=True, materialized=True,
+                    created_at=time.time(), materialized_at=time.time(),
+                )
+            )
+    events: list[str] = []
+    monkeypatch.setattr(
+        orchestrator.session_providers, "create", lambda *_args: _provider(events)
+    )
+    current_branch, run, _saved = _saving_git(events, monkeypatch, commit="c" * 40)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    assert await orchestrator.aconfirm_integration_owner_handoff(
+        _owner(), save_wip_reason="stopped by aq task stop"
+    ) is True
+
+    resume = await orchestrator.db.get_task_meta("task", RESUME_POINT_META)
+    if origin_recorded:
+        assert resume == {
+            "repository_id": "repo", "branch": "aq/parent",
+            "base_sha": "b" * 40, "sha": "c" * 40,
+        }
+    else:
+        assert resume is None
+
+
+async def test_an_ordinary_owner_handoff_records_no_resume_point(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """Only a stop that saves WIP moves the next worker's start point."""
+    from src.orchestrator.stranded_work import RESUME_POINT_META
+
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    events: list[str] = []
+    monkeypatch.setattr(
+        orchestrator.session_providers, "create", lambda *_args: _provider(events)
+    )
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    assert await orchestrator.aconfirm_integration_owner_handoff(_owner()) is True
+    assert await orchestrator.db.get_task_meta("task", RESUME_POINT_META) is None
 
 
 async def test_unsaved_wip_keeps_the_fence_and_records_the_writer_stopped(

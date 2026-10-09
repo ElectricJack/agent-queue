@@ -16013,12 +16013,15 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:b8931e129bb973699d31926136333d1dced3f3bf014480af6631aae027183b72",
+      "digest": "sha256:1ac710e93b1cc076786e9d5f108abcdbc7908898b631f2757ab86d40b0aa1a47",
       "imports": [
         "src.git.manager",
-        "src.orchestrator.stranded_work"
+        "src.orchestrator.stranded_work",
+        "src.orchestrator.workspace"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "``preserve_unpushed_work`` — the push-before-you-close rule."
     },
     "tests/test_streams_api.py": {
