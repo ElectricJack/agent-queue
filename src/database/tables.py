@@ -3103,6 +3103,67 @@ task_branch_origins = Table(
     ),
 )
 
+#: The audit row every abandoned branch leaves behind (no-dangling-branches
+#: item 3).  The name and the sha are written *before* anything is deleted, so
+#: a branch that was never merged is still identifiable — and restorable from
+#: the bundle the same step verifies — after the ref is gone.  The row carries
+#: no foreign key to ``tasks``: an abandoned task may be deleted outright, and
+#: the record of what its branch was must outlive it.
+branch_deletion_audit = Table(
+    "branch_deletion_audit",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=True),
+    Column("task_id", Text, nullable=True),
+    Column("branch", Text, nullable=False),
+    Column("head_sha", Text, nullable=False),
+    # Why the branch went: obsolete_close | cancel | fail_close | supersede |
+    # abort | delete.
+    Column("reason", Text, nullable=False),
+    # Human explanation carried from the decision that abandoned the work.
+    Column("detail", Text, nullable=True),
+    # What became of the recorded ref: pending (recorded, deletion not yet
+    # confirmed) | deleted | held | failed | moved.  A ``pending`` row is the
+    # durable intent: a daemon that dies between recording and deleting leaves
+    # one behind, and the drain retries it.
+    Column("outcome", Text, nullable=False),
+    # Why a held/failed/moved row was not deleted, and the bundle holding the
+    # tip when it was not reachable from the default branch.
+    Column("detail_reason", Text, nullable=True),
+    Column("backup_path", Text, nullable=True),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("next_attempt_at", Float, nullable=True),
+    Column("recorded_at", Float, nullable=False),
+    Column("deleted_at", Float, nullable=True),
+    CheckConstraint(
+        "reason IN ('obsolete_close', 'cancel', 'fail_close', 'supersede', 'abort', 'delete')",
+        name="ck_branch_deletion_audit_reason",
+    ),
+    CheckConstraint(
+        "outcome IN ('pending', 'deleted', 'held', 'failed', 'moved')",
+        name="ck_branch_deletion_audit_outcome",
+    ),
+    CheckConstraint(
+        "attempts >= 0",
+        name="ck_branch_deletion_audit_attempts",
+    ),
+    CheckConstraint(
+        "length(head_sha) = 40 AND head_sha = lower(head_sha)",
+        name="ck_branch_deletion_audit_head_sha",
+    ),
+    Index(
+        "ix_branch_deletion_audit_branch",
+        "project_id",
+        "branch",
+    ),
+    Index(
+        "ix_branch_deletion_audit_due",
+        "next_attempt_at",
+        postgresql_where=text("outcome = 'pending'"),
+    ),
+)
+
 integration_branch_owners = Table(
     "integration_branch_owners",
     metadata,

@@ -59,6 +59,7 @@ from src.database.tables import (
     task_metadata,
     tasks,
 )
+from src.integration.branch_abandon import OBSOLETE_CLOSE
 from src.integration.finished_owners import stop_confirmer_for
 from src.integration.owner_recovery import (
     COLLECTOR_ROLE,
@@ -101,6 +102,10 @@ _CLEARED_KEYS = (
 
 #: ``(owner_row_id, principal) -> outcome``: the release-owner proof for one row.
 ReleaseOwner = Callable[[str, str], Awaitable[RecoveryOutcome]]
+
+#: ``(task_id, *, reason, detail, principal) -> summary``: delete the branches
+#: an obsolete task abandoned, after recording each name and sha.
+AbandonBranches = Callable[..., Awaitable[dict[str, Any]]]
 
 
 class ObsoleteCloseRefused(Exception):
@@ -154,11 +159,13 @@ class ObsoleteClose:
         release_owner: ReleaseOwner | None,
         git_manager=None,
         clock: Callable[[], float] = time.time,
+        branch_abandon: AbandonBranches | None = None,
     ) -> None:
         self.db = db
         self.release_owner = release_owner
         self.git = git_manager
         self.clock = clock
+        self.branch_abandon = branch_abandon
 
     # -- the close --------------------------------------------------------------
 
@@ -403,6 +410,11 @@ class ObsoleteClose:
                     )
                 )
 
+        branches = None
+        if self.branch_abandon is not None:
+            branches = await self._abandon_branches(task_id, principal=principal)
+            pending.extend(_pending_branches(branches))
+
         pr_cleanup = None
         if task.pr_url:
             from src.integration.pr_cleanup import SettledTaskPullRequestClosure
@@ -438,10 +450,36 @@ class ObsoleteClose:
             "dropped_batches": dropped,
             "pending": pending,
         }
+        if branches is not None:
+            summary["branches"] = branches
         if pr_cleanup is not None:
             summary["pr_cleanup"] = pr_cleanup
         await self._record_cleanup(task_id, task.project_id, summary)
         return summary
+
+    async def _abandon_branches(self, task_id: str, *, principal: str) -> dict[str, Any]:
+        """Delete the branches this task abandoned, and report what happened.
+
+        A branch is never removed while something live owns it, and a refusal
+        or an unconfirmed delete becomes a pending entry so the lifecycle sweep
+        tries again.  A failure here must not mask the owner releases that
+        already succeeded, so it is caught and reported rather than raised.
+        """
+        assert self.branch_abandon is not None
+        try:
+            return await self.branch_abandon(
+                task_id,
+                reason=OBSOLETE_CLOSE,
+                detail="closed as obsolete",
+                principal=principal,
+            )
+        except Exception as exc:  # noqa: BLE001 - cleanup never fails the close
+            logger.warning("Abandoning the branches of %s failed", task_id, exc_info=True)
+            return {
+                "state": "pending",
+                "branches": [],
+                "reason": f"branch abandon failed: {exc or type(exc).__name__}",
+            }
 
     async def retry_pending(self, *, principal: str = "lifecycle-sweep") -> list[dict]:
         """Re-run :meth:`cleanup` for every obsolete task whose cleanup is pending."""
@@ -512,6 +550,40 @@ class ObsoleteClose:
                     payload=json.dumps(summary, sort_keys=True, default=str),
                     conn=conn,
                 )
+
+
+def _pending_branches(summary: dict[str, Any]) -> list[dict]:
+    """The branches an obsolete task could not delete yet, as pending entries.
+
+    A held branch is the live owner winning; an unconfirmed delete is transport
+    trouble.  Either way the lifecycle sweep retries, so the obsolete close does
+    not settle while a branch it abandoned is still on origin.
+    """
+    pending = []
+    for entry in summary.get("branches") or []:
+        outcome = entry.get("outcome")
+        if outcome in {"deleted", "absent"}:
+            continue
+        pending.append(
+            {
+                "kind": "branch",
+                "branch": entry.get("branch"),
+                "outcome": outcome,
+                "reason": f"branch_abandon_{outcome}",
+                "detail": entry.get("detail") or summary.get("reason") or "",
+            }
+        )
+    if not pending and summary.get("state") == "pending":
+        pending.append(
+            {
+                "kind": "branch",
+                "branch": None,
+                "outcome": "pending",
+                "reason": "branch_abandon_pending",
+                "detail": summary.get("reason") or "",
+            }
+        )
+    return pending
 
 
 def _pending_owner(row: dict, reason: str, detail: str) -> dict:

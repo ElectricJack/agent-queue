@@ -320,7 +320,11 @@ class IntegrationCommandsMixin:
         if refusal:
             return _failure("unauthorized", refusal)
         try:
-            result = await TrainControls(self.db).abort_batch(
+            result = await TrainControls(
+                self.db,
+                git=self.orchestrator.git,
+                data_dir=self.config.data_dir,
+            ).abort_batch(
                 request.batch_id, dry_run=request.dry_run, operator_id=operator,
                 reason=request.reason,
             )

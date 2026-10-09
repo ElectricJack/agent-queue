@@ -218,13 +218,26 @@ class LifecycleMixin:
     async def retry_obsolete_cleanup(self) -> list[dict]:
         """Retry the cleanup every obsolete close still owes (``aq task close --obsolete``).
 
-        A publishing batch, an open development repair or a refused owner proof
-        leaves an obsolete task's cleanup pending; this finishes it once the
-        holder lets go.
+        A publishing batch, an open development repair, a refused owner proof or
+        a branch an owner still holds leaves an obsolete task's cleanup pending;
+        this finishes it once the holder lets go.
         """
         from src.sessions.obsolete import ObsoleteClose, obsolete_owner_release_for
 
         service = ObsoleteClose(
             self.db, release_owner=obsolete_owner_release_for(self), git_manager=self.git,
+            branch_abandon=self._abandon_branches,
         )
         return await service.retry_pending()
+
+    def _abandon_branches(self, task_id: str, *, reason: str, detail: str, principal: str):
+        """The daemon's abandon service, or a no-op report when it is unwired."""
+        from src.integration.branch_abandon import BranchAbandonService
+
+        service = self.branch_abandon_service
+        if service is None:
+            service = BranchAbandonService(self.db, data_dir=self.config.data_dir,
+                                           git_manager=self.git)
+        return service.abandon_task(
+            task_id, reason=reason, detail=detail, principal=principal
+        )
