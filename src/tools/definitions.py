@@ -9,6 +9,9 @@ from __future__ import annotations
 # Which category each tool belongs to.
 # Tools not listed here are "core" (always loaded).
 _TOOL_CATEGORIES: dict[str, str] = {
+    "policy_export": "policy",
+    "policy_diff": "policy",
+    "policy_apply": "policy",
     "decision_record": "decision",
     "decision_list": "decision",
     "object_loop_start": "task",
@@ -752,6 +755,58 @@ _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
 
 
 _ALL_TOOL_DEFINITIONS = [
+    {
+        "name": "policy_export",
+        "description": "Preview allow-listed project policy; write a directory/zip only with the preview checksum.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "name": {"type": "string"},
+                "path": {"type": "string"},
+                "expected_checksum": {"type": "string"},
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "policy_diff",
+        "description": "Preview every portable policy item, placement, placeholders and overwrite diff.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "path": {"type": "string"},
+                "bundle": {"type": "object"},
+                "archive": {"type": "string"},
+                "values": {"type": "object"},
+                "selections": {"type": "object"},
+                "only": {"type": "array", "items": {"type": "string"}},
+                "skip": {"type": "array", "items": {"type": "string"}},
+                "no_overwrite": {"type": "boolean"},
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "policy_apply",
+        "description": "Copy selected policy with explicit placement/overwrite choices; playbooks await review, flows remain drafts.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "path": {"type": "string"},
+                "bundle": {"type": "object"},
+                "archive": {"type": "string"},
+                "values": {"type": "object"},
+                "selections": {"type": "object"},
+                "only": {"type": "array", "items": {"type": "string"}},
+                "skip": {"type": "array", "items": {"type": "string"}},
+                "no_overwrite": {"type": "boolean"},
+            },
+            "required": ["project_id"],
+        },
+    },
     {
         "name": "list_projects",
         "description": "List all projects in the system.",

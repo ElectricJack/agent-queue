@@ -8796,6 +8796,115 @@
       }
     },
     {
+      "path": "aq policy apply",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.policy.policy_apply",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project",
+          "path"
+        ],
+        "optional": [
+          "--no-overwrite",
+          "--set",
+          "--scope",
+          "--skip",
+          "--only",
+          "--yes",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq policy diff",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.policy.policy_diff",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project",
+          "path"
+        ],
+        "optional": [
+          "--no-overwrite",
+          "--set",
+          "--scope",
+          "--skip",
+          "--only",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq policy export",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.policy.policy_export",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project",
+          "--out"
+        ],
+        "optional": [
+          "--name",
+          "--yes",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq pool provider apply",
       "registration": "generated",
       "owner_kind": "core",
@@ -9236,20 +9345,18 @@
     },
     {
       "path": "aq project create",
-      "registration": "generated",
+      "registration": "handwritten",
       "owner_kind": "core",
       "owner": "agent-queue",
       "backend_command": "create_project",
-      "callback": "src.cli.auto_commands.callback",
+      "callback": "src.cli.projects.project_create",
       "support": "supported",
       "alias_for": null,
       "deprecation": null,
       "unsupported_reason": null,
-      "evidence_level": "dispatch",
+      "evidence_level": "registration",
       "evidence": [
         "click-registration",
-        "json-schema",
-        "mock-dispatch",
         "core-handler"
       ],
       "acceptance_status": "working",
@@ -9261,6 +9368,9 @@
           "--name"
         ],
         "optional": [
+          "--from-policy",
+          "--repo-url",
+          "--default-branch",
           "--create-repo",
           "--private",
           "--root-id",
@@ -9268,8 +9378,6 @@
           "--request-id",
           "--credit-weight",
           "--max-concurrent-agents",
-          "--repo-url",
-          "--default-branch",
           "--json",
           "--brief",
           "--save-output",

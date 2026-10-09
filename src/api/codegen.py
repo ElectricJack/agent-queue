@@ -173,6 +173,9 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "archive_task",
             "delete_project",
             "provider_allocation_apply",
+            "policy_export",
+            "policy_diff",
+            "policy_apply",
         }
     )
     | DASHBOARD_STATE_COMMANDS

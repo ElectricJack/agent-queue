@@ -1,6 +1,120 @@
 {
   "explicit": [
     {
+      "name": "policy_export",
+      "description": "Preview allow-listed project policy; write a directory/zip only with the preview checksum.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "expected_checksum": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "policy_diff",
+      "description": "Preview every portable policy item, placement, placeholders and overwrite diff.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "bundle": {
+            "type": "object"
+          },
+          "archive": {
+            "type": "string"
+          },
+          "values": {
+            "type": "object"
+          },
+          "selections": {
+            "type": "object"
+          },
+          "only": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "skip": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "no_overwrite": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "policy_apply",
+      "description": "Copy selected policy with explicit placement/overwrite choices; playbooks await review, flows remain drafts.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "bundle": {
+            "type": "object"
+          },
+          "archive": {
+            "type": "string"
+          },
+          "values": {
+            "type": "object"
+          },
+          "selections": {
+            "type": "object"
+          },
+          "only": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "skip": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "no_overwrite": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
+    },
+    {
       "name": "list_projects",
       "description": "List all projects in the system.",
       "input_schema": {
@@ -16305,6 +16419,7 @@
     }
   },
   "categories": {
+    "policy": "Portable project policy profiles: export, diff and selective import",
     "cron": "Session-owned recurring prompts: register, inspect and cancel wake-ups.",
     "git": "Branch, commit, push, PR, merge, and remote URL operations for project repositories",
     "project": "Project CRUD, workspace management, project metadata (repo URL, GitHub URL, workspace path)",
@@ -16341,6 +16456,9 @@
     "graph": "Server-side spatial task-graph layout \u2014 synchronous rebuild and tidy jobs"
   },
   "tool_categories": {
+    "policy_export": "policy",
+    "policy_diff": "policy",
+    "policy_apply": "policy",
     "decision_record": "decision",
     "decision_list": "decision",
     "object_loop_start": "task",

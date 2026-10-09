@@ -976,6 +976,13 @@
         "tests/test_vibecop_plugin.py"
       ]
     },
+    "policy-profiles": {
+      "description": "Portable policy archives, selective imports and guarded preview/review flows.",
+      "modules": [
+        "tests/test_cli_policy.py",
+        "tests/test_policy_profiles.py"
+      ]
+    },
     "prime": {
       "description": "aq prime and agent guidance: the prime renderer and sections, hook envelopes and overrides, session and workspace description, structured handoff notes and their byte-bounded wake context, and the prime/handoff/inbox CLI.",
       "modules": [
@@ -3646,6 +3653,20 @@
         "parametrize"
       ],
       "summary": "Contract tests for the ``aq plugin`` CLI layer (api-cli plan 19)."
+    },
+    "tests/test_cli_policy.py": {
+      "areas": [
+        "policy-profiles"
+      ],
+      "default_arm": true,
+      "digest": "sha256:b4af0fda565f00441a1b0ab323bac37939e6972420b1c531d1a604fbbec55e2d",
+      "imports": [
+        "src.cli.app"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Interactive selection, preview writes and project-create policy parity."
     },
     "tests/test_cli_pool_provider.py": {
       "areas": [
@@ -12739,6 +12760,35 @@
         "asyncio"
       ],
       "summary": "Tests for the plugin system: base classes, loader, registry, and DB queries."
+    },
+    "tests/test_policy_profiles.py": {
+      "areas": [
+        "policy-profiles"
+      ],
+      "default_arm": true,
+      "digest": "sha256:60aea7e4d492ad3d7a20810f91a2637d4844c445b84359c0bce46926a05fb09c",
+      "imports": [
+        "src.api",
+        "src.api.app",
+        "src.api.dependencies",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.event_bus",
+        "src.integration.promotion_steps",
+        "src.models",
+        "src.playbooks.definition",
+        "src.policy_profiles.archive",
+        "src.policy_profiles.models",
+        "src.policy_profiles.service",
+        "src.profiles",
+        "src.profiles.parser",
+        "src.profiles.project_override_migration",
+        "src.profiles.sync"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Portable allow-list policy, checked copies and review-preserving command flow."
     },
     "tests/test_pool_admin.py": {
       "areas": [
