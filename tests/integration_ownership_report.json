@@ -7912,6 +7912,9 @@
         735
       ]
     },
+    "src/orchestrator/workspace.py::WorkspaceMixin._operator_handoff_start": {
+      "reason": "Exact-origin operator handoff start under the owner fence; resumes audited progress on the owned task branch through owner recovery without publication."
+    },
     "src/orchestrator/workspace.py::WorkspaceMixin._prepare_exact_origin_workspace": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -8243,6 +8246,9 @@
         1396,
         1488
       ]
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.reset_slot_for_task": {
+      "reason": "Slot preparation resumes owner-recovery snapshots onto the task branch before a stopped writer restarts; merges proven progress, never publishes or resets it."
     },
     "src/playbooks/artifact_diff.py::_rule_rows": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",

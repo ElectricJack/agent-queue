@@ -6841,6 +6841,9 @@
         735
       ]
     },
+    "src/orchestrator/workspace.py::WorkspaceMixin._operator_handoff_start": {
+      "reason": "Exact-origin operator handoff start under the owner fence; resumes audited progress on the owned task branch through owner recovery without publication."
+    },
     "src/orchestrator/workspace.py::WorkspaceMixin._prepare_exact_origin_workspace": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -7172,6 +7175,9 @@
         1396,
         1488
       ]
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.reset_slot_for_task": {
+      "reason": "Slot preparation resumes owner-recovery snapshots onto the task branch before a stopped writer restarts; merges proven progress, never publishes or resets it."
     },
     "src/playbooks/artifact_diff.py::_rule_rows": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -15523,8 +15529,10 @@
     "src/models.py::TaskType": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/models.py::VerificationType": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/models.py::WORKSPACE_MODE_VALUES": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::WORKTREE_SENTINEL_NAME": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/models.py::Workspace": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/models.py::WorkspaceMode": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::worktree_setup_hash": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/notifications/builder.py::build_agent_summary": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/notifications/events.py::AgentQuestionEvent": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/notifications/events.py::ChainStuckEvent": "Generic dependency; integration-specific definitions in this file are charged independently.",
@@ -15552,6 +15560,7 @@
     "src/orchestrator/stranded_work.py::unpushed_close_issues": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/task_checkpoint.py::CHECKPOINT_META": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/task_checkpoint.py::_lock_sentinel_ignored": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/task_checkpoint.py::prepare_checkpoint": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/task_checkpoint.py::restore_checkpoint": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/workspace.py::REQUEUE_INTEGRATION_OWNER_ROLES": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/workspace_attachments.py::AcquisitionFailed": "Generic dependency; integration-specific definitions in this file are charged independently.",

@@ -464,6 +464,9 @@ async def test_hierarchy_non_slot_prep_uses_exact_origin_under_owner_fence(
             calls.append((args, cwd))
             return "c" * 40 if args == ["rev-parse", "HEAD"] else ""
 
+        async def aprepare_child_branch(self, workspace, branch, parent_sha):
+            calls.append((["prepare-child", branch, parent_sha], workspace))
+
     env.orch.git = Git()
 
     async def excluded(_path):
@@ -478,7 +481,9 @@ async def test_hierarchy_non_slot_prep_uses_exact_origin_under_owner_fence(
     )
 
     assert branch == "aq/child"
-    assert (["checkout", "-B", "aq/child", "c" * 40], env.base.workspace_path) in calls
+    # A worker resumes its task branch at the pinned origin, preserving progress.
+    assert (["prepare-child", "aq/child", "c" * 40], env.base.workspace_path) in calls
+    assert not any(args[:2] == ["checkout", "-B"] for args, _cwd in calls)
     assert not any("main" in args for args, _cwd in calls)
 
 
