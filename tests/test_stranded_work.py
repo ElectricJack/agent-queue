@@ -16,7 +16,7 @@ import subprocess
 import pytest
 
 from src.git.manager import GitManager
-from src.orchestrator.stranded_work import preserve_unpushed_work
+from src.orchestrator.stranded_work import preserve_unpushed_work, save_wip_to_task_branch
 
 
 def _git(args: list[str], cwd: str) -> str:
@@ -187,3 +187,74 @@ async def test_missing_workspace_is_unknown_not_clean(tmp_path, git):
     result = await preserve_unpushed_work(git, str(tmp_path / "nope"), "task-8")
     assert result.status == "unknown"
     assert result.at_risk is False
+
+
+async def test_wip_save_commits_and_fast_forwards_the_task_branch(clone, origin, git):
+    """Usage-exhausted handoff: the work lands on the task's own branch, nowhere else."""
+    _git(["checkout", "-b", "aq/task-wip"], cwd=clone)
+    base = _commit(clone, "done.py", "print(0)")
+    _git(["push", "origin", "aq/task-wip"], cwd=clone)
+    _commit(clone, "committed.py", "print(1)")
+    pathlib.Path(clone, "unstaged.py").write_text("print(2)")
+
+    result = await save_wip_to_task_branch(
+        git, clone, "refs/heads/aq/task-wip", "usage exhausted on opencode"
+    )
+
+    assert result.status == "pushed"
+    head = _git(["rev-parse", "HEAD"], cwd=clone)
+    assert result.commit == head
+    assert _git(["rev-parse", "refs/heads/aq/task-wip"], cwd=origin) == head
+    assert _git(["merge-base", "--is-ancestor", base, head], cwd=clone) == ""
+    assert _git(["log", "-1", "--format=%s", head], cwd=clone).startswith(
+        "WIP saved by AQ: usage exhausted on opencode"
+    )
+    assert _git(["status", "--porcelain"], cwd=clone) == ""
+    # Fast-forward: no -wip or preserved name was needed.
+    refs = _git(["for-each-ref", "--format=%(refname)"], cwd=origin).split()
+    assert refs == ["refs/heads/aq/task-wip", "refs/heads/main"]
+
+
+async def test_wip_save_of_a_clean_pushed_checkout_is_clean(clone, origin, git):
+    _git(["checkout", "-b", "aq/task-clean"], cwd=clone)
+    sha = _commit(clone, "done.py")
+    _git(["push", "origin", "aq/task-clean"], cwd=clone)
+
+    result = await save_wip_to_task_branch(git, clone, "aq/task-clean", "stopped")
+
+    assert result.status == "clean"
+    assert result.commit == sha
+    assert _git(["rev-parse", "HEAD"], cwd=clone) == sha
+
+
+async def test_wip_save_never_forces_a_diverged_task_branch(clone, origin, tmp_path, git):
+    _git(["checkout", "-b", "aq/task-split"], cwd=clone)
+    _commit(clone, "base.py")
+    _git(["push", "origin", "aq/task-split"], cwd=clone)
+    other = str(tmp_path / "other")
+    _git(["clone", origin, other], cwd=str(tmp_path))
+    _git(["config", "user.name", "Test"], cwd=other)
+    _git(["config", "user.email", "t@t.com"], cwd=other)
+    _git(["checkout", "aq/task-split"], cwd=other)
+    theirs = _commit(other, "theirs.py")
+    _git(["push", "origin", "aq/task-split"], cwd=other)
+    pathlib.Path(clone, "mine.py").write_text("mine")
+
+    result = await save_wip_to_task_branch(git, clone, "aq/task-split", "stopped")
+
+    assert result.status == "push_failed"
+    assert "does not descend" in result.error
+    assert _git(["rev-parse", "refs/heads/aq/task-split"], cwd=origin) == theirs
+    # The work is committed locally, for owner recovery to preserve.
+    assert _git(["status", "--porcelain"], cwd=clone) == ""
+
+
+async def test_wip_save_refuses_a_checkout_on_another_branch(clone, origin, git):
+    _git(["checkout", "-b", "aq/someone-else"], cwd=clone)
+    pathlib.Path(clone, "mine.py").write_text("mine")
+
+    result = await save_wip_to_task_branch(git, clone, "aq/task-mine", "stopped")
+
+    assert result.status == "push_failed"
+    assert "not aq/task-mine" in result.error
+    assert _git(["status", "--porcelain"], cwd=clone) == "?? mine.py"
