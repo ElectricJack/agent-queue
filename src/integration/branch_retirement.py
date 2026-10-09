@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import time
 import uuid
 from pathlib import Path
@@ -14,6 +15,7 @@ from sqlalchemy.dialects.postgresql import insert
 from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
 from src.database.tables import (
     branch_deletion_audit,
+    archived_tasks,
     branch_retirements as retirements,
     integration_batches,
     integration_branch_owners,
@@ -22,6 +24,7 @@ from src.database.tables import (
     sessions,
     task_branch_origins,
     task_completion_records,
+    task_metadata,
     tasks,
     workspaces,
 )
@@ -115,6 +118,81 @@ class BranchRetirementService(BranchDiscardService):
     def __init__(self, db, *, candidate_store=None, **kwargs):
         super().__init__(db, **kwargs)
         self.candidate_store = candidate_store
+
+    async def reconcile_project(self, project_id, *, now=None, limit=100):
+        """Recover missed terminal decisions, then drain this project's intents.
+
+        Ordinary completed work still needs Git landing proof; temporary pauses
+        and retries never authorize disposal. The retirement guard rechecks a
+        recovered decision's generation and every live reference before deletion.
+        """
+        now = self.clock() if now is None else now
+        async with self.db.immediate() as conn:
+            repository_ids = list((await conn.execute(select(repos.c.id).where(
+                repos.c.project_id == project_id,
+            ))).scalars())
+            designated = await conn.scalar(select(projects.c.integration_repository_id).where(
+                projects.c.id == project_id,
+            ))
+            for table in (tasks, archived_tasks):
+                latest_id = select(task_completion_records.c.id).where(
+                    task_completion_records.c.task_id == table.c.id,
+                ).order_by(task_completion_records.c.completed_at.desc(),
+                           task_completion_records.c.id.desc()).limit(1).correlate(table)
+                abandoned = select(task_metadata.c.task_id).where(
+                    task_metadata.c.task_id == table.c.id,
+                    task_metadata.c.key == "work_outcome",
+                    task_metadata.c.value == json.dumps("abandoned"),
+                ).exists()
+                terminal = ((table.c.status == "FAILED") | (
+                    table.c.status.in_(("COMPLETED", "BLOCKED")) & (
+                        abandoned | (task_completion_records.c.work_outcome == "abandoned")
+                    )
+                ))
+                if table is archived_tasks:
+                    # Archive itself is the durable retirement decision, even
+                    # when the accepted task had no failing/abandoned close.
+                    terminal = table.c.id.is_not(None)
+                rows = (await conn.execute(select(
+                    table, task_completion_records.c.id.label("completion_id"),
+                ).select_from(table.outerjoin(
+                    task_completion_records,
+                    task_completion_records.c.id == latest_id.scalar_subquery(),
+                )).where(
+                    table.c.project_id == project_id,
+                    table.c.branch_name.is_not(None), terminal,
+                ))).mappings()
+                for task in rows:
+                    branch = branch_of(task["branch_name"])
+                    if not branch:
+                        continue
+                    repository_id = task["repo_id"] or designated or (
+                        repository_ids[0] if len(repository_ids) == 1 else None
+                    )
+                    if not repository_id:
+                        continue
+                    request_id = ("backstop:" + task["id"] + ":" + task["legacy_completion_id"]
+                                  + ":" + str(task.get("claim_epoch", "archived"))
+                                  + ":" + (task["completion_id"] or "no-close"))
+                    decision = "archived" if table is archived_tasks else "terminal failed/abandoned"
+                    reason = "daily backstop: " + decision + " task " + task["id"]
+                    if table is tasks:
+                        await request_task_retirement_on(
+                            conn, task["id"], request_id=request_id,
+                            reason=reason, now=now,
+                        )
+                    else:
+                        for name in (branch, branch + "-wip"):
+                            await request_branch_retirement_on(
+                                conn, request_id=request_id, project_id=project_id,
+                                repository_id=repository_id, branch=name, task_id=task["id"],
+                                reason=reason, now=now,
+                            )
+            ids = list((await conn.execute(select(retirements.c.id).where(
+                retirements.c.project_id == project_id, retirements.c.state == "pending",
+                retirements.c.next_attempt_at <= now,
+            ).order_by(retirements.c.requested_at, retirements.c.id).limit(limit))).scalars())
+        return [await self.advance(identity, now=now) for identity in ids]
 
     async def discard_origin(self, origin):
         async with self.db.immediate() as conn:

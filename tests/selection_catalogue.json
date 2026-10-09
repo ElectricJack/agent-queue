@@ -3024,14 +3024,21 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:8f3f0a7b95101f306b29fad41e18318f4ee346070e8f6d782d7cf75c9624ada4",
+      "digest": "sha256:2ea50676f18ad351e90271289c226391655b0ab0a375afa61325826c91fcc111",
       "imports": [
+        "src.database",
+        "src.database.tables",
         "src.git.manager",
+        "src.integration",
         "src.integration.branch_sweep",
+        "src.integration.lock",
+        "src.integration.models",
+        "src.models",
         "src.orchestrator"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "The daily branch sweep deletes only refs with exact Git proof."
     },

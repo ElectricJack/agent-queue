@@ -3671,30 +3671,73 @@ class Orchestrator(
         )
 
     async def _run_daily_git_branch_sweep(self, scheduled_date: str | None = None) -> None:
-        """Sweep exact Git-proven refs across registered git-first checkouts."""
+        """Run each project's backstop and deliver its counts to its supervisor."""
         from datetime import UTC, datetime
 
-        from src.integration.branch_sweep import BranchSweepReport, sweep_checkout
+        from functools import partial
+        from types import SimpleNamespace
+
+        from src.git.manager import repository_urls_match
+        from src.integration.branch_sweep import (
+            BranchSweepReport, SweepSafety, _append_backup, record_sweep_date, sweep_checkout,
+        )
         from src.integration.delivery_branches import live_branch_references
+        from src.integration.provenance_migration import ProvenanceMigration
 
         try:
-            async with self.db._engine.connect() as conn:
-                holds = await live_branch_references(conn)
             projects = await self.db.list_projects()
         except Exception:
             self._last_git_branch_sweep_date = None
             logger.exception("Daily Git branch sweep could not read project state")
             return
 
-        reports: list[BranchSweepReport] = []
-        failures: list[str] = []
-        seen_common_dirs: set[str] = set()
-        for project in projects:
+        date = scheduled_date or datetime.now(UTC).date().isoformat()
+        cleanup = getattr(self, "integration_cleanup_service", None)
+        if cleanup is not None:
             try:
+                await cleanup.reconcile(time.time())
+            except Exception:
+                logger.exception("Daily Git sweep could not recover landing cleanup")
+        seen_common_dirs: set[str] = set()
+        reports_delivered = True
+        for project in projects:
+            project_marker = (Path(self.config.data_dir) / "maintenance" / "git-branch-sweeps"
+                              / str(project.id))
+            try:
+                if project_marker.read_text(encoding="ascii").strip() == date:
+                    continue
+            except FileNotFoundError:
+                pass
+            except OSError:
+                logger.warning("Could not read project Git sweep marker %s", project_marker,
+                               exc_info=True)
+            reports: list[BranchSweepReport] = []
+            failures: list[str] = []
+            retired: list[tuple[str, str | None]] = []
+            migrations: list[dict] = []
+            retirement = getattr(self, "branch_retirement_service", None)
+            if retirement is not None:
+                try:
+                    retired = await retirement.reconcile_project(project.id)
+                except Exception as exc:
+                    failures.append(f"retirement recovery failed ({exc})")
+            try:
+                repositories = await self.db.list_repos(project_id=project.id)
                 workspaces = await self.db.list_workspaces(project_id=project.id)
             except Exception as exc:
                 failures.append(f"{project.name}: workspace list failed ({exc})")
-                continue
+                repositories, workspaces = [], []
+            extra_paths = [getattr(project, "workspace_path", None)]
+            for repository in repositories:
+                extra_paths.append(repository.checkout_base_path)
+                if retirement is not None:
+                    extra_paths.append(str(retirement.retained_store(repository.id)))
+                publisher = getattr(self, "development_integration", None)
+                if publisher is not None:
+                    extra_paths.append(str(publisher._store_path(repository)))
+            registered = {ws.workspace_path for ws in workspaces}
+            workspaces.extend(SimpleNamespace(workspace_path=path, kind_id=None, is_slot=False)
+                              for path in extra_paths if path and path not in registered)
             # Process base checkouts before their linked slots; the common-dir
             # set makes each shared worktree repository run exactly once.
             workspaces.sort(key=lambda ws: bool(getattr(ws, "is_slot", False)))
@@ -3719,35 +3762,50 @@ class Orchestrator(
                     continue
                 if common_path in seen_common_dirs:
                     continue
+                try:
+                    repository_url = await self.git._arun(
+                        ["config", "--get", "remote.origin.url"], cwd=checkout
+                    )
+                except Exception as exc:
+                    failures.append(f"{checkout}: origin unavailable ({exc})")
+                    continue
+                matches = [repo for repo in repositories
+                           if repository_urls_match(repository_url, repo.url, base=checkout)]
+                if len(matches) != 1:
+                    failures.append(f"{checkout}: origin has no unique registered repository")
+                    continue
+                repository = matches[0]
                 seen_common_dirs.add(common_path)
-
-                repository_url = (
-                    getattr(kind, "repo_url", None)
-                    or getattr(project, "repo_url", None)
-                )
-                if not repository_url:
-                    try:
-                        repository_url = await self.git._arun(
-                            ["config", "--get", "remote.origin.url"], cwd=checkout
-                        )
-                    except Exception as exc:
-                        failures.append(f"{project.name} ({checkout}): origin unavailable ({exc})")
-                        continue
-                slug = self.git.slugify(project.name) or str(project.id)
+                safety = SweepSafety(self.db, repository.id,
+                                     default_branch=repository.default_branch,
+                                     git=self.git, checkout=checkout)
                 backup = (
                     Path(self.config.vault_projects)
-                    / slug
+                    / str(project.id)
                     / "notes"
-                    / f"git-branch-sweep-{datetime.now(UTC):%Y-%m-%d}.tsv"
+                    / f"git-branch-sweep-{date}.tsv"
                 )
+                audit = partial(_append_backup, backup, repository=repository_url)
+
+                def audit_migration(scope, branch, sha, proof):
+                    audit(scope=scope, branch=branch, sha=sha, proof=proof)
+
                 try:
+                    migration = await ProvenanceMigration(self.git).run(
+                        repository_url, checkout=checkout, dry_run=False,
+                        deletion_guard=safety.deletion, audit_delete=audit_migration,
+                    )
+                    migrations.extend(migration["rows"])
+                    async with self.db._engine.connect() as conn:
+                        holds = await live_branch_references(conn)
                     report = await sweep_checkout(
                         self.git,
                         checkout,
                         repository_url=repository_url,
-                        default_branch=getattr(project, "repo_default_branch", None) or "main",
+                        default_branch=repository.default_branch,
                         holds=holds,
                         backup_path=backup,
+                        deletion_guard=safety.deletion,
                     )
                     reports.append(report)
                     for branch, sha in report.unique_unmerged:
@@ -3767,52 +3825,56 @@ class Orchestrator(
                     )
                     failures.append(f"{project.name} ({checkout}): {exc}")
 
-        local_before = sum(row.local_before for row in reports)
-        local_after = sum(row.local_after for row in reports)
-        remote_before = sum(row.remote_before for row in reports)
-        remote_after = sum(row.remote_after for row in reports)
-        local_deleted = sum(len(row.local_deleted) for row in reports)
-        remote_deleted = sum(len(row.remote_deleted) for row in reports)
-        unique = {(row.checkout, branch, sha) for row in reports
-                  for branch, sha in row.unique_unmerged}
-        preserved = {(row.checkout, branch, sha) for row in reports
-                     for branch, sha in row.preserved_kept}
-        stash_rows = [(row.checkout, stash) for row in reports for stash in row.stashes]
-        stale_worktrees = sum(row.stale_worktrees_pruned for row in reports)
-        date = scheduled_date or datetime.now(UTC).date().isoformat()
-        lines = [
-            f"Daily Git-first branch sweep ({date} UTC)",
-            f"Checkouts: {len(reports)}; local heads {local_before} → {local_after}; "
-            f"deleted {local_deleted} Git-proven local refs.",
-            f"Remote heads {remote_before} → {remote_after}; "
-            f"deleted {remote_deleted} Git-proven remote refs.",
-            f"Kept {len(unique)} unique unmerged refs, including {len(preserved)} preserved refs; "
-            f"pruned {stale_worktrees} stale worktree registrations.",
-            f"Stash audit: {len(stash_rows)} stash(es) found in "
-            f"{sum(bool(r.stashes) for r in reports)} checkout(s); none were changed.",
-        ]
-        for checkout, stash in stash_rows[:20]:
-            lines.append(f"  stash {checkout}: {stash}")
-        if len(stash_rows) > 20:
-            lines.append(f"  ... {len(stash_rows) - 20} more stash record(s) in daemon logs")
-        if failures:
-            lines.append(f"Skipped {len(failures)} checkout(s): " + "; ".join(failures[:10]))
-            if len(failures) > 10:
-                lines.append(f"  ... {len(failures) - 10} more checkout error(s)")
-        try:
-            await self._emit_text_notify("\n".join(lines), project_id=None)
-        except Exception:
-            logger.exception("Daily Git branch sweep report notification failed")
+            unique = {(row.checkout, branch, sha) for row in reports
+                      for branch, sha in row.unique_unmerged}
+            lines = [
+                f"Daily branch backstop for {project.name} ({date} UTC)",
+                f"Checkouts: {len(reports)}; local heads "
+                f"{sum(r.local_before for r in reports)} → {sum(r.local_after for r in reports)}; "
+                f"deleted {sum(len(r.local_deleted) for r in reports)} Git-proven local refs.",
+                f"Remote heads {sum(r.remote_before for r in reports)} → "
+                f"{sum(r.remote_after for r in reports)}; "
+                f"deleted {sum(len(r.remote_deleted) for r in reports)} Git-proven remote refs.",
+                f"Held {sum(r.local_held for r in reports)} local and "
+                f"{sum(r.remote_held for r in reports)} remote live/attached refs; "
+                f"kept {len(unique)} unique unmerged refs.",
+                f"Retirement decisions: {sum(s == 'complete' for s, _ in retired)} complete, "
+                f"{sum(s != 'complete' for s, _ in retired)} held/conflicted.",
+                f"Provenance refs: {sum(r['action'] == 'migrated' for r in migrations)} migrated, "
+                f"{sum(r['action'] == 'blocked' for r in migrations)} blocked.",
+                f"Pruned {sum(r.stale_worktrees_pruned for r in reports)} stale registrations; "
+                f"audited {sum(len(r.stashes) for r in reports)} unchanged stashes.",
+            ]
+            if failures:
+                lines.append(f"Failures ({len(failures)}): " + "; ".join(failures[:10]))
+            for state, error in retired:
+                if state != "complete" and error:
+                    lines.append(f"  retirement {state}: {error}")
+            for row in migrations:
+                if row["action"] == "blocked":
+                    lines.append(f"  provenance {row['old_ref']}: {row['error']}")
+            try:
+                result = await self._command_handler.execute("message_send", {
+                    "project_id": project.id, "from_kind": "system",
+                    "from_id": "daily-branch-sweep", "to_kind": "session",
+                    "to_id": f"supervisor-{project.id}",
+                    "subject": f"Daily branch backstop: {project.name}",
+                    "body": "\n".join(lines), "archive_after_inject": True,
+                })
+                if not result.get("success"):
+                    raise RuntimeError(result.get("error", "report was not accepted"))
+                record_sweep_date(project_marker, date)
+            except Exception:
+                reports_delivered = False
+                logger.exception("Daily Git branch sweep report failed for %s", project.id)
+        if not reports_delivered:
+            self._last_git_branch_sweep_date = None
+            return
         marker = Path(self.config.data_dir) / "maintenance" / "git-branch-sweep-last-date"
         try:
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            temporary = marker.with_name(marker.name + ".tmp")
-            with temporary.open("w", encoding="ascii") as handle:
-                handle.write(date + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, marker)
+            record_sweep_date(marker, date)
         except OSError:
+            self._last_git_branch_sweep_date = None
             logger.exception("Could not persist daily Git sweep marker %s", marker)
 
     async def _reconcile_sessions(self) -> None:

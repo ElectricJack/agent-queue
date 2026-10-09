@@ -300,6 +300,51 @@ class TestProvenanceNamespaceMigration:
         assert await store.contained(item, item.source_oid)
         assert (await migration.run(str(remote), dry_run=False))["rows"] == []
 
+    async def test_backstop_keeps_live_legacy_refs_and_audits_before_deletion(self, provenance_repo):
+        from contextlib import asynccontextmanager
+
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        git, store, path, remote, _base = provenance_repo
+        item, marker = await self._legacy(provenance_repo)
+        allowed = False
+        audits = []
+
+        @asynccontextmanager
+        async def guard(branch):
+            assert branch == item.identity.legacy_branch
+            yield allowed
+
+        def audit(scope, branch, oid, proof):
+            assert branch == item.identity.legacy_branch and oid == marker
+            assert proof == "provenance:" + item.identity.ref
+            audits.append((scope, branch, oid))
+
+        migration = ProvenanceMigration(git)
+        held = await migration.run(str(remote), checkout=str(path), dry_run=False,
+                                   deletion_guard=guard, audit_delete=audit)
+        assert all(row["action"] == "blocked" for row in held["rows"])
+        assert audits == []
+        assert await git.arev_parse(str(remote), "refs/heads/" + item.identity.legacy_branch) == marker
+        assert await git.arev_parse(str(path), "refs/heads/" + item.identity.legacy_branch) == marker
+        allowed = True
+        original_remote_delete = git.adelete_remote_ref_exact
+        original_local_delete = git.adelete_local_ref_exact
+
+        async def remote_delete(*args, **kwargs):
+            assert ("remote", item.identity.legacy_branch, marker) in audits
+            return await original_remote_delete(*args, **kwargs)
+
+        async def local_delete(*args, **kwargs):
+            assert ("local", item.identity.legacy_branch, marker) in audits
+            return await original_local_delete(*args, **kwargs)
+
+        git.adelete_remote_ref_exact = remote_delete
+        git.adelete_local_ref_exact = local_delete
+        applied = await migration.run(str(remote), checkout=str(path), dry_run=False,
+                                      deletion_guard=guard, audit_delete=audit)
+        assert all(row["action"] == "migrated" for row in applied["rows"])
+
     @pytest.mark.parametrize("failure", ["conflict", "copy", "moved", "invalid"])
     async def test_failed_copy_or_changed_old_ref_is_never_deleted(
         self, provenance_repo, monkeypatch, failure,

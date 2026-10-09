@@ -1,7 +1,8 @@
 """Copy immutable provenance out of branch refs before deleting legacy copies.
 
-Invoked only by the operator command. Remote inventory lives in a temporary
-checkout; preview never mutates a managed checkout or the remote repository.
+Invoked by the operator command and the guarded daily backstop. Remote inventory
+lives in a temporary checkout; preview never mutates a managed checkout or the
+remote repository.
 """
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 from src.git.manager import GitError, RemoteRefState
+from src.integration.branch_sweep import unguarded_deletion
 from src.integration.provenance import (
     LEGACY_PREFIX,
     PREFIX,
@@ -32,6 +34,7 @@ class ProvenanceMigration:
     async def run(
         self, repository_url: str, *, dry_run: bool = True, limit: int = 50,
         checkout: str | None = None,
+        deletion_guard=unguarded_deletion, audit_delete=None,
     ) -> dict:
         """A bounded page, repeatable until no legacy refs remain.
 
@@ -96,20 +99,29 @@ class ProvenanceMigration:
                         row.update(action="blocked", error=destination.error or "copy not verified")
                         continue
                     try:
-                        await self.git.adelete_remote_ref_exact(
-                            path, row["old_ref"].removeprefix("refs/heads/"), row["oid"],
-                        )
-                        row["action"] = "migrated"
+                        branch = row["old_ref"].removeprefix("refs/heads/")
+                        async with deletion_guard(branch) as allowed:
+                            if not allowed:
+                                raise GitError("legacy branch has a live reference or is protected")
+                            if audit_delete is not None:
+                                audit_delete("remote", branch, row["oid"], "provenance:" + row["ref"])
+                            await self.git.adelete_remote_ref_exact(path, branch, row["oid"])
+                            after = await self.git.als_remote_ref(path, branch)
+                            if after.state is not RemoteRefState.ABSENT:
+                                raise GitError("legacy branch deletion was not confirmed")
+                            row["action"] = "migrated"
                     except GitError as exc:
                         row.update(action="blocked", error=str(exc))
         if checkout is not None:
-            await self._local(repository_url, checkout, rows, dry_run=dry_run, limit=limit)
+            await self._local(repository_url, checkout, rows, dry_run=dry_run, limit=limit,
+                              deletion_guard=deletion_guard, audit_delete=audit_delete)
         blocked = any(row["action"] == "blocked" for row in rows)
         return {"dry_run": dry_run, "rows": rows, "remaining": len(entries) - sum(
             row["scope"] == "remote" and row["action"] == "migrated" for row in rows),
             "outcome": "blocked" if blocked else "preview" if dry_run else "migrated"}
 
-    async def _local(self, repository_url, checkout, rows, *, dry_run, limit):
+    async def _local(self, repository_url, checkout, rows, *, dry_run, limit,
+                     deletion_guard, audit_delete):
         store = GitProvenance(self.git, checkout, repository_url=repository_url)
         if await store.run("remote", "get-url", "origin") != repository_url:
             raise ValueError("local checkout does not name the authorized repository")
@@ -142,9 +154,16 @@ class ProvenanceMigration:
                         await store.run("update-ref", ref, oid, "0" * 40)
                     if await store.run("rev-parse", "--verify", ref) != oid:
                         raise GitError("local copy not verified")
-                    await self.git.adelete_local_ref_exact(
-                        checkout, ref=old_ref, expected_old_oid=oid,
-                    )
-                    row["action"] = "migrated"
+                    branch = old_ref.removeprefix("refs/heads/")
+                    async with deletion_guard(branch) as allowed:
+                        if not allowed or any(item.get("branch") in {branch, old_ref}
+                                              for item in await self.git.aworktree_list(checkout)):
+                            raise GitError("legacy branch has a live reference or attached worktree")
+                        if audit_delete is not None:
+                            audit_delete("local", branch, oid, "provenance:" + ref)
+                        await self.git.adelete_local_ref_exact(
+                            checkout, ref=old_ref, expected_old_oid=oid,
+                        )
+                        row["action"] = "migrated"
             except (GitError, ValueError, KeyError, TypeError) as exc:
                 row.update(action="blocked", error=str(exc))
