@@ -114,8 +114,10 @@ from src.database.tables import (
     integration_legacy_deliveries,
     projects,
     repos,
+    sessions,
     task_branch_origins,
     tasks,
+    workspaces,
 )
 from src.git.github_contracts import (
     GitHubAccessError,
@@ -1669,6 +1671,107 @@ async def publish_cleanup_candidate(world, batch, head, *, cleanup=None):
     )
 
 
+async def cleanup_workspace(world, path, *, source_type="clone", locked=False):
+    async with world.db.immediate() as conn:
+        await conn.execute(insert(workspaces).values(
+            id=path.name, project_id="p", workspace_path=str(path), source_type=source_type,
+            locked_by_task_id="a" if locked else None, enabled=True, created_at=time.time(),
+        ))
+
+
+@pytest.mark.parametrize("tid", ["a", "epic", "repair"])
+async def test_landing_retires_remote_and_local_branches_in_the_settle_step(world, tmp_path, tid):
+    origin = world.origin
+    head = await completed(world, tid, land=True, pr=False)
+    batch = await freeze_cleanup_batch(world, "train-local-" + tid, {tid: head})
+    promoted = git(origin.url, "rev-parse", "refs/heads/main")
+    clone = tmp_path / "worker-clone"
+    slot = tmp_path / "worker-slot"
+    git(tmp_path, "clone", origin.url, str(clone))
+    git(clone, "branch", f"aq/{tid}", head)
+    git(clone, "worktree", "add", str(slot), f"aq/{tid}")
+    await cleanup_workspace(world, clone)
+    await cleanup_workspace(world, slot, source_type="worktree")
+    candidate = candidate_ref(batch.id)
+    # The train freezes its integration branch as this candidate ref. Keep
+    # that immutable identity, rather than rewriting a sealed batch.
+    assert (await world.db.get_integration_batch(batch.id))["integration_branch"] == candidate
+    git(clone, "branch", candidate.removeprefix("refs/heads/"), promoted)
+    git(origin.clone, "branch", candidate.removeprefix("refs/heads/"), promoted)
+
+    await publish_cleanup_candidate(world, batch, promoted,
+                                    cleanup=train_cleanup(world, tmp_path))
+
+    assert (await world.db.get_integration_batch(batch.id))["cleanup_state"] == "complete"
+    for path in (origin.url, origin.clone, clone, slot):
+        assert not git(path, "for-each-ref", "--format=%(refname)", f"refs/heads/aq/{tid}")
+        assert not git(path, "for-each-ref", "--format=%(refname)", candidate)
+        assert not git(path, "for-each-ref", "--format=%(refname)",
+                       f"refs/remotes/origin/aq/{tid}")
+    assert slot.is_dir() and git(slot, "rev-parse", "HEAD") == head
+    assert git(slot, "branch", "--show-current") == ""
+    assert git(origin.url, "rev-parse", "refs/heads/main") == promoted
+
+
+async def test_landing_cleanup_recovers_local_copies_after_origin_delete(world, tmp_path):
+    head = await completed(world, "a", land=True, pr=False)
+    batch = await freeze_cleanup_batch(world, "train-local-restart", {"a": head})
+    promoted = git(world.origin.url, "rev-parse", "refs/heads/main")
+    await publish_cleanup_candidate(world, batch, promoted)
+    git(world.origin.clone, "push", "origin", "--delete", "aq/a")
+    # Origin deletion can have succeeded before the daemon died. A fresh
+    # cleanup service must still remove the matching local branch on retry.
+    assert git(world.origin.clone, "rev-parse", "refs/heads/aq/a") == head
+    cleanup = train_cleanup(world, tmp_path)
+    assert {r.outcome for r in await cleanup.advance(batch.id)} == {"complete"}
+    assert not git(world.origin.clone, "for-each-ref", "--format=%(refname)", "refs/heads/aq/a")
+
+
+@pytest.mark.parametrize("hold", ["dirty", "busy", "session", "unique", "unmanaged"])
+async def test_landing_cleanup_retains_unsafe_local_worktrees(world, tmp_path, hold):
+    head = await completed(world, "a", land=True, pr=False)
+    batch = await freeze_cleanup_batch(world, "train-local-hold", {"a": head})
+    promoted = git(world.origin.url, "rev-parse", "refs/heads/main")
+    clone = tmp_path / "worker-clone"
+    git(tmp_path, "clone", world.origin.url, str(clone))
+    git(clone, "checkout", "-b", "aq/a", head)
+    await cleanup_workspace(world, clone, locked=hold == "busy",
+                            source_type="link" if hold == "unmanaged" else "clone")
+    if hold == "session":
+        # A live pool can hold a seat between tasks without a workspace task lock.
+        async with world.db.immediate() as conn:
+            await conn.execute(insert(sessions).values(
+                id="idle-pool", project_id="p", profile_id="worker", harness="codex",
+                provider="test", name="idle", lifecycle="pool", state="running",
+                desired_state="running", claims=0, work_dir=str(clone), epoch="0",
+                instance_token="token", started_at=time.time(), restarts=0, hooks_provisioned=False,
+            ))
+    if hold == "dirty":
+        (clone / "unsaved.txt").write_text("keep this change\n")
+    if hold == "unique":
+        git(clone, "config", "user.name", "Tester")
+        git(clone, "config", "user.email", "tester@example.test")
+        head = commit(clone, {"unique.txt": "keep this commit\n"})
+    await publish_cleanup_candidate(world, batch, promoted)
+    cleanup = train_cleanup(world, tmp_path)
+    results = await cleanup.advance(batch.id)
+    assert ("conflict" if hold == "unique" else "retryable") in {r.outcome for r in results}
+    assert git(clone, "rev-parse", "refs/heads/aq/a") == head
+    assert git(clone, "branch", "--show-current") == "aq/a"
+    if hold == "dirty":
+        assert (clone / "unsaved.txt").read_text() == "keep this change\n"
+    elif hold == "busy":
+        # The remote has already gone; releasing the slot lets the same item
+        # finish the local deletion without another publication.
+        async with world.db.immediate() as conn:
+            await conn.execute(update(workspaces).where(workspaces.c.id == clone.name)
+                               .values(locked_by_task_id=None))
+        assert {r.outcome for r in await cleanup.advance(batch.id, now=time.time() + 60)} == {
+            "complete"
+        }
+        assert git(clone, "branch", "--show-current") == ""
+
+
 async def test_promoted_train_cleans_refs_and_comments_only_repair_commits(world, tmp_path):
     """Fidelity §6 tests 9 and 3: exact promotion cleanup and a reviewer-visible fix."""
     db, origin = world.db, world.origin
@@ -1696,11 +1799,9 @@ async def test_promoted_train_cleans_refs_and_comments_only_repair_commits(world
 
     async with db._engine.connect() as conn:
         assert len((await conn.execute(select(integration_cleanup_items))).all()) == 6
-    results = await cleanup.advance(batch.id)
     async with db._engine.connect() as conn:
-        errors = (await conn.execute(select(integration_cleanup_items.c.identity,
-                                           integration_cleanup_items.c.last_error))).all()
-    assert {r.outcome for r in results} == {"complete"}, errors
+        states = (await conn.execute(select(integration_cleanup_items.c.state))).scalars().all()
+    assert set(states) == {"complete"}
     assert (await db.get_integration_batch(batch.id))["cleanup_state"] == "complete"
     for tid in sources:
         assert not git(origin.url, "for-each-ref", "--format=%(refname)", f"refs/heads/aq/{tid}")
@@ -1780,7 +1881,8 @@ async def test_promoted_train_cleanup_honors_retention_and_live_epic_target(worl
         ))
     retained = await freeze_cleanup_batch(world, "train-retained", {"epic": head})
     await publish_cleanup_candidate(world, retained, promoted, cleanup=cleanup)
-    assert {r.outcome for r in await cleanup.advance(retained.id)} == {"complete"}
+    assert (await world.db.get_integration_batch(retained.id))["cleanup_state"] == "complete"
+    assert await cleanup.advance(retained.id) == []
     assert not git(world.origin.url, "for-each-ref", "--format=%(refname)",
                    "refs/heads/aq/epic")
 
@@ -1817,7 +1919,7 @@ async def test_epic_refresh_cleanup_never_schedules_its_own_epic_target(world, t
         ("local_ref", RETAINED_CANDIDATE_PREFIX + batch.id),
         ("remote_ref", candidate_ref(batch.id)),
     ])
-    assert {r.outcome for r in await cleanup.advance(batch.id)} == {"complete"}
+    assert await cleanup.advance(batch.id) == []
     assert (await db.get_integration_batch(batch.id))["cleanup_state"] == "complete"
     assert git(origin.url, "rev-parse", target) == refreshed
     assert forge.comments == []

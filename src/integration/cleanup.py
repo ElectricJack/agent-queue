@@ -10,7 +10,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Literal
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict
@@ -36,10 +36,12 @@ from src.database.tables import (
     task_completion_records,
     task_delivery_receipts,
     tasks,
+    sessions,
     workspaces,
 )
+from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
 from src.git.github_contracts import GitHubRepositoryBinding
-from src.git.manager import GitError, RemoteRefState
+from src.git.manager import GitError, RemoteRefState, repository_urls_match
 from src.integration.delivery_branches import (
     branch_of, deletable, preserve_branch_tips, repository_protected_branches,
     train_cleanup_hold,
@@ -47,6 +49,13 @@ from src.integration.delivery_branches import (
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _TrainCleanupContext:
+    store: str | None
+    snapshot: Any
+    fetched_checkouts: set[str] = field(default_factory=set)
 
 
 class CleanupMaterializationResult(BaseModel):
@@ -1146,12 +1155,12 @@ class IntegrationCleanupService:
         try:
             store = str(await self.candidate_store(repository))
         except (GitError, OSError, ValueError):
-            return None, None
+            return _TrainCleanupContext(None, None)
         snapshot = await GitTruth(self.git).snapshot(
             store, project_id=batch["project_id"], repository_id=batch["repository_id"],
             repository_url=repository.url, target_ref=batch["target_ref"],
         )
-        return store, snapshot
+        return _TrainCleanupContext(store, snapshot)
 
     async def _cleanup_train_ref(self, row, batch, repository, binding):
         import asyncio
@@ -1173,19 +1182,28 @@ class IntegrationCleanupService:
         context = row.get("train_context") or await self._train_context(batch)
         if context is None:
             return "retryable", "train cleanup Git transport is unavailable"
-        store, snapshot = context
+        store, snapshot = context.store, context.snapshot
         if snapshot is None or snapshot.error or not snapshot.target_oid:
             return "retryable", "train cleanup target is unknown"
         current = (snapshot.for_target(ref).target_oid if row["kind"] == "remote_ref"
                    else await self.git.arev_parse(store, ref))
-        if current is None:
-            if row["kind"] == "local_ref" and await self.git.aref_exists(store, ref) is not False:
+        if current is None and row["kind"] == "local_ref":
+            if await self.git.aref_exists(store, ref) is not False:
                 return "retryable", "local candidate state is unknown"
             return "complete", None
-        ancestor = await self.git.ais_ancestor(store, current, snapshot.target_oid, strict=True)
+        # An absent origin branch can still have local copies. Retry those
+        # against the immutable landing head rather than finishing early.
+        proof_head = current or row["expected_sha"]
+        ancestry = await self.git.arun_git_result(
+            ["--no-replace-objects", "merge-base", "--is-ancestor", proof_head, snapshot.target_oid],
+            cwd=store,
+        )
+        ancestor = {0: True, 1: False}.get(ancestry.returncode)
         if ancestor is None:
             return "retryable", "train cleanup ancestry is unknown"
         if not ancestor:
+            if current is None:
+                return "conflict", "absent remote's recorded tip is not reachable from target"
             async def run_git(path, *args):
                 result = await self.git.arun_git_result(list(args), cwd=str(path))
                 if result.returncode:
@@ -1198,7 +1216,7 @@ class IntegrationCleanupService:
                 now=self.clock(),
             )
             return "conflict", f"ref is not reachable from target; retained and bundled at {bundle}"
-        if current != row["expected_sha"]:
+        if current is not None and current != row["expected_sha"]:
             return "conflict", "ref moved after promotion"
         locks = BranchLock(self.db, clock=self.clock)
         fence = None
@@ -1224,27 +1242,83 @@ class IntegrationCleanupService:
                                                               repository_url=repository.url)
                         if actual.state is RemoteRefState.ERROR:
                             return "retryable", "remote cleanup state is unknown"
-                        if actual.state is RemoteRefState.ABSENT:
-                            return "complete", None
-                        if actual.oid != current:
-                            return "retryable", "remote ref moved; reobserve before preservation"
-                        try:
-                            await self.git.adelete_repository_ref(store, repository=binding,
-                                branch=short, expected_old_oid=current,
-                                authority_deadline=asyncio.get_running_loop().time()
-                                + max(0, owner["expires_at"] - self.clock()))
-                        except GitError:
-                            pass
-                        actual = await self.git.als_remote_ref(store, short,
-                                                              repository_url=repository.url)
-                        if actual.state is not RemoteRefState.ABSENT:
-                            return "retryable", "remote deletion is unconfirmed"
+                        if actual.state is RemoteRefState.PRESENT:
+                            if actual.oid != current:
+                                return "retryable", "remote ref moved; reobserve before preservation"
+                            try:
+                                await self.git.adelete_repository_ref(store, repository=binding,
+                                    branch=short, expected_old_oid=current,
+                                    authority_deadline=asyncio.get_running_loop().time()
+                                    + max(0, owner["expires_at"] - self.clock()))
+                            except GitError:
+                                pass
+                            actual = await self.git.als_remote_ref(store, short,
+                                                                  repository_url=repository.url)
+                            if actual.state is not RemoteRefState.ABSENT:
+                                return "retryable", "remote deletion is unconfirmed"
+                        return await self._cleanup_train_checkouts(
+                            conn, row, repository, context, protected,
+                        )
             return "complete", None
         except BranchBusy:
             return "retryable", "ref has an active writer"
         finally:
             if fence is not None:
                 await locks.release(fence)
+
+    async def _cleanup_train_checkouts(self, conn, row, repository, context, protected):
+        """Retire local copies under the project/ref fence and workspace locks."""
+        from src.integration.branch_sweep import clean_landed_checkout
+
+        store, target_sha = context.store, context.snapshot.target_oid
+        checkouts = (await conn.execute(select(workspaces).where(
+            workspaces.c.project_id == row["project_id"],
+        ).order_by(workspaces.c.id).with_for_update())).mappings().all()
+        live_paths = (await conn.execute(select(sessions.c.work_dir).where(
+            sessions.c.project_id == row["project_id"],
+            sessions.c.state.in_(LIVE_SESSION_STATES),
+        ))).scalars().all()
+        busy = {str(Path(path).resolve()) for path in live_paths if path}
+        busy |= {str(Path(ws["workspace_path"]).resolve()) for ws in checkouts
+                 if ws["locked_by_agent_id"] or ws["locked_by_task_id"] or ws["job_pin_count"]}
+        managed = {str(Path(ws["workspace_path"]).resolve()) for ws in checkouts
+                   if ws["source_type"] in {"clone", "worktree"}}
+        managed.add(str(Path(store).resolve()))
+        paths = dict.fromkeys([store, *(ws["workspace_path"] for ws in checkouts)])
+        seen = set()
+        for path in paths:
+            if not Path(path).is_dir():
+                continue
+            common = await self.git.arun_git_result(["rev-parse", "--git-common-dir"], cwd=path)
+            if common.returncode:
+                if str(Path(path).resolve()) not in managed:
+                    # A linked workspace may intentionally be a non-Git directory.
+                    continue
+                return "retryable", f"cleanup common directory is unknown: {path}"
+            url = await self.git.aget_remote_url(path)
+            if not url:
+                return "retryable", f"cleanup repository is unknown: {path}"
+            if not repository_urls_match(url, repository.url, base=path):
+                if path == store:
+                    return "retryable", "retained cleanup repository changed"
+                continue
+            identity = str((Path(path) / common.stdout.strip()).resolve())
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if path == store:
+                # GitTruth already fetched this common directory for the visit.
+                context.fetched_checkouts.add(identity)
+            outcome, error = await clean_landed_checkout(
+                self.git, path, repository_url=repository.url,
+                default_branch=repository.default_branch, ref=row["target_ref"],
+                expected_sha=row["expected_sha"], target_sha=target_sha,
+                managed_paths=managed, busy_paths=busy, protected=protected,
+                fetched_checkouts=context.fetched_checkouts,
+            )
+            if outcome != "complete":
+                return outcome, error
+        return "complete", None
 
     async def _cleanup_train_pr(self, row, batch, binding):
         from src.integration.git_truth import commits_added
@@ -1265,7 +1339,7 @@ class IntegrationCleanupService:
         context = row.get("train_context") or await self._train_context(batch)
         if context is None:
             return "retryable", "train cleanup Git transport is unavailable"
-        store, snapshot = context
+        store, snapshot = context.store, context.snapshot
         promoted = batch["tested_candidate_sha"] or batch["final_main_sha"]
         if (snapshot is None or snapshot.error or not snapshot.target_oid
                 or await self.git.ais_ancestor(store, promoted, snapshot.target_oid,

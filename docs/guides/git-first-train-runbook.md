@@ -284,7 +284,16 @@ After Git proves promotion, cleanup is tracked separately. It retires private
 candidate refs and eligible member branches, comments delivery evidence on the
 PR, and protects live targets. A member head that lacks safe delivery proof is
 preserved or bundled rather than deleted. Aborted batches clean their candidate
-refs without treating members as delivered. Cleanup does not gate publication.
+refs without treating members as delivered. Settlement attempts cleanup in the
+same visit; maintenance retries incomplete cleanup after failures or restart.
+Each landed remote branch's cleanup also removes its matching local heads and
+origin tracking refs from the retained store and registered AQ checkouts of the
+same repository. Deletion requires the exact recorded head to be an ancestor of
+the fetched landing target (`git merge-base --is-ancestor`). Clean idle AQ
+worktrees detach at that head before deletion and remain available for reuse.
+Live sessions, workspace locks, dirty or unmanaged worktrees, changed heads,
+unknown Git state, and protected flow targets prevent local deletion. An already
+absent remote does not skip local cleanup. Cleanup does not gate publication.
 Sources: [cleanup.py](../../src/integration/cleanup.py) and
 [delivery_branches.py](../../src/integration/delivery_branches.py).
 
