@@ -895,19 +895,9 @@ class SessionCommandsMixin:
                     "work in its summary."
                 ),
             }
-        from src.integration.branch_abandon import BranchAbandonService
-
         service = ObsoleteClose(
             self.db, release_owner=obsolete_owner_release_for(self.orchestrator),
             git_manager=self.orchestrator.git,
-            branch_abandon=(
-                getattr(self.orchestrator, "branch_abandon_service", None)
-                or BranchAbandonService(
-                    self.db,
-                    data_dir=self.orchestrator.config.data_dir,
-                    git_manager=self.orchestrator.git,
-                )
-            ),
         )
         try:
             result = await service.close(

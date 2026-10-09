@@ -3039,6 +3039,33 @@ task_integration_checkpoints = Table(
     ),
 )
 
+branch_retirements = Table(
+    "branch_retirements",
+    metadata,
+    # No FKs: an explicit decision and its audit outlive tasks and repositories.
+    Column("id", Text, primary_key=True),
+    Column("request_id", Text, nullable=False),
+    Column("project_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("task_id", Text, nullable=True),
+    Column("branch", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("claim_epoch", Integer, nullable=True),
+    Column("requested_at", Float, nullable=False),
+    Column("state", Text, nullable=False, server_default="pending"),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("next_attempt_at", Float, nullable=False, server_default="0"),
+    Column("last_error", Text, nullable=True),
+    Column("evidence", JSONB, nullable=False, server_default="{}"),
+    CheckConstraint(
+        "state IN ('pending', 'complete', 'conflict', 'withdrawn')",
+        name="ck_branch_retirements_state",
+    ),
+    CheckConstraint("attempts >= 0", name="ck_branch_retirements_attempts"),
+    UniqueConstraint("request_id", "repository_id", "branch"),
+    Index("ix_branch_retirements_due", "state", "next_attempt_at"),
+)
+
 task_branch_origins = Table(
     "task_branch_origins",
     metadata,
@@ -3103,12 +3130,8 @@ task_branch_origins = Table(
     ),
 )
 
-#: The audit row every abandoned branch leaves behind (no-dangling-branches
-#: item 3).  The name and the sha are written *before* anything is deleted, so
-#: a branch that was never merged is still identifiable — and restorable from
-#: the bundle the same step verifies — after the ref is gone.  The row carries
-#: no foreign key to ``tasks``: an abandoned task may be deleted outright, and
-#: the record of what its branch was must outlive it.
+#: Retained predecessor audit history. Unfinished decisions are imported once
+#: into branch_retirements with their original SHA as a deletion precondition.
 branch_deletion_audit = Table(
     "branch_deletion_audit",
     metadata,

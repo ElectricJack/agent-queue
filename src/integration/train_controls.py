@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
 import time
 from dataclasses import replace
 
@@ -22,13 +21,10 @@ from src.database.tables import (
 )
 from src.git.manager import RemoteRefState
 from src.integration.batches import Batch, BatchStore, candidate_ref
-from src.integration.branch_abandon import ABORT, SUPERSEDE
 from src.integration.delivery_observer import delivery_targets
 from src.integration.delivery_truth import load_delivery_requests
 from src.integration.train import TrainTarget
 from src.integration.train_sources import project_delivered, project_snapshot
-
-logger = logging.getLogger(__name__)
 
 
 class TrainControlError(ValueError):
@@ -40,11 +36,8 @@ class TrainControlError(ValueError):
 
 
 class TrainControls:
-    def __init__(self, db, *, snapshot=project_snapshot, clock=time.time, train=None,
-                 git=None, data_dir=None):
+    def __init__(self, db, *, snapshot=project_snapshot, clock=time.time, train=None):
         self.db, self.snapshot, self.clock, self.train = db, snapshot, clock, train
-        self.git = git
-        self.data_dir = data_dir
 
     async def _root_noop_identity(self, conn, task_id):
         from src.database.queries.task_subtask_queries import OPEN_SUBTASK_STATUSES
@@ -250,7 +243,7 @@ class TrainControls:
             batch_id, "aborted", dry_run=dry_run, authorize=unchanged,
             operator_id=operator_id, reason=reason,
         )
-        result = {
+        return {
             "outcome": "preview" if dry_run else "aborted",
             "batch_id": batch_id,
             "project_id": batch.project_id,
@@ -260,37 +253,6 @@ class TrainControls:
             "intent": batch.intent if dry_run else "aborted",
             "dry_run": dry_run,
         }
-        if not dry_run:
-            result["branch_abandon"] = await self._abandon_batch_refs(
-                batch_id, reason=ABORT, detail=reason, principal=operator_id
-            )
-        return result
-
-    async def _abandon_batch_refs(self, batch_id, *, reason, detail, principal):
-        """Delete the refs an aborted or superseded batch owned outright.
-
-        A batch's *members* keep their branches: an unchanged member returns to
-        pending and is collected again, so deleting one would throw away work
-        that is about to be delivered.  Only the private candidate refs — the
-        ones no task and no other batch can name — are abandoned here.  A
-        failure to delete never fails the abort: the refs are already withheld
-        from delivery, and the recorded audit row is retried.
-        """
-        from src.integration.branch_abandon import BranchAbandonService
-
-        service = BranchAbandonService(
-            self.db, data_dir=self.data_dir, git_manager=self.git
-        )
-        try:
-            return await service.abandon_batch_candidates(
-                batch_id, reason=reason, detail=detail, principal=principal
-            )
-        except Exception as exc:  # noqa: BLE001 - an abort must not be undone by cleanup
-            logger.warning(
-                "Could not abandon the candidate refs of batch %s", batch_id, exc_info=True
-            )
-            return {"batch_id": batch_id, "state": "pending", "branches": [],
-                    "reason": str(exc) or type(exc).__name__}
 
     async def _abort_observation(self, batch_id):
         store = BatchStore(self.db, clock=self.clock)

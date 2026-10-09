@@ -82,6 +82,7 @@ class IntegrationCleanupService:
         forge_provider: Any | None = None,
         binding_resolver=None,
         candidate_store=None,
+        retirement_service=None,
         clock=time.time,
     ) -> None:
         self.db = db
@@ -91,6 +92,7 @@ class IntegrationCleanupService:
         self.forge_provider = forge_provider
         self.binding_resolver = binding_resolver
         self.candidate_store = candidate_store
+        self.retirement_service = retirement_service
         self.clock = clock
 
     async def advance(
@@ -1414,6 +1416,26 @@ class IntegrationCleanupService:
     async def _cleanup_aborted_ref(self, batch, ref, *, local=False) -> bool:
         """Delete one private candidate under its managed ref lease."""
         import asyncio
+
+        if self.retirement_service is not None:
+            from src.integration.branch_retirement import request_branch_retirement_on
+
+            async with self.db.immediate() as conn:
+                current = (await conn.execute(select(integration_batches).where(
+                    integration_batches.c.id == batch["id"],
+                ).with_for_update())).mappings().first()
+                if (current is None or current["intent"] != "aborted"
+                    or current["lifecycle"] != "aborted"):
+                    return False
+                identity = await request_branch_retirement_on(
+                    conn, request_id="abort:" + batch["id"], project_id=current["project_id"],
+                    repository_id=current["repository_id"], branch=ref,
+                    reason="aborted batch candidate", now=self.clock(),
+                )
+            if identity is None:
+                return False
+            state, _error = await self.retirement_service.advance(identity)
+            return state == "complete"
 
         from src.git.manager import RemoteRefState
         from src.integration.lock import BranchLock

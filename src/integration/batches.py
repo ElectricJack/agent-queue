@@ -377,6 +377,10 @@ class BatchStore:
             ).values(intent="aborted", lifecycle="aborted",
                      human_abort_reason=reason, ejection_record=instruction,
                      cleanup_state="pending", updated_at=self.clock()))
+            from src.integration.branch_retirement import request_batch_retirement_on
+
+            await request_batch_retirement_on(conn, row, reason="ejected batch candidate",
+                                             now=self.clock())
             if replacement is not None:
                 await self._freeze_on(conn, replacement, members, trees=trees)
             import json
@@ -391,50 +395,12 @@ class BatchStore:
 
         Its frozen candidate can no longer publish the refreshed source, so it
         must not keep the target. Unlike an ordinary abort, its unchanged
-        members return to pending — their branches stay, because their work is
-        about to be collected again. An explicit pause still holds.
+        members return to pending. An explicit pause still holds.
         """
         import json
-
-        from src.integration.branch_abandon import SUPERSEDE
 
         if not reason.strip():
             raise ValueError("supersede requires a nonblank reason")
-        superseded = await self._supersede_batch(batch, task_id, reason)
-        if superseded:
-            await self._abandon_batch_refs(batch, task_id, reason)
-        return superseded
-
-    async def _abandon_batch_refs(
-        self, batch: Batch, task_id: str, reason: str
-    ) -> None:
-        """Delete a superseded batch's private candidate refs, after the audit row.
-
-        Best effort by construction: the batch is already aborted and withheld
-        from delivery, so a cleanup failure must not undo the supersede.  The
-        recorded audit row is retried by the abandon drain.
-        """
-        from src.integration.branch_abandon import BranchAbandonService
-
-        service = BranchAbandonService(
-            self.db,
-            data_dir=getattr(self, "data_dir", None) or "",
-            git_manager=getattr(self, "git", None),
-        )
-        try:
-            await service.abandon_batch_candidates(
-                batch.id, reason=SUPERSEDE, detail=reason,
-                principal="service:integration-train",
-            )
-        except Exception:
-            logger.warning(
-                "Could not abandon the candidate refs of superseded batch %s (%s)",
-                batch.id, task_id, exc_info=True,
-            )
-
-    async def _supersede_batch(self, batch: Batch, task_id: str, reason: str) -> bool:
-        import json
-
         async with self.db.immediate() as conn:
             await self._target_lock(conn, batch)
             row = (await conn.execute(select(integration_batches).where(
@@ -467,6 +433,10 @@ class BatchStore:
             ).values(intent="aborted", lifecycle="aborted",
                      human_abort_reason=reason, ejection_record=instruction,
                      cleanup_state="pending", updated_at=self.clock()))
+            from src.integration.branch_retirement import request_batch_retirement_on
+
+            await request_batch_retirement_on(conn, row, reason="superseded batch candidate",
+                                             now=self.clock())
             await self.db.log_event("integration.batch_superseded", project_id=batch.project_id,
                 task_id=task_id, payload=json.dumps(instruction),
                 conn=conn)
@@ -509,6 +479,11 @@ class BatchStore:
             await conn.execute(update(integration_batches).where(
                 integration_batches.c.id == batch_id,
             ).values(**values))
+            if intent == "aborted":
+                from src.integration.branch_retirement import request_batch_retirement_on
+
+                await request_batch_retirement_on(conn, row, reason="aborted batch candidate",
+                                                 now=self.clock())
             if operator_id is not None:
                 import json
 

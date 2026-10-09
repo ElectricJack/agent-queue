@@ -638,7 +638,7 @@ class Orchestrator(
         self.promotion_flow_problems: dict[str, list[dict]] = {}
         self._promotion_flow_check = None
         self.branch_discard_service = None
-        self.branch_abandon_service = None
+        self.branch_retirement_service = None
         self.branch_materialization_service = None
         self.integration_release_service = None
         self.integration_cleanup_service = None
@@ -1356,22 +1356,9 @@ class Orchestrator(
         if service is None:
             return
         await service.drain_due(now=now)
-
-    async def _drain_branch_abandons(self, now: float) -> None:
-        """Finish the branch deletions an abandon decision recorded but could not confirm.
-
-        The decision itself deletes inline; this covers what it could not — a
-        branch that was held at the time, a transport failure, a daemon that
-        died between recording the audit row and pushing.  Each pass re-asks
-        git about the live owners rather than trusting the first answer.
-        """
-        service = self.branch_abandon_service
-        if service is None:
-            return
-        try:
-            await service.drain_due(now=now)
-        except Exception:
-            logger.warning("Abandoned-branch drain failed", exc_info=True)
+        retirements = getattr(self, "branch_retirement_service", None)
+        if retirements is not None:
+            await retirements.drain_due(now=now)
 
     async def _sweep_stranded_owners(self, now: float) -> None:
         """Release quiet, provably abandoned branch owners every five minutes."""
@@ -1871,7 +1858,6 @@ class Orchestrator(
         # outbox dispatch. Later Task 10 phases attach their narrow handlers
         # without adding another timer or orchestration authority.
         from src.integration.attestation import IntegrationAttestationService
-        from src.integration.branch_abandon import BranchAbandonService
         from src.integration.branch_discard import BranchDiscardService
         from src.integration.branch_materialization import BranchMaterializationService
         from src.integration.cleanup import IntegrationCleanupService
@@ -2008,19 +1994,23 @@ class Orchestrator(
             # that owns a collection episode is not built at all.
             legacy_container_collection=self.config.integration.git_first != "active",
         )
-        self.branch_discard_service = BranchDiscardService(
+        from src.integration.branch_retirement import BranchRetirementService
+
+        self.branch_retirement_service = BranchRetirementService(
             self.db,
             data_dir=self.config.data_dir,
             git_manager=self.git,
             github_client_factory=self.github_client_factory,
             github_repository_binding_resolver=self.github_repository_binding_resolver,
+            candidate_store=lambda repo: self.development_integration._store_path(repo),
         )
-        # Delete the branches an abandon decision abandoned, after recording
-        # each name and sha in branch_deletion_audit.  A branch with a live
-        # owner is held, never removed.
-        self.branch_abandon_service = BranchAbandonService(
-            self.db, data_dir=self.config.data_dir, git_manager=self.git,
+        self.branch_discard_service = BranchDiscardService(
+            self.db,
+            data_dir=self.config.data_dir,
+            git_manager=self.git,
+            retirement_service=self.branch_retirement_service,
         )
+        self.integration_cleanup_service.retirement_service = self.branch_retirement_service
         from src.integration.parent_ci import ParentCIService
 
         parent_ci = ParentCIService(
@@ -2083,7 +2073,6 @@ class Orchestrator(
                 "orphaned parent operations": settle_orphaned_parents,
                 "batch cleanup": self.integration_cleanup_service.reconcile,
                 "branch discard": self._drain_branch_discards,
-                "branch abandon": self._drain_branch_abandons,
                 "branch materialization": self._drain_branch_materializations,
                 "owner recovery": self._sweep_stranded_owners,
                 "delegate cleanup": RepairService(self.db).retire_terminal_delegates,
