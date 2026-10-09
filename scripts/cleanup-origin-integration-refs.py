@@ -14,16 +14,19 @@ import asyncio
 import os
 import sys
 from collections import Counter
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
-from src.git.manager import GitError, GitManager, RemoteRefState, is_valid_git_oid
-from src.integration.delivery_branches import _merges_are_clean, live_branch_references, remote_heads
+from src.git.manager import GitError, GitManager, RemoteRefState, repository_urls_match
+from src.integration.branch_sweep import PROTECTED_NAMES, SweepSafety, _proof
+from src.integration.delivery_branches import live_branch_references, remote_heads
 from src.projects.github import GitHubError, parse_github_repository
 
 
 REPOSITORY = "ElectricJack/agent-queue"
-PROTECTED = frozenset({"main", "dev", "staging"})
+PROTECTED = PROTECTED_NAMES
 COUNT_PREFIXES = (
     "aq/epic/",
     "aq/preserved/",
@@ -50,21 +53,6 @@ async def _run(git: GitManager, store: str, *args: str) -> str:
     return result.stdout.strip()
 
 
-async def _patch_equivalent(git: GitManager, store: str, head: str, target: str) -> bool:
-    """Prove every branch commit has a patch-id twin and every merge is clean."""
-    common_base = await git.arun_git_result(["merge-base", target, head], cwd=store)
-    if common_base.returncode:
-        return False
-    merges = await _run(git, store, "rev-list", "--merges", f"{target}..{head}")
-    if merges and not await _merges_are_clean(_run_adapter(git, store), store, target, head):
-        return False
-    result = await git.arun_git_result(["cherry", target, head], cwd=store)
-    if result.returncode:
-        return False
-    rows = [line for line in result.stdout.splitlines() if line]
-    return bool(rows) and all(row.startswith("-") for row in rows)
-
-
 def _run_adapter(git: GitManager, store: str):
     async def run(_store: str, *args: str) -> str:
         return await _run(git, store, *args)
@@ -83,19 +71,7 @@ async def _plan(git: GitManager, store: str) -> tuple[dict[str, dict[str, str]],
     for branch, head in sorted(heads.items()):
         if branch in PROTECTED or branch.startswith("aq-provenance/"):
             continue
-        proof = None
-        for target_name, target_sha in targets.items():
-            if not is_valid_git_oid(head) or not is_valid_git_oid(target_sha):
-                continue
-            ancestor = await git.ais_ancestor(store, head, target_sha, strict=True)
-            if ancestor is True:
-                proof = f"ancestor:{target_name}"
-                break
-            if ancestor is None:
-                continue
-            if await _patch_equivalent(git, store, head, target_sha):
-                proof = f"patch-equivalent:{target_name}"
-                break
+        proof = await _proof(git, store, head, targets)
         if proof:
             deletable[branch] = {"head": head, "reason": proof}
         elif branch.startswith("aq/preserved/"):
@@ -103,11 +79,14 @@ async def _plan(git: GitManager, store: str) -> tuple[dict[str, dict[str, str]],
     return deletable, preserved, heads
 
 
-async def _load_operator_holds():
+@asynccontextmanager
+async def _operator_state(repository_url, checkout):
+    from sqlalchemy import select
     from sqlalchemy import text
 
     from src.config import load_config
     from src.database.engine import create_postgres_engine
+    from src.database.tables import repos
 
     config = load_config(os.path.expanduser("~/.agent-queue/config.yaml"))
     engine = create_postgres_engine(config.database.url, 1, 2)
@@ -116,7 +95,15 @@ async def _load_operator_holds():
             async with conn.begin():
                 await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
                 holds = await live_branch_references(conn)
-        return config, holds
+                repositories = (await conn.execute(select(repos))).mappings().all()
+        matches = [repo for repo in repositories
+                   if repository_urls_match(repo["url"], repository_url, base=str(checkout))]
+        if len(matches) != 1:
+            raise GitError("origin has no unique registered repository; refusing apply")
+        repository = matches[0]
+        db = SimpleNamespace(_engine=engine, immediate=engine.begin)
+        safety = SweepSafety(db, repository["id"], default_branch=repository["default_branch"])
+        yield config, holds, safety
     finally:
         await engine.dispose()
 
@@ -173,9 +160,14 @@ async def _main(args: argparse.Namespace) -> int:
     if current_scope() == WORKER or os.environ.get("AQ_DB_SCOPE") == "worker":
         raise GitError("apply is operator-only; this worker must not read the operator database")
 
-    config, holds = await _load_operator_holds()
+    async with _operator_state(remote_url, checkout) as (config, holds, safety):
+        return await _apply(args, checkout, remote_url, config, holds, safety)
+
+
+async def _apply(args, checkout, remote_url, config, holds, safety):
     # Re-read target and candidate heads after the database snapshot. The
     # branch delete itself remains leased to the exact observed candidate tip.
+    git = GitManager()
     await git.afetch_origin(str(checkout), repository_url=remote_url, all_heads=True)
     plan, preserved, before = await _plan(git, str(checkout))
     _print_report("Rechecked before apply", before)
@@ -190,35 +182,13 @@ async def _main(args: argparse.Namespace) -> int:
     binding = await git._abind_git_repository(remote_url)
     deleted = []
     for branch, entry in sorted(plan.items()):
-        ref = "refs/heads/" + branch
-        current = await git.als_remote_ref(str(checkout), branch)
-        if current.state is RemoteRefState.ERROR:
-            print(f"  failed {branch}: remote state unknown")
-            continue
-        if current.state is RemoteRefState.ABSENT:
-            continue
-        if current.oid != entry["head"]:
-            print(f"  moved {branch}: expected head no longer matches")
-            continue
-        _append_backup(args.backup, branch, entry["head"], entry["reason"])
-        try:
-            if binding is None:
-                await git.adelete_remote_ref_exact(str(checkout), ref, entry["head"])
-            else:
-                await git.adelete_repository_ref(
-                    str(checkout), repository=binding, branch=branch,
-                    expected_old_oid=entry["head"],
-                )
-        except GitError:
-            pass
-        after = await git.als_remote_ref(str(checkout), branch)
-        if after.state is RemoteRefState.ABSENT:
-            deleted.append(branch)
-            print(f"  deleted {branch} {entry['head']}")
-        elif after.state is RemoteRefState.PRESENT and after.oid != entry["head"]:
-            print(f"  moved {branch}: new remote head retained")
-        else:
-            print(f"  failed {branch}: deletion could not be confirmed")
+        async with safety.deletion(branch) as allowed:
+            if not allowed or any(row.get("branch") in {branch, "refs/heads/" + branch}
+                                  for row in await git.aworktree_list(str(checkout))):
+                print(f"  held {branch}: live reference, owner, protected target or worktree")
+                continue
+            if await _delete(args, git, checkout, binding, branch, entry):
+                deleted.append(branch)
 
     await git.afetch_origin(str(checkout), repository_url=remote_url, all_heads=True)
     after_heads = await remote_heads(_run_adapter(git, str(checkout)), str(checkout))
@@ -226,6 +196,39 @@ async def _main(args: argparse.Namespace) -> int:
     print(f"Backup: {args.backup}")
     _print_report("After", after_heads)
     return 0
+
+
+async def _delete(args, git, checkout, binding, branch, entry):
+    ref = "refs/heads/" + branch
+    current = await git.als_remote_ref(str(checkout), branch)
+    if current.state is RemoteRefState.ERROR:
+        print(f"  failed {branch}: remote state unknown")
+        return False
+    if current.state is RemoteRefState.ABSENT:
+        return False
+    if current.oid != entry["head"]:
+        print(f"  moved {branch}: expected head no longer matches")
+        return False
+    _append_backup(args.backup, branch, entry["head"], entry["reason"])
+    try:
+        if binding is None:
+            await git.adelete_remote_ref_exact(str(checkout), ref, entry["head"])
+        else:
+            await git.adelete_repository_ref(
+                str(checkout), repository=binding, branch=branch,
+                expected_old_oid=entry["head"],
+            )
+    except GitError:
+        pass
+    after = await git.als_remote_ref(str(checkout), branch)
+    if after.state is RemoteRefState.ABSENT:
+        print(f"  deleted {branch} {entry['head']}")
+        return True
+    elif after.state is RemoteRefState.PRESENT and after.oid != entry["head"]:
+        print(f"  moved {branch}: new remote head retained")
+    else:
+        print(f"  failed {branch}: deletion could not be confirmed")
+    return False
 
 
 def main() -> None:

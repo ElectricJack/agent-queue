@@ -81,6 +81,12 @@ no durable local/remote refs, configuration, index or database rows. Optional
 copy-before-delete rule; attached worktree branches are held. Fetch with pruning
 removes obsolete remote-tracking copies after the remote migration.
 
+The daily per-project branch backstop also runs this bounded namespace migration.
+It rechecks live tasks, owners, protected targets and attached worktrees under
+the shared ref exclusion before deleting an old branch, records a pre-delete
+audit entry and reports migrated/blocked counts to the project supervisor. It
+does not infer completion bindings for unlabelled sources.
+
 Close allocates its completion ID before verification, verifies the clean,
 exactly pushed final task source, publishes the provenance ref, verifies that
 exact remote OID, and rechecks the source before terminal transition. It refuses

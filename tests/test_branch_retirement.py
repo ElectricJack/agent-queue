@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 
 from src.database import Database
 from src.database.tables import (
@@ -111,6 +111,45 @@ async def rows(db):
         return [dict(row) for row in (await conn.execute(
             select(branch_retirements).order_by(branch_retirements.c.branch)
         )).mappings()]
+
+
+@pytest.mark.parametrize("decision", ["abandoned", "failed", "archived"])
+async def test_daily_backstop_recovers_missed_abandonment_and_audits_unique_work(setup, decision):
+    db, git, service, checkout, remote, head = setup
+    if decision == "abandoned":
+        await db.set_task_meta("retired", "work_outcome", "abandoned")
+    elif decision == "failed":
+        await db.update_task("retired", status=TaskStatus.FAILED)
+    else:
+        await db.archive_task("retired")
+        async with db.immediate() as conn:
+            await conn.execute(delete(branch_retirements))
+    assert await rows(db) == []
+    outcomes = await service.reconcile_project("p")
+    assert outcomes and all(state == "complete" for state, _ in outcomes)
+    audit = next(row for row in await rows(db) if row["branch"] == BRANCH)
+    assert audit["evidence"]["remote"]["sha"] == head
+    assert Path(audit["evidence"]["remote"]["bundle"]).is_file()
+    assert await git.arev_parse(str(remote), BRANCH) is None
+    assert await git.arev_parse(str(checkout), BRANCH) is None
+    assert await service.reconcile_project("p") == []
+
+
+async def test_daily_backstop_keeps_completed_unique_work_without_abandonment(setup):
+    db, git, service, _checkout, remote, head = setup
+    assert await service.reconcile_project("p") == []
+    assert await rows(db) == []
+    assert await git.arev_parse(str(remote), BRANCH) == head
+
+
+@pytest.mark.parametrize("status", [TaskStatus.READY, TaskStatus.PAUSED, TaskStatus.WAITING_INPUT])
+async def test_daily_backstop_does_not_retire_live_task_even_with_old_abandon_marker(setup, status):
+    db, git, service, _checkout, remote, head = setup
+    await db.set_task_meta("retired", "work_outcome", "abandoned")
+    await db.update_task("retired", status=status)
+    assert await service.reconcile_project("p") == []
+    assert await rows(db) == []
+    assert await git.arev_parse(str(remote), BRANCH) == head
 
 
 async def test_abandon_deletes_local_and_remote_after_committing_audit(setup):

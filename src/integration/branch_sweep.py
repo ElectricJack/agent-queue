@@ -8,7 +8,9 @@ stash. Live AQ references and branches attached to any worktree are held.
 
 from __future__ import annotations
 
+import asyncio
 import os
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,9 +18,66 @@ from pathlib import Path
 from src.git.manager import GitError, GitManager, RemoteRefState, is_valid_git_oid
 from src.integration.delivery_branches import (
     PROTECTED_BRANCHES, _merges_are_clean, branch_of, deletable, remote_heads,
+    live_branch_references, repository_protected_branches,
 )
 
 PROTECTED_NAMES = frozenset({"main", "dev", "staging", "gh-pages"})
+
+
+def record_sweep_date(path: Path, date: str) -> None:
+    """Persist completed maintenance only after its report was accepted."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    with temporary.open("w", encoding="ascii") as handle:
+        handle.write(date + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+@asynccontextmanager
+async def unguarded_deletion(branch):
+    yield True
+
+
+class SweepSafety:
+    """Share claim/publication exclusion and re-read holds for each deletion."""
+
+    def __init__(self, db, repository_id, *, default_branch, git=None, checkout=None):
+        self.db, self.repository_id, self.default_branch = db, repository_id, default_branch
+        self.git, self.checkout = git, checkout
+
+    @asynccontextmanager
+    async def deletion(self, branch):
+        from sqlalchemy import select
+
+        from src.database.tables import task_branch_origins, tasks
+        from src.integration.lock import BranchLock
+        from src.integration.models import BranchKey
+
+        async with asyncio.timeout(30), self.db.immediate() as conn:
+            owner = await BranchLock(self.db).lock_on(
+                conn, BranchKey(repository_id=self.repository_id, branch=branch),
+            )
+            names = {branch, branch.removesuffix("-wip")}
+            names |= {"refs/heads/" + name for name in tuple(names)}
+            originating = select(task_branch_origins.c.task_id).where(
+                task_branch_origins.c.repository_id == self.repository_id,
+                task_branch_origins.c.branch_name.in_(names),
+            )
+            await conn.execute(select(tasks.c.id).where(
+                tasks.c.branch_name.in_(names) | tasks.c.id.in_(originating),
+            ).order_by(tasks.c.id).with_for_update())
+            protected = await repository_protected_branches(
+                conn, self.repository_id, default_branch=self.default_branch,
+            )
+            held = await live_branch_references(conn)
+            attached = (self.git is not None and self.checkout is not None
+                        and any(branch_of(row.get("branch")) == branch
+                                for row in await self.git.aworktree_list(self.checkout)))
+            yield (branch not in protected | PROTECTED_NAMES and branch not in held
+                   and not attached
+                   and (owner is None or owner["handoff_state"] == "released"))
 
 
 @dataclass
@@ -197,6 +256,8 @@ async def sweep_checkout(
     default_branch: str,
     holds: dict[str, str],
     backup_path: Path,
+    protected: frozenset[str] = frozenset(),
+    deletion_guard=unguarded_deletion,
 ) -> BranchSweepReport:
     """Sweep one git common directory after fetching its authorized origin."""
     report = BranchSweepReport(checkout=checkout)
@@ -226,8 +287,8 @@ async def sweep_checkout(
     report.stashes = [line for line in stash_output.splitlines() if line.strip()]
 
     worktrees = await git.aworktree_list(checkout)
-    attached = {row["branch"] for row in worktrees if row.get("branch")}
-    protected = PROTECTED_NAMES | PROTECTED_BRANCHES | {default_branch}
+    attached = {branch_of(row["branch"]) for row in worktrees if row.get("branch")}
+    protected = protected | PROTECTED_NAMES | PROTECTED_BRANCHES | {default_branch}
     target_names = ("dev", "main", default_branch)
     targets = {
         name: remote_before[name]
@@ -271,41 +332,45 @@ async def sweep_checkout(
                     report.preserved_kept.append((branch, remote_sha))
 
     for branch, proof in sorted(local_proofs.items()):
-        if branch in attached:
-            continue
-        sha = local_before[branch]
-        _append_backup(
-            backup_path, repository=repository_url, scope="local",
-            branch=branch, sha=sha, proof=proof,
-        )
-        try:
-            await git.adelete_local_ref_exact(
-                checkout, ref=f"refs/heads/{branch}", expected_old_oid=sha
+        async with deletion_guard(branch) as allowed:
+            if not allowed or any(branch_of(row.get("branch")) == branch
+                                 for row in await git.aworktree_list(checkout)):
+                report.local_held += 1
+                continue
+            sha = local_before[branch]
+            _append_backup(
+                backup_path, repository=repository_url, scope="local",
+                branch=branch, sha=sha, proof=proof,
             )
-        except GitError:
-            # The compare-and-delete failed because the ref moved; keep it.
-            continue
-        report.local_deleted.append((branch, sha, proof))
+            try:
+                await git.adelete_local_ref_exact(
+                    checkout, ref=f"refs/heads/{branch}", expected_old_oid=sha
+                )
+            except GitError:
+                continue
+            report.local_deleted.append((branch, sha, proof))
 
     for branch, proof in sorted(remote_proofs.items()):
-        sha = remote_before[branch]
-        current = await git.als_remote_ref(checkout, branch)
-        if current.state is RemoteRefState.ERROR or current.state is RemoteRefState.ABSENT:
-            continue
-        if current.oid != sha:
-            continue
-        _append_backup(
-            backup_path, repository=repository_url, scope="remote",
-            branch=branch, sha=sha, proof=proof,
-        )
-        try:
-            await git.adelete_remote_ref_exact(checkout, branch, sha)
-        except GitError:
-            # Resolve moved/uncertain deletes with an exact ref read below.
-            pass
-        after = await git.als_remote_ref(checkout, branch)
-        if after.state is RemoteRefState.ABSENT:
-            report.remote_deleted.append((branch, sha, proof))
+        async with deletion_guard(branch) as allowed:
+            if not allowed or any(branch_of(row.get("branch")) == branch
+                                 for row in await git.aworktree_list(checkout)):
+                report.remote_held += 1
+                continue
+            sha = remote_before[branch]
+            current = await git.als_remote_ref(checkout, branch)
+            if current.state is not RemoteRefState.PRESENT or current.oid != sha:
+                continue
+            _append_backup(
+                backup_path, repository=repository_url, scope="remote",
+                branch=branch, sha=sha, proof=proof,
+            )
+            try:
+                await git.adelete_remote_ref_exact(checkout, branch, sha)
+            except GitError:
+                pass
+            after = await git.als_remote_ref(checkout, branch)
+            if after.state is RemoteRefState.ABSENT:
+                report.remote_deleted.append((branch, sha, proof))
 
     await git.afetch_origin(checkout, repository_url=repository_url, all_heads=True)
     final_remote = await remote_heads(_run_adapter(git), checkout)
