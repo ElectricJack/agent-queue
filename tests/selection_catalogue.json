@@ -13945,12 +13945,13 @@
         "provider-failover"
       ],
       "default_arm": true,
-      "digest": "sha256:bca613ca26abfb97d69c5523c15ffffe691b25785322ad188a5e54fb801c32bf",
+      "digest": "sha256:abfb111bed39d0d0ed72f235a692226f376991516ad1a439612ec116280ce24f",
       "imports": [
         "src.commands.handler",
         "src.database.tables",
         "src.git.manager",
         "src.intelligence_classes",
+        "src.knowledge.budget",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.provider_failover",

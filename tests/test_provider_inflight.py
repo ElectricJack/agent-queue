@@ -169,6 +169,59 @@ def test_the_hand_off_note_says_where_the_last_worker_stopped():
     assert "aq session logs sess-1" in text
 
 
+def test_a_saved_head_says_continue_even_without_a_session_log():
+    text = inflight.handoff_comment(
+        {"checkpoint": "pushed", "branch": "aq/t0", "head": "a" * 40, "wip_commit": True},
+        "t0",
+    )
+    assert "continue from the branch tip -- do not restart the task." in text
+
+
+#: A full-width OpenCode frame: box-drawing chrome is three UTF-8 bytes a character.
+_BOX_PANE = "\n".join(f"│ step {n:02d} " + "─" * 150 + "│" for n in range(80))
+
+
+def test_the_kept_screen_tail_is_bounded_in_bytes_not_characters():
+    tail = inflight.screen_tail(_BOX_PANE)
+    assert len(tail.encode("utf-8")) <= 8192
+    assert tail.endswith(_BOX_PANE.splitlines()[-1])
+    kept, omitted = inflight.tail_within(tail, inflight.PRIME_SCREEN_BYTES)
+    assert len(kept.encode("utf-8")) <= inflight.PRIME_SCREEN_BYTES
+    assert omitted == len(tail.splitlines()) - len(kept.splitlines()) > 0
+    # One line wider than the budget keeps its end, never a split character.
+    wide, dropped = inflight.tail_within("─" * 2000, 100)
+    assert wide == "─" * 33 and dropped == 0
+
+
+async def test_a_large_hand_off_screen_keeps_prime_inside_the_context_budget(orch):
+    """fresh-rapids-73 review: prime's body is required knowledge context, and an
+    over-budget body fails ``aq prime`` outright -- the quoted screen stays small."""
+    from src.knowledge.budget import ContextBudget
+    from tests.session_dispatch_helpers import prime_bodies, render_prime
+
+    await _task(orch, "t0")
+    handoff = {
+        "checkpoint": "pushed", "branch": "aq/t0", "head": "a" * 40,
+        "session_logs": "aq session logs sess-1",
+    }
+    await orch.db.set_task_meta("t0", inflight.HANDOFF_META, handoff)
+    without = prime_bodies(await render_prime(orch, "t0"))["task_context"]
+    # The size an older daemon stored, before the byte cap.
+    handoff["screen_tail"] = "\n".join(_BOX_PANE.splitlines()[-80:])
+    assert len(handoff["screen_tail"].encode("utf-8")) > 32768
+    await orch.db.set_task_meta("t0", inflight.HANDOFF_META, handoff)
+
+    doc = await render_prime(orch, "t0")
+    body = prime_bodies(doc)["task_context"]
+    assert len(body.encode("utf-8")) - len(without.encode("utf-8")) <= (
+        inflight.PRIME_SCREEN_BYTES + 512
+    )
+    assert _BOX_PANE.splitlines()[-1] in body
+    assert "earlier screen line(s) omitted; the full log: `aq session logs sess-1`" in body
+    budget = ContextBudget.from_config(orch.config).account(doc.to_markdown())
+    assert budget["diagnostic"] is None
+
+
 # -- the WIP checkpoint against real Git -------------------------------------------
 
 
@@ -572,7 +625,8 @@ async def test_live_opencode_exhaustion_preserves_work_and_releases_or_holds_tas
 
 
 async def _attach_train_owner(
-    orch, origin: pathlib.Path, work: pathlib.Path, *, session_id: str, workspace_id: str
+    orch, origin: pathlib.Path, work: pathlib.Path, *, session_id: str, workspace_id: str,
+    owner_role: str = "worker",
 ) -> None:
     """Make p-1 a train project whose writer of t0 is *session_id* in *workspace_id*.
 
@@ -614,11 +668,36 @@ async def _attach_train_owner(
         await conn.execute(
             insert(integration_branch_owners).values(
                 id="owner-t0", repository_id="r-1", ref="aq/t0", owner_id="t0",
-                owner_role="worker", fence_token=1, handoff_state="attached",
+                owner_role=owner_role, fence_token=1, handoff_state="attached",
                 session_id=session_id, workspace_id=workspace_id,
                 created_at=time.time(), updated_at=time.time(),
             )
         )
+
+
+async def test_a_train_verifier_on_a_usage_limit_screen_commits_nothing(orch, tmp_path):
+    """fresh-rapids-73 review: only the task's own writer is saved onto its branch;
+    a verifier's checkout is left to owner recovery, untouched."""
+    session, workspace, origin = await _launch_on_codex(
+        orch, git_root=tmp_path / "git", harness="opencode-zen"
+    )
+    head = _do_some_work(workspace)
+    await _attach_train_owner(
+        orch, origin, workspace, session_id=session.id, workspace_id="ws-p-1",
+        owner_role="verifier",
+    )
+    orch.git = GitManager()
+    refs = _git(["for-each-ref", "--format=%(refname) %(objectname)"], origin)
+
+    _fake(orch).feed_output(session.name, OPENCODE_LIMIT_PANE)
+    await orch.session_reconciler.tick(now=time.time())
+
+    assert orch.provider_availability.effective_state("opencode-zen") == EXHAUSTED
+    assert _git(["for-each-ref", "--format=%(refname) %(objectname)"], origin) == refs
+    assert _git(["rev-parse", "HEAD"], workspace) == head
+    assert "new.py" in _git(["status", "--porcelain"], workspace)
+    handoff = await orch.db.get_task_meta("t0", inflight.HANDOFF_META)
+    assert handoff["checkpoint"] == "integration_managed"
 
 
 async def test_a_train_writer_on_a_usage_limit_screen_saves_wip_onto_its_own_branch(

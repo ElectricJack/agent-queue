@@ -409,6 +409,29 @@ async def test_an_ordinary_owner_handoff_records_no_resume_point(
     assert await orchestrator.db.get_task_meta("task", RESUME_POINT_META) is None
 
 
+async def test_a_verifier_checkout_is_never_saved_onto_the_task_branch(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    """fresh-rapids-73 review: a verifier's scratch edits are not the task's work,
+    so a dirty verifier keeps the old refusal -- nothing is stopped or committed."""
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    events: list[str] = []
+    monkeypatch.setattr(
+        orchestrator.session_providers, "create", lambda *_args: _provider(events)
+    )
+    current_branch, run, saved = _saving_git(events, monkeypatch)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    confirmed = await orchestrator.aconfirm_integration_owner_handoff(
+        _owner(owner_role="verifier"), save_wip_reason="stopped by aq task stop"
+    )
+
+    assert confirmed is False
+    assert saved == [] and "stop" not in events
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
+
+
 async def test_unsaved_wip_keeps_the_fence_and_records_the_writer_stopped(
     orchestrator_factory, tmp_path, monkeypatch
 ):
