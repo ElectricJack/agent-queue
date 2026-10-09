@@ -665,7 +665,7 @@ class SessionReconciler:
                     f"is retired ({retirement['disposition']}) and no close of it can be "
                     "accepted. The session reconciler stopped the session; the task was "
                     "not closed or marked passed. Its checkout and branch stay preserved: "
-                    "owner recovery snapshots unpushed work to aq/preserved/<owner-row> "
+                    "owner recovery publishes unpushed work to this task branch "
                     "before it releases the branch."
                 ),
                 author_kind="supervisor",
@@ -735,7 +735,7 @@ class SessionReconciler:
                     "come. The session reconciler stopped the session; the task's terminal "
                     "state and completion were not changed. Its claim, checkout and branch "
                     "binding stay for owner recovery (`aq integration release-owner`), "
-                    "which snapshots unpushed work to aq/preserved/<owner-row> before it "
+                    "which publishes unpushed work to this task branch before it "
                     "releases the branch."
                 ),
                 author_kind="supervisor",

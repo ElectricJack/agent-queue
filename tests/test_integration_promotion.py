@@ -3722,7 +3722,7 @@ async def test_unwritten_resolution_recovery_refuses_live_writer(db, conflict_re
         await service.recover_unwritten_resolution(case["intent_id"])
 
 
-async def _preserved_no_progress_case(db, case):
+async def _preserved_no_progress_case(db, case, ref_style="legacy"):
     """Expired stage9 shape: exact completed merge, stopped/released writer, audit."""
     from src.database.tables import integration_owner_recoveries
 
@@ -3735,7 +3735,8 @@ async def _preserved_no_progress_case(db, case):
         owner = (await conn.execute(select(integration_branch_owners).where(
             integration_branch_owners.c.ref == "aq/parent",
         ))).mappings().one()
-        ref = f"aq/preserved/{owner['id']}"
+        ref = {"legacy": f"aq/preserved/{owner['id']}", "task": "aq/parent",
+               "snapshot": f"aq/recovery/{owner['id']}/{candidate}"}[ref_style]
         subject = {"kind": "parent", "generation": 0, "head_sha": case["target"]}
         await conn.execute(update(integration_repair_stages).where(
             integration_repair_stages.c.operation_id == "resolution-op",
@@ -3774,12 +3775,13 @@ async def _preserved_no_progress_case(db, case):
                                     "candidate_sha": candidate}}
 
 
+@pytest.mark.parametrize("ref_style", ["legacy", "task", "snapshot"])
 async def test_preserved_repair_recovers_expired_stage_without_renewing_budget(
-    db, conflict_resolution_case, command_handler_factory,
+    db, conflict_resolution_case, command_handler_factory, ref_style,
 ):
     from src.integration.records import ParentEpisodeRecords
 
-    case = await _preserved_no_progress_case(db, conflict_resolution_case)
+    case = await _preserved_no_progress_case(db, conflict_resolution_case, ref_style)
     handler = await _detached_rebind_handler(db, case, command_handler_factory)
     before = await _detached_rebind_snapshot(db)
     preview = await handler.execute("integration_recover_preserved_repair", case["request_args"])
@@ -3805,6 +3807,8 @@ async def test_preserved_repair_recovers_expired_stage_without_renewing_budget(
     assert _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0] == case["candidate"]
     replay = await handler.execute("integration_recover_preserved_repair", args)
     assert replay["outcome"] == "already_recovered", replay
+    if ref_style != "task":
+        assert _git(["ls-remote", "origin", "refs/heads/" + case["preserved_ref"]], case["work"]) == ""
     assert await _detached_rebind_snapshot(db) == after
     async with db._engine.connect() as conn:
         assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 1
@@ -3884,7 +3888,7 @@ async def test_preserved_repair_refuses_stale_moved_or_ambiguous_evidence(
     if mutation in {"source", "target", "preserved", "parents"}:
         branch = {"source": "aq/child", "target": "aq/parent",
                   "preserved": case["preserved_ref"], "parents": case["preserved_ref"]}[mutation]
-        new = case["resolved_head"] if mutation in {"source", "parents"} else case["candidate"]
+        new = case["resolved_head"] if mutation in {"source", "target", "parents"} else case["candidate"]
         if mutation == "preserved":
             new = case["source"]
         _git(["push", "--force", "origin", f"{new}:refs/heads/{branch}"], case["work"])

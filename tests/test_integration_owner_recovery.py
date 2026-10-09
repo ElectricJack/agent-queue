@@ -296,14 +296,14 @@ async def test_a_local_branch_ahead_of_origin_is_preserved_then_released(env):
     result = await env.service().recover("o2", principal="sweep")
 
     assert result.outcome == "preserved_and_released"
-    assert remote_sha(env.origin, "aq/preserved/o2") == tip
-    assert result.evidence["preserved_ref"] == "aq/preserved/o2"
+    assert remote_sha(env.origin, "aq/t2") == tip
+    assert result.evidence["preserved_ref"] == "aq/t2"
     assert result.evidence["preserved_sha"] == tip
     assert result.evidence["local_sha"] == tip
     assert result.evidence["worktree"] is None
     assert (await env.row("o2"))["handoff_state"] == "released"
-    # The task branch itself was never rewritten on origin.
-    assert remote_sha(env.origin, "aq/t2") != tip
+    assert remote_sha(env.origin, "aq/t2") == tip
+    assert git(env.origin, "for-each-ref", "refs/heads/aq/preserved/") == ""
 
 
 async def test_a_preserved_ref_already_at_the_same_sha_is_not_a_failure(env):
@@ -315,7 +315,7 @@ async def test_a_preserved_ref_already_at_the_same_sha_is_not_a_failure(env):
     result = await env.service().recover("o2", principal="sweep")
 
     assert result.outcome == "preserved_and_released"
-    assert remote_sha(env.origin, "aq/preserved/o2") == tip
+    assert remote_sha(env.origin, "aq/t2") == tip
 
 
 async def test_a_dirty_worktree_is_snapshotted_without_touching_it_then_detached(env):
@@ -334,7 +334,7 @@ async def test_a_dirty_worktree_is_snapshotted_without_touching_it_then_detached
     result = await env.service().recover("o3", principal="sweep")
 
     assert result.outcome == "preserved_and_released"
-    preserved = remote_sha(env.origin, "aq/preserved/o3")
+    preserved = remote_sha(env.origin, "aq/t3")
     assert preserved is not None and preserved == result.evidence["preserved_sha"]
     assert git(env.origin, "show", f"{preserved}:base.txt") == "edited"
     assert git(env.origin, "show", f"{preserved}:untracked.txt") == "brand new"
@@ -465,7 +465,7 @@ async def test_a_row_that_changes_before_the_release_is_refused_as_stale(env):
     row = await env.row("o9")
     assert (row["handoff_state"], row["fence_token"]) == ("attached", 4)
     # The preservation already pushed is kept, and the evidence says where.
-    assert remote_sha(env.origin, "aq/preserved/o9") == tip
+    assert remote_sha(env.origin, "aq/t9") == tip
     assert result.evidence["preserved_sha"] == tip
     [audit] = await env.audits("o9")
     assert audit["reason"] == "stale_fence"
@@ -483,11 +483,11 @@ async def test_a_dry_run_plans_the_preservation_and_changes_nothing(env):
 
     assert (result.outcome, result.dry_run) == ("preserved_and_released", True)
     planned = result.evidence["planned"]
-    assert {"action": "push", "ref": "aq/preserved/o10", "source": f"snapshot of {slot}"} in [
+    assert {"action": "push", "ref": "aq/t10", "source": f"snapshot of {slot}"} in [
         {k: step.get(k) for k in ("action", "ref", "source")} for step in planned
     ]
     assert {"action": "detach", "worktree": str(slot)} in planned
-    assert remote_sha(env.origin, "aq/preserved/o10") is None
+    assert remote_sha(env.origin, "aq/t10") == git(slot, "rev-parse", "HEAD")
     assert not detached(slot)
     assert await env.audits("o10") == []
     assert (await env.row("o10"))["handoff_state"] == "attached"
@@ -693,7 +693,7 @@ async def test_failed_operator_stop_release_reroute_resume_preserves_successor_g
     await env.db.queue_task_recovery_notifications()
     released = await handler.execute("integration_release_owner", {"task_id": "producer"})
     assert released["outcome"] == "preserved_and_released", released
-    assert remote_sha(env.origin, "aq/preserved/owner") == tip
+    assert remote_sha(env.origin, "aq/producer") == tip
     await env.db.update_task(
         "producer",
         profile_id="codex-worker",
@@ -770,7 +770,7 @@ async def test_failed_operator_stop_release_reroute_resume_preserves_successor_g
         git(env.base, "push", "--force", "origin", "HEAD:refs/heads/aq/producer")
         git(env.base, "checkout", "main")
     if scenario == "ref-moved":
-        git(env.base, "push", "--force", "origin", f"{base_sha}:refs/heads/aq/preserved/owner")
+        git(env.base, "push", "--force", "origin", f"{base_sha}:refs/heads/aq/producer")
         with pytest.raises(GitError, match="preserved ref changed"):
             await orch._prepare_exact_origin_workspace(
                 task,
@@ -781,7 +781,7 @@ async def test_failed_operator_stop_release_reroute_resume_preserves_successor_g
             )
         assert git(slot, "rev-parse", "HEAD") == tip
     elif scenario == "canonical-diverged":
-        with pytest.raises(GitError, match="canonical branch diverged"):
+        with pytest.raises(GitError, match="task branch lost audited progress"):
             await orch._prepare_exact_origin_workspace(
                 task,
                 project,
@@ -801,7 +801,7 @@ async def test_failed_operator_stop_release_reroute_resume_preserves_successor_g
         assert git(slot, "rev-parse", "HEAD") == expected_tip
         assert git(slot, "rev-parse", "--abbrev-ref", "HEAD") == "aq/producer"
         if scenario != "published-descendant":
-            assert remote_sha(env.origin, "aq/producer") != tip  # No implicit publication.
+            assert remote_sha(env.origin, "aq/producer") == tip
 
 
 @pytest.mark.parametrize(("state", "role"), [("attached", "collector"), ("reserved", "worker")])
@@ -1212,7 +1212,7 @@ async def test_a_retired_delegates_drain_ack_stops_it_and_its_work_is_preserved(
         assert await release_delegates(env.db, now=now, released_by="integration_service") == []
         return
     assert outcome.outcome == "preserved_and_released"
-    preserved = remote_sha(env.origin, "aq/preserved/owner")
+    preserved = remote_sha(env.origin, outcome.evidence["preserved_ref"])
     assert git(env.origin, "show", f"{preserved}:progress.txt") == "unsaved repair progress"
     assert (slot / "progress.txt").read_text() == "unsaved repair progress\n"
     assert (await env.row("owner"))["handoff_state"] == "released"
@@ -1368,7 +1368,7 @@ async def test_an_ambiguous_close_drain_ack_stops_the_writer_and_its_owner_is_re
     )
     assert outcome.outcome == ("preserved_and_released" if unsaved else "released")
     if unsaved:
-        preserved = remote_sha(env.origin, "aq/preserved/owner")
+        preserved = remote_sha(env.origin, outcome.evidence["preserved_ref"])
         assert git(env.origin, "show", f"{preserved}:notes.txt") == (
             "notes written after the close"
         )
@@ -1382,3 +1382,153 @@ async def test_an_ambiguous_close_drain_ack_stops_the_writer_and_its_owner_is_re
         TaskStatus.COMPLETED, None, 1
     )
     assert await env.db.get_task_completion("leaf") is None
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+@pytest.mark.parametrize("crash", ["before_release", "push_response_lost"])
+async def test_published_progress_survives_unfinished_release(env, dirty, crash, monkeypatch):
+    from src.git.manager import GitError
+
+    env.branch("aq/resume", extra=0 if dirty else 1)
+    slot = await env.slot("slot", "aq/resume")
+    if dirty:
+        (slot / "notes.txt").write_text("dirty progress\n")
+    await env.session("writer", work_dir=slot)
+    await env.owner("owner", "aq/resume", "resume", session_id="writer", workspace_id="ws-slot")
+    service = env.service()
+    if crash == "before_release":
+        original = service._release
+        monkeypatch.setattr(service, "_release", AsyncMock(side_effect=RuntimeError("release lost")))
+        with pytest.raises(RuntimeError, match="release lost"):
+            await service.recover("owner", principal="sweep")
+        monkeypatch.setattr(service, "_release", original)
+    else:
+        original = service.git.apush_validated_ref
+
+        async def interrupted(*args, **kwargs):
+            await original(*args, **kwargs)
+            raise GitError("push response lost")
+
+        monkeypatch.setattr(service.git, "apush_validated_ref", interrupted)
+        refused = await service.recover("owner", principal="sweep")
+        assert (refused.outcome, refused.reason) == ("not_eligible", "origin_unreachable")
+        monkeypatch.setattr(service.git, "apush_validated_ref", original)
+    published = remote_sha(env.origin, "aq/resume")
+    recovered = await env.service().recover("owner", principal="restart")
+    assert recovered.outcome == "preserved_and_released"
+    assert recovered.evidence["preserved_ref"] == "aq/resume"
+    assert recovered.evidence["preserved_sha"] == published
+    assert remote_sha(env.origin, "aq/resume") == published
+    assert (await env.row("owner"))["handoff_state"] == "released"
+    assert git(env.origin, "for-each-ref", "refs/heads/aq/preserved/") == ""
+    if dirty:
+        assert git(env.origin, "show", f"{published}:notes.txt") == "dirty progress"
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+@pytest.mark.parametrize("replay", ["none", "after_push", "after_delete"])
+async def test_diverged_snapshot_is_merged_on_same_branch_then_deleted(env, dirty, replay, monkeypatch):
+    from src.git.manager import GitError
+    from src.integration.owner_recovery import resume_recovery_snapshots
+
+    original = env.branch("aq/resume")
+    slot = await env.slot("slot", "aq/resume")
+    await env.task("resume")
+    await env.db.update_task("resume", repo_id="r", branch_name="aq/resume")
+    (slot / "local.txt").write_text("local progress\n")
+    if not dirty:
+        git(slot, "add", "local.txt")
+        git(slot, "commit", "-m", "local progress")
+    git(env.base, "checkout", "-b", "publisher", original)
+    (env.base / "remote.txt").write_text("remote progress\n")
+    git(env.base, "add", "remote.txt")
+    git(env.base, "commit", "-m", "remote progress")
+    remote = git(env.base, "rev-parse", "HEAD")
+    git(env.base, "push", "origin", "HEAD:refs/heads/aq/resume")
+    git(env.base, "checkout", "main")
+    await env.session("writer", work_dir=slot)
+    await env.owner("owner", "aq/resume", "resume", session_id="writer", workspace_id="ws-slot")
+    service = env.service()
+    recovered = await service.recover("owner", principal="sweep")
+    assert recovered.outcome == "preserved_and_released"
+    sha, ref = recovered.evidence["preserved_sha"], recovered.evidence["preserved_ref"]
+    assert ref == f"aq/recovery/owner/{sha}"
+    assert remote_sha(env.origin, "aq/resume") == remote
+    assert remote_sha(env.origin, ref) == sha
+    assert git(env.origin, "for-each-ref", "refs/heads/aq/preserved/") == ""
+
+    # A retained local copy must also disappear on cleanup replay.
+    git(env.base, "update-ref", f"refs/heads/{ref}", sha)
+    deletion = service.git.adelete_remote_ref_exact
+    if replay != "none":
+        async def interrupted(*args, **kwargs):
+            if replay == "after_delete":
+                await deletion(*args, **kwargs)
+            raise GitError("injected response loss")
+        monkeypatch.setattr(service.git, "adelete_remote_ref_exact", interrupted)
+        with pytest.raises(GitError, match="injected response loss"):
+            await resume_recovery_snapshots(
+                env.db, service.git, str(env.base), "r", "aq/resume", repository_url=str(env.origin),
+            )
+        monkeypatch.setattr(service.git, "adelete_remote_ref_exact", deletion)
+    tip = await resume_recovery_snapshots(
+        env.db, service.git, str(env.base), "r", "aq/resume", repository_url=str(env.origin),
+    )
+    assert remote_sha(env.origin, "aq/resume") == tip
+    assert git(env.origin, "show", f"{tip}:local.txt") == "local progress"
+    assert git(env.origin, "show", f"{tip}:remote.txt") == "remote progress"
+    assert await service.git.ais_ancestor(str(env.base), sha, tip, strict=True)
+    assert await service.git.ais_ancestor(str(env.base), remote, tip, strict=True)
+    assert remote_sha(env.origin, ref) is None
+    assert git(env.base, "for-each-ref", f"refs/remotes/origin/{ref}") == ""
+    assert git(env.base, "for-each-ref", f"refs/heads/{ref}") == ""
+    # Actual retry selects the existing identity and keeps the merged work.
+    from src.config import WorktreesConfig
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+    import asyncio
+
+    mgr = WorktreeSlotManager(env.db, service.git, None, WorktreesConfig(), lambda _: asyncio.Lock())
+    task = await env.db.get_task("resume")
+    branch = await mgr.reset_slot_for_task(await env.db.get_workspace("ws-slot"), task)
+    assert branch == "aq/resume" and git(slot, "rev-parse", "HEAD") == tip
+    assert (slot / "local.txt").read_text() == "local progress\n"
+    assert (slot / "remote.txt").read_text() == "remote progress\n"
+
+
+@pytest.mark.parametrize("guard", ["conflict", "moved_snapshot", "failed_push"])
+async def test_diverged_recovery_refuses_without_losing_either_side(env, guard, monkeypatch):
+    from src.git.manager import GitError
+    from src.integration.owner_recovery import resume_recovery_snapshots
+
+    original = env.branch("aq/resume")
+    slot = await env.slot("slot", "aq/resume")
+    (slot / "base.txt").write_text("local change\n")
+    git(slot, "add", "base.txt")
+    git(slot, "commit", "-m", "local change")
+    local = git(slot, "rev-parse", "HEAD")
+    git(env.base, "checkout", "-b", "publisher", original)
+    filename = "base.txt" if guard == "conflict" else "remote.txt"
+    (env.base / filename).write_text("remote change\n")
+    git(env.base, "add", filename)
+    git(env.base, "commit", "-m", "remote change")
+    remote = git(env.base, "rev-parse", "HEAD")
+    git(env.base, "push", "origin", "HEAD:refs/heads/aq/resume")
+    git(env.base, "checkout", "main")
+    await env.session("writer", work_dir=slot)
+    await env.owner("owner", "aq/resume", "resume", session_id="writer", workspace_id="ws-slot")
+    service = env.service()
+    recovered = await service.recover("owner", principal="sweep")
+    ref = recovered.evidence["preserved_ref"]
+    if guard == "moved_snapshot":
+        git(env.origin, "update-ref", "refs/heads/" + ref, original)
+    if guard == "failed_push":
+        monkeypatch.setattr(service.git, "apush_validated_ref", AsyncMock(side_effect=GitError("push failed")))
+    with pytest.raises(GitError, match={"conflict": "conflicts", "moved_snapshot": "ref changed",
+                                      "failed_push": "push failed"}[guard]):
+        await resume_recovery_snapshots(
+            env.db, service.git, str(env.base), "r", "aq/resume", repository_url=str(env.origin),
+        )
+    assert remote_sha(env.origin, "aq/resume") == remote
+    assert remote_sha(env.origin, ref) == (original if guard == "moved_snapshot" else local)
+    assert git(slot, "rev-parse", "HEAD") == local
+    assert (slot / "base.txt").read_text() == "local change\n"
