@@ -1066,7 +1066,7 @@ async def _ingest_propose(handler, path, scope, graph=None):
     assert await check_request_scope("task_batch_propose", args, scope, db=handler.db) is None
     result = await handler.execute("task_batch_propose", {**args, "_scope": asdict(scope)})
     assert result["success"], result
-    return result["proposal_id"]
+    return result
 
 
 async def _ingest_commit(handler, proposal_id, scope):
@@ -1075,13 +1075,55 @@ async def _ingest_commit(handler, proposal_id, scope):
     return await handler.execute("task_batch_commit", {**args, "_scope": asdict(scope)})
 
 
+async def _proposal_rows(handler, project_id="p1"):
+    """(id, status) of every proposal in a project, read on its own connection."""
+    from sqlalchemy import select
+
+    from src.database.tables import task_proposals
+
+    async with handler.db._engine.begin() as conn:
+        rows = await conn.execute(
+            select(task_proposals.c.id, task_proposals.c.status).where(
+                task_proposals.c.project_id == project_id
+            )
+        )
+        return [tuple(row) for row in rows]
+
+
+async def test_approved_implementation_spec_publishes_live_tasks_without_a_commit_call(handler):
+    """The graph an approved spec describes goes live in the call that stages it.
+
+    Nothing waits on a second command: no ready proposal, no human gate, no
+    operator running ``task_batch_commit`` by hand.
+    """
+    path, scope = await _ingest_assignment(handler)
+    result = await _ingest_propose(handler, path, scope)
+
+    assert result["committed"] is True
+    assert len(result["task_ids"]) == 6
+    proposal = await get_proposal(handler.db, result["proposal_id"])
+    assert proposal["status"] == "committed"
+    assert proposal["payload"]["spec_ingest"]["task_ids"] == result["task_ids"]
+    # Every proposed task is a real row the graph already serves.
+    assert {task.id for task in await handler.db.list_tasks(project_id="p1")} == {
+        "ingest", *result["task_ids"]
+    }
+    assert await existing_graph_edges(handler.db, "p1")
+    emitted = [event for event in _emitted(handler) if event[0].startswith("proposal")]
+    assert not [event for event in emitted if event[0] == "proposal.ready"]
+    assert ("proposal.status_changed", {
+        "project_id": "p1", "proposal_id": result["proposal_id"], "status": "committed",
+    }) in emitted
+    # A later commit is the idempotent replay of that same receipt.
+    replay = await _ingest_commit(handler, result["proposal_id"], scope)
+    assert replay["already_committed"] and replay["task_ids"] == result["task_ids"]
+
+
 async def test_design_ingestion_only_files_implementation_spec_for_review(handler):
     path, scope = await _ingest_assignment(handler, "design")
     # Even a recorded implementation graph cannot implement an explicit design.
-    proposal_id = await _ingest_propose(handler, path, scope)
+    result = await _ingest_propose(handler, path, scope)
     assert not [event for event in _emitted(handler) if event[0] == "proposal.ready"]
-    result = await _ingest_commit(handler, proposal_id, scope)
-    assert result["success"], result
     epic, child = [await handler.db.get_task(tid) for tid in result["task_ids"]]
     assert child.parent_task_id == epic.id
     assert child.task_type == TaskType.DESIGN
@@ -1096,9 +1138,7 @@ async def test_design_ingestion_only_files_implementation_spec_for_review(handle
 
 async def test_implementation_ingestion_commits_epics_and_leaf_dependencies_without_gate(handler):
     path, scope = await _ingest_assignment(handler)
-    proposal_id = await _ingest_propose(handler, path, scope)
-    result = await _ingest_commit(handler, proposal_id, scope)
-    assert result["success"], result
+    result = await _ingest_propose(handler, path, scope)
     ids = dict(zip(["core", "api", "ui", "docs", "draft", "final"], result["task_ids"], strict=True))
     for leaf, parent in [("api", "core"), ("ui", "core"), ("draft", "docs"), ("final", "docs")]:
         task = await handler.db.get_task(ids[leaf])
@@ -1119,43 +1159,45 @@ async def test_implementation_ingestion_commits_epics_and_leaf_dependencies_with
     assert not (await handler.db.get_task(ids["ui"])).is_blocked
     assert not (await handler.db.get_task(ids["draft"])).is_blocked
     assert (await handler.db.get_task(ids["final"])).is_blocked
-    replay = await _ingest_commit(handler, proposal_id, scope)
+    replay = await _ingest_commit(handler, result["proposal_id"], scope)
     assert replay["already_committed"]
     assert replay["task_ids"] == result["task_ids"]
 
 
 async def test_ingest_transaction_hides_partial_graph_and_rolls_back_every_row(handler, monkeypatch):
     path, scope = await _ingest_assignment(handler)
-    proposal_id = await _ingest_propose(handler, path, scope)
     original = handler.db.create_task
     original_recompute = handler.db.recompute_blocked
-    calls = 0
+    created = []
 
-    async def fail_during_creation(task, **kwargs):
-        nonlocal calls
+    async def record_creation(task, **kwargs):
         await original(task, **kwargs)
-        calls += 1
-        # A separate connection cannot see the inserted task or commit claim.
+        created.append(task.id)
+        # A separate connection cannot see the inserted task or the proposal.
         assert {task.id for task in await handler.db.list_tasks(project_id="p1")} == {"ingest"}
-        assert (await get_proposal(handler.db, proposal_id))["status"] == "ready"
+        assert await _proposal_rows(handler) == []
 
     async def fail_after_dependency(*args, **kwargs):
         # Edges are inserted on the commit connection just before this recompute.
         await original_recompute(*args, **kwargs)
         raise RuntimeError("injected failure after dependency insertion")
 
-    monkeypatch.setattr(handler.db, "create_task", fail_during_creation)
+    monkeypatch.setattr(handler.db, "create_task", record_creation)
     monkeypatch.setattr(handler.db, "recompute_blocked", fail_after_dependency)
-    result = await _ingest_commit(handler, proposal_id, scope)
+    result = await handler.execute(
+        "task_batch_propose", {**_implementation_graph(path), "_scope": asdict(scope)}
+    )
     assert not result["success"] and "injected failure" in result["error"]
     assert {task.id for task in await handler.db.list_tasks(project_id="p1")} == {"ingest"}
-    assert calls == 6
+    assert len(created) == 6
     assert await existing_graph_edges(handler.db, "p1") == []
-    assert (await get_proposal(handler.db, proposal_id))["status"] == "ready"
+    # Nothing survives for an operator to commit by hand either.
+    assert await _proposal_rows(handler) == []
     assert not [event for event in _emitted(handler) if event[0] == "proposal.status_changed"]
     monkeypatch.setattr(handler.db, "create_task", original)
     monkeypatch.setattr(handler.db, "recompute_blocked", original_recompute)
-    assert (await _ingest_commit(handler, proposal_id, scope))["success"]
+    retried = await _ingest_propose(handler, path, scope)
+    assert retried["committed"] is True
 
 
 @pytest.mark.parametrize(
@@ -1179,6 +1221,8 @@ async def test_ingestion_refuses_invalid_graph_before_publishing(handler, invali
     assert not result["success"], result
     assert len(await handler.db.list_tasks(project_id="p1")) == 1
     assert (await handler.db.get_task("ingest")).title == "Ingest approved spec"
+    # A refused batch leaves no staged proposal behind.
+    assert await _proposal_rows(handler) == []
 
 
 async def test_source_text_cannot_grant_ungated_authority(handler):
