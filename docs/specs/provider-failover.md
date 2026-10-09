@@ -774,7 +774,9 @@ detail) into `_fail_session_launch`; the exit path is
   is `stranded_work.save_wip_to_task_branch`: the stopped writer's work becomes
   one `WIP saved by AQ: <reason>` commit fast-forwarded onto the task's *own*
   branch (never forced, only in the project's integration repository), with no
-  `aq/preserved` snapshot. The save records `failover_resume_checkpoint`
+  `aq/preserved` snapshot. Only the task's own writer is saved (owner role
+  `worker` or `repair`, owner id the task): a verifier's checkout is not the
+  task's work and is left untouched. The save records `failover_resume_checkpoint`
   (repository, branch, base, saved sha) in task metadata; the next exact-origin
   preparation starts from `origin/<branch>` while it still descends from that
   sha (else from the filing base), and launch or pool-claim activation consumes
@@ -788,7 +790,8 @@ detail) into `_fail_session_launch`; the exit path is
 * **`aq task stop` on a hierarchy/train writer** (`stop_task`, and the forced
   shutdown and delete paths) stops the process first and then saves the same
   way instead of refusing because the writer or its workspace is still
-  attached; it records the same resume point.
+  attached; it records the same resume point. A dirty verifier keeps the
+  refusal.
 * **Order on the exit path:** checkpoint while the session row is still live
   (a daemon that dies mid-push re-runs the failover next tick, where a row
   already marked non-live would have let the orphan sweep BLOCK the task),
@@ -808,9 +811,13 @@ detail) into `_fail_session_launch`; the exit path is
   system comment (`system:provider-failover`), and `aq prime` renders it in
   the task-context section on its own, so a later re-route comment cannot push
   it out of the five recent comments. It names the saved commit, tells the next
-  worker to continue from the branch tip rather than restart, and quotes the
+  worker to continue from the branch tip rather than restart, and keeps the
   stopped session's last ~80 screen lines (`screen_tail`, captured before the
-  stop) inside a fence its content cannot close, labelled as quoted output.
+  stop, at most 8 KiB of UTF-8). Prime quotes only the last whole lines within
+  2 KiB (`PRIME_SCREEN_BYTES`) and points at `aq session logs` for the rest:
+  its body is required knowledge context, and a body over the context budget
+  fails `aq prime` outright (`context.required_over_budget`). The quote sits
+  inside a fence its content cannot close, labelled as quoted output.
   Writing it emits `task.handoff` for the dashboard and supervisor playbooks.
 * **A move to another provider drops `session_resume_key`**
   (`ProviderRerouteService._move`): the carried conversation id belongs to the
