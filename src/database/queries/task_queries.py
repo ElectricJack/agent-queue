@@ -1703,6 +1703,13 @@ class TaskQueryMixin:
                     await self._upsert_meta(
                         task_id, TERMINAL_BLOCKED_META_KEY, context, conn=conn
                     )
+                if context == "stop_task":
+                    from src.integration.branch_retirement import request_task_retirement_on
+
+                    await request_task_retirement_on(
+                        conn, task_id, request_id=f"cancel:{task_id}:{values['updated_at']}",
+                        reason="task cancelled", now=values["updated_at"],
+                    )
             elif current_status == TaskStatus.BLOCKED:
                 await conn.execute(
                     delete(task_metadata).where(

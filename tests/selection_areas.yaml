@@ -488,6 +488,7 @@ areas:
       - tests/test_development_*.py
       - tests/test_delivery_*.py
       - tests/test_branch_discard.py
+      - tests/test_branch_retirement.py
       - tests/test_close_unpushed_work.py
       - tests/test_stranded_work.py
       - tests/test_slot_report.py

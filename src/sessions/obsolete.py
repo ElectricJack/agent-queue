@@ -234,6 +234,12 @@ class ObsoleteClose:
                     )
                 ]
             if existing is None:
+                from src.integration.branch_retirement import request_task_retirement_on
+
+                await request_task_retirement_on(
+                    conn, task_id, request_id=f"obsolete:{task_id}:{marker['closed_at']}",
+                    reason=f"superseded: {reason}",
+                )
                 await self.db.log_event(
                     f"task.{CLOSED_OBSOLETE}",
                     project_id=row["project_id"],
