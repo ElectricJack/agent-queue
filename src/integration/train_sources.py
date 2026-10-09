@@ -1662,8 +1662,9 @@ class DatabaseBatches:
             # maintenance recovers a failure between commit and materialization.
             try:
                 await self.cleanup.materialize(batch.id, now=self.clock())
+                await self.cleanup.advance(batch.id, now=self.clock())
             except Exception:
-                logger.warning("Could not materialize promoted batch %s", batch.id, exc_info=True)
+                logger.warning("Could not clean promoted batch %s", batch.id, exc_info=True)
 
 
 async def epic_policy_on(conn, row, project) -> EpicPolicy:

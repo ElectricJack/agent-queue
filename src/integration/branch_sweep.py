@@ -14,7 +14,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src.git.manager import GitError, GitManager, RemoteRefState, is_valid_git_oid
-from src.integration.delivery_branches import PROTECTED_BRANCHES, _merges_are_clean, remote_heads
+from src.integration.delivery_branches import (
+    PROTECTED_BRANCHES, _merges_are_clean, branch_of, deletable, remote_heads,
+)
 
 PROTECTED_NAMES = frozenset({"main", "dev", "staging", "gh-pages"})
 
@@ -78,6 +80,91 @@ async def _proof(
             continue
         return f"patch-equivalent:{target_name}"
     return None
+
+
+async def clean_landed_checkout(
+    git: GitManager,
+    checkout: str,
+    *,
+    repository_url: str,
+    default_branch: str,
+    ref: str,
+    expected_sha: str,
+    target_sha: str,
+    managed_paths: set[str],
+    busy_paths: set[str],
+    protected: frozenset[str],
+    fetched_checkouts: set[str],
+) -> tuple[str, str | None]:
+    """Retire one landed head in a common Git directory, retaining worktrees.
+
+    The caller excludes new claims/writers while this runs. Attached heads may
+    only be detached in clean idle AQ checkouts; other worktrees remain holds.
+    Both the local head and origin tracking ref use expected-old deletion.
+    Daily sweeping keeps its broader patch-equivalence policy; landing requires
+    strict ancestry of the recorded tip, including after origin was deleted.
+    """
+    name = branch_of(ref)
+    if (not ref.startswith("refs/heads/") or not name
+            or not deletable(name, default_branch, protected=protected | PROTECTED_NAMES)
+            or not is_valid_git_oid(expected_sha) or not is_valid_git_oid(target_sha)):
+        return "conflict", "local cleanup identity is protected or invalid"
+    tracking = f"refs/remotes/origin/{name}"
+    exists = await git.aref_exists(checkout, ref)
+    tracked = await git.aref_exists(checkout, tracking)
+    if exists is None or tracked is None:
+        return "retryable", "local cleanup ref state is unknown"
+    if not exists and not tracked:
+        return "complete", None
+    common = await _run(git, checkout, "rev-parse", "--git-common-dir")
+    common_path = str((Path(checkout) / common).resolve())
+    if common_path not in fetched_checkouts:
+        await git.afetch_origin(checkout, repository_url=repository_url, all_heads=True)
+        fetched_checkouts.add(common_path)
+    head = await git.arev_parse(checkout, ref) if exists else None
+    if exists and head != expected_sha:
+        return "conflict", f"local ref moved after delivery: {checkout}"
+    result = await git.arun_git_result(
+        ["--no-replace-objects", "merge-base", "--is-ancestor", expected_sha, target_sha],
+        cwd=checkout,
+    )
+    ancestor = {0: True, 1: False}.get(result.returncode)
+    if ancestor is not True:
+        return ("retryable" if ancestor is None else "conflict"), "local tip is not proven landed"
+
+    attached = [row for row in await git.aworktree_list(checkout)
+                if branch_of(row.get("branch")) == name]
+    for row in attached:
+        path = str(Path(row["path"]).resolve())
+        if path in busy_paths or path not in managed_paths or row.get("locked"):
+            return "retryable", f"landed branch has a busy or unmanaged worktree: {path}"
+        if row.get("head") != expected_sha:
+            return "conflict", f"worktree head moved after delivery: {path}"
+        if await git.ahas_uncommitted_changes(path, strict=True) is not False:
+            return "retryable", f"landed branch worktree is dirty or unreadable: {path}"
+    for row in attached:
+        # Preserve the entire checkout at the same commit. Never reset, clean
+        # or force-remove a worktree merely to make its branch deletable.
+        if (await git.aget_current_branch(row["path"]) != name
+                or await git.arev_parse(row["path"], "HEAD") != expected_sha):
+            return "conflict", "worktree changed before detachment"
+        if await git.ahas_uncommitted_changes(row["path"], strict=True) is not False:
+            return "retryable", "worktree changed before detachment"
+        await _run(git, row["path"], "switch", "--detach", expected_sha)
+    if any(branch_of(row.get("branch")) == name for row in await git.aworktree_list(checkout)):
+        return "retryable", "landed branch is still checked out"
+    if exists:
+        await git.adelete_local_ref_exact(checkout, ref=ref, expected_old_oid=expected_sha)
+    if await git.aref_exists(checkout, ref) is not False:
+        return "retryable", "local branch deletion is unconfirmed"
+    if await git.aref_exists(checkout, tracking) is True:
+        current = await git.arev_parse(checkout, tracking)
+        if current != expected_sha:
+            return "conflict", "origin tracking ref moved after delivery"
+        await _run(git, checkout, "update-ref", "-d", tracking, expected_sha)
+    if await git.aref_exists(checkout, tracking) is not False:
+        return "retryable", "origin tracking ref deletion is unconfirmed"
+    return "complete", None
 
 
 def _append_backup(
@@ -230,4 +317,4 @@ async def sweep_checkout(
     return report
 
 
-__all__ = ["BranchSweepReport", "sweep_checkout"]
+__all__ = ["BranchSweepReport", "clean_landed_checkout", "sweep_checkout"]
