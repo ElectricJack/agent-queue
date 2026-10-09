@@ -14638,11 +14638,11 @@
       "disposition": "ordinary",
       "reason": "task.removed audit records the confirmed operator decision, removed subtree, disposition and cancelled operations/batches; preserves history without asserting ref or delivery truth."
     },
-    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._cmd_task_batch_commit::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
-      "line": 467,
-      "owner": "TaskProposalCommandsMixin._cmd_task_batch_commit",
+    "src/commands/proposal_commands.py::TaskProposalCommandsMixin._materialize_proposal::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "line": 518,
+      "owner": "TaskProposalCommandsMixin._materialize_proposal",
       "call": "insert",
-      "owner_fingerprint": "644f415c55b56fbf76e4fa10449bf8805acb3eae65860283681c17672329e28d",
+      "owner_fingerprint": "e8836451c93c803b62334041f2ef9a8a473244470dbcfa284c160e41fb0a1735",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Immutable task change-set audit containing actor, source, reviewed diff and receipt in the proposal transaction; no ref replay or authoritative delivery lifecycle state."
