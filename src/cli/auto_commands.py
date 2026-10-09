@@ -496,7 +496,7 @@ def _make_auto_command(
                 click.Option(
                     [option_name + "/--no-" + prop_name.replace("_", "-")],
                     required=prop_name in required,
-                    **({} if prop_name in required else {"default": None}),
+                    **({} if prop_name in required else {"default": prop_schema.get("default")}),
                     help=description,
                 )
             )
@@ -506,7 +506,7 @@ def _make_auto_command(
                     option_decls,
                     type=click_type,
                     required=prop_name in required,
-                    **({} if prop_name in required else {"default": None}),
+                    **({} if prop_name in required else {"default": prop_schema.get("default")}),
                     help=description,
                 )
             )

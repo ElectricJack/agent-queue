@@ -5479,12 +5479,12 @@
           "method": {
             "type": "string",
             "enum": [
-              "squash",
               "merge",
+              "squash",
               "rebase"
             ],
-            "description": "Merge strategy (default: squash).",
-            "default": "squash"
+            "description": "Merge strategy (default: merge).",
+            "default": "merge"
           },
           "force": {
             "type": "boolean",

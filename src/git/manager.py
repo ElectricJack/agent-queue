@@ -3179,14 +3179,14 @@ class GitManager:
         self,
         checkout_path: str,
         pr_url: str,
-        method: str = "squash",
+        method: str = "merge",
         *,
         expected_head_oid: str | None = None,
         expected_base_ref: str | None = None,
         repository: GitHubRepositoryBinding | None = None,
     ) -> dict:
         """Merge only the validated head and base through the shared client."""
-        if method not in ("squash", "merge", "rebase"):
+        if method not in ("merge", "squash", "rebase"):
             return {"success": False, "sha": None, "error": f"invalid method: {method}"}
         if expected_head_oid is not None:
             expected_head_oid = expected_head_oid.lower()

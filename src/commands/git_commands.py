@@ -44,7 +44,7 @@ class GitCommandsMixin:
         Args:
             project_id: ID of the project whose workspace will be used.
             pr_url: Full GitHub PR URL, e.g. ``https://github.com/o/r/pull/42``.
-            method: Merge strategy — ``"squash"`` (default), ``"merge"``,
+            method: Merge strategy — ``"merge"`` (default), ``"squash"``,
                 or ``"rebase"``.
             force: Merge even when ``merge_ci_policy: required`` would
                 refuse. This waives only the CI policy: immutable PR identity
@@ -56,7 +56,7 @@ class GitCommandsMixin:
         """
         project_id = args.get("project_id")
         pr_url = args.get("pr_url")
-        method = str(args.get("method") or "squash")
+        method = str(args.get("method") or "merge")
         force = bool(args.get("force") or False)
 
         if not project_id:

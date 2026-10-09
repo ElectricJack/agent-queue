@@ -1079,19 +1079,19 @@ async def test_ordinary_merge_pins_head_and_rejects_foreign_pr(credential_identi
     client = GitHubClient(REPOSITORY, runner=runner)
     with pytest.raises(GitHubAccessError):
         await client.merge_pull_request(
-            "https://github.com/other/repo/pull/7", method="squash",
+            "https://github.com/other/repo/pull/7", method="merge",
             expected_head_oid="a" * 40,
         )
     assert not runner.calls
 
     result = await client.merge_pull_request(
-        "https://github.com/acme/widgets/pull/7", method="squash",
+        "https://github.com/acme/widgets/pull/7", method="merge",
         expected_head_oid="a" * 40,
     )
     assert result == sha
     assert runner.calls[0]["repository"] == REPOSITORY
     assert runner.calls[0]["args"] == [
-        "pr", "merge", "7", "--squash", "--match-head-commit", "a" * 40,
+        "pr", "merge", "7", "--merge", "--match-head-commit", "a" * 40,
         "--delete-branch",
     ]
 
@@ -1193,7 +1193,7 @@ async def test_ordinary_merge_reports_confirmed_cleanup_failure(credential_ident
     client = GitHubClient(REPOSITORY, runner=runner)
     with pytest.raises(GitHubMergeReconciled) as caught:
         await client.merge_pull_request(
-            "https://github.com/acme/widgets/pull/7", method="squash",
+            "https://github.com/acme/widgets/pull/7", method="merge",
             expected_head_oid="a" * 40, expected_base_ref="main",
         )
     assert caught.value.sha == "b" * 40
@@ -1214,7 +1214,7 @@ async def test_ordinary_merge_reconciles_when_cleanup_already_finished(credentia
     client = GitHubClient(REPOSITORY, runner=runner)
     with pytest.raises(GitHubMergeReconciled) as caught:
         await client.merge_pull_request(
-            "https://github.com/acme/widgets/pull/7", method="squash",
+            "https://github.com/acme/widgets/pull/7", method="merge",
             expected_head_oid="a" * 40, expected_base_ref="main",
         )
     assert caught.value.outcome == "merged_reconciled"
@@ -1233,7 +1233,7 @@ async def test_ordinary_merge_does_not_assume_hidden_head_was_deleted(credential
     client = GitHubClient(REPOSITORY, runner=runner)
     with pytest.raises(GitHubMergeReconciled) as caught:
         await client.merge_pull_request(
-            "https://github.com/acme/widgets/pull/7", method="squash",
+            "https://github.com/acme/widgets/pull/7", method="merge",
             expected_head_oid="a" * 40, expected_base_ref="main",
         )
     assert caught.value.outcome == "merged_cleanup_unknown"
@@ -1248,7 +1248,7 @@ async def test_ordinary_merge_does_not_replay_confirmed_rejection(credential_ide
     client = GitHubClient(REPOSITORY, runner=runner)
     with pytest.raises(GitHubAccessError) as caught:
         await client.merge_pull_request(
-            "https://github.com/acme/widgets/pull/7", method="squash",
+            "https://github.com/acme/widgets/pull/7", method="merge",
             expected_head_oid="a" * 40, expected_base_ref="main",
         )
     assert caught.value.category == "credentials"
@@ -1383,7 +1383,7 @@ async def test_app_credential_failure_before_merge_is_not_an_uncertain_write():
 
     with pytest.raises(GitHubAccessError, match="App token unavailable") as caught:
         await client.merge_pull_request(
-            "https://github.com/acme/widgets/pull/7", method="squash",
+            "https://github.com/acme/widgets/pull/7", method="merge",
             expected_head_oid="a" * 40, expected_base_ref="main",
         )
     assert caught.value.category == "credentials"
