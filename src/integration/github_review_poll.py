@@ -74,9 +74,11 @@ class RootPullRequestGate:
     authorize admission, and have no bearing on delivery or a frozen batch.
     """
 
-    def __init__(self, db, *, repository, checks, clock=time.time, review_requirements=None):
+    def __init__(self, db, *, repository, checks, clock=time.time, review_requirements=None,
+                 failure_handler=None):
         self.db, self.repository, self.checks, self.clock = db, repository, checks, clock
         self.review_requirements = review_requirements
+        self.failure_handler = failure_handler
         self._deferred = {}
 
     async def __call__(self, target, member):
@@ -96,9 +98,17 @@ class RootPullRequestGate:
         async with self.db._engine.connect() as conn:
             row = (await conn.execute(select(
                 tasks.c.pr_url, tasks.c.branch_name, projects.c.hierarchical_integration_policy,
+                projects.c.hierarchical_integration_generation,
             ).join(projects, projects.c.id == tasks.c.project_id).where(
                 tasks.c.id == member.task_id,
             ))).mappings().one()
+            request = None
+            if self.failure_handler is not None and not repaired_source:
+                from src.integration.delivery_truth import load_delivery_requests
+
+                request = (await load_delivery_requests(self.db, [member.task_id],
+                    repository_id=target.repository_id, target_ref=target.target_ref,
+                    conn=conn, reduced=True)).get(member.task_id)
         policy = row["hierarchical_integration_policy"] or {}
         url = row["pr_url"]
 
@@ -110,7 +120,7 @@ class RootPullRequestGate:
         if not isinstance(url, str) or not url.strip():
             return blocker("awaiting_pr")
         key = (target.key, member.task_id, member.source_sha, url, row["branch_name"],
-               json.dumps(policy, sort_keys=True))
+               json.dumps(policy, sort_keys=True), request)
         for stale in list(self._deferred):
             if stale[:2] == key[:2] and stale != key:
                 del self._deferred[stale]
@@ -188,8 +198,24 @@ class RootPullRequestGate:
                 return defer("unknown", due_at=result.due_at, reason="PR checks unavailable")
             repaired_red = repaired_source and result.state.value == "red"
             if not result.green and not suppressed and not repaired_red:
-                return defer("pr_checks_red" if result.state.value == "red"
-                             else "awaiting_pr_checks", due_at=result.due_at)
+                recovery = {}
+                if result.state.value == "red" and request is not None:
+                    from src.integration.checks import Conclusion
+                    from src.integration.root_pr_recovery import RootPRCheckFailure
+
+                    # Workflow-level failure, absent checks and cancellations do
+                    # not establish a failed required job that a worker can fix.
+                    if any(check.conclusion is Conclusion.FAILURE for check in result.checks):
+                        recovery = await self.failure_handler(RootPRCheckFailure(
+                            request=request, source_sha=member.source_sha,
+                            source_base_sha=member.source_base_sha, pr_url=url,
+                            policy_generation=row["hierarchical_integration_generation"],
+                            policy=policy, checks=result,
+                        ))
+                return defer(recovery.get("blocker") or (
+                             "pr_checks_red" if result.state.value == "red"
+                             else "awaiting_pr_checks"), due_at=result.due_at,
+                             **({"recovery": recovery} if recovery else {}))
             if reviewed and not local:
                 state = await review_state()
                 if state != "approved":

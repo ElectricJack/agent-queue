@@ -9427,7 +9427,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:cfd513eca9babc07d6ed12049da0baed709705bc33da28cb3336a2b8939ee26a",
+      "digest": "sha256:cea48e1bdbd9c66155c8be09afd1a10175ecbf0c26d0fd29562fdb0fea06f090",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -9460,6 +9460,7 @@
         "src.integration.regeneration",
         "src.integration.repair",
         "src.integration.reviews",
+        "src.integration.root_pr_recovery",
         "src.integration.root_pull_requests",
         "src.integration.runtime_contracts",
         "src.integration.scheduler",
@@ -9471,6 +9472,7 @@
         "src.integration.train_controls",
         "src.integration.train_sources",
         "src.models",
+        "src.orchestrator.core",
         "src.orchestrator.workspace",
         "src.profiles.capabilities",
         "src.test_selection",

@@ -1899,7 +1899,8 @@ class DaemonLanes:
 
             hosted_pr_gate = RootPullRequestGate(
                 self.db, repository=repository, checks=self._pr_checks, clock=clock,
-                review_requirements=review_requirements)
+                review_requirements=review_requirements,
+                failure_handler=getattr(self.orchestrator, "_repair_root_pr_checks", None))
 
             async def pr_gate(target, member):
                 # Local candidate validation comes from a retained reviewed
