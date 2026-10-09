@@ -18979,8 +18979,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved vault path may commit immediately; those batches require epics with children and leaf dependency edges.",
-        "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved vault path may commit immediately; those batches require epics with children and leaf dependency edges.",
+        "summary": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved vault path needs no approval step: that batch is applied live in the same call and returns its task_ids, and a later task_batch_commit is an idempotent replay. Those batches require epics with children and leaf dependency edges.",
+        "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved vault path needs no approval step: that batch is applied live in the same call and returns its task_ids, and a later task_batch_commit is an idempotent replay. Those batches require epics with children and leaf dependency edges.",
         "operationId": "task_batch_propose",
         "requestBody": {
           "content": {
@@ -67494,6 +67494,25 @@
             "title": "Dry Run",
             "default": false
           },
+          "committed": {
+            "type": "boolean",
+            "title": "Committed",
+            "default": false
+          },
+          "task_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Ids"
+          },
           "diff": {
             "anyOf": [
               {
@@ -67509,7 +67528,7 @@
         },
         "type": "object",
         "title": "TaskBatchProposeResponse",
-        "description": "A proposal is created, not applied \u2014 nothing exists in the graph yet."
+        "description": "A proposal is created, not applied \u2014 unless ingestion applies it live.\n\nA batch carrying a live spec-ingest role's approved-document authority is\napplied in the same call: ``committed`` is then true and ``task_ids`` is\nthat batch's receipt, exactly as a commit's would be. Every other proposal\nstages in ``ready`` and waits for approval."
       },
       "TaskBatchUpdateRequest": {
         "properties": {

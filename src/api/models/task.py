@@ -908,11 +908,19 @@ class SpecApproveResponse(BaseModel):
 
 
 class TaskBatchProposeResponse(BaseModel):
-    """A proposal is created, not applied — nothing exists in the graph yet."""
+    """A proposal is created, not applied — unless ingestion applies it live.
+
+    A batch carrying a live spec-ingest role's approved-document authority is
+    applied in the same call: ``committed`` is then true and ``task_ids`` is
+    that batch's receipt, exactly as a commit's would be. Every other proposal
+    stages in ``ready`` and waits for approval.
+    """
 
     success: bool = True
     proposal_id: str | None = None
     dry_run: bool = False
+    committed: bool = False
+    task_ids: list[str] | None = None
     diff: dict[str, Any] | None = None
 
 
