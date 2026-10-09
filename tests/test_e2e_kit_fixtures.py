@@ -741,6 +741,103 @@ def test_s18_claim_wait_is_bounded_and_reports_fixture_and_last_claim(s18_surfac
         assert detail in str(error.value)
 
 
+@pytest.fixture(params=["std", "solo"])
+def s16_canary_surfaces(monkeypatch, request):
+    """Exercise S16's probation-canary claim without a live daemon."""
+    smoke = _load_smoke()
+    profile = smoke.STD_A if request.param == "std" else smoke.SOLO_A
+    expected = "pinned-task" if request.param == "std" else "solo-task"
+    responses = [{"result": "claimed", "task": {"id": expected}, "claim_epoch": 7}]
+    calls = []
+
+    def fake_aq(*args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ("session", "token"):
+            return {"token": "canary-token"}
+        if args[:2] == ("task", "claim"):
+            return responses.pop(0) if len(responses) > 1 else responses[0]
+        raise AssertionError(args)
+
+    monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "live_sessions_for", lambda profile_id: (
+        [{"id": "canary", "profile_id": profile}] if profile_id == profile else []
+    ))
+    monkeypatch.setattr(smoke, "task_show", lambda task_id: {
+        "id": task_id, "status": "READY", "profile_id": profile,
+        "route_source": "pin", "is_blocked": False,
+    })
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+    monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 1)
+    monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.25))
+    return smoke, responses, calls, clock, profile, expected
+
+
+def _claims(calls):
+    return [args for args, _ in calls if args[:2] == ("task", "claim")]
+
+
+@pytest.mark.parametrize("empty_attempts", [0, 2])
+def test_s16_canary_retries_empty_claims_then_holds_its_pools_task(
+    s16_canary_surfaces, empty_attempts,
+):
+    smoke, responses, calls, _clock, profile, expected = s16_canary_surfaces
+    responses[:0] = [{"result": "no_ready_work"}] * empty_attempts
+
+    worker, canary, held = smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert (canary["id"], canary["profile_id"], held) == ("canary", profile, expected)
+    assert (worker.session_id, worker.token) == ("canary", "canary-token")
+    assert (worker.task_id, worker.claim_epoch) == (expected, 7)
+    assert len(_claims(calls)) == empty_attempts + 1
+    assert all(kwargs["token"] == "canary-token" for args, kwargs in calls
+               if args[:2] == ("task", "claim"))
+
+
+@pytest.mark.parametrize("result", ["prepare_failed", "drain_requested", "not_admissible"])
+def test_s16_canary_does_not_retry_other_claim_failures(s16_canary_surfaces, result):
+    smoke, responses, calls, clock, _profile, _expected = s16_canary_surfaces
+    responses[:] = [{"result": result}]
+
+    with pytest.raises(smoke.Failure, match=result):
+        smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert len(_claims(calls)) == 1
+    assert clock.now == 0
+
+
+def test_s16_canary_rejects_the_other_pools_held_task(s16_canary_surfaces):
+    smoke, responses, calls, _clock, _profile, expected = s16_canary_surfaces
+    other = "solo-task" if expected == "pinned-task" else "pinned-task"
+    responses[0]["task"]["id"] = other
+
+    with pytest.raises(smoke.Failure, match=f"{expected}.*{other}"):
+        smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert len(_claims(calls)) == 1
+
+
+def test_s16_canary_claim_wait_is_bounded_and_reports_fixture_and_last_claim(
+    s16_canary_surfaces,
+):
+    smoke, responses, calls, clock, profile, expected = s16_canary_surfaces
+    # The shape of the CI failure this retry absorbs (run 37983264206).
+    responses[:] = [{"result": "no_ready_work", "session": {
+        "id": "canary", "claims": 0, "claim_phase": "claiming",
+    }}]
+
+    with pytest.raises(smoke.Failure, match="timed out after 1s") as error:
+        smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert clock.now == 1
+    assert len(_claims(calls)) > 1
+    for detail in (expected, "no_ready_work", "claim_phase", "READY", profile, "pin"):
+        assert detail in str(error.value)
+
+
 @pytest.fixture
 def s19_claim_surfaces(monkeypatch, tmp_path):
     """Exercise both S19 claims up to the checklist, without a live daemon."""
