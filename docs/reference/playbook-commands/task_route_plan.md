@@ -137,15 +137,20 @@ literal `{"failed": true}` when classification failed.
    - **Kind and class.** `task_type`, else the classification's kind, else
      `default_kind`; an origin rule (`created_by_kind`) merges over it. The
      class hint beats the classification, which beats the kind's class, and
-     `max_class` clamps (`class_clamped_from`).
+     `max_class` clamps (`class_clamped_from`). A `risk` rule's `min_class`
+     then raises the class (`class_raised_for_risk`). In a policy that reads
+     risks, a classification that answered no risk, or failed, is treated as
+     `medium` (`class_raised_for_risk.assumed`); before the classifier runs
+     the risk stays unknown.
    - **Candidates.** Worker candidates (`catalog.worker_route` plus a slot)
      for the lane or the class, minus reserved cells, `exclude_providers`
      (`tasks.route.constraints`), providers other than the project's
      `preferred_provider`, pool profiles when the task needs a workspace
      kind other than `project-repo`/`vault`, and self-hosted models (a harness
      whose `provider` is `ollama`, or one `local_models.harnesses` names) for
-     a task the policy's `local_models` gate refuses: priority at or above
-     `below_priority` (default 150), a `train_kinds` kind (default `bugfix`)
+     a task the policy's `local_models` gate refuses: a priority number at or
+     below `above_priority` (default 50; a lower number is more important, as
+     on the claim frontier), a `train_kinds` kind (default `bugfix`)
      in a project whose integration mode is `hierarchy`, `train` or
      `development`, or a task an unfinished task waits on through a blocking
      edge other than `parent-child` (unless `allow_blocking`). A narrow kind's OpenCode lanes

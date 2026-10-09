@@ -1,8 +1,11 @@
 # Risk-aware routing: draft revision of `default-assignment-routing`
 
-**Status:** draft for Jack's review. Nothing is activated: the vault playbook,
-the shipped reviewed bundle and the live router are unchanged. Task
-`smart-beacon-29`.
+**Status:** approved (`rev-azure-flare`); drafted in task `smart-beacon-29`.
+Steps 1 and 2 of "Activating after approval" landed in `solid-apex-59`, with
+Jack's answers to the open questions applied (see "Decisions"). Where this
+document and its draft (`default-assignment-routing.md`, `bundle/`) say
+priority is a ceiling, or that a missing risk answer applies no floor, the
+decisions below and the shipped source supersede them.
 
 ## What changes
 
@@ -194,6 +197,30 @@ module, 1 in the router module.
    mechanism line if you want it.
 4. **Track-record numbers.** 10 clean passes, a 14-day look-back, and 2
    reworks in the last 10 to fall back to probation are proposals.
+
+## Decisions
+
+Jack answered the open questions in review `rev-wise-impact` (2026-10-09),
+which also made that review's approval the step-3 go-live approval (A1):
+
+1. **Lower numbers are more important**, as on the claim frontier. Both
+   ceilings became floors: `local_models: above_priority: 50` and
+   `above_priority: 99` on the free hosted lane, mirrored around the default
+   of 100, so default-priority work still qualifies. The policy key
+   `below_priority` is retired and refused by name; the
+   `high_priority_local_model` stall check reads the same floor. Two worked
+   examples in `dry-run.md` (the approval-time record) change with it: the
+   fleet-ridge docs slice at the epic's 230 and the chore at 200 are now less
+   important than default, so as low-risk narrow work they take local
+   OpenCode (`standard-high-opencode`, `fast-low-opencode`). At priority 50 or
+   below both stay on Codex. The other 16 examples route as recorded.
+2. **`very_high` floors at `deep-low`**, relaxed to `standard-high` when
+   narrow and test-verified, as drafted.
+3. **No risk answer is treated as `medium`.** In a policy that reads risks, a
+   classification that answered no risk, or failed, gets the medium floor and
+   harnesses; the plan records `class_raised_for_risk.assumed: true`. Before
+   the classifier runs, the risk stays unknown and is still asked for.
+4. **Track-record numbers stand** as drafted.
 
 ## Activating after approval
 

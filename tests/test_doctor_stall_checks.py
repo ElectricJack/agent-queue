@@ -296,14 +296,17 @@ async def test_high_priority_task_on_a_local_model(context):
     context.db.profiles = [
         SimpleNamespace(id=f"standard-high-{harness}", harness=harness) for harness in providers
     ]
+    # A lower priority number is more important (the claim frontier takes it
+    # first): local models take only work numbered above the floor of 50.
     rows = [
-        task("top-fix", profile="standard-high-opencode", priority=298,
+        task("top-fix", profile="standard-high-opencode", priority=1,
              status=TaskStatus.IN_PROGRESS),
-        task("queued-fix", project="two", profile="standard-high-opencode", priority=150),
+        task("queued-fix", project="two", profile="standard-high-opencode", priority=50),
         task("docs", profile="standard-high-opencode", priority=100),
-        task("hosted", profile="standard-high-opencode-zen", priority=298),
-        task("claude", profile="standard-high-claude", priority=298),
-        task("done", profile="standard-high-opencode", priority=298,
+        task("backlog", profile="standard-high-opencode", priority=298),
+        task("hosted", profile="standard-high-opencode-zen", priority=1),
+        task("claude", profile="standard-high-claude", priority=1),
+        task("done", profile="standard-high-opencode", priority=1,
              status=TaskStatus.COMPLETED),
     ]
     findings = await module._local_model_findings(context, rows)
@@ -312,7 +315,7 @@ async def test_high_priority_task_on_a_local_model(context):
         ("high_priority_local_model", "queued-fix", "two"),
     ]
     assert "stop it, then aq task route --task-id top-fix" in findings[0]["detail"]
-    assert findings[1]["detail"].endswith("< 150); aq task route --task-id queued-fix")
+    assert findings[1]["detail"].endswith("> 50); aq task route --task-id queued-fix")
 
 
 def test_high_cost_non_design_route_across_projects():

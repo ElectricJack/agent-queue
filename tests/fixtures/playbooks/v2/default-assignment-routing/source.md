@@ -111,7 +111,10 @@ harness, never by rung id. Key by key:
   work; the classifier picks one when risky work is also complex (see
   "Classifying a task"). Low risk has no rule, so low-risk
   work routes exactly as the rest of this policy says. A failed or missing risk
-  answer applies no floor, and leaves every lane with a `max_risk` closed.
+  answer is treated as `medium`, because not knowing is not evidence the change
+  is safe: it gets the medium floor and harnesses, the plan records the class
+  it raised with `assumed: true`, and every lane with `max_risk: low` stays
+  closed.
 - `origins`: overrides by who filed the task. Integration and development
   repairs are never OpenCode work, and a review dispatch goes to the
   design-review lane.
@@ -130,23 +133,24 @@ harness, never by rung id. Key by key:
   (LongCat 2.5 Preview free). Until a hosted model has a track record (see
   "Earning a wider lane"), the lane takes only work the classifier put in a
   fast class (trivial, localized, settled): narrow, test-verified, low-risk
-  chores, run on the model's one `standard-high` rung. Its `below_priority`
-  ceiling is stricter than the local one. The lane matches `opencode-zen*`, so
+  chores, run on the model's one `standard-high` rung. Its `above_priority`
+  floor is stricter than the local one. The lane matches `opencode-zen*`, so
   new Zen preview harnesses cannot become general candidates or take
   integration/development repairs. Each
   hosted model is its own harness, so each has an independent
   availability row (free-tier exhaustion is separate from local OpenCode's and
   from the other hosted models), and they share one lane so the lane can be
   tightened as a unit.
-- `local_models` and a lane's `below_priority`: priority is only a ceiling on
-  the cheap lanes. A task whose priority is at or above `local_models`'
-  `below_priority` never runs on a local model, and a task at or above a
-  lane's `below_priority` never takes that lane. Priority never chooses a
-  class, a harness or a lane in any other way: an unimportant task is not
-  pushed to a cheap lane by its priority, and an important one is not pushed
-  up the ladder by it. The local value, 150, is the default the policy already
-  had, written out here. The free hosted lane's 101 admits default-priority
-  (100) work and below.
+- `local_models` and a lane's `above_priority`: a lower priority number is
+  more important, as on the claim frontier, which takes the lowest number
+  first. Priority is only a floor on the cheap lanes. A task whose priority
+  is at or below `local_models`' `above_priority` never runs on a local model,
+  and a task at or below a lane's `above_priority` never takes that lane.
+  Priority never chooses a class, a harness or a lane in any other way: an
+  unimportant task is not pushed to a cheap lane by its priority, and an
+  important one is not pushed up the ladder by it. The local value, 50, is
+  the policy default, written out here. The free hosted lane's 99 admits
+  default-priority (100) work and anything less important.
 - `reserved`: keeps deep-high Claude for code design and design review, so a
   hard bug fix hinted deep-high lands on deep-high Codex.
 - `balance`: the load score. A candidate's pressure is its live load plus one,
@@ -209,10 +213,10 @@ lanes:
     classes: {fast-high: standard-high, fast-low: standard-high}
     requires: [narrow, test_verified]
     max_risk: low
-    below_priority: 101
+    above_priority: 99
     prefer: true
 local_models:
-  below_priority: 150
+  above_priority: 50
 reserved:
   - {class: deep-high, harness: claude, only_lanes: [code-design, design-review]}
 balance:
@@ -226,10 +230,11 @@ balance:
 ## Earning a wider lane
 
 The free hosted models start on probation: the `narrow-hosted` lane above
-takes only trivial (fast-class), narrow, test-verified, low-risk work below
-priority 101. Nothing in the router measures a track record, and nothing
-widens a lane by itself. A record is evidence that an operator reads before
-approving a change to this playbook, the same reviewed flow as this revision.
+takes only trivial (fast-class), narrow, test-verified, low-risk work at
+priority 100 or less important (a number above 99). Nothing in the router
+measures a track record, and nothing widens a lane by itself. A record is
+evidence that an operator reads before approving a change to this playbook,
+the same reviewed flow as this revision.
 
 - **Per harness.** Each hosted model is its own harness, so each earns its own
   record. One model's record never widens another's lane.
@@ -242,8 +247,8 @@ approving a change to this playbook, the same reviewed flow as this revision.
   route an operator overrode does not count either way. Stage 2 is a reviewed
   change that moves the proven harness into its own lane (for example
   `narrow-hosted-proven`). That lane adds `standard-high: standard-high`, so
-  ordinary narrow, test-verified, low-risk work qualifies, and it lifts the
-  ceiling to the local one (150). The `opencode-zen*` lane keeps every unproven
+  ordinary narrow, test-verified, low-risk work qualifies, and it lowers the
+  priority floor to the local one (50). The `opencode-zen*` lane keeps every unproven
   and newly installed Zen model on probation, and still keeps them out of the
   general candidates.
 - **No stage 3.** Medium, high and very high risk work never goes to a free
@@ -340,5 +345,5 @@ two minutes, so a transient failure is retried by the next event and a
 permanent one (no worker candidate satisfies the policy) stays visible until
 an operator adds a profile or binds the project to another router. A failed
 classification is not a failed run: the plan proceeds with the policy's
-defaults, and with no risk answer it applies no risk floor and keeps every
-cheap lane closed.
+defaults, and with no risk answer it treats the risk as `medium`: the medium
+floor and harnesses apply, and every cheap lane stays closed.

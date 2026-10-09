@@ -546,13 +546,14 @@ def _local(plan: dict) -> set[str]:
 
 
 @pytest.mark.parametrize("classification", [NARROW_YES, NARROW_NO])
-def test_a_priority_290_bugfix_never_picks_a_local_profile(classification) -> None:
+def test_a_priority_10_bugfix_never_picks_a_local_profile(classification) -> None:
+    # A lower number is more important (the claim frontier takes it first).
     # Every hosted rung full: the local model would win on load, and still is
     # not a candidate.
     busy = {
         "standard-high-claude": 4, "standard-high-codex": 4, "standard-high-opencode-zen": 1,
     }
-    task = _task(task_type="bugfix", priority=290)
+    task = _task(task_type="bugfix", priority=10)
     plan = _planned(task, _snapshot(_hosted_fleet(), busy=busy), classification)
     assert _local(plan) == set()
     assert plan["profile_id"] != "standard-high-opencode"
@@ -569,14 +570,19 @@ def test_a_priority_100_docs_task_can_still_run_on_a_local_profile() -> None:
     ("changes", "local_allowed"),
     [
         ({}, True),
-        ({"priority": 149}, True),
-        ({"priority": 150}, False),
+        ({"priority": 51}, True),
+        ({"priority": 290}, True),
+        ({"priority": 50}, False),
+        ({"priority": 1}, False),
         ({"on_train": True}, False),
         # Only the policy's train kinds lose the local model on a train.
         ({"on_train": True, "task_type": "docs"}, True),
         ({"blocks_work": True}, False),
     ],
-    ids=["default", "below", "at-threshold", "train-bugfix", "train-docs", "blocking"],
+    ids=[
+        "default", "above", "least-important", "at-threshold", "most-important",
+        "train-bugfix", "train-docs", "blocking",
+    ],
 )
 def test_the_local_model_gate(changes, local_allowed) -> None:
     values = {"task_type": "bugfix", "priority": 100, **changes}
@@ -597,7 +603,7 @@ def test_local_models_policy_knobs() -> None:
     policy, digest = parse_policy(BALANCED_POLICY + (
         "local_models:\n"
         "  harnesses: [opencode-zen]\n"
-        "  below_priority: 300\n"
+        "  above_priority: 0\n"
         "  train_kinds: []\n"
         "  allow_blocking: true\n"
     ))
@@ -614,11 +620,17 @@ def test_local_models_policy_knobs() -> None:
         return {c["profile_id"] for c in plan(task)["candidates"]}
 
     local = {"standard-high-opencode", "standard-high-opencode-zen"}
-    # A raised threshold, no train kinds and allow_blocking admit this task ...
-    task = _task(task_type="bugfix", priority=290, on_train=True, blocks_work=True)
+    # A floor of 0, no train kinds and allow_blocking admit this task ...
+    task = _task(task_type="bugfix", priority=1, on_train=True, blocks_work=True)
     assert local <= candidates(task)
-    # ... and a harness the policy names is local, past the threshold, too.
-    assert not candidates(replace(task, priority=300)) & local
+    # ... and a harness the policy names is local, behind a raised floor, too.
+    raised, raised_digest = parse_policy(BALANCED_POLICY + (
+        "local_models: {harnesses: [opencode-zen], above_priority: 200}\n"
+    ))
+    result = plan_route(task, raised, _snapshot(_hosted_fleet()), policy_sha256=raised_digest,
+                        classification=NARROW_YES)
+    assert result.outcome == "planned", result
+    assert not {c["profile_id"] for c in result.value["candidates"]} & local
 
 
 # -- hosted lanes: all three (Space Bunny + Nemotron + LongCat) -------------
@@ -734,7 +746,7 @@ def test_a_fleet_of_only_local_models_names_the_gate() -> None:
     )
     fleet = [p for p in _fleet() if p.harness in {"claude", "codex"}]
     result = plan_route(
-        _task(task_type="research", priority=290), policy, _snapshot(fleet),
+        _task(task_type="research", priority=10), policy, _snapshot(fleet),
         policy_sha256=digest,
     )
     assert result.outcome == "no_candidates"
@@ -751,7 +763,7 @@ benchmark_arms:
     requested_model: qwen3.8:27b
     observed_models: [qwen3.8*]
 """)
-    task = _task(task_type="bugfix", priority=290, benchmark_arms=("qwen",))
+    task = _task(task_type="bugfix", priority=10, benchmark_arms=("qwen",))
     result = plan_route(task, policy, _snapshot(), policy_sha256=digest)
     assert result.outcome == "planned", result
     assert result.value["profile_id"] == "standard-high-opencode"
@@ -1038,7 +1050,7 @@ def test_routine_preference_preserves_local_design_art_and_operator_rules():
     assert narrow.value["provider"] == "opencode"
     assert narrow.value["decision"]["mode"] == "lane_preference"
     # The shipped narrow lanes take only work classified low risk: narrow and
-    # test-verified alone, or with no risk answer, no longer qualifies.
+    # test-verified alone no longer qualifies.  No risk answer is a medium one.
     for classification in (NARROW_YES, {**NARROW_YES, "risk": "medium"}):
         hosted = plan_route(_task(task_type="bugfix"), policy, _snapshot(),
                             policy_sha256=digest, classification=classification)
@@ -1378,9 +1390,9 @@ _NARROW_CLASSES = (
 )
 
 #: The shipped policy, no ``risk`` block, with the local ``narrow`` lane
-#: capped at a low risk and at priorities below 100.
+#: capped at a low risk and at priorities above 100 (less important work).
 LANE_CAP_POLICY = SHIPPED_POLICY.replace(
-    _NARROW_CLASSES, _NARROW_CLASSES + "    max_risk: low\n    below_priority: 100\n",
+    _NARROW_CLASSES, _NARROW_CLASSES + "    max_risk: low\n    above_priority: 100\n",
 )
 assert "max_risk: low" in LANE_CAP_POLICY
 
@@ -1399,21 +1411,23 @@ def _risk_plan(text: str, task: TaskFacts, snapshot: Snapshot | None = None,
 
 
 def test_a_policy_without_risk_keys_keeps_its_digest() -> None:
-    # Pinned before the risk keys existed: an optional key at its default is
-    # left out of the canonical JSON, so no existing policy's digest moves.
-    # SHIPPED_POLICY is the default routing playbook's policy before the
-    # risk-aware revision; the shipped playbook now uses the risk keys.
-    assert DIGEST == "sha256:d9655c554de53d0b7579a30baab409a3a25c178f80339e705315c8bc07f2ab03"
+    # An optional key at its default is left out of the canonical JSON, so
+    # no existing policy's digest moves when one is added.  SHIPPED_POLICY is
+    # the default routing playbook's policy before the risk-aware revision;
+    # the shipped playbook now uses the risk keys.  Re-pinned once when
+    # ``local_models`` (always dumped) turned its priority ceiling into the
+    # ``above_priority`` floor: the old digest named the reversed reading.
+    assert DIGEST == "sha256:11b856f0011eaaccdfa67f5f0e3e6bee5460d94d1b3d02746f08bb413925bb0c"
     assert parse_policy(SHIPPED_POLICY)[1] == (
-        "sha256:af27b036017f783c1784e7e11c1c3800fa9ab971fdd9db241e9a0a619cd4f63e"
+        "sha256:905029e269b475b066603fa2ad97fe9dd73b3326ed41b25757ab529f2e9558cd"
     )
     fixture = (Path(__file__).parent / "fixtures/routing/active-policy-2026-10-03.yaml")
     assert parse_policy(fixture.read_text())[1] == (
-        "sha256:9d4ed14f5b5841dfb3f3ac628be0f99fad44baa05c2e1970506e42a2a04cc967"
+        "sha256:108222f39693c7af2f03a5d7c581a9e0d453ed9f556b20cc3ac887b522f43725"
     )
     dumped = POLICY.model_dump(mode="json", by_alias=True)
     assert "risk" not in dumped
-    assert not any({"max_risk", "below_priority"} & set(lane) for lane in dumped["lanes"].values())
+    assert not any({"max_risk", "above_priority"} & set(lane) for lane in dumped["lanes"].values())
     assert not POLICY.uses_risk
 
     # A policy that uses them digests them.
@@ -1425,7 +1439,7 @@ def test_a_policy_without_risk_keys_keeps_its_digest() -> None:
     capped, capped_digest = parse_policy(LANE_CAP_POLICY)
     assert capped_digest != parse_policy(SHIPPED_POLICY)[1]
     lane = capped.model_dump(mode="json", by_alias=True)["lanes"]["narrow"]
-    assert (lane["max_risk"], lane["below_priority"]) == ("low", 100)
+    assert (lane["max_risk"], lane["above_priority"]) == ("low", 100)
 
 
 def test_a_risk_block_parses() -> None:
@@ -1441,7 +1455,7 @@ def test_a_risk_block_parses() -> None:
 
     capped, _digest = parse_policy(LANE_CAP_POLICY)
     assert capped.uses_risk and not capped.risk
-    assert (capped.lanes["narrow"].max_risk, capped.lanes["narrow"].below_priority) == ("low", 100)
+    assert (capped.lanes["narrow"].max_risk, capped.lanes["narrow"].above_priority) == ("low", 100)
 
 
 @pytest.mark.parametrize(
@@ -1461,15 +1475,21 @@ def test_a_risk_block_parses() -> None:
          "    relax: {class: standard-high, requires: [vibes]}\n", "vibes"),
         (SHIPPED_POLICY.replace("hold: true}", "hold: true, max_risk: low}"),
          "'max_risk' belongs to a narrow lane"),
-        (SHIPPED_POLICY.replace("hold: true}", "hold: true, below_priority: 100}"),
-         "'below_priority' belongs to a narrow lane"),
+        (SHIPPED_POLICY.replace("hold: true}", "hold: true, above_priority: 100}"),
+         "'above_priority' belongs to a narrow lane"),
         (LANE_CAP_POLICY.replace("max_risk: low", "max_risk: extreme"), "not a risk level"),
-        (LANE_CAP_POLICY.replace("below_priority: 100", "below_priority: 0"), "below_priority"),
+        (LANE_CAP_POLICY.replace("above_priority: 100", "above_priority: -1"), "above_priority"),
+        # The ceiling read priority backwards; a policy still writing it is
+        # refused rather than silently inverted.
+        (LANE_CAP_POLICY.replace("above_priority: 100", "below_priority: 100"),
+         "'below_priority' is retired"),
+        (SHIPPED_POLICY + "local_models: {below_priority: 150}\n", "'below_priority' is retired"),
     ],
     ids=[
         "unknown-level", "no-min-class", "unknown-class", "bad-selector", "relax-above-floor",
         "relax-no-flags", "relax-unknown-flag", "max-risk-design-lane",
-        "below-priority-design-lane", "unknown-max-risk", "below-priority-zero",
+        "above-priority-design-lane", "unknown-max-risk", "above-priority-negative",
+        "lane-below-priority-retired", "local-below-priority-retired",
     ],
 )
 def test_an_invalid_risk_key_is_refused(text: str, fragment: str) -> None:
@@ -1583,12 +1603,67 @@ def test_a_high_risk_keeps_only_claude_and_codex() -> None:
     assert (alone.outcome, alone.value["reason"]) == ("no_candidates", "risk_harnesses")
 
 
+def test_a_missing_risk_answer_is_treated_as_medium() -> None:
+    # An answer without a risk gets the medium rule's floor, and the plan
+    # says the risk was assumed rather than answered.
+    task = _task(task_type="chore", class_hint="fast-high")
+    classification = {**NARROW_NO, "task_type": "chore", "intelligence_class": "fast-high"}
+    plan = _risk_plan(RISK_POLICY, task, classification=classification)
+    assert plan.outcome == "planned", plan
+    assert plan.value["intelligence_class"] == "standard-high"
+    assert plan.value["class_raised_for_risk"] == {
+        "from": "fast-high", "to": "standard-high", "risk": "medium", "assumed": True,
+    }
+    assert "no risk answer, treated as medium" in plan.value["reason"]
+    # The record keeps what the classifier said, which named no risk.
+    assert set(plan.value["classification"]) == _RECORD_KEYS
+
+    # A failed classification answered nothing, the risk included.
+    failed = _risk_plan(RISK_POLICY, task, classification={**classification, "risk": "extreme"})
+    assert failed.outcome == "planned", failed
+    assert failed.value["classification"]["failed"] is True
+    assert failed.value["intelligence_class"] == "standard-high"
+    assert failed.value["class_raised_for_risk"]["assumed"] is True
+
+    # An answered risk is not assumed.
+    answered = _risk_plan(RISK_POLICY, task, classification={**classification, "risk": "medium"})
+    assert "assumed" not in answered.value["class_raised_for_risk"]
+
+
+def test_an_assumed_medium_takes_the_medium_harnesses_and_meets_a_medium_cap() -> None:
+    policy = LANE_CAP_POLICY.replace("max_risk: low", "max_risk: medium") + (
+        "risk:\n  medium: {min_class: standard-high, harnesses: [claude, codex, opencode]}\n"
+    )
+    plan = _risk_plan(policy, _task(task_type="bugfix"), classification=NARROW_YES)
+    assert plan.outcome == "planned", plan
+    assert {c["harness"] for c in plan.value["candidates"]} <= {"claude", "codex", "opencode"}
+    assert plan.value["profile_id"] == "standard-high-opencode"
+    assert "no risk answer, treated as medium" in plan.value["reason"]
+
+
+def test_no_risk_is_assumed_before_the_classifier_answers() -> None:
+    # The question is still asked: an assumed medium would hide the lanes a
+    # low answer opens.
+    asked = _risk_plan(LANE_CAP_POLICY, _task(task_type="bugfix"))
+    assert asked.outcome == "needs_classification", asked
+    assert "risk" in asked.value["questions"]
+
+
+def test_a_policy_that_reads_no_risk_assumes_none() -> None:
+    task = _task(task_type="chore", class_hint="fast-high")
+    plain = _risk_plan(SHIPPED_POLICY, task, classification={
+        **NARROW_NO, "task_type": "chore", "intelligence_class": "fast-high",
+    })
+    assert plain.value["intelligence_class"] == "fast-high"
+    assert "treated as medium" not in plain.value["reason"]
+
+
 @pytest.mark.parametrize(
     ("risk", "admitted"),
     [("low", True), ("medium", False), ("very_high", False), (None, False)],
 )
 def test_a_narrow_lane_admits_work_up_to_its_max_risk(risk, admitted) -> None:
-    # An unknown risk does not meet the cap, exactly like a missing flag.
+    # No risk answer is treated as medium, which a low cap refuses.
     classification = NARROW_YES if risk is None else {**NARROW_YES, "risk": risk}
     plan = _risk_plan(LANE_CAP_POLICY, _task(task_type="bugfix"), classification=classification)
     assert plan.outcome == "planned", plan
@@ -1598,15 +1673,15 @@ def test_a_narrow_lane_admits_work_up_to_its_max_risk(risk, admitted) -> None:
 
 @pytest.mark.parametrize(
     ("priority", "admitted"),
-    [(None, True), (50, True), (99, True), (100, False), (120, False)],
+    [(None, True), (300, True), (101, True), (100, False), (1, False)],
 )
-def test_a_narrow_lane_admits_work_below_its_priority_ceiling(priority, admitted) -> None:
+def test_a_narrow_lane_admits_work_above_its_priority_floor(priority, admitted) -> None:
     task = _task(task_type="bugfix", priority=priority)
     plan = _risk_plan(LANE_CAP_POLICY, task, classification={**NARROW_YES, "risk": "low"})
     assert plan.outcome == "planned", plan
     assert (plan.value["profile_id"] == "standard-high-opencode") is admitted
 
-    # The ceiling is known before any classification: a lane it refuses is
+    # The floor is known before any classification: a lane it refuses is
     # not a potential lane, so it asks nothing.
     asked = _risk_plan(LANE_CAP_POLICY, task)
     if admitted:

@@ -358,21 +358,24 @@ async def _provider_findings(ctx: DoctorContext, tasks: list) -> list[dict]:
 
 
 async def _local_model_findings(ctx: DoctorContext, tasks: list) -> list[dict]:
-    """Unfinished work at or above the local-model priority threshold on a local profile.
+    """Unfinished work at or below the local-model priority floor on a local profile.
+
+    A lower priority number is more important (the claim frontier takes it
+    first), so the floor marks the work too important for a local model.
 
     The router keeps such work off a self-hosted model (``local_models``); a
-    hit is an override or a route that predates the gate.  The threshold is
+    hit is an override or a route that predates the gate.  The floor is
     the policy default, since the project's policy lives in its playbook.
     """
     from src.commands.routing_commands import profile_provider
     from src.routing.planner import LOCAL_MODEL_PROVIDERS
     from src.routing.policy import LocalModels
 
-    threshold = LocalModels().below_priority
+    floor = LocalModels().above_priority
     flagged = [
         task for task in tasks
         if task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED}
-        and task.profile_id and (task.priority or 0) >= threshold
+        and task.profile_id and task.priority is not None and task.priority <= floor
     ]
     if not flagged:
         return []
@@ -390,7 +393,7 @@ async def _local_model_findings(ctx: DoctorContext, tasks: list) -> list[dict]:
         findings.append(_finding(
             "high_priority_local_model", task.project_id,
             f"{task.id} [{task.status.value}] priority {task.priority} sits on local "
-            f"{task.profile_id} (local models take priority < {threshold}); "
+            f"{task.profile_id} (local models take priority > {floor}); "
             + ("" if queued else "stop it, then ") + f"aq task route --task-id {task.id}",
             task_id=task.id, profile_id=task.profile_id, priority=task.priority,
         ))
