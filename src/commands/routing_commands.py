@@ -741,6 +741,10 @@ class RoutingCommandsMixin:
                     "routed_at": time.time(),
                     "live_context": dict(snapshot.context),
                 }
+                if raised := plan.get("class_raised_for_risk"):
+                    # Only a plan whose risk floor raised the class carries it,
+                    # so every other route record is unchanged.
+                    route["class_raised_for_risk"] = raised
                 prior = getattr(fresh, "route", None)
                 if constraints := route_constraints(fresh):
                     route["constraints"] = constraints

@@ -50,6 +50,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -888,6 +890,43 @@ def routing_policy_block(source_text: str) -> str:
     return "".join(f"{line}\n" for line in blocks[0])
 
 
+#: The classifier's risk answer, in ascending order
+#: (:data:`src.routing.policy.RISK_LEVELS`).
+_RISK_LEVELS = ["low", "medium", "high", "very_high"]
+
+
+def _classification_schema(policy_text: str) -> dict[str, Any]:
+    """The classify step's ``output_schema`` for the policy block *policy_text*.
+
+    A policy with a top-level ``risk`` table asks the classifier for ``risk``
+    and ``risk_reason`` as well; one without it keeps the six fields, so a
+    policy that does not use risk compiles to the same artifact as before.
+    """
+    properties: dict[str, Any] = {
+        "task_type": {"type": "string"},
+        "intelligence_class": {"type": "string"},
+        "narrow": {"type": "boolean"},
+        "test_verified": {"type": "boolean"},
+        "independent_verifier": {"type": "boolean"},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 400},
+    }
+    required = [
+        "task_type", "intelligence_class", "narrow",
+        "test_verified", "independent_verifier", "reason",
+    ]
+    parsed = yaml.safe_load(policy_text)
+    if isinstance(parsed, dict) and parsed.get("risk"):
+        properties["risk"] = {"type": "string", "enum": list(_RISK_LEVELS)}
+        properties["risk_reason"] = {"type": "string", "minLength": 1, "maxLength": 400}
+        required += ["risk", "risk_reason"]
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
 def _default_assignment_routing_body(source: PlaybookSource) -> dict[str, Any]:
     """The routing semantic body for ``default-assignment-routing``.
 
@@ -1026,22 +1065,7 @@ def _default_assignment_routing_body(source: PlaybookSource) -> dict[str, Any]:
                         "questions", "allowed_kinds", "allowed_classes",
                     )
                 },
-                "output_schema": {
-                    "type": "object",
-                    "properties": {
-                        "task_type": {"type": "string"},
-                        "intelligence_class": {"type": "string"},
-                        "narrow": {"type": "boolean"},
-                        "test_verified": {"type": "boolean"},
-                        "independent_verifier": {"type": "boolean"},
-                        "reason": {"type": "string", "minLength": 1, "maxLength": 400},
-                    },
-                    "required": [
-                        "task_type", "intelligence_class", "narrow",
-                        "test_verified", "independent_verifier", "reason",
-                    ],
-                    "additionalProperties": False,
-                },
+                "output_schema": _classification_schema(policy["value"]),
                 "budget": {
                     "max_calls": 1,
                     "max_output_tokens": 4096,
@@ -1552,9 +1576,13 @@ def _terminal(rule: str, outcome: str, source_ref: dict[str, Any]) -> dict[str, 
     }
 
 
-def build(playbook_id: str) -> dict[str, Any]:
-    """Compile one shipped source and report what a reviewer would see."""
-    rel_path = SOURCES[playbook_id]
+def build(playbook_id: str, rel_path: str | None = None) -> dict[str, Any]:
+    """Compile one shipped source and report what a reviewer would see.
+
+    *rel_path* compiles a draft of the shipped playbook in place of its
+    shipped source, with the same semantic body.
+    """
+    rel_path = rel_path or SOURCES[playbook_id]
     source = _load(rel_path)
     body = semantic_body(playbook_id, source)
     if not body:
@@ -1624,15 +1652,34 @@ def main() -> int:
         action="store_true",
         help="report drift in the deterministic fields, write nothing",
     )
+    parser.add_argument(
+        "--source",
+        help=(
+            "compile this draft source of one shipped id instead of its shipped "
+            "source; needs --out and exactly one id"
+        ),
+    )
+    parser.add_argument(
+        "--out",
+        help=(
+            "write the bundle here instead of the fixture tree; the manifest is "
+            "seeded from the fixture's on first write"
+        ),
+    )
     parser.add_argument("ids", nargs="*", default=None)
     args = parser.parse_args()
+    if args.source and (not args.out or len(args.ids or []) != 1):
+        parser.error("--source needs --out and exactly one playbook id")
 
     drift = 0
     for playbook_id in args.ids or list(SOURCES):
         print(f"{playbook_id}:")
-        result = build(playbook_id)
-        directory = FIXTURE_ROOT / playbook_id
+        result = build(playbook_id, args.source)
+        directory = Path(args.out).resolve() if args.out else FIXTURE_ROOT / playbook_id
         directory.mkdir(parents=True, exist_ok=True)
+        seed_manifest = FIXTURE_ROOT / playbook_id / "manifest.md"
+        if args.out and not (directory / "manifest.md").exists() and seed_manifest.exists():
+            (directory / "manifest.md").write_bytes(seed_manifest.read_bytes())
         files: dict[Path, bytes] = {
             directory / "source.md": (REPO_ROOT / result["rel_path"]).read_bytes(),
             directory / "diagnostics.json": (
@@ -1692,7 +1739,7 @@ def main() -> int:
                 if stable(existing) == stable(payload):
                     continue
             drift += 1
-            rel = path.relative_to(REPO_ROOT)
+            rel = path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
             if args.check:
                 print(f"  DRIFT {rel}")
             else:

@@ -10,20 +10,27 @@ Every function here is a pure function of the task's facts, the policy
 The steps, as the spec numbers them:
 
 1. **Kind and class** — the filer's hint beats the classification, which
-   beats the kind's default; ``max_class`` clamps.
+   beats the kind's default; ``max_class`` clamps.  A classified risk with a
+   ``risk`` rule then raises the class to that rule's floor, beating the hint
+   and ``max_class`` alike.
 2. **Candidates** — worker candidates for the lane (or the class), minus
    reserved cells, excluded providers, providers other than the project's
    ``preferred_provider``, for a task needing a non-pool workspace every
    pool profile and, for work the ``local_models`` gate refuses (priority at
    or above its threshold, a train bugfix, work others wait on), every
-   self-hosted model.  A narrow lane's candidates form the preferred tier.
+   self-hosted model, and every harness a classified risk's rule does not
+   list.  A narrow lane's candidates form the preferred tier when the
+   classification meets its ``requires``, its ``max_risk`` (an unknown risk
+   does not) and its ``below_priority``.
 2b. **Preference** — the filer's ``prefer_target``, a harness or a profile:
    ``strict`` leaves only the candidates that serve it and refuses to fall
    back, ``soft`` flags them so :func:`reselect` prefers them while they have
    headroom.  A task that names none is untouched.
 3. **Availability** — an unlaunchable provider is dropped from the choice
    but stays in ``candidates``; nothing launchable is ``held``.
-4. **Classification needed?** — only when the answer could change the route.
+4. **Classification needed?** — only when the answer could change the route:
+   a narrow lane's flags (and its ``max_risk``), and the risk when a ``risk``
+   rule could raise the class or remove a candidate's harness.
 5. **Load score** — ``pressure = (load + 1) / (slots × weight × usage ×
    availability)``; ``load = busy + eligible backlog``.  Blocked, unclaimable
    routed work (dependency, hold, origin, container, gate, already-assigned)
@@ -45,9 +52,11 @@ from src.models import TaskType
 from src.profiles.catalog import worker_route
 from src.routing.policy import (
     CLASSIFICATION_FLAGS,
+    RISK_LEVELS,
     Balance,
     Lane,
     RoutingPolicy,
+    risk_rank,
     selector_matches,
 )
 from src.routing.sources import LEGACY, OVERRIDE, ROLE, ROUTER, UNROUTED
@@ -288,14 +297,23 @@ class Classification:
     intelligence_class: str
     flags: frozenset[str]
     reason: str = ""
+    #: One of :data:`~src.routing.policy.RISK_LEVELS`; ``None`` when not answered.
+    risk: str | None = None
+    risk_reason: str = ""
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        record = {
             "task_type": self.task_type,
             "intelligence_class": self.intelligence_class,
             **{flag: flag in self.flags for flag in sorted(CLASSIFICATION_FLAGS)},
             "reason": self.reason,
         }
+        if self.risk is not None:
+            # Only an answered risk is recorded, so a record without one is
+            # the record it was before risks existed.
+            record["risk"] = self.risk
+            record["risk_reason"] = self.risk_reason
+        return record
 
 
 # -- worker candidates ---------------------------------------------------------
@@ -357,9 +375,11 @@ def read_classification(
     """``(classification, failed, error)`` for a ``classification`` argument.
 
     ``None`` means no classification was asked for yet.  ``{"failed": true}``
-    and an answer outside ``allowed_kinds`` / ``allowed_classes`` are a failed
+    and an answer outside ``allowed_kinds`` / ``allowed_classes`` (or a
+    ``risk`` outside :data:`~src.routing.policy.RISK_LEVELS`) are a failed
     classification (§6.5): the plan proceeds with the defaults and treats
-    every ``requires`` flag as false.
+    every ``requires`` flag as false and the risk as unknown.  An answer
+    without ``risk`` leaves the risk unknown.
     """
     if raw is None:
         return None, False, None
@@ -380,9 +400,20 @@ def read_classification(
             return None, True, f"classification {flag} must be true or false"
         if value:
             flags.add(flag)
+    risk = raw.get("risk")
+    if risk is not None and (not isinstance(risk, str) or risk not in RISK_LEVELS):
+        return None, True, f"classification risk {risk!r} is not a risk level"
+    risk_reason = raw.get("risk_reason")
+    if risk_reason is None:
+        risk_reason = ""
+    elif not isinstance(risk_reason, str):
+        return None, True, "classification risk_reason must be a string"
     reason = raw.get("reason") or ""
     return (
-        Classification(str(task_type), str(class_id), frozenset(flags), str(reason)[:400]),
+        Classification(
+            str(task_type), str(class_id), frozenset(flags), str(reason)[:400],
+            risk=risk, risk_reason=risk_reason[:400],
+        ),
         False,
         None,
     )
@@ -403,10 +434,18 @@ class _Rule:
     narrow: bool
     prefer_harnesses: tuple[str, ...]
     notes: tuple[str, ...]
+    #: The class before a ``risk`` rule's floor raised it, and that risk.
+    raised_from: str | None = None
+    raised_for_risk: str | None = None
 
 
 def _rule(task: TaskFacts, policy: RoutingPolicy, classified: Classification | None) -> _Rule:
-    """Step 1: the kind, the merged rule and the class."""
+    """Step 1: the kind, the merged rule and the class.
+
+    The classified risk's floor comes last, so it beats a hint and
+    ``max_class``: it is a safety floor, and an operator who wants a task
+    below it overrides the route.
+    """
     notes: list[str] = []
     kind = task.task_type or (classified.task_type if classified else None) or policy.default_kind
     base = policy.kinds.get(kind)
@@ -437,10 +476,41 @@ def _rule(task: TaskFacts, policy: RoutingPolicy, classified: Classification | N
     clamped_from = None
     if max_class is not None and policy.rank(chosen) > policy.rank(max_class):
         clamped_from, chosen = chosen, max_class
+    raised_from = raised_for_risk = None
+    risk = classified.risk if classified else None
+    risk_rule = policy.risk.get(risk) if risk is not None else None
+    if risk_rule is not None:
+        floor = risk_rule.floor(classified.flags if classified else ())
+        if policy.rank(chosen) < policy.rank(floor):
+            raised_from, raised_for_risk, chosen = chosen, risk, floor
+            notes.append(f"class raised from {raised_from} to {chosen} for risk {risk}")
     return _Rule(
         kind=kind, rule=rule_name, origin=origin_name, class_id=chosen, hint=hint,
         clamped_from=clamped_from, lane=lane, narrow=narrow,
         prefer_harnesses=prefer_harnesses, notes=tuple(notes),
+        raised_from=raised_from, raised_for_risk=raised_for_risk,
+    )
+
+
+def _risk_harnesses(policy: RoutingPolicy, risk: str | None) -> tuple[str, ...]:
+    """The harness selectors a classified *risk* restricts candidates to; ``()`` for none."""
+    risk_rule = policy.risk.get(risk) if risk is not None else None
+    return risk_rule.harnesses if risk_rule is not None else ()
+
+
+def _lane_admits_risk(lane: Lane, risk: str | None) -> bool:
+    """A narrow lane's ``max_risk`` is met; an unknown risk meets no cap."""
+    if lane.max_risk is None:
+        return True
+    return risk is not None and risk_rank(risk) <= risk_rank(lane.max_risk)
+
+
+def _lane_admits_priority(lane: Lane, task: TaskFacts) -> bool:
+    """A narrow lane's ``below_priority`` is met; an unknown priority meets it."""
+    return (
+        lane.below_priority is None
+        or task.priority is None
+        or task.priority < lane.below_priority
     )
 
 
@@ -510,11 +580,13 @@ def is_local(candidate: Candidate, policy: RoutingPolicy) -> bool:
 def _filter(
     candidates: list[Candidate], task: TaskFacts, policy: RoutingPolicy,
     *, respect_reserved: bool = True, local_gate: bool = True, kind: str | None = None,
+    risk_harnesses: tuple[str, ...] = (),
 ) -> tuple[list[Candidate], str | None]:
     """Step 2's removals, returning the survivors and why the list emptied.
 
     ``local_gate=False`` is for an allowlisted benchmark arm, which names its
-    harness explicitly.
+    harness explicitly.  *risk_harnesses* are the selectors a classified
+    risk's rule allows; empty restricts nothing.
     """
     local_refused = local_gate and local_refusal(task, policy, kind) is not None
     stages = (
@@ -526,6 +598,11 @@ def _filter(
         ),
         ("workspace_requirement", lambda c: not task.needs_task_lifecycle or c.lifecycle != "pool"),
         ("local_model_gate", lambda c: not local_refused or not is_local(c, policy)),
+        (
+            "risk_harnesses",
+            lambda c: not risk_harnesses
+            or any(selector_matches(c.harness, s) for s in risk_harnesses),
+        ),
     )
     reason = None if candidates else "no_worker_candidates"
     for name, keep in stages:
@@ -561,8 +638,11 @@ def _candidates(
     snapshot: Snapshot,
     rule: _Rule,
     flags: frozenset[str] | None,
+    risk: str | None = None,
 ) -> _Pool:
-    """Step 2.  *flags* ``None`` means the classification is still unknown."""
+    """Step 2.  *flags* ``None`` means the classification is still unknown;
+    *risk* ``None`` means no risk was classified."""
+    risk_harnesses = _risk_harnesses(policy, risk)
     if rule.lane is not None:
         lane = policy.lanes[rule.lane]
         class_id = lane.class_ or rule.class_id
@@ -576,7 +656,9 @@ def _candidates(
             )
             for profile in cells
         ]
-        found, reason = _filter(found, task, policy, kind=rule.kind)
+        found, reason = _filter(
+            found, task, policy, kind=rule.kind, risk_harnesses=risk_harnesses,
+        )
         ordered = sorted(found, key=_order_key(policy, lane))
         preferred = [c for c in ordered if c.tier == PREFERRED]
         fallback = [c for c in ordered if c.tier == FALLBACK]
@@ -594,7 +676,9 @@ def _candidates(
         )
         if not is_opencode_family(profile.harness, profile.provider, profile.harness_family)
     ]
-    general, reason = _filter(general, task, policy, kind=rule.kind)
+    general, reason = _filter(
+        general, task, policy, kind=rule.kind, risk_harnesses=risk_harnesses,
+    )
     general.sort(key=_order_key(policy, None))
 
     preferred: list[Candidate] = []
@@ -602,17 +686,21 @@ def _candidates(
     if rule.narrow:
         for name, lane in policy.narrow_lanes():
             mapped = (lane.classes or {}).get(rule.class_id)
-            if mapped is None:
+            if mapped is None or not _lane_admits_priority(lane, task):
+                # The priority ceiling is known before any classification, so
+                # a lane it refuses is not even a potential one.
                 continue
             lane_cells = [
                 _candidate(profile, mapped, tier=PREFERRED, lane=name)
                 for profile in _cells(snapshot, mapped, frozenset(lane.harnesses))
             ]
-            lane_cells, _reason = _filter(lane_cells, task, policy, kind=rule.kind)
+            lane_cells, _reason = _filter(
+                lane_cells, task, policy, kind=rule.kind, risk_harnesses=risk_harnesses,
+            )
             lane_cells.sort(key=_order_key(policy, lane))
             if flags is None:
                 potential.extend(lane_cells)
-            elif set(lane.requires) <= flags:
+            elif set(lane.requires) <= flags and _lane_admits_risk(lane, risk):
                 preferred.extend(lane_cells)
     seen: set[tuple[str, str]] = set()
     ordered: list[Candidate] = []
@@ -923,6 +1011,24 @@ def selection_reason(evidence: Mapping[str, Any]) -> str:
     return reason + ("; bypassed " + ", ".join(bypassed[:2]) if bypassed else "")
 
 
+# -- step 4 --------------------------------------------------------------------
+
+
+def _risk_could_change_route(
+    policy: RoutingPolicy, rule: _Rule, candidates: Sequence[Candidate]
+) -> bool:
+    """A classified risk could raise *rule*'s class or remove one of *candidates*."""
+    for risk_rule in policy.risk.values():
+        if policy.rank(risk_rule.min_class) > policy.rank(rule.class_id):
+            return True
+        if risk_rule.harnesses and any(
+            not any(selector_matches(c.harness, s) for s in risk_rule.harnesses)
+            for c in candidates
+        ):
+            return True
+    return False
+
+
 # -- step 7 --------------------------------------------------------------------
 
 
@@ -1034,6 +1140,7 @@ def plan_route(
     classified, failed, error = read_classification(classification, policy)
     known = classification is not None
     flags = (classified.flags if classified else frozenset()) if known else None
+    risk = classified.risk if classified else None
     rule = _rule(task, policy, classified)
     unmatched = policy.unmatched_selectors(snapshot.harnesses) if snapshot.harnesses else []
     if unmatched:
@@ -1042,7 +1149,7 @@ def plan_route(
         rule = replace(rule, notes=(
             *rule.notes, "lane selectors match no installed harness: " + ", ".join(unmatched),
         ))
-    pool = _candidates(task, policy, snapshot, rule, flags)
+    pool = _candidates(task, policy, snapshot, rule, flags, risk)
     eligible = pool.candidates
     pool, refused = _apply_preference(pool, task)
 
@@ -1083,10 +1190,20 @@ def plan_route(
         questions: list[str] = []
         if not task.task_type and not rule.hint:
             questions += ["task_type", "intelligence_class"]
-        if rule.narrow and any(launchable(c, snapshot) for c in pool.potential):
-            lanes = {c.lane for c in pool.potential if launchable(c, snapshot)}
-            wanted = {flag for name in lanes for flag in policy.lanes[name].requires}
-            questions += sorted(wanted)
+        wanted: set[str] = set()
+        potential = [c for c in pool.potential if launchable(c, snapshot)]
+        if rule.narrow and potential:
+            lanes = {c.lane for c in potential}
+            wanted |= {flag for name in lanes for flag in policy.lanes[name].requires}
+            if any(policy.lanes[name].max_risk is not None for name in lanes):
+                wanted.add("risk")
+        if _risk_could_change_route(policy, rule, [*pool.candidates, *potential]):
+            wanted.add("risk")
+            wanted |= {
+                flag for risk_rule in policy.risk.values() if risk_rule.relax is not None
+                for flag in risk_rule.relax.requires
+            }
+        questions += sorted(wanted)
         if questions:
             return PlanResult("needs_classification", {
                 "task_id": task.task_id,
@@ -1141,6 +1258,11 @@ def plan_route(
         "preference": preference,
         "policy_sha256": policy_sha256,
         "class_clamped_from": rule.clamped_from,
+        # Present only when a risk floor raised the class, so a plan without
+        # one is the plan it was before risks existed.
+        **({"class_raised_for_risk": {
+            "from": rule.raised_from, "to": rule.class_id, "risk": rule.raised_for_risk,
+        }} if rule.raised_from is not None else {}),
         "classification": classification_record,
         "balance": policy.balance.model_dump(mode="json"),
     })

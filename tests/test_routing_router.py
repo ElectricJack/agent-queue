@@ -666,6 +666,39 @@ async def test_apply_writes_the_classified_kind_and_keeps_constraints(handler, o
     assert task.route["classification"]["intelligence_class"] == "deep-high"
 
 
+async def test_apply_records_a_class_a_risk_floor_raised(handler, orch):
+    from tests.test_routing_planner import RISK_POLICY
+
+    classification = {
+        "task_type": "research", "intelligence_class": "standard-high", "narrow": False,
+        "test_verified": False, "independent_verifier": False, "reason": "schema change",
+        "risk": "very_high", "risk_reason": "migrates the claims table",
+    }
+    for task_id, risk in (("raised", "very_high"), ("kept", "low")):
+        await _create(orch.db, task_id, task_type=TaskType.RESEARCH, class_hint="standard-high")
+        plan = await handler.execute("task_route_plan", {
+            "task_id": task_id, "policy": RISK_POLICY,
+            "classification": {**classification, "risk": risk},
+        })
+        assert plan["outcome"] == "planned", plan
+        with _as_playbook():
+            applied = await handler.execute("task_route_apply", {"task_id": task_id, "plan": plan})
+        assert applied["outcome"] == "routed", applied
+
+    raised = await orch.db.get_task("raised")
+    assert raised.intelligence_class == "deep-high"
+    assert raised.route["class_raised_for_risk"] == {
+        "from": "standard-high", "to": "deep-high", "risk": "very_high",
+    }
+    assert raised.route["classification"]["risk"] == "very_high"
+    assert raised.route["classification"]["risk_reason"] == "migrates the claims table"
+
+    # No raise: the route record has no such key.
+    kept = await orch.db.get_task("kept")
+    assert kept.intelligence_class == "standard-high"
+    assert "class_raised_for_risk" not in kept.route
+
+
 async def test_apply_reroutes_a_legacy_route(handler, orch):
     await _create(orch.db, "t", task_type=TaskType.RESEARCH, profile_id="standard-high-claude",
                   intelligence_class="standard-high")
