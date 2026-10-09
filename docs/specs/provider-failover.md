@@ -769,11 +769,26 @@ detail) into `_fail_session_launch`; the exit path is
   locked by the task, never a pool claim still `preparing` (`not_started`),
   and plan files -- left out of every task commit -- do not count as work at
   risk. It runs in the orchestrator cycle, so each is bounded by
-  `CHECKPOINT_BUDGET_SECONDS` (90 s); an overrun is `unknown`, which holds. A
-  hierarchy/train branch is left to its integration owner (`checkpoint:
-  integration_managed`), and a tripped task there takes a short provider pause
-  instead of READY, as the launch path does when the integration release is
-  unconfirmed.
+  `CHECKPOINT_BUDGET_SECONDS` (90 s); an overrun is `unknown`, which holds.
+* **A hierarchy/train branch** keeps its integration owner, so its checkpoint
+  is `stranded_work.save_wip_to_task_branch`: the stopped writer's work becomes
+  one `WIP saved by AQ: <reason>` commit fast-forwarded onto the task's *own*
+  branch (never forced, only in the project's integration repository), with no
+  `aq/preserved` snapshot. The save records `failover_resume_checkpoint`
+  (repository, branch, base, saved sha) in task metadata; the next exact-origin
+  preparation starts from `origin/<branch>` while it still descends from that
+  sha (else from the filing base), and launch or pool-claim activation consumes
+  it. A pool claim is retained while its owner is attached, so once the save
+  leaves the checkout clean and pushed the exit path hands the owner back
+  (`arelease_integration_writer_for_retry(pool=True)`) before the teardown. A
+  branch that cannot fast-forward is left untouched (`checkpoint:
+  integration_managed`) for owner recovery, and a tripped task there takes a
+  short provider pause instead of READY, as the launch path does when the
+  integration release is unconfirmed.
+* **`aq task stop` on a hierarchy/train writer** (`stop_task`, and the forced
+  shutdown and delete paths) stops the process first and then saves the same
+  way instead of refusing because the writer or its workspace is still
+  attached; it records the same resume point.
 * **Order on the exit path:** checkpoint while the session row is still live
   (a daemon that dies mid-push re-runs the failover next tick, where a row
   already marked non-live would have let the orphan sweep BLOCK the task),
@@ -792,7 +807,11 @@ detail) into `_fail_session_launch`; the exit path is
 * **The hand-off note** is `task_metadata['provider_failover_handoff']` plus a
   system comment (`system:provider-failover`), and `aq prime` renders it in
   the task-context section on its own, so a later re-route comment cannot push
-  it out of the five recent comments.
+  it out of the five recent comments. It names the saved commit, tells the next
+  worker to continue from the branch tip rather than restart, and quotes the
+  stopped session's last ~80 screen lines (`screen_tail`, captured before the
+  stop) inside a fence its content cannot close, labelled as quoted output.
+  Writing it emits `task.handoff` for the dashboard and supervisor playbooks.
 * **A move to another provider drops `session_resume_key`**
   (`ProviderRerouteService._move`): the carried conversation id belongs to the
   old CLI, and a harness without a transcript reader would take it unchecked.
