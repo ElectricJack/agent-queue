@@ -819,7 +819,7 @@ async def test_admission_refuses_changed_or_unretained_inputs(promotion, change)
         await update_meta(e, step=step)
     elif change == "provenance":
         identity = CompletionIdentity("p", "r", e.member.task_id, "promotion:" + e.meta["request_id"])
-        git(e.ops.git.remote_path, "update-ref", "-d", "refs/heads/" + identity.branch)
+        git(e.ops.git.remote_path, "update-ref", "-d", identity.ref)
     else:
         async with e.db._engine.begin() as conn:
             if change == "profile":

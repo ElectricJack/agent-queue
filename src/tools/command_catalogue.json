@@ -11373,6 +11373,49 @@
         "type": "object"
       }
     },
+    "integration_migrate_provenance_refs": {
+      "name": "integration_migrate_provenance_refs",
+      "description": "Local operator copies and verifies immutable provenance refs before deleting legacy heads.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 1000,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "checkout": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Checkout"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationMigrateProvenanceRefsArgs",
+        "type": "object"
+      }
+    },
     "integration_mutate_hierarchy": {
       "name": "integration_mutate_hierarchy",
       "description": "Apply a guarded hierarchy change and invalidate affected parent generations.",

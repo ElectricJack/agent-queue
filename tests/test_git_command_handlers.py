@@ -57,6 +57,10 @@ class TestExactGitProvenance:
         final = await _provenance_commit(provenance_repo, "two", message="two\n\nAQ-Task: task")
         completed = CompletedSource(CompletionIdentity("p", "r", "task", "close-1"), final)
         marker = await store.write_completion(completed, claim_epoch=1)
+        assert completed.identity.ref.startswith("refs/aq/provenance/completions/")
+        assert completed.identity.ref in await store.run("ls-remote", "origin")
+        assert "aq-provenance" not in await store.run("ls-remote", "--heads", "origin")
+        assert "aq-provenance" not in await store.run("for-each-ref", "--format=%(refname)")
         await store.run("checkout", "-b", "target", base)
         # Force an actual rewrite, not cherry-pick's optional fast-forward.
         await _provenance_commit(provenance_repo, "target-only")
@@ -117,12 +121,12 @@ class TestExactGitProvenance:
         monkeypatch.setattr(git, "_apush_oid", refused)
         results = await store.write_completions([*fresh, taken, kept])
         # One transfer carries every absent ref, and nothing else.
-        assert [sorted(tips) for tips in pushes] == [sorted(c.identity.branch for c in fresh)]
+        assert [sorted(tips) for tips in pushes] == [sorted(c.identity.ref for c in fresh)]
         assert not single
         for completed in fresh:
             assert (await store.read_completion(completed.identity))["source_oid"] == completed.source_oid
             assert results[completed.identity] == await store.run(
-                "rev-parse", "refs/remotes/origin/" + completed.identity.branch)
+                "rev-parse", completed.identity.ref)
         # A generation bound to other evidence fails alone; an identical one is kept.
         assert isinstance(results[taken.identity], ValueError)
         assert "already binds different evidence" in str(results[taken.identity])
@@ -138,7 +142,7 @@ class TestExactGitProvenance:
         conflicted = await store.write_completions(
             [CompletedSource(split, first), CompletedSource(split, second)])
         assert "two sources" in str(conflicted[split])
-        assert split.branch not in await store.run("ls-remote", "origin")
+        assert split.ref not in await store.run("ls-remote", "origin")
 
     async def test_archive_and_source_branch_deletion_preserve_git_proof(self, provenance_repo, db):
         from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
@@ -161,6 +165,7 @@ class TestExactGitProvenance:
         await store.run("branch", "-D", "aq/task")
         fresh = path.parent / "fresh"
         await git.acreate_checkout(str(remote), str(fresh), no_checkout=True)
+        await git.afetch_origin(str(fresh), repository_url=str(remote), all_heads=True)
         retained = GitProvenance(git, str(fresh), repository_url=str(remote))
         assert await retained.contained(completed, source)
         assert await db.get_task("task") is None
@@ -181,6 +186,8 @@ class TestExactGitProvenance:
         assert not await store.contained(original, repair)
         evidence = await store.write_replacement(source_oid=repair, base_oid=repair_base,
             replaces=[original], authority="repair_contract", reason="all work resolved")
+        assert evidence in await store.run("ls-remote", "origin", "refs/aq/provenance/replacements/*")
+        assert "aq-provenance" not in await store.run("ls-remote", "--heads", "origin")
         assert await store.contained(original, repair)
         assert not await store.contained(original, await store.run("rev-parse", repair + "^"))
         reopened = CompletedSource(CompletionIdentity("p", "r", "task", "close-2"), final)
@@ -238,7 +245,7 @@ class TestExactGitProvenance:
         assert not await store.contained(item, base)
         async def failed(*args, **kwargs):
             raise GitError("network unavailable")
-        monkeypatch.setattr(store.git, "als_remote_ref", failed)
+        monkeypatch.setattr(store.git, "als_remote_qualified_refs", failed)
         with pytest.raises(GitError, match="network unavailable"):
             await store.write_completion(item)
 
@@ -250,6 +257,175 @@ class TestExactGitProvenance:
         await store.write_completion(item, artifact=False)
         assert (await store.read_completion(item.identity))["artifact"] is False
         assert not await store.contained(item, base)
+
+
+class TestProvenanceNamespaceMigration:
+    async def _legacy(self, provenance_repo):
+        from src.integration.provenance import CompletedSource, CompletionIdentity
+
+        git, store, path, remote, _base = provenance_repo
+        source = await _provenance_commit(provenance_repo, "legacy-source")
+        item = CompletedSource(CompletionIdentity("p", "r", "task", "g"), source)
+        marker = await store.write_completion(item)
+        # Model a pre-upgrade remote and bare/local branch without rewriting its object.
+        await git._arun(["update-ref", "refs/heads/" + item.identity.legacy_branch, marker],
+                       cwd=str(remote))
+        await git._arun(["update-ref", "-d", item.identity.ref], cwd=str(remote))
+        await store.run("update-ref", "refs/heads/" + item.identity.legacy_branch, marker)
+        await store.run("update-ref", "-d", item.identity.ref)
+        return item, marker
+
+    async def test_dry_run_changes_no_refs_and_apply_preserves_exact_object(self, provenance_repo):
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        git, store, path, remote, _base = provenance_repo
+        item, marker = await self._legacy(provenance_repo)
+        assert (await store.read_completion(item.identity))["source_oid"] == item.source_oid
+        remote_before = await store.run("ls-remote", "origin")
+        local_before = await store.run("for-each-ref", "--format=%(refname) %(objectname)")
+        config_before = (path / ".git" / "config").read_bytes()
+        migration = ProvenanceMigration(git)
+        preview = await migration.run(str(remote), checkout=str(path))
+        assert preview["outcome"] == "preview" and len(preview["rows"]) == 2
+        assert await store.run("ls-remote", "origin") == remote_before
+        assert await store.run("for-each-ref", "--format=%(refname) %(objectname)") == local_before
+        assert (path / ".git" / "config").read_bytes() == config_before
+        applied = await migration.run(str(remote), checkout=str(path), dry_run=False)
+        assert applied["outcome"] == "migrated" and applied["remaining"] == 0
+        assert {row["action"] for row in applied["rows"]} == {"migrated"}
+        assert await store.run("rev-parse", item.identity.ref) == marker
+        assert marker in await store.run("ls-remote", "origin", item.identity.ref)
+        assert "aq-provenance" not in await store.run("ls-remote", "--heads", "origin")
+        assert "aq-provenance" not in await store.run("for-each-ref", "--format=%(refname)")
+        assert await store.contained(item, item.source_oid)
+        assert (await migration.run(str(remote), dry_run=False))["rows"] == []
+
+    @pytest.mark.parametrize("failure", ["conflict", "copy", "moved", "invalid"])
+    async def test_failed_copy_or_changed_old_ref_is_never_deleted(
+        self, provenance_repo, monkeypatch, failure,
+    ):
+        from src.git.manager import RemoteRefResult, RemoteRefState
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        git, store, _path, remote, base = provenance_repo
+        item, marker = await self._legacy(provenance_repo)
+        old_ref = "refs/heads/" + item.identity.legacy_branch
+        if failure == "conflict":
+            await git._arun(["update-ref", item.identity.ref, base], cwd=str(remote))
+        elif failure == "copy":
+            async def failed_copy(checkout, tips, **kwargs):
+                return {ref: RemoteRefResult(RemoteRefState.ERROR, error="copy failed")
+                        for ref in tips}
+            monkeypatch.setattr(git, "apush_new_refs", failed_copy)
+        elif failure == "moved":
+            delete = git.adelete_remote_ref_exact
+            async def changed(checkout, branch, expected_old_oid, **kwargs):
+                await git._arun(["update-ref", old_ref, base], cwd=str(remote))
+                await delete(checkout, branch, expected_old_oid, **kwargs)
+            monkeypatch.setattr(git, "adelete_remote_ref_exact", changed)
+        else:
+            await git._arun(["update-ref", old_ref, base], cwd=str(remote))
+        result = await ProvenanceMigration(git).run(str(remote), dry_run=False)
+        assert result["outcome"] == "blocked"
+        assert result["rows"][0]["action"] == "blocked"
+        expected = base if failure in {"moved", "invalid"} else marker
+        assert (await git.als_remote_ref(str(store.checkout), item.identity.legacy_branch)).oid == expected
+
+    async def test_replacement_migration_and_fresh_fetched_snapshot(self, provenance_repo):
+        from src.integration.delivery_truth import delivery_snapshot
+        from src.integration.provenance import GitProvenance
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        git, store, path, remote, base = provenance_repo
+        item, _marker = await self._legacy(provenance_repo)
+        await store.run("checkout", "-b", "repair", base)
+        await _provenance_commit(provenance_repo, "target-work")
+        repair_base = await store.run("rev-parse", "HEAD")
+        await store.run("cherry-pick", item.source_oid)
+        repair = await store.run("rev-parse", "HEAD")
+        replacement = await store.write_replacement(source_oid=repair, base_oid=repair_base,
+            replaces=[item], authority="operator", reason="entire source replaced")
+        ref = (await store.run("for-each-ref", "--format=%(refname)",
+                               "refs/aq/provenance/replacements/")).strip()
+        legacy = "refs/heads/aq-provenance/" + ref.removeprefix("refs/aq/provenance/")
+        await git._arun(["update-ref", legacy, replacement], cwd=str(remote))
+        await git._arun(["update-ref", "-d", ref], cwd=str(remote))
+        applied = await ProvenanceMigration(git).run(str(remote), dry_run=False, limit=1)
+        assert applied["remaining"] == 1
+        assert (await ProvenanceMigration(git).run(str(remote), dry_run=False))["remaining"] == 0
+        fresh = str(path.parent / "observer")
+        await git.acreate_checkout(str(remote), fresh, no_checkout=True)
+        snapshot = await delivery_snapshot(git, fresh, project_id="p", repository_id="r",
+            repository_url=str(remote), target_ref="refs/heads/main")
+        assert item.identity.ref in snapshot.source_heads
+        retained = GitProvenance(git, fresh, repository_url=str(remote))
+        assert (await retained.read_completion(item.identity, refs=snapshot.source_heads))["source_oid"] == item.source_oid
+        assert await retained.read_completion(item.identity, refs={}) is None
+        assert await retained.contained(item, repair)
+
+    @pytest.mark.parametrize("failure", ["conflict", "attached", "moved"])
+    async def test_local_migration_preserves_conflicting_attached_or_changed_head(
+        self, provenance_repo, monkeypatch, failure,
+    ):
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        git, store, path, remote, base = provenance_repo
+        item, marker = await self._legacy(provenance_repo)
+        old_ref = "refs/heads/" + item.identity.legacy_branch
+        if failure == "conflict":
+            await store.run("update-ref", item.identity.ref, base)
+        elif failure == "attached":
+            await store.run("checkout", item.identity.legacy_branch)
+        else:
+            delete = git.adelete_local_ref_exact
+            async def changed(checkout, *, ref, expected_old_oid):
+                await store.run("update-ref", ref, base)
+                await delete(checkout, ref=ref, expected_old_oid=expected_old_oid)
+            monkeypatch.setattr(git, "adelete_local_ref_exact", changed)
+        result = await ProvenanceMigration(git).run(
+            str(remote), checkout=str(path), dry_run=False,
+        )
+        local = [row for row in result["rows"] if row["scope"] == "local"]
+        assert result["outcome"] == "blocked" and local[0]["action"] == "blocked"
+        assert await store.run("rev-parse", old_ref) == (base if failure == "moved" else marker)
+
+    async def test_writers_never_rebind_legacy_generation(self, provenance_repo):
+        from src.integration.provenance import CompletedSource
+
+        _git, store, _path, _remote, base = provenance_repo
+        item, marker = await self._legacy(provenance_repo)
+        conflicting = CompletedSource(item.identity, base)
+        with pytest.raises(ValueError, match="already binds"):
+            await store.write_completion(conflicting)
+        assert isinstance((await store.write_completions([conflicting]))[item.identity], ValueError)
+        assert (await store.git.als_remote_qualified_refs(
+            store.checkout, [item.identity.ref]))[item.identity.ref].oid is None
+        assert await store.write_completion(item) == marker
+        assert "aq-provenance" in await store.run("ls-remote", "--heads", "origin")
+
+    async def test_operator_command_uses_designated_repo_and_refuses_worker(self, provenance_repo, db):
+        from types import SimpleNamespace
+        from src.commands.integration_commands import IntegrationCommandsMixin
+        from src.commands.principal import (
+            ExecutionPrincipal, PrincipalKind, TRUSTED_LOCAL, principal_context,
+        )
+
+        git, _store, _path, remote, _base = provenance_repo
+        await self._legacy(provenance_repo)
+        await db.create_project(Project(id="p", name="P"))
+        await db.create_repo(RepoConfig(id="r", project_id="p", source_type=RepoSourceType.CLONE,
+                                       url=str(remote)))
+        await db.update_project("p", integration_repository_id="r")
+        handler = IntegrationCommandsMixin()
+        handler.db = db
+        handler.orchestrator = SimpleNamespace(git=git)
+        request = {"project_id": "p", "dry_run": True}
+        preview = await handler._cmd_integration_migrate_provenance_refs(request)
+        assert preview["success"] and preview["outcome"] == "preview"
+        with principal_context(ExecutionPrincipal(kind=PrincipalKind.SESSION,
+                               policy=TRUSTED_LOCAL.policy, project_id="p")):
+            refused = await handler._cmd_integration_migrate_provenance_refs(request)
+        assert not refused["success"] and refused["outcome"] == "refused"
 
 
 class TestLegacyGitProvenanceMigration:

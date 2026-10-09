@@ -20,6 +20,21 @@ def _client(result):
     return client
 
 
+@pytest.mark.parametrize("apply", [False, True])
+def test_provenance_namespace_migration_defaults_to_preview(tmp_path, apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "migrated" if apply else "preview"})
+    argv = ["integration", "migrate-provenance-refs", "p", "--limit", "12",
+            "--checkout", str(tmp_path)]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, argv + (["--apply"] if apply else []))
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == ("integration_migrate_provenance_refs", {
+        "project_id": "p", "dry_run": not apply, "limit": 12, "checkout": str(tmp_path),
+    })
+
+
 
 def test_cutover_transmits_saved_plan_and_defaults_to_preview(tmp_path):
     from src.cli.app import cli

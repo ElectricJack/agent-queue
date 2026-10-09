@@ -552,6 +552,8 @@ async def test_isolated_origin_fetch_imports_source_refs_without_using_checkout_
     destination = tmp_path / "destination"
     _git(["clone", str(source), str(destination)], tmp_path)
     _git(["push", str(source), f"{tip}:refs/heads/topic"], checkout)
+    provenance_ref = "refs/aq/provenance/completions/subject/generation"
+    _git(["push", str(source), f"{tip}:{provenance_ref}"], checkout)
     _git(["config", "remote.origin.url", str(trap)], destination)
 
     await GitManager()._afetch_origin_with_auth_to_url(
@@ -559,6 +561,8 @@ async def test_isolated_origin_fetch_imports_source_refs_without_using_checkout_
     )
 
     assert _git(["rev-parse", "refs/remotes/origin/topic"], destination) == tip
+    assert _git(["rev-parse", provenance_ref], destination) == tip
+    assert "aq-provenance" not in _git(["for-each-ref", "--format=%(refname)"], destination)
     assert _git(["rev-parse", "HEAD"], destination) == base
     assert _git(["config", "--get", "remote.origin.url"], destination) == str(trap)
     assert _git(["for-each-ref", "--format=%(refname)"], trap) == ""
@@ -2012,6 +2016,24 @@ async def test_new_heads_report_a_failed_transfer_per_head_and_never_move_one(
     failed = await manager.apush_new_refs(str(checkout), {"other": tip}, repository_url=str(target))
     # Absent after a failed transfer is that failure, not an observation.
     assert failed == {"other": RemoteRefResult(RemoteRefState.ERROR, error="remote unreachable")}
+
+
+@pytest.mark.asyncio
+async def test_authenticated_provenance_push_uses_exact_non_branch_namespace(tmp_path):
+    checkout, target, _, _base, tip = _git_push_case(tmp_path)
+    ref = "refs/aq/provenance/completions/subject/generation"
+    manager = GitManager()
+    await manager._apush_refs_with_app_auth_to_url(
+        str(checkout), destination_url=target.as_uri(), token="local-test-token",
+        updates=((tip, ref, "0" * 40),), _qualified_refs=True,
+    )
+    assert _git(["rev-parse", ref], target) == tip
+    assert "provenance" not in _git(["for-each-ref", "--format=%(refname)", "refs/heads"], target)
+    _git(["remote", "add", "origin", str(target)], checkout)
+    assert (await manager.als_remote_qualified_refs(str(checkout), [ref]))[ref].oid == tip
+    with pytest.raises(GitError, match="provenance ref"):
+        await manager.apush_new_refs(str(checkout), {"refs/heads/aq-provenance/bad": tip},
+                                     qualified=True)
 
 
 @pytest.mark.asyncio
