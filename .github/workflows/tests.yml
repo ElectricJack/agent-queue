@@ -137,6 +137,10 @@ jobs:
 
       # Service containers cannot pass server arguments. Preserve PR #640's
       # connection headroom and disable durability only for disposable CI data.
+      # The image comes from Google's Docker Hub mirror: anonymous Docker Hub
+      # pulls are rate limited per runner IP (run 37990643989 failed every
+      # Postgres job with `toomanyrequests`), and a login secret would not
+      # reach pull requests from forks.
       - name: Start PostgreSQL
         run: |
           docker run --detach --name ci-postgres \
@@ -144,7 +148,7 @@ jobs:
             --env POSTGRES_USER=agent_queue \
             --env POSTGRES_PASSWORD=agent_queue \
             --env POSTGRES_DB=agent_queue \
-            postgres:18 \
+            mirror.gcr.io/library/postgres:18 \
             -c max_connections=300 \
             -c fsync=off \
             -c synchronous_commit=off \
@@ -292,7 +296,8 @@ jobs:
 
     services:
       postgres:
-        image: postgres:18
+        # The same Docker Hub mirror as the test job's `Start PostgreSQL`.
+        image: mirror.gcr.io/library/postgres:18
         env:
           POSTGRES_USER: agent_queue
           POSTGRES_PASSWORD: agent_queue
