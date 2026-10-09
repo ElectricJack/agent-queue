@@ -7,7 +7,7 @@ import EnableToggle from "../pages/agents/EnableToggle";
 import { useAgentSelection } from "../pages/agents/useAgentSelection";
 import { AgentState, AgentEligibility, AgentWaitingQuestion, FlockSubagents } from "../pages/agents/AgentMetadata";
 import { OutsidePoolBadge, PoolBadge, PoolPlacementRow, PoolQuarantine, PoolSupplyRow } from "../pages/agents/PoolMetadata";
-import { isPoolAgent, outsideSessionAgent, poolDisplayName, useDebouncedBusyPoolEntries, usePoolFlock, type PoolEntry } from "../pages/agents/pools";
+import { isPoolAgent, outsideSessionAgent, outsideSessionName, poolDisplayName, useDebouncedBusyPoolEntries, usePoolFlock, type PoolEntry } from "../pages/agents/pools";
 import { useShellPreferences } from "./useShellPreferences";
 
 export default function AgentFlock() {
@@ -208,9 +208,11 @@ export default function AgentFlock() {
 /**
  * Task-lifecycle sessions running on a pool's route, nested under the pool.
  *
- * They are not pool members — typically tasks launched on the profile before
- * it switched to ``lifecycle: pool`` — so the pool's supply does not count
- * them and the roster hides their agents with the pool's. Listed here, each
+ * They are not pool members — tasks launched on the profile before it
+ * switched to ``lifecycle: pool``, or a dedicated profile's task (spec-ingest)
+ * on the same harness and class, often on a reused pool worker's agent row —
+ * so the pool's supply does not count them and the roster hides their agents
+ * with the pool's. Each is named by ``outsideSessionName``. Listed here, each
  * one opens its agent's window like any other row, so its progress can be
  * watched. A session no roster agent is running is still listed, without a
  * click target: there is no agent window to open for it.
@@ -226,13 +228,13 @@ function OutsidePoolRows({ entry, roster, selectedIds, onSelect }: {
     <ul aria-label={"Sessions outside the " + poolDisplayName(entry.pool) + " pool"} className="ml-4 mt-1 space-y-1 border-l border-gray-800 pl-2">
       {entry.outside.map((session) => {
         const agent = outsideSessionAgent(session, roster);
-        const name = agent?.name || session.name;
+        const name = outsideSessionName(session, agent);
         const task = session.task_title || session.task_id || agent?.current_task_title || "No task";
         const selected = !!agent && selectedIds.includes(agent.id);
         const body = (
           <>
             <span className="mb-0.5 flex items-center justify-between gap-2">
-              <span className="truncate text-xs font-medium text-gray-200">{name}</span>
+              <span className="truncate text-xs font-medium text-gray-200" title={session.name}>{name}</span>
               <span className={"shrink-0 text-[10px] capitalize "
                 + (agent?.waiting_question ? "text-amber-300" : (agent?.state ?? session.state) === "busy" ? "text-emerald-400" : "text-gray-500")}>
                 {agent ? <AgentState agent={agent} /> : session.state}
