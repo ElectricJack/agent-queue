@@ -6434,9 +6434,9 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "method": {
                     "type": "string",
-                    "enum": ["squash", "merge", "rebase"],
-                    "description": "Merge strategy (default: squash).",
-                    "default": "squash",
+                    "enum": ["merge", "squash", "rebase"],
+                    "description": "Merge strategy (default: merge).",
+                    "default": "merge",
                 },
                 "force": {
                     "type": "boolean",
