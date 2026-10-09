@@ -581,7 +581,7 @@
       ]
     },
     "integration-trains": {
-      "description": "Hierarchical integration trains: durable integration state, the reconciliation service and schedules, settling and sealing, candidate construction, the outbox, integration mode policy, attestations, CI and cleanup.",
+      "description": "Hierarchical integration trains: durable integration state, the reconciliation service and schedules, settling and sealing, candidate construction, the outbox, integration mode policy, attestations, CI and cleanup, plus the end-to-end regression scenarios for incidents that needed a hand fix.",
       "modules": [
         "tests/test_attestation_check_run_id.py",
         "tests/test_branch_sweep.py",
@@ -627,6 +627,7 @@
         "tests/test_integration_state.py",
         "tests/test_integration_subjects.py",
         "tests/test_integration_train.py",
+        "tests/test_integration_train_regressions.py",
         "tests/test_integration_train_sources.py"
       ]
     },
@@ -2852,7 +2853,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:b4bc28aa39ce8749c17095a273397acced5fe5b55e0bcfb2fc83f29d728d51e8",
+      "digest": "sha256:c2354d6e678b3372ebdde6437cb194fd8e9841bf24911e9c6657bee3ef2dad28",
       "imports": [
         "src.database.tables"
       ],
@@ -3024,7 +3025,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:2ea50676f18ad351e90271289c226391655b0ab0a375afa61325826c91fcc111",
+      "digest": "sha256:47ebb7d2a0ddb85ac4892797ac647dd96a9831079e70d742369aaf63149e11fa",
       "imports": [
         "src.database",
         "src.database.tables",
@@ -7368,7 +7369,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:2341555a97dfada6c15506548f8fe5af5823cb1c260c93bd27ba9328540c723c",
+      "digest": "sha256:d99e7ef4f885d6037781a14fb96a4cde182dc8f020d7e3c1f3e84c075dc69fef",
       "imports": [
         "src.integration",
         "src.integration.ci",
@@ -7793,7 +7794,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:72271514bb6ff9659e5046f4bb45fea8a057376fdf120e5a45a11bd1751fb782",
+      "digest": "sha256:7b51c78e6647328d987d1e2ad0b06e3a48ddf1c8cf665ca9715c8aec5e92c0ef",
       "imports": [
         "src.commands.principal",
         "src.database.tables",
@@ -7842,7 +7843,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:882258dbc8565af9bd68936c84aea48c1d000c19ae540ff3e76d1e24482adfc0",
+      "digest": "sha256:4e14a358a23c95cde6ed047a899e7115f16a67a7587a83544d2cf857fd639f70",
       "imports": [
         "src.database.tables",
         "src.git.github_app",
@@ -7865,7 +7866,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:f8905eba17ebd2e5e92629cc1a44ffe94fab665e188964c68155e4d8c5e1397d",
+      "digest": "sha256:f9c6f7d296addf4dd8960bd50038812773b1913e99d7feed8bb7b3bffd6b9048",
       "imports": [
         "src.database.tables",
         "src.integration.attestation",
@@ -7919,7 +7920,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:973381429bd6275ad5033df399581989714fc37027dbe5c0a761ccabc2112950",
+      "digest": "sha256:14a39086f9129ea204d0e9b93df660f10b279e32e0d61841349eb2ce5b7c2b42",
       "imports": [
         "src.database.tables",
         "src.integration.batches",
@@ -7942,7 +7943,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:5632df08147e809e780429866e921d5cb6f45faeede8c5b2a4c292f09a655614",
+      "digest": "sha256:608c0c7b3456dbd3815653fab60f93f2505e9ecb369acbb28a8b349038f69959",
       "imports": [
         "src.commands.principal",
         "src.database.tables",
@@ -7969,7 +7970,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:743d039c1e0275638ef50f8110685077a1b329f2499898fadcff3611e8d1917b",
+      "digest": "sha256:ba879b58645930dad31b11d39514296bc12bb040aaa2872769ad0e8c6b0933c6",
       "imports": [
         "src.database.tables",
         "src.git.github_contracts",
@@ -8021,7 +8022,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:f55c6200531ad6f3404e4914d5d0525e4697950f0674920fe5ec9c4b78f58531",
+      "digest": "sha256:3310eead8378fff0efd1159741e943aee52928fdb22e7a83a32000a4a9ee4214",
       "imports": [
         "src.database.tables",
         "src.integration.ci",
@@ -8039,7 +8040,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:82d8d05f63f2d28ec9f3dff61e84dfdfc72073055f3ab4972686107389464a82",
+      "digest": "sha256:2e52a8ab8687f673d898f4c884d83e39fd5042136d78ebc5dd3b78a4bfb97648",
       "imports": [
         "src.commands.job_commands",
         "src.config",
@@ -8069,7 +8070,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:bf0b93cf1fd853d3016b682f47d237c78fc5d7f1a9e8bec4e517c367c68177b1",
+      "digest": "sha256:6ef32b5b872257c8e95f4a54bc598a8db213ab5a00286376f46b146231fed3c2",
       "imports": [
         "src.commands.principal",
         "src.database.adapters.postgresql",
@@ -8095,7 +8096,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:470abd814b47e66d05af40310b38da0a16b31037a3924d96ec868c3567bbbca1",
+      "digest": "sha256:023248fa74e33353ecae752495f06a241ca179f745b3542369db2849f28ddab7",
       "imports": [
         "src.cli.app"
       ],
@@ -8107,7 +8108,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:9c75b8e72ebdfd3ac8e5cc42c70f7a2e98fd8c770526d73b1c53dc9862fc41d1",
+      "digest": "sha256:abac64d0ab61b3e7e189307cb33e0a4762829cf0371780798df363aa2330db0d",
       "imports": [
         "src.database.tables",
         "src.git.github_contracts",
@@ -8126,7 +8127,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:17d969738e46d61e0befd77f95b8ba6810694be7a49356f52973d83f2ff3d26f",
+      "digest": "sha256:2394598b96d0b0d5263a8a8338769a62381c8f5a8aac55c9903d05d7ff04d366",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
@@ -8148,7 +8149,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:4b2b8f24683d5348623c866affde192df18386fe9a3cef6dc5fce6938d3c92c0",
+      "digest": "sha256:48f3bfc211d2df27572e3fd924de5b999377450b05bcfd10f2572ece7ccbb25c",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -8256,7 +8257,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:b2493aa12f33f51350c05b221caf611262c8bf44e8dfa340ddf90dca681de402",
+      "digest": "sha256:071a00482d4a8ccd723d9396d77352de48d4e21394ea78fa9748a8595e2f8da9",
       "imports": [
         "src.git.github_contracts",
         "src.git.manager",
@@ -8276,7 +8277,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:eb005120916ca7259695c9357fd484a75dc02e683fee9f48b4cb8c93f62adf72",
+      "digest": "sha256:191c23072dd433680b50ab3b33457f31ae6bcc82aaf219715a9d9df85e0cd0d2",
       "imports": [
         "src.database",
         "src.database.tables",
@@ -8302,7 +8303,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:e984250447b8f1c1ce347b1fd72d4c2f8c6e77647682df81ae587196b4076810",
+      "digest": "sha256:4a82655ba500feffb589d36f6ffe4d48f24e09dfd51999b513a486bf495893d2",
       "imports": [
         "src",
         "src.api",
@@ -8437,7 +8438,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:e505d871d4ab1c4145b2dd66c82235e4a1d253a53474fa7a2915f80b701cf001",
+      "digest": "sha256:0c05c4ce7674211474f930cbdd8cc8f58d10c486936738a6069636bec77fb5b6",
       "imports": [
         "src.config",
         "src.database.queries.task_queries",
@@ -8461,7 +8462,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:bdd1323fbdf4e532515d7c55a0c8ec081efc19e8a25cb035f07eb2fe4ea2858c",
+      "digest": "sha256:9b5db55b6f9234bc204defc99483aec73b684354fb2dfa72f01a65c437e0c120",
       "imports": [
         "src.database",
         "src.database.tables",
@@ -8485,7 +8486,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:141a80b2917853894e52f258a1b4882b16956650a9c77a5db10917d6732f6024",
+      "digest": "sha256:17f64112ac989239627749b59c1545cac1e96aa1151770b5abd6395f0404f52b",
       "imports": [
         "src.cli.app",
         "src.cli.envelope",
@@ -8508,7 +8509,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:8458ee663b2e1c9623905628a39e752693bd8005dfdd9a80864cdcb677849c90",
+      "digest": "sha256:9fcdb6b38ffdf26373940a7574c68fae98621600e063fbdf52c95e3a1dfd5f6c",
       "imports": [
         "src.config",
         "src.database.tables",
@@ -8644,7 +8645,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:c2a6f3e839d772aaaf246384fd40e137baf96b5e30ead2ea3631edffb437f495",
+      "digest": "sha256:8fea2ff358c895c79619d9751463eae9ad3366637de9e7872d7aac7484ec64c2",
       "imports": [
         "src.commands.gate_commands",
         "src.commands.integration_commands",
@@ -8713,7 +8714,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:ce1deaf5d7546154a7294d5ffb4c1a064c57a55bd382ac80a4c5440848e955a0",
+      "digest": "sha256:5988c4ffbbcf656e0fe0dfa4e4e16d7052fa9ed1428aad63ccb3b5dff2885435",
       "imports": [
         "src.database",
         "src.database.tables",
@@ -8832,7 +8833,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:e93eb6e61a733bcb76fcf8ccb58ff38b83a4edb393fe47a33e6cfff7bc714614",
+      "digest": "sha256:76dfa543a4d51fd6a078f36e4fa4d23e015c72d85fedfbbdd42f952a3cc0bf79",
       "imports": [
         "src.database",
         "src.database.tables",
@@ -8851,7 +8852,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:21d268ca79d9c90a92b6bf0274da22389ac9ba767405f45060d6ac21cca6a770",
+      "digest": "sha256:11d9ccb71aa151799dbafff08c6c0c838e9cbbab953a7b27d02c2d8f70468585",
       "imports": [
         "src.commands.contracts.integration",
         "src.commands.integration_commands",
@@ -8883,7 +8884,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:31eff3d7fa6795f1d758f2776dcea09b85c27dac5c886f56bdcf60d0cca52e69",
+      "digest": "sha256:a18a7689cbe5ae206959f27af16ce65dbb2855a18133d0e7d23467ed50e0e0e4",
       "imports": [
         "src.database",
         "src.database.tables",
@@ -8982,7 +8983,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:4deff16e15aa4d5aae84eaea0e44a56994fe2026be632e5357e85377040ad5b4",
+      "digest": "sha256:678985df1e04579ef2111a8c0b38aded3e2f7f5ddf8d9b28430e3d6f7f1d1839",
       "imports": [
         "src.commands.handler",
         "src.git.manager",
@@ -9030,7 +9031,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:bb6f18091b36c5a2282ebc847cc13e50e433b36fa192afe1f372e619b1546223",
+      "digest": "sha256:c349cd7fdd9c04419fae1f03482e0e578cc333ee3f01540aa4df4fa2f84a3305",
       "imports": [
         "src.commands.contracts.integration",
         "src.commands.contracts.registry",
@@ -9085,7 +9086,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:d5103f7c1344d06bd24a4decf41a79cce35e2619eb7440312dbedcbc48a78203",
+      "digest": "sha256:aca3328245234c0e2a5427f3aebe23a540358b5d50273595a0a925987429e7e1",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -9131,7 +9132,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:a653df5a4e1b3ac6cc7d17751d9f15d7f926617592e241e4115b396b52d32b8b",
+      "digest": "sha256:aa3a0c47c2bef40f208dbace38e5033a74b77faf877d5a7e94c55cb26f7d9d63",
       "imports": [
         "src.commands.handler",
         "src.commands.principal",
@@ -9177,7 +9178,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:afc97685b382151ff49999f85c946a041c19a4424fccaa109b80ee47e9b8e33c",
+      "digest": "sha256:f4fbca18090e1af39013a5b89c0fcaf225496e171cd172962c955eb59fc27807",
       "imports": [
         "src.commands.principal",
         "src.database",
@@ -9201,7 +9202,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:0e1012cefdba89040866e976a56bc54741be775e2490a15c48ae729223497abc",
+      "digest": "sha256:7888240b95b96ccfc6bb92fdf0521fb92d60c4c14a21af4bb35dcfd7dccdf872",
       "imports": [
         "src.commands.principal",
         "src.database.queries.hierarchy_queries",
@@ -9234,7 +9235,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:a09615df745f540a7e57dfc67cbba73676a912839e4413c36c5f7479c4ce2494",
+      "digest": "sha256:06ffc8f870e855574b055e320e0d26d122a77e26d47c5d5471c55310ca47c62f",
       "imports": [
         "src.config",
         "src.database.tables",
@@ -9254,7 +9255,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:ac10bfe07173ccf40fe0f743234208ec081d1820ab62f4c58ced77891f815bb5",
+      "digest": "sha256:cef267cda75f656fa9f04b97ea35d47bcea5af151c7a441a48db703ac9a0d837",
       "imports": [
         "src.database.tables",
         "src.integration.settling",
@@ -9268,7 +9269,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:cfdc56c5987bca8e5e06bb25ae7ad92dc0e1d894018c24a2d1ff898f52bec8ee",
+      "digest": "sha256:a3623e780ca9810f6f847ef05ad71aed056cc152eede53ebd9c9d7393ef620e3",
       "imports": [],
       "markers": [
         "parametrize"
@@ -9280,7 +9281,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:ed32da8a5ed9b612a92dfdc37593e697892a1fa55576bd0ec32b2c3e394cceaf",
+      "digest": "sha256:cb11f999e8eb9dcf4a9b885123ec55f41824784e1eda1899d8639f98bc7c4a7c",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -9305,7 +9306,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:a8bf6be73e01388d9cc2388ea40fa4b06e06b59e2479db5904fa5114f873b930",
+      "digest": "sha256:a8ce5490b6f8becae4babdb2a10fd455a278c3e988147b18d1251a59e7383138",
       "imports": [
         "src.database.queries.claim_queries",
         "src.database.tables",
@@ -9346,7 +9347,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:36645fea405d5a7d6098ff3975aba538214f982347050748620984c0539cd5b4",
+      "digest": "sha256:328d7c75eaffac524197f4bc659e679cf07809bd0121b744f3dab1497b97a284",
       "imports": [
         "src.database.tables",
         "src.integration.release",
@@ -9365,7 +9366,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:06ec72ad8eb7baef43703bb645db4e41e16c9d83da30e051a494c48c9ccc2428",
+      "digest": "sha256:1565ecfdb58c27d8a81fcf3bc8011649b410658376d94fc9996695debbe37b36",
       "imports": [
         "src.integration.outbox",
         "src.integration.service"
@@ -9378,7 +9379,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:882a8a0b964bced4a2c4fee6e5f62b3836db4aa349322ded8501e2fc548679bd",
+      "digest": "sha256:ef2beafdc82bea01839ff8fa0100523f09b55b3519f557eedc6f5c76c3e1c8f6",
       "imports": [
         "src.database",
         "src.database.tables",
@@ -9410,7 +9411,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:79a199b99fa1db2f90bd31234e1fcb741654481a9eb26feb2bb87a70bfbf2b9a",
+      "digest": "sha256:f7bc3e72af96aef137f69467e6d07f184b6c841aa8cdbb4493caa31a8134cac4",
       "imports": [
         "src.commands.contracts.integration",
         "src.database",
@@ -9429,7 +9430,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:4f2eb72c51f1cfd7acff92ac601c0a1cf56eba53fefda1ebfe11537febfd2beb",
+      "digest": "sha256:397e918acbd6e0e38298ff5f2931ad03e5559f3356b3622ea65510f02f711ae8",
       "imports": [
         "src.api.codegen",
         "src.cli.auto_commands",
@@ -9478,12 +9479,43 @@
       "markers": [],
       "summary": "One-step request → pinned human review → exact FF and annotated release tag."
     },
+    "tests/test_integration_train_regressions.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:8329cf0fb199d62c18716d1bee3a40eb820539302a8a095288b687347ae807b5",
+      "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.github_review_poll",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.promotion",
+        "src.integration.repair",
+        "src.models",
+        "src.orchestrator.core",
+        "src.sessions",
+        "src.sessions.fake",
+        "src.sessions.provider",
+        "src.sessions.reconciler",
+        "src.test_selection.catalogue"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Integration-train regressions: the 2026-10-03/04 overnight failure modes."
+    },
     "tests/test_integration_train_sources.py": {
       "areas": [
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:cea48e1bdbd9c66155c8be09afd1a10175ecbf0c26d0fd29562fdb0fea06f090",
+      "digest": "sha256:fcf187bfa69e3d2652c65e4cb1b847a243c77bf84c001371e2cd337f7c8137cc",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
