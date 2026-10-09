@@ -496,6 +496,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
 
     ("src/projects/**", "workspaces", "docs/concepts/projects-and-workspaces.md",
      PRODUCTION, "Project registration, onboarding and paths."),
+    ("src/policy_profiles/**", "workspaces", "docs/specs/design/policy-profiles.md",
+     PRODUCTION, "Portable project policy: allow-listed export, diff and selective import."),
     ("src/git/**", "workspaces", "docs/concepts/projects-and-workspaces.md",
      PRODUCTION, "Async Git manager, credentials and CI gate reads."),
     ("src/workspace_names.py", "workspaces",

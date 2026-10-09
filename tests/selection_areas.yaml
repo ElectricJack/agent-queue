@@ -11,6 +11,9 @@
 # tests/selection_catalogue.json.
 version: 1
 areas:
+  - id: policy-profiles
+    description: "Portable policy archives, selective imports and guarded preview/review flows."
+    match: [tests/test_policy_profiles.py, tests/test_cli_policy.py]
   - id: knowledge-records
     description: "Durable record identities, knowledge schema and immutable revision integrity."
     match: [tests/test_record*.py, tests/test_knowledge*.py, tests/test_api_knowledge.py]

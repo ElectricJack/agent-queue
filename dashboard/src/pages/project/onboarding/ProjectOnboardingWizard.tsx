@@ -16,6 +16,7 @@ import { WizardContext, fieldLabel, type WizardContextValue } from "./context";
 import { defaultStepRegistry, type WizardStep } from "./stepRegistry";
 import { daemonSubmit, newRequestId, toSubmissionError } from "./submission";
 import { useFocusTrap } from "./useFocusTrap";
+import { PolicyDialog } from "../PolicyProfiles";
 import type { ProjectRootsSource } from "./useProjectRoots";
 
 /** Where the Settings UI manages configured project roots (design §3.2). */
@@ -70,6 +71,8 @@ function WizardDialog({
   submit,
   onSuccess,
 }: ProjectOnboardingWizardProps) {
+  const [importPolicy, setImportPolicy] = useState(false);
+  const [createdForPolicy, setCreatedForPolicy] = useState<OnboardingResult | null>(null);
   const [state, dispatch] = useReducer(wizardReducer, projectIds, initialWizardState);
   const requestId = useRef(newRequestId()).current;
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -88,7 +91,7 @@ function WizardDialog({
   const noRoots = roots.status === "ready" && roots.roots.length === 0;
   const isReview = stepId === "review";
 
-  useFocusTrap(dialogRef, true);
+  useFocusTrap(dialogRef, !createdForPolicy);
 
   // Restore focus to the opener when the dialog unmounts (design §9).
   useEffect(() => {
@@ -102,6 +105,7 @@ function WizardDialog({
   }, [onClose, submitting]);
 
   useEffect(() => {
+    if (createdForPolicy) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
@@ -110,7 +114,7 @@ function WizardDialog({
     };
     document.addEventListener("keydown", handler, true);
     return () => document.removeEventListener("keydown", handler, true);
-  }, [close]);
+  }, [close, createdForPolicy]);
 
   useEffect(() => {
     if (failed) summaryRef.current?.focus();
@@ -149,8 +153,8 @@ function WizardDialog({
     try {
       const result = await effectiveSubmit(request, { onPhase: (phase) => dispatch({ type: "submit_phase", phase }) });
       dispatch({ type: "submit_succeeded", result });
-      onSuccess?.(result);
-      onClose();
+      if (importPolicy) setCreatedForPolicy(result);
+      else { onSuccess?.(result); onClose(); }
     } catch (err) {
       dispatch({ type: "submit_failed", error: toSubmissionError(err) });
     }
@@ -164,6 +168,10 @@ function WizardDialog({
   };
 
   const StepComponent = step.Component;
+
+  if (createdForPolicy) return <PolicyDialog projectId={createdForPolicy.project_id} onClose={() => {
+    onSuccess?.(createdForPolicy); onClose();
+  }} />;
 
   return (
     <WizardContext.Provider value={ctx}>
@@ -263,6 +271,10 @@ function WizardDialog({
                 <section aria-labelledby={`${uid}-step-title`}>
                   <h3 id={`${uid}-step-title`} className="mb-3 text-sm font-medium text-gray-200">{step.title}</h3>
                   <StepComponent />
+                  {isReview && <label className="mt-4 block text-sm">
+                    <input type="checkbox" checked={importPolicy} disabled={submitting}
+                      onChange={event => setImportPolicy(event.target.checked)} /> Import a policy profile after creation
+                  </label>}
                 </section>
 
                 {submitting && (

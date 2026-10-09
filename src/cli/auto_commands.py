@@ -33,6 +33,10 @@ _TOOL_CATEGORIES = _CATALOGUE["tool_categories"]
 # CommandHandler commands covered by hand-crafted CLI commands.
 # Auto-generation skips these to avoid duplicates.
 HANDCRAFTED_COVERAGE = {
+    "policy_export",
+    "policy_diff",
+    "policy_apply",
+    "create_project",
     "remove_task",
     "promote_schema",
     "promote_validate",

@@ -146,6 +146,7 @@ def test_registry_has_categories(registry):
         "collaboration",
         "job",
         "artifact",
+        "policy",
     }
 
     for cat in categories:

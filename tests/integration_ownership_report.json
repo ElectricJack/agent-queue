@@ -9602,6 +9602,12 @@
     },
     "src/sessions/obsolete.py::ObsoleteClose.close": {
       "reason": "Queues an explicit branch retirement for a superseded task in the obsolete-close transaction via src.integration.branch_retirement, replacing the removed branch_abandon callback; adds no delivery state or publication authority."
+    },
+    "src/policy_profiles/service.py::validate_payload": {
+      "reason": "Portable policy validation adapter: checks a promotion-flow draft against the existing src.integration.promotion_steps FlowSchema with a read-only JSON Schema pass, beside profile, playbook, routing and formula validation. Adds no storage, delivery, promotion or trust authority."
+    },
+    "src/policy_profiles/service.py::PolicyFiles.read_local": {
+      "reason": "Portable policy export reads the workspace .github/agent-queue-integration.json CI trust projection and the copied ci-checks policy as typed settings beside other vault policy files. Read-only; never writes integration state, publishes refs or changes trust."
     }
   },
   "shared_state": {

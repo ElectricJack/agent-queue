@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ProjectOnboardingWizard, { type ProjectRootsSource } from "..";
 import { browseProjectRoot } from "../projectRootsClient";
 import { client } from "../../../../api/client";
@@ -63,7 +64,7 @@ function installHttpServer() {
 }
 
 function Harness({ onSuccess = vi.fn() }: { onSuccess?: (result: { project_id: string }) => void }) {
-  return <MemoryRouter><ProjectOnboardingWizard open onClose={() => {}} roots={roots} onSuccess={onSuccess} /></MemoryRouter>;
+  return <QueryClientProvider client={new QueryClient()}><MemoryRouter><ProjectOnboardingWizard open onClose={() => {}} roots={roots} onSuccess={onSuccess} /></MemoryRouter></QueryClientProvider>;
 }
 
 async function chooseSource(user: ReturnType<typeof userEvent.setup>, name: RegExp) {
@@ -110,6 +111,25 @@ describe("project onboarding wizard against generated-client HTTP commands", () 
     await user.click(screen.getByRole("button", { name: "Link project" }));
     await waitFor(() => expect(requests.some((request) => request.path === "/api/project/onboard")).toBe(true));
     expect(requests.find((request) => request.path === "/api/project/onboard")?.body).toMatchObject({ source_mode: "link", root_id: "dev", relative_path: "widgets", project_name: "widgets", project_id: "widgets", default_branch: "main" });
+  });
+
+  it("opens the shared policy selector after creation and navigates on its dismissal", async () => {
+    const user = userEvent.setup();
+    const onSuccess = vi.fn();
+    render(<Harness onSuccess={onSuccess} />);
+    await chooseSource(user, /Existing local repository/);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Project root" }), "dev");
+    await user.click(await screen.findByText("widgets"));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await completeIdentity(user);
+    await user.click(screen.getByRole("checkbox", { name: "Import a policy profile after creation" }));
+    await user.click(screen.getByRole("button", { name: "Link project" }));
+    expect(await screen.findByRole("dialog", { name: "Import policy profile" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Policy archive")).toBeInTheDocument();
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(requests.filter(request => request.path === "/api/project/onboard")).toHaveLength(1);
+    await user.keyboard("{Escape}");
+    expect(onSuccess).toHaveBeenCalledWith(expect.objectContaining({ project_id: "widgets" }));
   });
 
   it("preserves init values after the backend's structured retry error", async () => {

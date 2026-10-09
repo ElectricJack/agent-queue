@@ -14,6 +14,7 @@ import {
   useResumeProject,
 } from "../../api/hooks";
 import DeleteProjectModal from "../../components/DeleteProjectModal";
+import PolicyProfiles from "./PolicyProfiles";
 import GitIdentitySection from "./GitIdentitySection";
 import {
   GIT_IDENTITY_SECTION_HINT,
@@ -130,6 +131,7 @@ export default function ProjectConfig() {
 
   return (
     <div className="space-y-6">
+      <PolicyProfiles projectId={projectId} />
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-semibold uppercase text-gray-500">Project</h2>
