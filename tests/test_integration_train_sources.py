@@ -3203,7 +3203,7 @@ class HostedGitHub:
 
 
 async def hosted_train(world, *, retained_store=None, clock=time.time, settling=False,
-                       review_requirements=None):
+                       review_requirements=None, failure_handler=None):
     """The daemon's own lanes for a project with no development pin: hosted checks."""
     db, origin = world.db, world.origin
     async with db._engine.begin() as conn:
@@ -3251,6 +3251,7 @@ async def hosted_train(world, *, retained_store=None, clock=time.time, settling=
         db=db, git=LocalGit(Path(origin.url)), github_repository_binding_resolver=binding,
         development_integration=SimpleNamespace(store=store),
         integration_attestation_service=attestation,
+        _repair_root_pr_checks=failure_handler,
     )
     orchestrator.git._github_client = lambda binding: github
     orchestrator.git.bind_github_repository = AsyncMock(return_value=GitHubRepositoryBinding(
@@ -3272,6 +3273,230 @@ async def hosted_train(world, *, retained_store=None, clock=time.time, settling=
         repair=OrdinaryRepairService(db, clock=clock), clock=clock,
     )
     return train, github, trusts
+
+
+def root_pr_recovery(world):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.orchestrator.core import Orchestrator
+
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    orchestrator = SimpleNamespace(_command_handler=handler)
+
+    async def recover(observation):
+        return await Orchestrator._repair_root_pr_checks(orchestrator, observation)
+
+    return recover
+
+
+@pytest.mark.parametrize("mode", ["direct", "pull_request"])
+async def test_red_root_pr_reopens_its_worker_with_failed_checks_and_tests(world, mode):
+    from src.integration.root_pr_recovery import RECOVERY_KEY
+    from src.models import AgentProfile
+
+    train, github, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
+    await world.db.update_project("p", integration_mode=mode)
+    source = await completed(world, "red-root")
+    await world.db.create_profile(AgentProfile(id="worker", name="Worker"))
+    await world.db.update_task("red-root", profile_id="worker", route_source="router",
+                               integration_mode="pull_request")
+    github.pr_runs[source] = "failure"
+    rows = github._rows
+
+    def diagnostics(sha, event="push"):
+        check, run, job = rows(sha, event)
+        if sha == source and event == "pull_request":
+            check["output"] = {"summary": "FAILED tests/test_registry.py::test_new_command - missing"}
+            check["html_url"] = "https://github.com/acme/widgets/actions/runs/131/job/151"
+        return check, run, job
+
+    github._rows = diagnostics
+    before = await world.db.get_task("red-root")
+    blocked = await train.visit(MAIN, seal_now=True)
+    assert blocked.batch_id is None
+    assert blocked.detail["blockers"][0]["recovery"]["outcome"] == "reopened"
+    task = await world.db.get_task("red-root")
+    assert task.status is TaskStatus.READY and not task.is_blocked
+    assert task.branch_name == before.branch_name and task.profile_id == "worker"
+    assert task.integration_mode == "pull_request" and task.pr_url is None
+    assert "unit: failure" in task.description
+    assert "FAILED tests/test_registry.py::test_new_command" in task.description
+    assert "https://github.com/acme/widgets/actions/runs/131/job/151" in task.description
+    assert (await world.db.get_task_meta("red-root", RECOVERY_KEY))["heads"] == [source]
+    assert (await train.visit(MAIN, seal_now=True)).batch_id is None
+    # A fresh daemon cannot spend another attempt on a task already reopened.
+    train, _, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
+    assert (await train.visit(MAIN, seal_now=True)).batch_id is None
+    assert (await world.db.get_task_meta("red-root", RECOVERY_KEY))["attempts"] == 1
+
+
+@pytest.mark.parametrize("conclusion", ["pending", "cancelled", "success"])
+async def test_root_pr_recovery_does_not_reopen_without_a_failed_required_job(world, conclusion):
+    recover = AsyncMock(wraps=root_pr_recovery(world))
+    train, github, _ = await hosted_train(world, failure_handler=recover)
+    source = await completed(world, "root")
+    github.pr_runs[source] = conclusion
+    await train.visit(MAIN, seal_now=True)
+    recover.assert_not_awaited()
+    assert (await world.db.get_task("root")).status is TaskStatus.COMPLETED
+
+
+@pytest.mark.parametrize("change", ["completion", "running", "policy", "pr", "base", "origin"])
+async def test_root_pr_failure_observation_cannot_reopen_changed_identity(world, change):
+    recover = root_pr_recovery(world)
+    observations = []
+
+    async def capture(observation):
+        observations.append(observation)
+        return {"success": True, "outcome": "captured"}
+
+    train, github, _ = await hosted_train(world, failure_handler=capture)
+    source = await completed(world, "root")
+    github.pr_runs[source] = "failure"
+    await train.visit(MAIN, seal_now=True)
+    assert len(observations) == 1
+    if change == "completion":
+        await close(world.db, "root", [source], close_id="new-completion", origin=world.origin)
+    elif change == "running":
+        await world.db.transition_task("root", TaskStatus.IN_PROGRESS)
+    elif change == "policy":
+        async with world.db.immediate() as conn:
+            await conn.execute(update(projects).where(projects.c.id == "p").values(
+                hierarchical_integration_generation=1))
+    elif change == "pr":
+        await world.db.update_task("root", pr_url="https://github.com/acme/widgets/pull/9999")
+    elif change == "origin":
+        async with world.db.immediate() as conn:
+            await conn.execute(update(task_branch_origins).where(
+                task_branch_origins.c.task_id == "root").values(retired_at=time.time()))
+    else:
+        observations[0] = replace(observations[0], source_base_sha="f" * 40)
+    assert (await recover(observations[0]))["outcome"] == "stale"
+    assert "Reopen Feedback" not in (await world.db.get_task("root")).description
+
+
+@pytest.mark.parametrize("unchanged", [True, False])
+async def test_root_pr_recovery_escalates_once_after_restart(world, unchanged):
+    from src.database.tables import messages
+    from src.integration.root_pr_recovery import RECOVERY_KEY
+
+    train, github, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
+    source = await completed(world, "root")
+    await world.db.set_task_meta("root", RECOVERY_KEY,
+        {"heads": [source] if unchanged else [str(n) * 40 for n in range(3)]})
+    github.pr_runs[source] = "failure"
+    first = await train.visit(MAIN, seal_now=True)
+    code = "root_pr_checks_unchanged" if unchanged else "root_pr_checks_recovery_exhausted"
+    assert first.detail["blockers"][0]["code"] == code
+    for _ in range(2):
+        train, github, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
+        github.pr_runs[source] = "failure"
+        assert (await train.visit(MAIN, seal_now=True)).detail["blockers"][0]["code"] == code
+    async with world.db._engine.connect() as conn:
+        notices = (await conn.execute(select(messages).where(
+            messages.c.body_kind == "integration_root_pr_checks",
+        ))).mappings().all()
+    assert len(notices) == 1 and notices[0]["to_id"] == "supervisor-p"
+    assert (await world.db.get_task("root")).status is TaskStatus.COMPLETED
+
+
+async def test_root_pr_recovery_preserves_existing_bound_source_repair(world):
+    recover = root_pr_recovery(world)
+    outcomes = []
+
+    async def record(observation):
+        result = await recover(observation)
+        outcomes.append(result["outcome"])
+        return result
+
+    train, github, _ = await hosted_train(world, failure_handler=record)
+    source = await completed(world, "source")
+    await completed_source_ci_repair(world, source)
+    await source_ci_binding(world, "source", "repair", source)
+    github.pr_runs[source] = "failure"
+    testing = await train.visit(MAIN, seal_now=True)
+    assert outcomes == ["already_repairing"]
+    assert testing.state == "testing", testing
+    assert {m.task_id for m in await BatchStore(world.db).members(testing.batch_id)} == {
+        "source", "repair"}
+    assert (await world.db.get_task("source")).status is TaskStatus.COMPLETED
+    assert (await world.db.get_task("repair")).status is TaskStatus.COMPLETED
+
+
+async def test_root_pr_recovery_fixed_head_requires_fresh_pr_and_candidate_checks(world):
+    from src.integration.root_pr_recovery import RECOVERY_KEY
+
+    now = [time.time()]
+
+    def clock():
+        return now[0]
+
+    train, github, _ = await hosted_train(world, clock=clock,
+                                        failure_handler=root_pr_recovery(world))
+    source = await completed(world, "root")
+    original = await world.db.get_task("root")
+    base = git(world.origin.url, "rev-parse", "main")
+    github.pr_runs[source] = "failure"
+    assert (await train.visit(MAIN, seal_now=True)).batch_id is None
+    assert (await world.db.get_task("root")).status is TaskStatus.READY
+
+    await world.db.transition_task("root", TaskStatus.IN_PROGRESS)
+    fixed = world.origin.work("root", "fixed")
+    await close(world.db, "root", [fixed], close_id="fixed-completion", origin=world.origin)
+    await world.db.update_task("root", pr_url=original.pr_url)
+    # The failed old head and successful push run cannot authorize the new PR head.
+    github.runs[fixed] = "success"
+    pending = await train.visit(MAIN, seal_now=True)
+    assert pending.batch_id is None
+    assert pending.detail["blockers"][0]["code"] == "awaiting_pr_checks"
+    github.pr_runs[fixed] = "success"
+    # A restart retains both the exact-check retry deadline and recovery accounting.
+    now[0] += 601
+    train, github, _ = await hosted_train(world, clock=clock,
+                                        failure_handler=root_pr_recovery(world))
+    testing = await train.visit(MAIN, seal_now=True)
+    assert testing.state == "testing", testing
+    assert testing.candidate_sha != fixed
+    assert git(world.origin.url, "rev-parse", "main") == base
+    assert (await train.visit(MAIN)).state == "testing"
+    github.runs[testing.candidate_sha] = "success"
+    delivered = await train.visit(MAIN)
+    assert delivered.state == "delivered", delivered
+    git(world.origin.url, "merge-base", "--is-ancestor", fixed, "main")
+    assert (await world.db.get_task_meta("root", RECOVERY_KEY))["attempts"] == 1
+
+
+async def test_root_pr_recovery_keeps_independent_healthy_roots_moving(world):
+    train, github, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
+    source = await completed(world, "red")
+    await completed(world, "healthy")
+    github.pr_runs[source] = "failure"
+    testing = await train.visit(MAIN, seal_now=True)
+    assert testing.state == "testing", testing
+    assert (await world.db.get_task("red")).status is TaskStatus.READY
+    assert [m.task_id for m in await BatchStore(world.db).members(testing.batch_id)] == ["healthy"]
+    github.runs[testing.candidate_sha] = "success"
+    assert (await train.visit(MAIN)).state == "delivered"
+
+
+async def test_root_pr_recovery_rolls_back_feedback_and_budget_with_transition(world, monkeypatch):
+    from src.integration.root_pr_recovery import RECOVERY_KEY
+
+    train, github, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
+    source = await completed(world, "root")
+    github.pr_runs[source] = "failure"
+    append = world.db.add_task_comment
+
+    async def fail_comment(*args, **kwargs):
+        if kwargs.get("author_id") == "service:integration-admission":
+            raise ValueError("feedback persistence failed")
+        return await append(*args, **kwargs)
+
+    monkeypatch.setattr(world.db, "add_task_comment", fail_comment)
+    blocked = await train.visit(MAIN, seal_now=True)
+    assert blocked.detail["blockers"][0]["recovery"]["outcome"] == "recovery_deferred"
+    assert (await world.db.get_task("root")).status is TaskStatus.COMPLETED
+    assert await world.db.get_task_meta("root", RECOVERY_KEY) is None
 
 
 @pytest.mark.parametrize("kind,boundary", [("root", "root"), ("epic", "parent")])
@@ -3315,7 +3540,9 @@ async def collected_epic(world, request):
         ))
     children = [await completed(world, tid, parent="epic") for tid in ("child-a", "child-b")]
     await db.transition_task("epic", TaskStatus.COMPLETED)
-    train, github, trusts = await hosted_train(world, clock=clock)
+    failure_handler = (root_pr_recovery(world)
+                       if getattr(request, "param", None) == "root_pr_recovery" else None)
+    train, github, trusts = await hosted_train(world, clock=clock, failure_handler=failure_handler)
     required = {"version": "v1", "names": ["unit"], "producer_id": "15368"}
     async with db._engine.begin() as conn:
         await conn.execute(update(projects).where(projects.c.id == "p").values(
@@ -3351,6 +3578,27 @@ async def review_epic(case, *, verdict="approved", decision="approve"):
     case.github.reviews.append({"id": len(case.github.reviews) + 1,
         "state": "APPROVED" if verdict == "approved" else "CHANGES_REQUESTED",
         "commit_id": head, "user": {"login": "jack", "type": "User"}})
+
+
+@pytest.mark.parametrize("collected_epic", ["root_pr_recovery"], indirect=True)
+async def test_root_pr_recovery_notifies_supervisor_for_completed_container(collected_epic):
+    from src.database.tables import messages
+
+    case = collected_epic
+    head = await collect_epic(case)
+    await review_epic(case)
+    assert (await case.train.visit(case.target)).state == "idle"
+    case.github.pr_runs[head] = "failure"
+    blocked = await case.train.visit(MAIN, seal_now=True)
+    assert blocked.batch_id is None
+    assert blocked.detail["blockers"][0]["code"] == "root_pr_checks_need_repair"
+    assert (await case.db.get_task("epic")).status is TaskStatus.COMPLETED
+    assert (await case.train.visit(MAIN, seal_now=True)).batch_id is None
+    async with case.db._engine.connect() as conn:
+        notices = (await conn.execute(select(messages).where(
+            messages.c.body_kind == "integration_root_pr_checks"))).mappings().all()
+    assert len(notices) == 1
+    assert "unit: failure" in notices[0]["body"]
 
 
 async def test_collected_two_child_epic_gets_completion_and_lands_via_root(collected_epic):

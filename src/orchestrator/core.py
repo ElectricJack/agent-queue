@@ -1299,6 +1299,14 @@ class Orchestrator(
         with principal_context(ExecutionPrincipal.service("integration-source-ci")):
             return await self._command_handler._cmd_observe_integration_source_ci(observation)
 
+    async def _repair_root_pr_checks(self, observation):
+        from src.commands.principal import ExecutionPrincipal, principal_context
+
+        if self._command_handler is None:
+            return {"success": False, "outcome": "not_ready"}
+        with principal_context(ExecutionPrincipal.service("integration-admission")):
+            return await self._command_handler.repair_root_pr_checks(observation)
+
     async def _repair_integration_source_ancestry(self, observation):
         from src.commands.principal import ExecutionPrincipal, principal_context
         if self._command_handler is None:

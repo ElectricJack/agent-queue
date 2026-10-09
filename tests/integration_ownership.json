@@ -14899,6 +14899,15 @@
       "disposition": "retire",
       "reason": "Explicit LOCAL abandonment appends a cancelled revision to the existing legacy development.operation lifecycle journal after exact event/hash/full-manifest and inactive-authority checks. It preserves prior revisions and makes no delivery claim. This compatibility writer retires with the legacy journal and receives no final-phase allowance."
     },
+    "src/integration/root_pr_recovery.py::recover_root_pr_checks::9838abf578dc8c2a386d1d4a9012e2aabe1e175732dd1d51dbe41a2ef7cfc4e9": {
+      "line": 154,
+      "owner": "recover_root_pr_checks",
+      "call": "log_event",
+      "owner_fingerprint": "c3379e0cf6851fdb157980e7cc490eb7030d2248444849254c144459f96608e3",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Transactional audit of a completed root reopened after authenticated exact-head required-check failure and locked completion, origin and policy revalidation. Records the failed source SHA, completion identity and reopen attempt alongside ordinary feedback and bounded recovery accounting; no ref replay instructions, publication authority or duplicate delivery lifecycle. Fresh PR and candidate checks remain required."
+    },
     "src/database/queries/project_queries.py::ProjectQueryMixin.bind_project_repository::21ae1cd4ddf58cf690836c6bf31c504fe7942594a23d94bcc21935941e496c96": {
       "line": 124,
       "owner": "ProjectQueryMixin.bind_project_repository",
