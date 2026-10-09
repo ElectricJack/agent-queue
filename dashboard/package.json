@@ -15,6 +15,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check:layout": "node layout-checks/run.mjs",
+    "check:terminal-parity": "node layout-checks/playwright-terminal-parity.mjs",
     "check:layout:selftest": "node layout-checks/selftest.mjs"
   },
   "dependencies": {
@@ -63,6 +64,7 @@
     "globals": "^15.14.0",
     "jest-axe": "^11.0.0",
     "jsdom": "^30.0.1",
+    "playwright-core": "1.64.0",
     "postcss": "^8.4.49",
     "puppeteer-core": "24.43.1",
     "tailwindcss": "^4.0.0",

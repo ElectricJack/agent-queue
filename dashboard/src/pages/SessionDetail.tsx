@@ -18,9 +18,6 @@ import type { SessionSummary } from "../api/client";
 import { AttemptTime } from "../components/TaskSessions";
 import { useTranscriptStream } from "../ws/useTranscriptStream";
 import InteractiveTerminal from "../components/InteractiveTerminal";
-import PhoneTerminal from "../components/PhoneTerminal";
-import { useCompactViewport } from "../hooks/useCompactViewport";
-import { focusSessionHref } from "./focus/routes";
 import { workspaceHref } from "../shell/projectNavigation";
 
 export default function SessionDetail() {
@@ -80,7 +77,6 @@ function SessionDetailContent({ session, attempt, interactive }: { session: Sess
   const attach = useSessionAttach(interactive ? sessionId : "");
   const nudge = useSessionNudge();
   const kill = useSessionKill();
-  const compact = useCompactViewport();
   const [text, setText] = useState("");
   const [streamOn, setStreamOn] = useState(true);
   const focusSelection = location.state?.terminalFocus === true;
@@ -259,14 +255,8 @@ function SessionDetailContent({ session, attempt, interactive }: { session: Sess
         {!showingPane && error && <p className="px-3 py-1 text-xs text-amber-400">{error}</p>}
         {showingPane ? (
           <div className="h-[60vh] min-h-80">
-            {/* Below 768 px, the phone terminal (AgentTerminal). */}
-            {compact ? (
-              <PhoneTerminal key={sessionId} sessionId={sessionId} name={session.name}
-                focusHref={focusSessionHref(sessionId, { started: attempt?.session_started_at ?? session.started_at })} />
-            ) : (
-              <InteractiveTerminal key={sessionId} sessionId={sessionId} name={session.name}
-                focusRequest={focusSelection || paneRequest ? `${location.key}:${paneRequest}` : null} />
-            )}
+            <InteractiveTerminal key={sessionId} sessionId={sessionId} name={session.name}
+              focusRequest={focusSelection || paneRequest ? `${location.key}:${paneRequest}` : null} />
           </div>
         ) : (
           <div className="max-h-[60vh] overflow-y-auto p-3 font-mono text-xs">

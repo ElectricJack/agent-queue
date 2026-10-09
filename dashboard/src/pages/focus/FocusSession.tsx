@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { useSession } from "../../api/hooks";
 import { useAgentFlock, type FlockAgent } from "../../api/agents";
 import type { SessionSummary } from "../../api/client";
-import PhoneTerminal from "../../components/PhoneTerminal";
+import InteractiveTerminal from "../../components/InteractiveTerminal";
 import { FocusError } from "./FocusNotice";
 import { useFocusChrome } from "./focusChrome";
 import { focusSessionHref, focusTaskHref } from "./routes";
@@ -21,11 +21,11 @@ function currentSessionFor(session: SessionSummary, flock: FlockAgent[]): FlockA
 }
 
 /**
- * `/focus/sessions/:sessionId` — the phone terminal (mobile dashboard §4,
+ * `/focus/sessions/:sessionId` — a session's terminal (mobile dashboard §4,
  * §4.1). The view is pinned to one process: the link's `?started=` or the
  * first one it saw. A restart shows a notice and waits for a tap; a session
  * that is not running shows why and links the agent's current session. The
- * terminal is always the phone terminal (PhoneTerminal), on any screen.
+ * terminal is always the host shell page's terminal, on any screen.
  */
 export default function FocusSession() {
   const { sessionId = "" } = useParams();
@@ -85,7 +85,7 @@ function FocusSessionContent({ sessionId, pinned }: { sessionId: string; pinned:
   }
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PhoneTerminal sessionId={sessionId} name={session.name} />
+      <InteractiveTerminal sessionId={sessionId} name={session.name} />
     </div>
   );
 }

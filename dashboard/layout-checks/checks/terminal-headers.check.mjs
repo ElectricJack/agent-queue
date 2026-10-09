@@ -9,13 +9,20 @@ const DETAILS = '[data-terminal-header] [aria-label^="Details for "]';
 const DIALOG = "[data-terminal-details]";
 const PICKER = '[data-terminal-header] select';
 
-/** Every phone attach asks for scrollback and for the agent's own size back. */
-function phoneAttaches(t) {
-  assert.ok(t.stub.terminalUpgrades.length > 0, "the phone never attached");
-  for (const raw of t.stub.terminalUpgrades) {
-    const url = new URL(raw, "http://stub.invalid");
-    assert.equal(url.searchParams.get("history"), "2000", `a phone attach asks for no history: ${raw}`);
-    assert.equal(url.searchParams.get("restore_size"), "1", `a phone attach keeps the phone's size: ${raw}`);
+/**
+ * One terminal at every width. Below 768 px its attach asks tmux for
+ * scrollback and for the agent's own size back; at or above it asks for
+ * neither, exactly like the host shell page's attach.
+ */
+function attaches(t, sessionId) {
+  const found = t.stub.terminalUpgrades
+    .map((raw) => new URL(raw, "http://stub.invalid"))
+    .filter((url) => url.pathname === `/ws/terminal/${sessionId}`);
+  assert.ok(found.length > 0, `no attach for ${sessionId}`);
+  const wide = t.page.viewport().width >= 768;
+  for (const url of found) {
+    assert.equal(url.searchParams.get("history"), wide ? null : "2000", `wrong history in ${url}`);
+    assert.equal(url.searchParams.get("restore_size"), wide ? null : "1", `wrong restore_size in ${url}`);
   }
 }
 
@@ -48,12 +55,10 @@ export async function run(t) {
     await t.page.waitForFunction(() => document.querySelector('[aria-label$="terminal connection"]')?.textContent.includes("connected"));
     await t.page.waitForFunction(() => document.querySelector('[aria-label="Supervisor terminal connection"]')?.textContent.includes("error"));
   } else {
-    // Phones attach too, asking for history and the agent's size back; the
-    // refused supervisor watches its pane stream in the same terminal.
-    await t.page.waitForFunction(() => document.querySelector('[aria-label$="terminal status"]')?.textContent === "Live");
-    await t.page.waitForFunction(() => document.querySelector('[aria-label="Supervisor terminal status"]')?.textContent.startsWith("Watch only"));
-    assert.equal(await t.page.$("[data-interactive-terminal]"), null, "a phone mounted the desktop terminal");
-    phoneAttaches(t);
+    // A phone gets the same terminal, attached with the phone's transport.
+    await t.page.waitForFunction(() => document.querySelector('[aria-label$="terminal connection"]')?.textContent === "connected");
+    await t.page.waitForFunction(() => document.querySelector('[aria-label="Supervisor terminal connection"]')?.textContent.includes("error"));
+    attaches(t, SESSION);
   }
   await oneRow(t);
   await t.shot("three-panes");
@@ -128,9 +133,9 @@ export async function run(t) {
     await t.page.waitForFunction(() => document.querySelector('[aria-label="Second worker terminal connection"]')?.textContent.includes("connected"));
     assert.equal(t.stub.terminalViewers.filter((row) => row.sessionId === SECOND_POOL_SESSION).length, 1);
   } else {
-    await t.page.waitForFunction(() => document.querySelector('[aria-label="Second worker terminal status"]')?.textContent === "Live");
+    await t.page.waitForFunction(() => document.querySelector('[aria-label="Second worker terminal connection"]')?.textContent === "connected");
     assert.equal(t.stub.terminalViewers.filter((row) => row.sessionId === SECOND_POOL_SESSION).length, 1);
-    phoneAttaches(t);
+    attaches(t, SECOND_POOL_SESSION);
   }
   await oneRow(t);
   await t.shot("pool-header-selection");
@@ -144,7 +149,7 @@ export async function run(t) {
     await t.page.waitForFunction(() => document.querySelector('[aria-label="Pool worker with a long session name terminal connection"]')?.textContent.includes("connected"));
     assert.equal(t.stub.terminalViewers.filter((row) => row.sessionId === POOL_SESSION).length, 2);
   } else {
-    await t.page.waitForFunction(() => document.querySelector('[aria-label="Pool worker with a long session name terminal status"]')?.textContent === "Live");
+    await t.page.waitForFunction(() => document.querySelector('[aria-label="Pool worker with a long session name terminal connection"]')?.textContent === "connected");
     assert.equal(t.stub.terminalViewers.filter((row) => row.sessionId === POOL_SESSION).length, 2);
   }
   assert.equal(await t.page.$(DIALOG), null);
@@ -164,7 +169,7 @@ export async function run(t) {
     await expectLayout(t, { primary: [`${poolHeader} [role="tab"]`] });
     await t.shot("pool-header-settings");
     await t.page.click(`${poolHeader} [role="tab"][aria-label="Terminal"]`);
-    await t.page.waitForSelector('[aria-label$="terminal connection"], [aria-label$="terminal status"]');
+    await t.page.waitForSelector('[aria-label$="terminal connection"]');
     assert.equal(await t.page.$(DIALOG), null);
   }
 }
