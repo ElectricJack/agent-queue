@@ -13945,9 +13945,10 @@
         "provider-failover"
       ],
       "default_arm": true,
-      "digest": "sha256:fab9fdf8be5ce0199b0db15edd705cd1e68cc2287c5a010c64372d4582f791a6",
+      "digest": "sha256:bca613ca26abfb97d69c5523c15ffffe691b25785322ad188a5e54fb801c32bf",
       "imports": [
         "src.commands.handler",
+        "src.database.tables",
         "src.git.manager",
         "src.intelligence_classes",
         "src.models",

@@ -222,7 +222,7 @@ class Checkpoint:
     * ``integration_managed`` -- a hierarchy/train branch whose WIP could not
       be saved onto the task branch, so its integration owner's recovery
       governs what the workspace keeps (nothing is pushed around its fence).
-      A saved one reports ``pushed`` / ``clean`` with ``managed`` set;
+      A saved one reports ``pushed`` / ``clean`` like any other branch;
     * ``push_failed`` / ``no_remote`` / ``unknown`` / ``dirty`` -- work
       exists that no remote carries (or whose safety could not be proved).
     """
@@ -235,9 +235,6 @@ class Checkpoint:
     pushed_branch: str | None = None
     commits: int = 0
     error: str | None = None
-    #: A hierarchy/train branch: its integration owner still has to release
-    #: the workspace, whatever this checkpoint saved onto the branch.
-    managed: bool = False
     #: The WIP commit's message when it is not :data:`WIP_COMMIT_MESSAGE`.
     wip_message: str | None = None
 

@@ -197,6 +197,40 @@ async def preserve_unpushed_work(
 #: (``usage exhausted on opencode``, ``stopped by aq task stop``) follows.
 WIP_SAVED_PREFIX = "WIP saved by AQ: "
 
+#: Task metadata naming the commit a stopped hierarchy/train writer's work was
+#: saved at.  An exact-origin preparation otherwise checks the branch out at
+#: its filing base; with this it continues from the published branch while
+#: that still contains the saved commit.  Consumed by the launch it prepares.
+RESUME_POINT_META = "failover_resume_checkpoint"
+
+
+async def record_resume_point(db, task_id: str, repository_id: str, branch: str, sha) -> bool:
+    """Record where the next exact-origin preparation of *task_id* continues.
+
+    Pinned to the task's canonical origin, so a re-minted origin ignores it.
+    Never raises.
+    """
+    from src.git.manager import is_valid_git_oid
+
+    try:
+        origin = await db.get_task_branch_origin_for_promotion(task_id, repository_id)
+        if origin is None or not is_valid_git_oid(sha):
+            return False
+        await db.set_task_meta(
+            task_id,
+            RESUME_POINT_META,
+            {
+                "repository_id": repository_id,
+                "branch": branch.removeprefix("refs/heads/"),
+                "base_sha": origin["base_sha"],
+                "sha": sha,
+            },
+        )
+    except Exception:
+        logger.warning("Task %s: resume point not recorded", task_id, exc_info=True)
+        return False
+    return True
+
 
 async def save_wip_to_task_branch(
     git,

@@ -116,14 +116,19 @@ class ProviderFailoverMixin:
         that release finds a clean, pushed checkout and the next worker
         resumes on the same branch.  A branch that cannot fast-forward is
         left untouched (``integration_managed``) for owner recovery, whose
-        ``aq/preserved`` snapshot is what remains for that case.
+        ``aq/preserved`` snapshot is what remains for that case.  A saved one
+        records the resume point the next preparation continues from.
         """
         from src.git.manager import commit_identity
-        from src.orchestrator.stranded_work import WIP_SAVED_PREFIX, save_wip_to_task_branch
+        from src.orchestrator.stranded_work import (
+            WIP_SAVED_PREFIX,
+            record_resume_point,
+            save_wip_to_task_branch,
+        )
 
         branch = getattr(task, "branch_name", None)
         untouched = inflight.Checkpoint(
-            status="integration_managed", workspace=workspace, branch=branch, managed=True
+            status="integration_managed", workspace=workspace, branch=branch
         )
         repository_id = getattr(project, "integration_repository_id", None)
         repository = await self.db.get_repo(repository_id) if repository_id else None
@@ -146,6 +151,7 @@ class ProviderFailoverMixin:
                 task.id, branch, saved.status, saved.error,
             )
             return replace(untouched, error=saved.error)
+        await record_resume_point(self.db, task.id, repository.id, branch, saved.commit)
         return inflight.Checkpoint(
             status=saved.status,
             workspace=workspace,
@@ -154,7 +160,6 @@ class ProviderFailoverMixin:
             wip_commit=bool(saved.count),
             pushed_branch=saved.branch if saved.status == "pushed" else None,
             commits=saved.count,
-            managed=True,
             wip_message=WIP_SAVED_PREFIX + why if saved.count else None,
         )
 

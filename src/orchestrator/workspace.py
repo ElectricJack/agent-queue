@@ -795,6 +795,16 @@ class WorkspaceMixin:
                 ):
                     raise ValueError("operator handoff checkpoint no longer matches the canonical origin")
                 origin = dict(origin) | {"operator_handoff": progress}
+            elif prerequisite_head is None:
+                # A stopped writer's saved work (provider failover, ``aq task
+                # stop``). A stacked child already merges its published branch.
+                from src.orchestrator.stranded_work import RESUME_POINT_META
+
+                resume = await self.db.get_task_meta(task.id, RESUME_POINT_META)
+                if resume and (
+                    resume.get("repository_id"), resume.get("branch"), resume.get("base_sha")
+                ) == (repository_id, branch.removeprefix("refs/heads/"), canonical_base_sha):
+                    origin = dict(origin) | {"resume_point": resume}
         return (
             origin,
             Fence(target=target, owner_id=task.id, token=int(owner["fence_token"])),
@@ -971,6 +981,10 @@ class WorkspaceMixin:
                 base_sha = await self._operator_handoff_start(
                     workspace, origin, fence, repository_url=project.repo_url or ""
                 )
+            if ws.is_slot and origin.get("resume_point"):
+                base_sha = await self._resume_point_start(
+                    workspace, origin, fence, repository_url=project.repo_url or ""
+                )
             if ws.is_slot:
                 if origin.get("stack_store"):
                     await self.git._arun(
@@ -1030,6 +1044,10 @@ class WorkspaceMixin:
             if role == "worker" and origin.get("prerequisite_head"):
                 await self.git.aprepare_child_branch(workspace, branch, base_sha)
                 return fence.target.branch
+            if origin.get("resume_point"):
+                base_sha = await self._resume_point_start(
+                    workspace, origin, fence, repository_url=project.repo_url or ""
+                )
             await self.git._arun(["checkout", "-B", branch, base_sha], cwd=workspace)
             actual_head = await self.git._arun(["rev-parse", "HEAD"], cwd=workspace)
             if actual_head != base_sha:
@@ -1059,6 +1077,31 @@ class WorkspaceMixin:
         if await self.git.ais_ancestor(workspace, head, sha, strict=True) is True:
             return sha
         raise GitError("operator handoff progress and canonical branch diverged")
+
+    async def _resume_point_start(self, workspace, origin, fence, *, repository_url):
+        """Continue from the published branch while it still holds the saved WIP.
+
+        A branch rewound or rewritten since the save is someone else's call
+        now: start from the filing base as an ordinary preparation would.
+        """
+        resume = origin["resume_point"]
+        base_sha = str(origin["base_sha"])
+        branch = fence.target.branch.removeprefix("refs/heads/")
+        await self.git.afetch_origin(workspace, repository_url=repository_url)
+        head = await self.git.arev_parse(workspace, f"refs/remotes/origin/{branch}")
+        sha = resume.get("sha")
+        if (
+            is_valid_git_oid(sha)
+            and is_valid_git_oid(head)
+            and await self.git.ais_ancestor(workspace, base_sha, sha, strict=True) is True
+            and await self.git.ais_ancestor(workspace, sha, head, strict=True) is True
+        ):
+            return head
+        logger.warning(
+            "origin/%s no longer holds the saved WIP %s; starting from its origin %s",
+            branch, sha, base_sha,
+        )
+        return base_sha
 
     async def _ensure_control_files_excluded(self, workspace: str) -> bool:
         """Write and verify the managed block at Git's exact exclude path.
@@ -1707,6 +1750,20 @@ class WorkspaceMixin:
                     owner.get("id"), owner.get("ref"), saved.error,
                 )
                 return False
+        if (
+            save_wip_reason is not None
+            and owner.get("owner_role") == "worker"
+            and owner.get("owner_id") == task.id
+        ):
+            # The next worker continues from the saved (or already pushed)
+            # head instead of restarting at the branch's filing base.
+            from src.orchestrator.stranded_work import record_resume_point
+
+            head = (
+                saved.commit if not probed
+                else await self.git.arev_parse(workspace.workspace_path, "HEAD")
+            )
+            await record_resume_point(self.db, task.id, repository.id, str(owner["ref"]), head)
 
         try:
             from src.orchestrator.workspace_attachments import (

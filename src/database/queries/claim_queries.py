@@ -374,6 +374,9 @@ CLAIM_PREPARATION_METADATA_KEYS = (
     # preparation that applies it; left behind, every later prepare re-enters
     # the handoff path against a preserved ref that has since moved or gone.
     "supervisor_recovery_checkpoint",
+    # A stopped writer's saved-WIP resume point (``stranded_work``): consumed
+    # by the preparation that continues from it, like the handoff above.
+    "failover_resume_checkpoint",
     PREPARE_BACKOFF_UNTIL_KEY,
     PREPARE_BACKOFF_ATTEMPTS_KEY,
     "slot_reset_failure",
