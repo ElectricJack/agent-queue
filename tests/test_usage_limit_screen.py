@@ -85,6 +85,36 @@ class TestOpenCode:
         assert screen.line == "Free usage exceeded, subscribe to Go [retrying in 15h 2m]"
         assert match_usage_limit_screen(OPENCODE_LIMIT_PANE) is None
 
+    def test_footer_with_right_aligned_version_badge(self):
+        # fresh-rapids-73: the live pane of four parked OpenCode 1.18.35 workers.
+        # The badge after the interrupt hint defeated an end-of-line anchor.
+        pane = (
+            "┃  Build  Space Bunny  OpenCode Zen\n"
+            "   ⬝⬝⬝⬝⬝⬝⬝⬝ Free usage exceeded, subscribe to Go [retrying in 4h 28m attempt #1]"
+            "               esc interrupt    • OpenCode 1.18.35"
+        )
+        screen = detect_usage_limit_screen(pane, opencode=True)
+        assert screen is not None and screen.usage_exhausted
+        assert screen.retry_after == 4 * 3600 + 28 * 60
+        assert screen.line == (
+            "Free usage exceeded, subscribe to Go [retrying in 4h 28m attempt #1]"
+        )
+
+    def test_footer_without_a_duration_or_with_an_expand_hint(self):
+        screen = detect_usage_limit_screen(
+            "  ⬝⬝ Free usage exceeded [retrying attempt #3]  esc again to interrupt", opencode=True
+        )
+        assert screen is not None and screen.usage_exhausted and screen.retry_after is None
+        long_retry = detect_usage_limit_screen(
+            "  ⬝⬝ Service unavailable: upstream overloaded… (click to expand)"
+            " [retrying in 2h attempt #4]  esc interrupt",
+            opencode=True,
+        )
+        assert long_retry is not None and long_retry.retry_after == 7200
+        assert detect_usage_limit_screen(
+            "  ⬝⬝ Service unavailable [retrying attempt #4]  esc interrupt", opencode=True
+        ) is None
+
     def test_retry_footer_with_animations_disabled(self):
         screen = detect_usage_limit_screen(
             " [⋯] Free limit reached [retrying in 15h 2m attempt #1] esc interrupt", opencode=True

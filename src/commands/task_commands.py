@@ -4745,7 +4745,9 @@ class TaskCommandsMixin:
         if not task:
             return {"error": f"Task '{task_id}' not found"}
         if task.status == TaskStatus.IN_PROGRESS:
-            error = await self.orchestrator.stop_task(task_id)
+            error = await self.orchestrator.stop_task(
+                task_id, reason="stopped before deletion"
+            )
             if error:
                 return {"error": f"Could not stop task before deleting: {error}"}
         cascade = bool(args.get("cascade", False))

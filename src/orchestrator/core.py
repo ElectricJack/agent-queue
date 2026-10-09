@@ -1376,12 +1376,19 @@ class Orchestrator(
         candidates = await recovery.candidates(quiet_seconds=600, limit=50)
         await recovery.recover_many([candidate["id"] for candidate in candidates], principal="sweep")
 
-    async def stop_task(self, task_id: str) -> str | None:
+    async def stop_task(
+        self, task_id: str, *, reason: str = "stopped by aq task stop"
+    ) -> str | None:
         """Forcibly stop an in-progress task and release its agent.
 
         Sends a stop signal to the running adapter, transitions the task to
         BLOCKED, resets the agent to IDLE, and checks whether stopping this
         task orphans any downstream dependency chain (notifying if so).
+
+        In a managed project the writer's unsaved work is committed and
+        fast-forwarded onto the task branch as ``WIP saved by AQ: <reason>``
+        -- a worker stuck in a usage-limit retry wait can never push it
+        itself, and refusing the stop over it stranded the task.
 
         Returns None on success, or an error string if the task cannot be stopped.
         """
@@ -1427,7 +1434,10 @@ class Orchestrator(
             from src.integration.models import REQUEUE_INTEGRATION_OWNER_ROLES
 
             released = await self.arelease_integration_writer_for_retry(
-                task, reason="stop_task", roles=REQUEUE_INTEGRATION_OWNER_ROLES
+                task,
+                reason="stop_task",
+                roles=REQUEUE_INTEGRATION_OWNER_ROLES,
+                save_wip_reason=reason,
             )
             if released is not True:
                 return "Integration branch handoff is unproven; task resources were retained"

@@ -14030,11 +14030,13 @@
         "provider-failover"
       ],
       "default_arm": true,
-      "digest": "sha256:fab9fdf8be5ce0199b0db15edd705cd1e68cc2287c5a010c64372d4582f791a6",
+      "digest": "sha256:abfb111bed39d0d0ed72f235a692226f376991516ad1a439612ec116280ce24f",
       "imports": [
         "src.commands.handler",
+        "src.database.tables",
         "src.git.manager",
         "src.intelligence_classes",
+        "src.knowledge.budget",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.provider_failover",
@@ -16097,12 +16099,15 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:b8931e129bb973699d31926136333d1dced3f3bf014480af6631aae027183b72",
+      "digest": "sha256:1ac710e93b1cc076786e9d5f108abcdbc7908898b631f2757ab86d40b0aa1a47",
       "imports": [
         "src.git.manager",
-        "src.orchestrator.stranded_work"
+        "src.orchestrator.stranded_work",
+        "src.orchestrator.workspace"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "``preserve_unpushed_work`` — the push-before-you-close rule."
     },
     "tests/test_streams_api.py": {
