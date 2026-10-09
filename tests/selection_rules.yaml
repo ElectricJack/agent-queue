@@ -68,7 +68,7 @@ non_behavioral:                 # never forces fallback, adds nothing; no test r
 
 ownership:                      # path globs -> areas whose modules join M
   - { paths: ["tests/integration_ownership.py", "tests/integration_ownership.json", "tests/integration_ownership_report.json"], areas: ["integration-trains"] }
-  - { paths: ["scripts/integration-cutover-evidence.py", "scripts/backfill-legacy-deliveries.py", "scripts/benchmark-git-truth.py", "scripts/benchmark-train-selection.py"], areas: ["integration-trains"] }
+  - { paths: ["scripts/integration-cutover-evidence.py", "scripts/backfill-legacy-deliveries.py", "scripts/benchmark-git-truth.py", "scripts/benchmark-train-selection.py", "scripts/cleanup-origin-integration-refs.py"], areas: ["integration-trains"] }
   - { paths: ["src/knowledge/__init__.py", "src/knowledge/imports/**", "tests/fixtures/knowledge/**"], areas: ["knowledge-inventory"] }
   - { paths: ["src/records/**", "src/knowledge/**", "src/database/queries/record_queries.py", "src/database/queries/knowledge_queries.py", "tests/record_helpers.py"], areas: ["knowledge-records"] }
   - { paths: ["src/object_loop/**", "src/commands/object_loop_commands.py", "src/commands/contracts/object_loop.py", "src/api/models/object_loop.py"], areas: ["object-loop"] }

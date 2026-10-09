@@ -6384,6 +6384,20 @@
         3604
       ]
     },
+    "src/orchestrator/core.py::Orchestrator._run_daily_git_branch_sweep": {
+      "reason": "Sweeps exact Git-proven local and remote refs across registered Git-first project checkouts and reports preserved work and stash inventory.",
+      "landing_span": [
+        3650,
+        3794
+      ]
+    },
+    "src/orchestrator/core.py::Orchestrator._schedule_daily_git_branch_sweep": {
+      "reason": "Schedules the fleet Git branch sweep once per UTC day while Git-first integration is active.",
+      "landing_span": [
+        3625,
+        3649
+      ]
+    },
     "src/orchestrator/core.py::Orchestrator._repair_integration_source_ancestry": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -7148,6 +7162,13 @@
     },
     "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_is_live": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.prune_branches": {
+      "reason": "Prunes only Git-proven merged task branches, protecting globally live branch references and attached worktrees while retaining unique failed-task work.",
+      "landing_span": [
+        1396,
+        1488
+      ]
     },
     "src/playbooks/artifact_diff.py::_rule_rows": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",

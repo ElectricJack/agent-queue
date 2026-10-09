@@ -1402,21 +1402,11 @@ class WorktreeSlotManager:
     ) -> list[str]:
         """Delete stale local ``aq/*`` branches beneath *base_ws*.
 
-        Two categories are pruned (design §6.5):
-
-        * **Merged** local ``aq/*`` branches — always safe (spec §5).
-        * **Failed & old** local ``aq/*`` branches — the branch name
-          encodes the task id (``aq/<task_id>``); if that task exists and
-          is in a terminal-FAILED state and the branch's last commit is
-          older than ``retain_failed_days``, delete it with ``-D``
-          (force, because it's unmerged).  Branches whose task can not
-          be looked up, or whose task is not FAILED, are kept — the
-          reaper never destroys unmerged work speculatively.
-
-        Returns the combined list of deleted branch names.
+        Only local ``aq/*`` branches already merged into *default_branch* are
+        pruned. A failed task's unique commits remain recoverable regardless
+        of age; terminal status and commit date are not proof that a ref is
+        disposable.
         """
-        from src.models import TaskStatus
-
         base_path = base_ws.workspace_path
         _validate_ref(default_branch, field="default branch")
         if not Path(base_path).is_dir():
@@ -1424,6 +1414,19 @@ class WorktreeSlotManager:
             return []
 
         async with self._git_mutex(base_path):
+            from src.integration.delivery_branches import live_branch_references
+
+            try:
+                async with self.db._engine.connect() as conn:
+                    holds = await live_branch_references(conn)
+            except Exception as exc:
+                logger.warning(
+                    "Skipping branch cleanup; live-ref inventory failed in %s: %s",
+                    base_path,
+                    exc,
+                )
+                return []
+
             # A merged or failed branch may still belong to a worktree. Never
             # delete it or detach that worktree as part of routine cleanup.
             try:
@@ -1472,7 +1475,7 @@ class WorktreeSlotManager:
 
             deleted: list[str] = []
             for br in merged:
-                if br in attached:
+                if br in attached or br in holds:
                     continue
                 if not await remote_cleanup_ready(br):
                     continue
@@ -1481,61 +1484,6 @@ class WorktreeSlotManager:
                     deleted.append(br)
                 except GitError as e:
                     logger.warning("delete branch %s failed: %s", br, e)
-
-            # Failed-and-old pruning.
-            retain_days = int(getattr(self.config, "retain_failed_days", 0) or 0)
-            if retain_days > 0:
-                cutoff = time.time() - (retain_days * 86400.0)
-                # List all local aq/* branches with their last-commit unix time.
-                try:
-                    out = await self.git._arun(
-                        [
-                            "for-each-ref",
-                            "--format=%(refname:short) %(committerdate:unix)",
-                            f"refs/heads/{BRANCH_PREFIX}",
-                        ],
-                        cwd=base_path,
-                    )
-                except GitError as e:
-                    logger.warning("for-each-ref failed in %s: %s", base_path, e)
-                    out = ""
-                for line in out.splitlines():
-                    parts = line.strip().split()
-                    if len(parts) != 2:
-                        continue
-                    br, ts_raw = parts
-                    if br in deleted or br in attached:
-                        continue
-                    try:
-                        ts = float(ts_raw)
-                    except ValueError:
-                        continue
-                    if ts >= cutoff:
-                        continue  # still within retention window
-                    # Derive task id from branch name (aq/<task_id>).
-                    if not br.startswith(BRANCH_PREFIX):
-                        continue
-                    task_id = br[len(BRANCH_PREFIX):]
-                    if not task_id:
-                        continue
-                    try:
-                        task = await self.db.get_task(task_id)
-                    except Exception as e:
-                        logger.debug("get_task(%s) failed during prune: %s", task_id, e)
-                        continue
-                    if task is None:
-                        continue  # unknown → keep
-                    status = getattr(task, "status", None)
-                    status_val = getattr(status, "value", status)
-                    if status_val != TaskStatus.FAILED.value:
-                        continue
-                    if not await remote_cleanup_ready(br):
-                        continue
-                    try:
-                        await self.git.adelete_local_branch(base_path, br, force=True)
-                        deleted.append(br)
-                    except GitError as e:
-                        logger.warning("force-delete branch %s failed: %s", br, e)
 
         return deleted
 

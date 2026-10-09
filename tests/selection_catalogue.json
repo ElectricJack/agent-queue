@@ -583,6 +583,7 @@
       "description": "Hierarchical integration trains: durable integration state, the reconciliation service and schedules, settling and sealing, candidate construction, the outbox, integration mode policy, attestations, CI and cleanup.",
       "modules": [
         "tests/test_attestation_check_run_id.py",
+        "tests/test_branch_sweep.py",
         "tests/test_hosted_attestation.py",
         "tests/test_integration_accepted_repair.py",
         "tests/test_integration_attestation.py",
@@ -2993,6 +2994,22 @@
       ],
       "markers": [],
       "summary": "Tests for branch-isolated workspace mode (Roadmap 7.4.4)."
+    },
+    "tests/test_branch_sweep.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:8f3f0a7b95101f306b29fad41e18318f4ee346070e8f6d782d7cf75c9624ada4",
+      "imports": [
+        "src.git.manager",
+        "src.integration.branch_sweep",
+        "src.orchestrator"
+      ],
+      "markers": [
+        "asyncio"
+      ],
+      "summary": "The daily branch sweep deletes only refs with exact Git proof."
     },
     "tests/test_budget.py": {
       "areas": [
@@ -8018,12 +8035,13 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:bb00f4a31192f121290a98ffe1d6ef074f5947dd6b03cc191b43c4eb22339597",
+      "digest": "sha256:bf0b93cf1fd853d3016b682f47d237c78fc5d7f1a9e8bec4e517c367c68177b1",
       "imports": [
         "src.commands.principal",
         "src.database.adapters.postgresql",
         "src.database.tables",
         "src.git.github_app",
+        "src.integration.batches",
         "src.integration.cleanup",
         "src.integration.release",
         "src.integration.runtime_contracts",
