@@ -1672,6 +1672,13 @@ class WorkspaceMixin:
         # subsequent probe/detach will race a checkout that is no longer under
         # the writer's control.  Proving the Git state first lets us refuse
         # cleanly while the writer is still intact.
+        # Only the task's own writer has its checkout saved onto the task
+        # branch: a verifier's scratch edits are not the task's work.
+        may_save_wip = (
+            save_wip_reason is not None
+            and owner.get("owner_role") in RETRYABLE_INTEGRATION_OWNER_ROLES
+            and owner.get("owner_id") == task.id
+        )
         try:
             from src.orchestrator.workspace_attachments import (
                 probe_slot_for_integration_handoff,
@@ -1697,7 +1704,7 @@ class WorkspaceMixin:
                     repository_url=repository.url,
                     default_branch=repository.default_branch,
                 )
-            if not probed and save_wip_reason is None:
+            if not probed and not may_save_wip:
                 logger.warning(
                     "Refusing integration handoff %s: checkout not clean and pushed "
                     "before writer stop (workspace=%s, branch=%s)",
@@ -1724,17 +1731,20 @@ class WorkspaceMixin:
             logger.warning("Could not confirm integration writer %s stopped", session_id, exc_info=True)
             return False
         if not probed:
+            from src.git.manager import commit_identity
             from src.orchestrator.stranded_work import save_wip_to_task_branch
 
-            saved = await save_wip_to_task_branch(
-                self.git,
-                workspace.workspace_path,
-                str(owner["ref"]),
-                save_wip_reason,
-                repository_url=repository.url,
-                event_bus=self.bus,
-                project_id=task.project_id,
-            )
+            project = await self.db.get_project(task.project_id)
+            with commit_identity(self.git.resolve_commit_identity(project)):
+                saved = await save_wip_to_task_branch(
+                    self.git,
+                    workspace.workspace_path,
+                    str(owner["ref"]),
+                    save_wip_reason,
+                    repository_url=repository.url,
+                    event_bus=self.bus,
+                    project_id=task.project_id,
+                )
             if saved.status not in {"pushed", "clean"}:
                 # The writer is gone; say so, so owner recovery can preserve
                 # the checkout instead of waiting on a session that is dead.

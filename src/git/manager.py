@@ -3717,6 +3717,7 @@ class GitManager:
         *,
         event_bus: EventBus | None = None,
         project_id: str | None = None,
+        repository_url: str | None = None,
     ) -> None:
         """Push ``HEAD`` to ``origin/<branch>``, creating the branch if needed.
 
@@ -3729,10 +3730,13 @@ class GitManager:
         This is a non-delivery recovery primitive: stranded-work preservation
         must save the complete commit even when it contains daemon-owned
         paths. Automatic task delivery must use
-        :meth:`apush_validated_delivery` instead.
+        :meth:`apush_validated_delivery` instead.  ``repository_url``, when
+        given, refuses a checkout whose ``origin`` names another repository.
         """
         tip = await self._aresolve_delivery_tip(checkout_path, "HEAD")
-        remote_ref_before = await self._apush_oid(checkout_path, tip, branch)
+        remote_ref_before = await self._apush_oid(
+            checkout_path, tip, branch, repository_url=repository_url
+        )
         await self._aemit_push_event(
             checkout_path,
             branch,

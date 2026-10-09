@@ -90,7 +90,12 @@ HANDOFF_META = "provider_failover_handoff"
 HANDOFF_EVENT = "task.handoff"
 #: How much of the stopped session's screen the hand-off note keeps.
 HANDOFF_SCREEN_LINES = 80
-_HANDOFF_SCREEN_CHARS = 12_000
+_HANDOFF_SCREEN_BYTES = 8_192
+#: How much of that tail ``aq prime`` quotes.  Prime's body is required
+#: context, so it must stay inside the knowledge-context budget
+#: (``context.required_over_budget`` fails the whole prime); box-drawing
+#: TUI chrome is three UTF-8 bytes a character.
+PRIME_SCREEN_BYTES = 2_048
 #: ``needs_attention`` when the checkpoint could not be pushed.
 PUSH_FAILED_ATTENTION = "provider_failover_push_failed"
 #: Who the system-authored hand-off comment is from.
@@ -424,7 +429,27 @@ def screen_tail(screen: str | None, lines: int = HANDOFF_SCREEN_LINES) -> str | 
     while rows and not rows[-1]:
         rows.pop()
     text = "\n".join(rows[-lines:]).strip("\n")
-    return text[-_HANDOFF_SCREEN_CHARS:] or None
+    return tail_within(text, _HANDOFF_SCREEN_BYTES)[0] or None
+
+
+def tail_within(text: str, max_bytes: int) -> tuple[str, int]:
+    """*text*'s last whole lines that fit in *max_bytes* UTF-8 bytes, and how many it dropped.
+
+    A last line longer than the budget on its own keeps its end.
+    """
+    rows = text.splitlines()
+    kept: list[str] = []
+    size = 0
+    for row in reversed(rows):
+        cost = len(row.encode("utf-8")) + (1 if kept else 0)
+        if size + cost > max_bytes:
+            break
+        kept.append(row)
+        size += cost
+    if not kept and rows:
+        kept = [rows[-1].encode("utf-8")[-max_bytes:].decode("utf-8", "ignore")]
+    kept.reverse()
+    return "\n".join(kept), len(rows) - len(kept)
 
 
 def handoff_comment(handoff: Mapping[str, Any], task_id: str) -> str:
@@ -491,9 +516,9 @@ def handoff_comment(handoff: Mapping[str, Any], task_id: str) -> str:
             "The provider is suspect, so the task pauses briefly before its next "
             "launch (no retry was spent)."
         )
-    if handoff.get("session_logs"):
-        lines.append(
-            "Next worker: continue from the branch tip -- do not restart the task; "
-            f"`{handoff['session_logs']}` shows where the previous session stopped."
-        )
+    if handoff.get("head") or handoff.get("session_logs"):
+        text = "Next worker: continue from the branch tip -- do not restart the task"
+        if handoff.get("session_logs"):
+            text += f"; `{handoff['session_logs']}` shows where the previous session stopped"
+        lines.append(text + ".")
     return "\n".join(lines)

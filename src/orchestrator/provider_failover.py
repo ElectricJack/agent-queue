@@ -104,6 +104,29 @@ class ProviderFailoverMixin:
                 logger.debug("Task %s: unmerged branch not recorded", task.id, exc_info=True)
         return checkpoint
 
+    async def _is_task_writer_owner(self, task: Any, repository_id: str, branch: str) -> bool:
+        """Whether *task* itself owns *branch* as its writer (``worker``/``repair``)."""
+        from src.integration.models import RETRYABLE_INTEGRATION_OWNER_ROLES, BranchKey
+        from src.integration.ownership import BranchOwnership
+
+        ownership = BranchOwnership(self.db)
+        try:
+            owner = await ownership.get_owner(
+                BranchKey(repository_id=repository_id, branch=branch)
+            )
+            if owner is None and not branch.startswith("refs/heads/"):
+                owner = await ownership.get_owner(
+                    BranchKey(repository_id=repository_id, branch=f"refs/heads/{branch}")
+                )
+        except Exception:
+            logger.debug("Task %s: branch owner unreadable", task.id, exc_info=True)
+            return False
+        return (
+            owner is not None
+            and owner.get("owner_id") == task.id
+            and owner.get("owner_role") in RETRYABLE_INTEGRATION_OWNER_ROLES
+        )
+
     async def _integration_wip_checkpoint(
         self, task: Any, project: Any, workspace: str | None, reason: str | None
     ) -> inflight.Checkpoint:
@@ -133,6 +156,10 @@ class ProviderFailoverMixin:
         repository_id = getattr(project, "integration_repository_id", None)
         repository = await self.db.get_repo(repository_id) if repository_id else None
         if not workspace or not branch or repository is None or task.repo_id != repository.id:
+            return untouched
+        if not await self._is_task_writer_owner(task, repository.id, branch):
+            # A verifier's (or any other owner's) checkout is not the
+            # task's work; owner recovery decides what it keeps.
             return untouched
         why = " ".join((reason or "provider failover").split())[:160]
         with commit_identity(self.git.resolve_commit_identity(project)):

@@ -270,7 +270,10 @@ async def save_wip_to_task_branch(
             return StrandedWork(
                 status="push_failed",
                 branch=branch,
-                error=f"checkout is on {current or 'an unknown ref'}, not {branch}",
+                error=(
+                    f"checkout is on a detached HEAD, not {branch}" if current == "HEAD"
+                    else f"checkout is on {current or 'an unknown ref'}, not {branch}"
+                ),
             )
         remote = await git.als_remote_ref(workspace, branch, repository_url=repository_url)
         if remote.state is RemoteRefState.ERROR:
@@ -302,7 +305,13 @@ async def save_wip_to_task_branch(
                 count=int(committed),
                 error=f"origin/{branch} has commits this HEAD does not descend from",
             )
-        await git.apush_head_to(workspace, branch, event_bus=event_bus, project_id=project_id)
+        await git.apush_head_to(
+            workspace,
+            branch,
+            event_bus=event_bus,
+            project_id=project_id,
+            repository_url=repository_url,
+        )
     except (GitError, OSError) as exc:
         logger.warning("Could not save WIP for %s onto %s: %s", workspace, branch, exc)
         return StrandedWork(status="push_failed", branch=branch, error=str(exc))
