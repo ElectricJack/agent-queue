@@ -998,6 +998,8 @@ class TaskRecoveryQueryMixin:
             .mappings()
             .first()
         )
+        from src.integration.owner_recovery import recovery_ref_allowed
+
         evidence = audit["evidence"] if audit else {}
         stop = evidence.get("stop_proof") or {}
         if (
@@ -1011,7 +1013,9 @@ class TaskRecoveryQueryMixin:
             or not evidence.get("claim_released")
             or not evidence.get("workspace_unlocked")
             or evidence.get("released_fence_token") != owner["fence_token"]
-            or evidence.get("preserved_ref") != f"aq/preserved/{owner['id']}"
+            or not recovery_ref_allowed(
+                evidence.get("preserved_ref"), branch, owner["id"], evidence.get("preserved_sha"),
+            )
             or not is_valid_git_oid(evidence.get("preserved_sha"))
             or stop.get("session_id") != attempt["session_id"]
             or stop.get("name") != row["name"]
