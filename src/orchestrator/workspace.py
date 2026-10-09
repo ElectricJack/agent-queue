@@ -1485,7 +1485,9 @@ class WorkspaceMixin:
         else:
             await self.db.release_workspace(ws.id)
 
-    async def aconfirm_integration_owner_handoff(self, owner: dict) -> bool:
+    async def aconfirm_integration_owner_handoff(
+        self, owner: dict, *, save_wip_reason: str | None = None
+    ) -> bool:
         """Stop and detach an attached integration writer before fencing it out.
 
         A database unlock is not termination evidence: slot worktrees retain
@@ -1493,6 +1495,14 @@ class WorkspaceMixin:
         uncached ``confirm_stopped`` probe, then requires a slot to be truly
         detached before releasing it.  If any proof is unavailable, retain
         the lock and return ``False`` so the ownership record stays fenced.
+
+        By default a dirty or unpushed checkout is refused before the writer
+        is stopped.  ``save_wip_reason`` is for a writer that cannot save its
+        own work -- out of usage, or stopped by an operator: the writer is
+        stopped first, then the whole checkout is committed as ``WIP saved by
+        AQ: <reason>`` and fast-forwarded onto the task's own branch, and the
+        ordinary proof runs on the result.  A branch that cannot fast-forward
+        stays fenced, for owner recovery to preserve.
         """
         session_id = owner.get("session_id")
         workspace_id = owner.get("workspace_id")
@@ -1644,7 +1654,7 @@ class WorkspaceMixin:
                     repository_url=repository.url,
                     default_branch=repository.default_branch,
                 )
-            if not probed:
+            if not probed and save_wip_reason is None:
                 logger.warning(
                     "Refusing integration handoff %s: checkout not clean and pushed "
                     "before writer stop (workspace=%s, branch=%s)",
@@ -1670,6 +1680,32 @@ class WorkspaceMixin:
         except Exception:
             logger.warning("Could not confirm integration writer %s stopped", session_id, exc_info=True)
             return False
+        if not probed:
+            from src.orchestrator.stranded_work import save_wip_to_task_branch
+
+            saved = await save_wip_to_task_branch(
+                self.git,
+                workspace.workspace_path,
+                str(owner["ref"]),
+                save_wip_reason,
+                event_bus=self.bus,
+                project_id=task.project_id,
+            )
+            if saved.status not in {"pushed", "clean"}:
+                # The writer is gone; say so, so owner recovery can preserve
+                # the checkout instead of waiting on a session that is dead.
+                await self.db.update_session(
+                    session.id,
+                    state="stopped",
+                    desired_state="stopped",
+                    end_reason="integration_handoff_wip_unsaved",
+                )
+                logger.warning(
+                    "Integration handoff %s stopped its writer but could not save WIP "
+                    "onto %s: %s",
+                    owner.get("id"), owner.get("ref"), saved.error,
+                )
+                return False
 
         try:
             from src.orchestrator.workspace_attachments import (
@@ -2259,6 +2295,7 @@ class WorkspaceMixin:
         pool: bool = False,
         roles: frozenset[str] = RETRYABLE_INTEGRATION_OWNER_ROLES,
         retained_preparation=None,
+        save_wip_reason: str | None = None,
     ) -> bool | None:
         """Prove an enabled writer stopped, then restore its task reservation.
 
@@ -2296,6 +2333,10 @@ class WorkspaceMixin:
         include ``verifier``; see that constant for why the exclusion does
         not apply when a task returns to the frontier still owning its own
         branch.
+
+        ``save_wip_reason`` lets the stop proof save a dirty or unpushed
+        checkout onto the task branch instead of refusing; see
+        :meth:`aconfirm_integration_owner_handoff`.  Pool handoffs ignore it.
         """
         project = await self.db.get_project(task.project_id)
         if getattr(project, "hierarchical_integration_mode", "disabled") not in {
@@ -2312,13 +2353,14 @@ class WorkspaceMixin:
                 owner, retained_preparation=retained_preparation,
             )
 
+        async def confirm_stop(owner):
+            return await self.aconfirm_integration_owner_handoff(
+                owner, save_wip_reason=save_wip_reason,
+            )
+
         ownership = BranchOwnership(
             self.db,
-            confirm_handoff=(
-                confirm_pool
-                if pool
-                else self.aconfirm_integration_owner_handoff
-            ),
+            confirm_handoff=confirm_pool if pool else confirm_stop,
         )
         owner = await ownership.get_owner(target)
         if owner is None and not task.branch_name.startswith("refs/heads/"):

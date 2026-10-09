@@ -829,7 +829,7 @@ class SystemCommandsMixin:
             running_task_ids = list(orch._running_tasks.keys())
             for task_id in running_task_ids:
                 try:
-                    await orch.stop_task(task_id)
+                    await orch.stop_task(task_id, reason="stopped by forced shutdown")
                 except Exception as e:
                     logger.warning("Error force-stopping task %s: %s", task_id, e)
         else:
