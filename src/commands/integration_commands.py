@@ -63,6 +63,15 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def repair_root_pr_checks(self, observation) -> dict:
+        """Daemon-only port for the admission gate's trusted failure observation."""
+        from src.integration.root_pr_recovery import recover_root_pr_checks
+
+        try:
+            return await recover_root_pr_checks(self, observation)
+        except (HierarchyError, BranchBusy, ValueError) as exc:
+            return _failure("recovery_deferred", str(exc))
+
     async def _cmd_integration_retire_legacy_park(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationRetireLegacyParkArgs
         from src.integration.legacy_park_retirement import LegacyParkRetirement
