@@ -552,6 +552,8 @@ async def test_isolated_origin_fetch_imports_source_refs_without_using_checkout_
     destination = tmp_path / "destination"
     _git(["clone", str(source), str(destination)], tmp_path)
     _git(["push", str(source), f"{tip}:refs/heads/topic"], checkout)
+    provenance_ref = "refs/aq/provenance/completions/subject/generation"
+    _git(["push", str(source), f"{tip}:{provenance_ref}"], checkout)
     _git(["config", "remote.origin.url", str(trap)], destination)
 
     await GitManager()._afetch_origin_with_auth_to_url(
@@ -559,6 +561,8 @@ async def test_isolated_origin_fetch_imports_source_refs_without_using_checkout_
     )
 
     assert _git(["rev-parse", "refs/remotes/origin/topic"], destination) == tip
+    assert _git(["rev-parse", provenance_ref], destination) == tip
+    assert "aq-provenance" not in _git(["for-each-ref", "--format=%(refname)"], destination)
     assert _git(["rev-parse", "HEAD"], destination) == base
     assert _git(["config", "--get", "remote.origin.url"], destination) == str(trap)
     assert _git(["for-each-ref", "--format=%(refname)"], trap) == ""
@@ -1987,6 +1991,43 @@ async def test_isolated_app_push_of_several_heads_imports_once_and_leases_each(
 
 
 @pytest.mark.asyncio
+async def test_isolated_app_push_import_never_starts_detached_maintenance(
+    tmp_path, monkeypatch
+):
+    """Git 2.47+ ends a fetch with ``maintenance run --auto --detach``.
+
+    That process calls setsid, so the group kill cannot reach it, and it holds
+    the import's stdout pipe until it closes its inherited descriptors: a push
+    abandoned at its deadline could return with that pipe still open.
+    """
+    checkout, target, _, base, tip = _git_push_case(tmp_path)
+    manager = GitManager()
+    fetches = []
+    real_import = manager._run_isolated_import_git
+
+    async def watched(args, **kwargs):
+        if "fetch" in args:
+            fetches.append(args)
+        return await real_import(args, **kwargs)
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", watched)
+
+    await manager._apush_oid_with_app_auth_to_url(
+        str(checkout),
+        destination_url=target.as_uri(),
+        token="installation-token-sentinel",
+        tip_oid=tip,
+        branch="main",
+        expected_old_oid=base,
+    )
+
+    [fetch] = fetches
+    assert "maintenance.auto=false" in fetch
+    assert fetch.index("maintenance.auto=false") < fetch.index("fetch")
+    assert _git(["rev-parse", "refs/heads/main"], target) == tip
+
+
+@pytest.mark.asyncio
 async def test_new_heads_report_a_failed_transfer_per_head_and_never_move_one(
     tmp_path, monkeypatch
 ):
@@ -2012,6 +2053,24 @@ async def test_new_heads_report_a_failed_transfer_per_head_and_never_move_one(
     failed = await manager.apush_new_refs(str(checkout), {"other": tip}, repository_url=str(target))
     # Absent after a failed transfer is that failure, not an observation.
     assert failed == {"other": RemoteRefResult(RemoteRefState.ERROR, error="remote unreachable")}
+
+
+@pytest.mark.asyncio
+async def test_authenticated_provenance_push_uses_exact_non_branch_namespace(tmp_path):
+    checkout, target, _, _base, tip = _git_push_case(tmp_path)
+    ref = "refs/aq/provenance/completions/subject/generation"
+    manager = GitManager()
+    await manager._apush_refs_with_app_auth_to_url(
+        str(checkout), destination_url=target.as_uri(), token="local-test-token",
+        updates=((tip, ref, "0" * 40),), _qualified_refs=True,
+    )
+    assert _git(["rev-parse", ref], target) == tip
+    assert "provenance" not in _git(["for-each-ref", "--format=%(refname)", "refs/heads"], target)
+    _git(["remote", "add", "origin", str(target)], checkout)
+    assert (await manager.als_remote_qualified_refs(str(checkout), [ref]))[ref].oid == tip
+    with pytest.raises(GitError, match="provenance ref"):
+        await manager.apush_new_refs(str(checkout), {"refs/heads/aq-provenance/bad": tip},
+                                     qualified=True)
 
 
 @pytest.mark.asyncio

@@ -214,8 +214,7 @@ class GitTruth:
 
     def _record_key(self, snapshot: DeliverySnapshot, identity: CompletionIdentity) -> tuple:
         return (snapshot.store, snapshot.repository_id, snapshot.repository_url, identity, tuple(
-            snapshot.source_heads.get(prefix + identity.branch)
-            for prefix in ("refs/remotes/origin/", "refs/heads/")
+            snapshot.source_heads.get(ref) for ref in identity.read_refs
         ))
 
     async def _completion(self, snapshot: DeliverySnapshot, identity: CompletionIdentity):

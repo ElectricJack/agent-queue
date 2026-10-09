@@ -9,10 +9,17 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import update
 
+from src.database import Database
+from src.database.tables import projects
 from src.git.manager import GitManager
-from src.integration.branch_sweep import sweep_checkout
+from src.integration.branch_sweep import SweepSafety, sweep_checkout
+from src.integration.lock import BranchLock
+from src.integration.models import BranchKey
+from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from src.orchestrator import Orchestrator
+from tests.db_fixtures import lease_dsn
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -149,6 +156,7 @@ async def test_daily_sweep_includes_non_active_registered_projects(tmp_path, mon
     db = SimpleNamespace(
         _engine=Engine(),
         list_projects=AsyncMock(return_value=[project]),
+        list_repos=AsyncMock(return_value=[]),
         list_workspaces=AsyncMock(return_value=[]),
     )
     monkeypatch.setattr(
@@ -162,9 +170,183 @@ async def test_daily_sweep_includes_non_active_registered_projects(tmp_path, mon
         data_dir=str(tmp_path / "state"),
         vault_projects=str(tmp_path / "vault"),
     )
-    orchestrator._emit_text_notify = AsyncMock()
+    orchestrator._command_handler = SimpleNamespace(
+        execute=AsyncMock(return_value={"success": True})
+    )
 
     await orchestrator._run_daily_git_branch_sweep("2026-10-08")
 
     db.list_workspaces.assert_awaited_once_with(project_id=project.id)
-    orchestrator._emit_text_notify.assert_awaited_once()
+    orchestrator._command_handler.execute.assert_awaited_once()
+    command, args = orchestrator._command_handler.execute.call_args.args
+    assert command == "message_send"
+    assert args["project_id"] == project.id
+    assert args["to_id"] == "supervisor-project-archived"
+    assert (tmp_path / "state/maintenance/git-branch-sweep-last-date").read_text().strip() == (
+        "2026-10-08"
+    )
+
+
+@pytest.fixture
+async def guarded_repo(tmp_path):
+    origin, checkout = tmp_path / "origin.git", tmp_path / "checkout"
+    _git(tmp_path, "init", "--bare", "--initial-branch=main", str(origin))
+    _git(tmp_path, "clone", str(origin), str(checkout))
+    _commit(checkout, "base", "README", "base\n")
+    _git(checkout, "push", "origin", "main")
+    _git(checkout, "branch", "aq/candidate")
+    _git(checkout, "push", "origin", "aq/candidate")
+    db = Database(lease_dsn("branch-sweep"))
+    await db.initialize()
+    await db.create_project(Project(id="p", name="project"))
+    await db.create_repo(RepoConfig(
+        id="repo", project_id="p", source_type=RepoSourceType.CLONE, url=str(origin),
+        checkout_base_path=str(checkout),
+    ))
+    yield db, GitManager(), checkout, origin
+    await db.close()
+
+
+@pytest.mark.parametrize("hold", ["task", "owner", "flow", "attached"])
+async def test_guarded_sweep_never_deletes_live_or_protected_work(guarded_repo, tmp_path, hold):
+    db, git, checkout, origin = guarded_repo
+    if hold == "task":
+        await db.create_task(Task(
+            id="candidate", project_id="p", title="live", description="", repo_id="repo",
+            branch_name="aq/candidate", status=TaskStatus.READY,
+        ))
+    elif hold == "owner":
+        await BranchLock(db).acquire(
+            BranchKey(repository_id="repo", branch="aq/candidate"), "live-owner",
+        )
+    elif hold == "flow":
+        async with db.immediate() as conn:
+            await conn.execute(update(projects).where(projects.c.id == "p").values(
+                promotion_flow=[{"id": "release", "source": "main", "target": "aq/candidate"}],
+            ))
+    else:
+        _git(checkout, "worktree", "add", str(tmp_path / "attached"), "aq/candidate")
+    safety = SweepSafety(db, "repo", default_branch="main", git=git, checkout=str(checkout))
+    backup = tmp_path / "audit.tsv"
+    report = await sweep_checkout(
+        git, str(checkout), repository_url=str(origin), default_branch="main",
+        holds={}, backup_path=backup, deletion_guard=safety.deletion,
+    )
+    assert report.local_deleted == report.remote_deleted == []
+    assert report.local_held == report.remote_held == 1
+    assert await git.arev_parse(str(checkout), "aq/candidate")
+    assert await git.arev_parse(str(origin), "refs/heads/aq/candidate")
+    assert not backup.exists()
+
+
+async def test_daily_backstop_reports_each_project_and_recovers_terminal_intents(tmp_path):
+    projects = [SimpleNamespace(id="p", name="One"), SimpleNamespace(id="q", name="Two")]
+    orchestrator = object.__new__(Orchestrator)
+    orchestrator.db = SimpleNamespace(
+        list_projects=AsyncMock(return_value=projects), list_repos=AsyncMock(return_value=[]),
+        list_workspaces=AsyncMock(side_effect=[[], RuntimeError("unavailable")]),
+    )
+    orchestrator.config = SimpleNamespace(data_dir=str(tmp_path), vault_projects=str(tmp_path))
+    orchestrator.integration_cleanup_service = SimpleNamespace(reconcile=AsyncMock())
+    orchestrator.branch_retirement_service = SimpleNamespace(
+        reconcile_project=AsyncMock(return_value=[("complete", None), ("pending", "live owner")]),
+    )
+    orchestrator._command_handler = SimpleNamespace(
+        execute=AsyncMock(return_value={"success": True}),
+    )
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+    orchestrator.integration_cleanup_service.reconcile.assert_awaited_once()
+    assert [call.args for call in
+            orchestrator.branch_retirement_service.reconcile_project.await_args_list] == [
+        ("p",), ("q",),
+    ]
+    messages = [call.args[1] for call in orchestrator._command_handler.execute.await_args_list]
+    assert [m["to_id"] for m in messages] == ["supervisor-p", "supervisor-q"]
+    assert all("1 complete, 1 held/conflicted" in m["body"] for m in messages)
+    assert "unavailable" in messages[1]["body"]
+
+
+async def test_failed_supervisor_report_does_not_mark_day_complete(tmp_path):
+    orchestrator = object.__new__(Orchestrator)
+    orchestrator.db = SimpleNamespace(
+        list_projects=AsyncMock(return_value=[SimpleNamespace(id="p", name="One")]),
+        list_repos=AsyncMock(return_value=[]), list_workspaces=AsyncMock(return_value=[]),
+    )
+    orchestrator.config = SimpleNamespace(data_dir=str(tmp_path), vault_projects=str(tmp_path))
+    orchestrator._command_handler = SimpleNamespace(execute=AsyncMock(return_value={
+        "success": False, "error": "message storage unavailable",
+    }))
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+    assert orchestrator._last_git_branch_sweep_date is None
+    assert not (tmp_path / "maintenance/git-branch-sweep-last-date").exists()
+
+
+async def test_daily_retry_skips_projects_already_reported_before_restart(tmp_path):
+    orchestrator = object.__new__(Orchestrator)
+    orchestrator.db = SimpleNamespace(
+        list_projects=AsyncMock(return_value=[SimpleNamespace(id="p", name="One"),
+                                             SimpleNamespace(id="q", name="Two")]),
+        list_repos=AsyncMock(return_value=[]), list_workspaces=AsyncMock(return_value=[]),
+    )
+    orchestrator.config = SimpleNamespace(data_dir=str(tmp_path), vault_projects=str(tmp_path))
+    orchestrator._command_handler = SimpleNamespace(execute=AsyncMock(side_effect=[
+        {"success": True}, {"success": False, "error": "temporarily unavailable"},
+        {"success": True},
+    ]))
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+    assert orchestrator._last_git_branch_sweep_date is None
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+    assert [call.args[1]["project_id"] for call in
+            orchestrator._command_handler.execute.await_args_list] == ["p", "q", "q"]
+    assert (tmp_path / "maintenance/git-branch-sweep-last-date").read_text().strip() == "2026-10-09"
+
+
+async def test_daily_backstop_sweeps_registered_checkout_with_fresh_holds(guarded_repo, tmp_path):
+    db, git, checkout, origin = guarded_repo
+    await db.create_task(Task(
+        id="candidate", project_id="p", title="live", description="", repo_id="repo",
+        branch_name="aq/candidate", status=TaskStatus.IN_PROGRESS,
+    ))
+    _git(checkout, "branch", "aq/missed-landing")
+    _git(checkout, "push", "origin", "aq/missed-landing")
+    orchestrator = object.__new__(Orchestrator)
+    orchestrator.db, orchestrator.git = db, git
+    orchestrator.config = SimpleNamespace(
+        data_dir=str(tmp_path / "state"), vault_projects=str(tmp_path / "vault"),
+    )
+    orchestrator._command_handler = SimpleNamespace(
+        execute=AsyncMock(return_value={"success": True}),
+    )
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+    assert await git.arev_parse(str(origin), "refs/heads/aq/candidate")
+    assert await git.arev_parse(str(checkout), "aq/candidate")
+    assert await git.arev_parse(str(origin), "refs/heads/aq/missed-landing") is None
+    assert await git.arev_parse(str(checkout), "aq/missed-landing") is None
+    report = orchestrator._command_handler.execute.call_args.args[1]["body"]
+    assert "deleted 1 Git-proven local refs" in report
+    assert "deleted 1 Git-proven remote refs" in report
+
+
+async def test_sweep_rechecks_task_that_resumes_after_git_proof(guarded_repo, tmp_path, monkeypatch):
+    from src.integration import branch_sweep
+
+    db, git, checkout, origin = guarded_repo
+    await db.create_task(Task(
+        id="candidate", project_id="p", title="completed", description="", repo_id="repo",
+        branch_name="aq/candidate", status=TaskStatus.COMPLETED,
+    ))
+    original = branch_sweep._proof
+
+    async def resume_after_proof(*args):
+        proof = await original(*args)
+        await db.update_task("candidate", status=TaskStatus.READY)
+        return proof
+
+    monkeypatch.setattr(branch_sweep, "_proof", resume_after_proof)
+    safety = SweepSafety(db, "repo", default_branch="main")
+    report = await sweep_checkout(
+        git, str(checkout), repository_url=str(origin), default_branch="main",
+        holds={}, backup_path=tmp_path / "audit.tsv", deletion_guard=safety.deletion,
+    )
+    assert report.local_deleted == report.remote_deleted == []
+    assert report.local_held == report.remote_held == 1

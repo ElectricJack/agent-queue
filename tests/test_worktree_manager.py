@@ -863,8 +863,8 @@ class TestResetSlot:
         ), "the attempt must be on origin before anything is reset"
         assert (Path(slot.workspace_path) / "attempt.txt").exists()
 
-    def test_a_retry_with_nothing_published_starts_clean(self, mgr, base_ws, kind, base_repo):
-        """No remote to preserve to → §3.2's fresh start point still wins."""
+    def test_a_retry_without_a_remote_keeps_local_progress(self, mgr, base_ws, kind, base_repo):
+        """Local commits remain the retry's progress even without a remote."""
         _git(["remote", "remove", "origin"], cwd=base_repo)
         slot = self._make_slot(mgr, base_ws, kind)
         asyncio.run(mgr.reset_slot_for_task(slot, FakeTask(id="tsk-r2")))
@@ -874,7 +874,7 @@ class TestResetSlot:
 
         asyncio.run(mgr.reset_slot_for_task(slot, FakeTask(id="tsk-r2")))
 
-        assert not (Path(slot.workspace_path) / "attempt.txt").exists()
+        assert (Path(slot.workspace_path) / "attempt.txt").read_text() == "one"
 
     def test_continuation_resumes_the_branch_tip(self, mgr, base_ws, kind):
         slot = self._make_slot(mgr, base_ws, kind)

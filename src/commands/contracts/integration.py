@@ -40,6 +40,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_record_delivered",
         "integration_quiesce",
         "integration_retire_legacy_park",
+        "integration_migrate_provenance_refs",
         "integration_reconcile_expired_mutation",
         "integration_parent_verify",
         "integration_complete_parent",
@@ -1023,6 +1024,20 @@ class IntegrationReconcileExpiredMutationValue(CommandValue):
 class IntegrationQuiesceOwner(CommandArgs):
     owner_row_id: str = Field(min_length=1)
     fence_token: StrictInt = Field(ge=0)
+
+
+class IntegrationMigrateProvenanceRefsArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    dry_run: bool = True
+    limit: StrictInt = Field(default=50, ge=1, le=1000)
+    checkout: str | None = None
+
+
+class IntegrationMigrateProvenanceRefsValue(CommandValue):
+    project_id: str | None = None
+    dry_run: bool = True
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    remaining: int = 0
 
 
 class IntegrationRetireLegacyParkArgs(CommandArgs):
@@ -3168,6 +3183,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         registry.register(CommandRegistration(
             name, contract, cutover_control, None if read_only else cutover_preview))
     for name, args_model, applied, value_model in (
+        ("integration_migrate_provenance_refs", IntegrationMigrateProvenanceRefsArgs, "migrated",
+         IntegrationMigrateProvenanceRefsValue),
         ("integration_retire_legacy_park", IntegrationRetireLegacyParkArgs, "retired",
          IntegrationRetireLegacyParkValue),
         ("integration_quiesce", IntegrationQuiesceArgs, "quiesced", IntegrationQuiesceValue),
@@ -3186,6 +3203,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             continue
         outcomes = ("preview", applied, "refused")
         successes = {"preview", applied}
+        if name == "integration_migrate_provenance_refs":
+            outcomes += ("blocked",)
         if name == "integration_seal_now":
             outcomes += ("no_ready_work", "existing_batch")
             successes.update({"no_ready_work", "existing_batch"})
@@ -3197,6 +3216,18 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             side_effect=SideEffectClass.COMPOSITE, result_model=value_model,
             supports_preview=True,
         )
+        if name == "integration_migrate_provenance_refs":
+            contract = contract.model_copy(update={
+                "execution": contract.execution.model_copy(update={"effects": (
+                    ReadClause(subject=EffectSubject.DELIVERY_EVIDENCE),
+                    UpdateClause(subject=EffectSubject.DELIVERY_EVIDENCE,
+                                 when=ClausePredicate(arg_equals=("dry_run", False))),
+                )}),
+                "presentation": CommandPresentation(
+                    title="Move Git provenance out of branches",
+                    summary="Local operator copies and verifies immutable provenance refs before deleting legacy heads.",
+                ),
+            })
         if name == "integration_retire_legacy_park":
             contract = contract.model_copy(update={
                 "execution": contract.execution.model_copy(update={"effects": (

@@ -347,7 +347,11 @@ remaining integration tests.
 ### Environment
 
 * Each job starts a disposable `postgres:18` container with `docker run`, with
-  `POSTGRES_TEST_DSN` pointed at its localhost port. GitHub Actions service
+  `POSTGRES_TEST_DSN` pointed at its localhost port. The image, like the
+  `E2E CLI` jobs' service image, is pulled from Google's Docker Hub mirror,
+  `mirror.gcr.io/library/postgres:18`: anonymous Docker Hub pulls are rate
+  limited per runner IP, and a login secret would not reach pull requests from
+  forks. GitHub Actions service
   containers do not accept PostgreSQL server arguments. The server runs with
   `max_connections=300` so concurrent xdist workers can lease databases without
   exhausting the default 100 connections. It also uses `fsync=off`,

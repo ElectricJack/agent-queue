@@ -282,13 +282,18 @@ async def test_git_first_delivery_releases_scheduler_pool_and_claim(
 
 
 async def test_stacked_frontier_agrees_for_scheduler_demand_explain_and_claim(
-    orch, db, git_first_frontier,
+    orch, db, git_first_frontier, frontier_clock, monkeypatch,
 ):
+    from types import SimpleNamespace
+
     from src.commands.handler import CommandHandler
+    from src.integration import stacked_branches
     from src.integration.delivery_observer import hierarchy_frontier_modes
     from src.scheduler import PoolKey
 
     env = git_first_frontier
+    # Explain reads cached stack refs only; a busy runner must not age them out.
+    monkeypatch.setattr(stacked_branches, "time", SimpleNamespace(monotonic=frontier_clock))
     handler = CommandHandler(orch, orch.config)
     await db.update_project(PROJECT_ID, hierarchical_integration_policy={
         "prerequisite_branches": "stacked",

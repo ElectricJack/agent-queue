@@ -879,10 +879,15 @@ class WriterPrimitives:
                 or (args.fence_token is not None and args.fence_token != token)
             ):
                 return PrimitiveOutcome.unknown(p, "writer_fence_stale")
-            preserved_ref = f"aq/preserved/{owner['id']}"
             if (
                 args.preserve_ref is not None
-                and args.preserve_ref.removeprefix("refs/heads/") != preserved_ref
+                and args.preserve_ref.removeprefix("refs/heads/") not in {
+                    owner["ref"].removeprefix("refs/heads/"),
+                    f"aq/preserved/{owner['id']}",
+                }
+                and not args.preserve_ref.removeprefix("refs/heads/").startswith(
+                    f"aq/recovery/{owner['id']}/"
+                )
             ):
                 return PrimitiveOutcome.unknown(p, "preservation_ref_must_use_existing_recovery")
             if await conn.scalar(

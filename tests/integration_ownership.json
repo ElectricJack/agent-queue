@@ -1296,6 +1296,9 @@
         100
       ]
     },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_migrate_provenance_refs']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
     "src/cli/client.py::_COMMAND_TIMEOUTS['integration_migrate_provenance']": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -6838,6 +6841,9 @@
         735
       ]
     },
+    "src/orchestrator/workspace.py::WorkspaceMixin._operator_handoff_start": {
+      "reason": "Exact-origin operator handoff start under the owner fence; resumes audited progress on the owned task branch through owner recovery without publication."
+    },
     "src/orchestrator/workspace.py::WorkspaceMixin._prepare_exact_origin_workspace": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -7169,6 +7175,9 @@
         1396,
         1488
       ]
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.reset_slot_for_task": {
+      "reason": "Slot preparation resumes owner-recovery snapshots onto the task branch before a stopped writer restarts; merges proven progress, never publishes or resets it."
     },
     "src/playbooks/artifact_diff.py::_rule_rows": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -8513,6 +8522,15 @@
     },
     "src/commands/project_onboarding_commands.py::ProjectOnboardingCommandsMixin._execute_onboard_project": {
       "reason": "Onboarding command adapter injects integration_app_verify as the repository access verifier before first binding and initial publication. Delegates to the existing onboarding saga; adds no storage, delivery state or publication authority."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin.abandon_subtree": {
+      "reason": "Queues an explicit branch retirement for each abandoned descendant in the abandon transaction via src.integration.branch_retirement; adds no delivery state or publication authority."
+    },
+    "src/database/queries/result_queries.py::ResultQueryMixin.save_task_completion": {
+      "reason": "Queues an explicit branch retirement for a failed or abandoned close in the completion transaction via src.integration.branch_retirement; adds no delivery state or publication authority."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose.close": {
+      "reason": "Queues an explicit branch retirement for a superseded task in the obsolete-close transaction via src.integration.branch_retirement, replacing the removed branch_abandon callback; adds no delivery state or publication authority."
     }
   },
   "exclusions": {
@@ -13301,13 +13319,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1708,
+      "line": 1715,
       "owner": "TaskQueryMixin._apply_transition",
       "call": "delete",
-      "owner_fingerprint": "3019891298b26657452f8707f04e4d1cd42683fe9d811bd0895bee7da158b2ca",
+      "owner_fingerprint": "605fbb4d06a34d89e51573d3b7dae49853b0afa107e82a464c4b06e60e8be240",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary lifecycle metadata cleanup when task status changes; proposal transactions may defer graph projection, while integration completion and wake guards retain authority. No ref replay state."
+      "reason": "Ordinary lifecycle metadata cleanup when task status changes; proposal transactions may defer graph projection, while integration completion and wake guards retain authority. No ref replay state. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 1956,
@@ -14453,22 +14471,22 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/sessions/obsolete.py::ObsoleteClose.close::323f29e5c2576fb3bb7d12d8133d3446524707629df5ca97c22e69b9324ca590": {
-      "line": 237,
+      "line": 243,
       "owner": "ObsoleteClose.close",
       "call": "log_event",
-      "owner_fingerprint": "e60433b0fd1782d77a8a764ee29fd6ae911ce1f4ffbbb2eff67c25c94498b58e",
-      "integration_signal": false,
+      "owner_fingerprint": "5d106dba93d4e960d95d85d4625d588e53160cbea3b4e087c02c66872ac555e3",
+      "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
     },
     "src/sessions/obsolete.py::ObsoleteClose.close::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 207,
       "owner": "ObsoleteClose.close",
       "call": "delete",
-      "owner_fingerprint": "e60433b0fd1782d77a8a764ee29fd6ae911ce1f4ffbbb2eff67c25c94498b58e",
-      "integration_signal": false,
+      "owner_fingerprint": "5d106dba93d4e960d95d85d4625d588e53160cbea3b4e087c02c66872ac555e3",
+      "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
     },
     "src/sessions/questions.py::AgentQuestionService._native_plan::aa6c5d0c1b30091482569a6d39a2770d8640228ff9deb37a3361d0b064977889": {
       "line": 974,
@@ -14624,13 +14642,13 @@
       "reason": "Clearing the exact holder from the task's own claimed_by_session record when the release takes that claim back; the claim itself, not a hold, ref replay or a duplicate lifecycle write."
     },
     "src/integration/batches.py::BatchStore.set_intent::6d729f7a8f24a4746d37ecea7871dfd209ea8cce995ce7499c8290475b86f660": {
-      "line": 430,
+      "line": 490,
       "owner": "BatchStore.set_intent",
       "call": "log_event",
-      "owner_fingerprint": "8b5bef73d474523b3d932137a051929dd0533a05af059f6aa74118ed76c1a41d",
+      "owner_fingerprint": "c28cfb2c4d6b9602d5625d34c43b813cc458291b509d2eae4e299a0420ddba30",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Operator audit of batch intent with principal and reason. Intent and terminal abort projection remain on the batch row; this event is never replayed and carries no ref-update lifecycle."
+      "reason": "Operator audit of batch intent with principal and reason. Intent and terminal abort projection remain on the batch row; this event is never replayed and carries no ref-update lifecycle. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
     },
     "src/integration/train_controls.py::TrainControls.retire_origin::0b56c6446d96c90b01889f9a0444c2e70ac5351db133ff1989c85a029ccd494a": {
       "line": 226,
@@ -14723,22 +14741,22 @@
       "reason": "Associates an isolated conflict repair with its preserved dependent for adoption. Claim-time diagnostic metadata mirrors the origin preparation hold and names exact inputs and paths; it cannot authorize publication or replay refs. Git ancestry, completion identity and current branch fences remain authoritative."
     },
     "src/integration/batches.py::BatchStore.eject::02dbb6e454b19e80a1f07be2b10de35299d826ab592437d231735f74ef0f522a": {
-      "line": 341,
+      "line": 388,
       "owner": "BatchStore.eject",
       "call": "log_event",
-      "owner_fingerprint": "c04a34ac34307bacf3d91e8d28b5009b7ddc7f78f22ab583939c619271347b25",
+      "owner_fingerprint": "3fdef6e7c66ba1aacf96188533b0735d913985a5423fd152762ab544270da006",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Audit of an explicit batch ejection with principal and reason. Admission reads the separate release instruction, not this event; no ref replay or duplicated delivery lifecycle."
+      "reason": "Audit of an explicit batch ejection with principal and reason. Admission reads the separate release instruction, not this event; no ref replay or duplicated delivery lifecycle. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
     },
     "src/integration/batches.py::BatchStore.supersede::71ad4246d258b2576f1bae229c1e92b1ae60dbae8a616cd7a77cd72c8e6b53f0": {
-      "line": 403,
+      "line": 440,
       "owner": "BatchStore.supersede",
       "call": "log_event",
-      "owner_fingerprint": "168f97beaf0573ede334f27b30c2bf1350b76fddb7d20f8f975ea40639d814bc",
+      "owner_fingerprint": "06a16c2d7e881ba72610c415b04fc8d005ff1a749971a9b42aa5847cf80e9e87",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Audit of an obsolete batch superseded after prerequisite refresh. The batch-owned ejection record authorizes input release; this event never replays refs or asserts delivery."
+      "reason": "Audit of an obsolete batch superseded after prerequisite refresh. The batch-owned ejection record authorizes input release; this event never replays refs or asserts delivery. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
     },
     "src/integration/stacked_branches.py::EpicRefresh.refresh::85c997f17278e49c5a7a51cb1d2aaa7efb3367004ec68ae50f173b3772c77128": {
       "line": 1002,
@@ -15520,8 +15538,10 @@
     "src/models.py::TaskType": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/models.py::VerificationType": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/models.py::WORKSPACE_MODE_VALUES": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::WORKTREE_SENTINEL_NAME": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/models.py::Workspace": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/models.py::WorkspaceMode": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/models.py::worktree_setup_hash": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/notifications/builder.py::build_agent_summary": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/notifications/events.py::AgentQuestionEvent": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/notifications/events.py::ChainStuckEvent": "Generic dependency; integration-specific definitions in this file are charged independently.",
@@ -15549,6 +15569,7 @@
     "src/orchestrator/stranded_work.py::unpushed_close_issues": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/task_checkpoint.py::CHECKPOINT_META": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/task_checkpoint.py::_lock_sentinel_ignored": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/task_checkpoint.py::prepare_checkpoint": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/task_checkpoint.py::restore_checkpoint": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/workspace.py::REQUEUE_INTEGRATION_OWNER_ROLES": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/workspace_attachments.py::AcquisitionFailed": "Generic dependency; integration-specific definitions in this file are charged independently.",
@@ -15767,7 +15788,9 @@
     "src/commands/authorization.py::denial_result": "Generic capability refusal payload with no integration state or authority.",
     "src/commands/principal.py::_principal_var": "Generic request principal context storage; integration dispatch and object scope checks are charged independently.",
     "src/routing/filing.py::routing_choice_refusal": "Generic task filing provider/profile choice policy; no integration delivery or Git authority.",
-    "src/routing/filing.py::without_inert_choices": "Generic task filing argument normalization; no integration delivery or Git authority."
+    "src/routing/filing.py::without_inert_choices": "Generic task filing argument normalization; no integration delivery or Git authority.",
+    "src/database/tables.py::branch_retirements": "Generic git branch-lifecycle storage: explicit retirement requests and the pre-delete SHA audit, owned by branch retirement rather than integration delivery; no integration_ prefix, journal or replay authority.",
+    "src/database/tables.py::branch_deletion_audit": "Generic git branch-lifecycle storage: explicit retirement requests and the pre-delete SHA audit, owned by branch retirement rather than integration delivery; no integration_ prefix, journal or replay authority."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

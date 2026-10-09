@@ -377,6 +377,10 @@ class BatchStore:
             ).values(intent="aborted", lifecycle="aborted",
                      human_abort_reason=reason, ejection_record=instruction,
                      cleanup_state="pending", updated_at=self.clock()))
+            from src.integration.branch_retirement import request_batch_retirement_on
+
+            await request_batch_retirement_on(conn, row, reason="ejected batch candidate",
+                                             now=self.clock())
             if replacement is not None:
                 await self._freeze_on(conn, replacement, members, trees=trees)
             import json
@@ -429,6 +433,10 @@ class BatchStore:
             ).values(intent="aborted", lifecycle="aborted",
                      human_abort_reason=reason, ejection_record=instruction,
                      cleanup_state="pending", updated_at=self.clock()))
+            from src.integration.branch_retirement import request_batch_retirement_on
+
+            await request_batch_retirement_on(conn, row, reason="superseded batch candidate",
+                                             now=self.clock())
             await self.db.log_event("integration.batch_superseded", project_id=batch.project_id,
                 task_id=task_id, payload=json.dumps(instruction),
                 conn=conn)
@@ -471,6 +479,11 @@ class BatchStore:
             await conn.execute(update(integration_batches).where(
                 integration_batches.c.id == batch_id,
             ).values(**values))
+            if intent == "aborted":
+                from src.integration.branch_retirement import request_batch_retirement_on
+
+                await request_batch_retirement_on(conn, row, reason="aborted batch candidate",
+                                                 now=self.clock())
             if operator_id is not None:
                 import json
 

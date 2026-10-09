@@ -1502,16 +1502,15 @@ async def _hotfix_source(db, conn, ops, repo, project_id, repository_id, step, r
         raise PromotionRefusal("promotion_source_not_on_chain", "Hotfix completion record is missing.")
     identity = CompletionIdentity(project_id, repository_id, row["id"],
                                   recorded.completion_id or recorded.legacy_generation)
-    retained = await ops.git.als_remote_ref(str(repo.store), identity.branch,
-                                           repository_url=f"https://github.com/{repo.binding.full_name}.git")
+    provenance = GitProvenance(ops.git, str(repo.store),
+        repository_url=f"https://github.com/{repo.binding.full_name}.git")
+    retained_ref, retained = await provenance.remote_completion(identity)
     if retained.state is RemoteRefState.ERROR:
         raise GitError(retained.error or "Hotfix retention cannot be observed.")
     if not retained.oid:
         raise PromotionRefusal("promotion_source_not_on_chain", "Hotfix completion is not retained.")
     await _fetch_commit(ops, repo, retained.oid)
-    completion = await GitProvenance(ops.git, str(repo.store),
-        repository_url=f"https://github.com/{repo.binding.full_name}.git").read_completion(
-        identity, refs={"refs/remotes/origin/" + identity.branch: retained.oid})
+    completion = await provenance.read_completion(identity, refs={retained_ref: retained.oid})
     source = completion and completion["source_oid"]
     if not source or (request.source_sha and request.source_sha != source):
         raise PromotionRefusal("promotion_source_not_on_chain", "Source differs from the hotfix completion.")

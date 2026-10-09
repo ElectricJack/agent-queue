@@ -22,6 +22,7 @@ from tests.test_e2e_cli_stateful import E2E_TEST_TIMEOUT_SECONDS, SCENARIO_GROUP
 WORKFLOWS = Path('.github/workflows')
 CANDIDATE_REF = 'aq/integration/p-' + '5' * 32 + '/r-' + '6' * 32
 BATCH_REF = candidate_ref('batch-1').removeprefix('refs/heads/')
+POSTGRES_IMAGE = 'mirror.gcr.io/library/postgres:18'
 
 
 def workflow(name='tests.yml'):
@@ -337,6 +338,25 @@ def test_test_job_checks_out_the_exact_event_revision_read_only():
     assert 'test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"' in text
     assert workflow()['permissions'] == {'contents': 'read'}
     assert list(workflow()['jobs']) == ['test', 'e2e-cli', 'dashboard']
+
+
+def test_postgres_comes_from_a_mirror_without_docker_hubs_anonymous_pull_limit():
+    # Run 37990643989 (2026-10-09) failed all 15 Postgres jobs with Docker Hub's
+    # `toomanyrequests` before a test ran. Google's Docker Hub mirror serves the
+    # same official image with no secret, so fork pull requests can pull it too.
+    jobs = workflow()['jobs']
+    start = next(step for step in jobs['test']['steps'] if step['name'] == 'Start PostgreSQL')
+    assert POSTGRES_IMAGE in start['run'].split()
+    assert jobs['e2e-cli']['services']['postgres']['image'] == POSTGRES_IMAGE
+    for path in WORKFLOWS.glob('*.yml'):
+        text = path.read_text()
+        assert not re.search(r'(?<![\w./-])postgres:\d', text), path
+        for job in workflow(path.name)['jobs'].values():
+            images = [service['image'] for service in (job.get('services') or {}).values()]
+            images += [job['container']['image']] if 'container' in job else []
+            for image in images:
+                registry = image.split('/', 1)[0]
+                assert '.' in registry and 'docker.io' not in registry, (path, image)
 
 
 def test_dashboard_checks_the_candidate_with_locked_workspace_dependencies():

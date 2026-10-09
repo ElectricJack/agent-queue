@@ -63,6 +63,27 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_migrate_provenance_refs(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationMigrateProvenanceRefsArgs
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        if (current_principal() or TRUSTED_LOCAL).kind is not PrincipalKind.LOCAL:
+            return _failure("refused", "provenance namespace migration requires the local operator")
+        request = IntegrationMigrateProvenanceRefsArgs.model_validate(args)
+        project = await self.db.get_project(request.project_id)
+        repository = await self.db.get_repo(project.integration_repository_id or "") if project else None
+        if repository is None or repository.project_id != request.project_id:
+            return _failure("refused", "project has no designated integration repository")
+        try:
+            result = await ProvenanceMigration(self.orchestrator.git).run(
+                repository.url, dry_run=request.dry_run, limit=request.limit,
+                checkout=request.checkout,
+            )
+        except (GitError, ValueError, OSError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": result["outcome"] != "blocked", "project_id": request.project_id,
+                **result}
+
     async def repair_root_pr_checks(self, observation) -> dict:
         """Daemon-only port for the admission gate's trusted failure observation."""
         from src.integration.root_pr_recovery import recover_root_pr_checks

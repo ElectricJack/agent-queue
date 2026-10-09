@@ -25,6 +25,7 @@ from src.database.tables import (
 )
 from src.git.manager import RemoteRefState
 from src.integration.models import BranchKey, RepairPolicy
+from src.integration.owner_recovery import consume_recovery_progress, recovery_ref_allowed
 from src.integration.promotion_contracts import PromotionInvariantError
 from src.integration.writers import OperationSafety
 from src.integration.repair import _RepairInvariant
@@ -57,6 +58,8 @@ class PreservedRepairRecovery:
         async with self.db.immediate() as conn:
             proof = await self._proof_on(conn, request)
         if proof.get("completed"):
+            if not request.dry_run:
+                await self._cleanup_completed(proof)
             return self._public(proof) | {"outcome": "already_recovered"}
         repository = await self.promotion._resolve_repository(proof["intent"]["repository_id"])
         self.promotion._assert_resolution_repository(proof["intent"], repository)
@@ -212,10 +215,43 @@ class PreservedRepairRecovery:
                         "repair_commit_shas": current["intent"]["resolution_commit_shas"],
                     },
                 )
+        await consume_recovery_progress(
+            self.promotion.git, str(repository.retained_git_dir),
+            current["intent"]["target_branch"],
+            {"ref": current["release"]["preserved_ref"], "sha": request.candidate_sha,
+             "owner_row_id": current["audit"]["owner_row_id"]},
+            repository_url=repository.origin_url,
+        )
         return result | {
             "outcome": "recovered",
             "next_step": "Normal parent collection and verification can continue; no repair budget was renewed.",
         }
+
+    async def _cleanup_completed(self, proof):
+        """Replay cleanup after a crash between the receipt and snapshot deletion."""
+        async with self.db._engine.connect() as conn:
+            audit = (await conn.execute(select(integration_owner_recoveries).where(
+                integration_owner_recoveries.c.id == proof["record"]["release_id"],
+            ))).mappings().one()
+        evidence = audit["evidence"]
+        branch = proof["intent"]["target_branch"]
+        if evidence["preserved_ref"] == branch.removeprefix("refs/heads/"):
+            return
+        repository = await self.promotion._resolve_repository(audit["repository_id"])
+        await self.promotion._ensure_retained_repository(repository)
+        store = str(repository.retained_git_dir)
+        await self.promotion.git.afetch_origin(store, repository_url=repository.origin_url)
+        target = await self.promotion.git.als_remote_ref(store, branch)
+        if (target.state is not RemoteRefState.PRESENT
+            or not await self.promotion.git.ais_ancestor(
+                store, evidence["preserved_sha"], target.oid, strict=True,
+            )):
+            raise RecoveryRefused("completed resolution is no longer on the task branch")
+        await consume_recovery_progress(
+            self.promotion.git, store, branch,
+            {"ref": evidence["preserved_ref"], "sha": evidence["preserved_sha"],
+             "owner_row_id": audit["owner_row_id"]}, repository_url=repository.origin_url,
+        )
 
     async def _proof_on(self, conn, request):
         async def row(table, *conditions):
@@ -522,7 +558,9 @@ class PreservedRepairRecovery:
             or audit["repository_id"] != parent["repo_id"]
             or audit["ref"] != parent["branch_name"]
             or release.get("preserved_sha") != request.candidate_sha
-            or release.get("preserved_ref") != f"aq/preserved/{owner['id']}"
+            or not recovery_ref_allowed(
+                release.get("preserved_ref"), parent["branch_name"], owner["id"], request.candidate_sha,
+            )
             or (not record and owner["confirmed_workspace_id"] != release.get("workspace_id"))
             or not release.get("workspace_id")
             or not release.get("session_id")
@@ -599,16 +637,19 @@ class PreservedRepairRecovery:
             observed = await self.promotion.git.als_remote_ref(
                 str(store), branch, repository_url=repository.origin_url
             )
-            if observed.state is not RemoteRefState.PRESENT or not observed.oid:
+            if observed.state is RemoteRefState.ABSENT and label == "preserved":
+                refs[label] = None  # Cleanup may have completed before a crash.
+            elif observed.state is not RemoteRefState.PRESENT or not observed.oid:
                 raise RecoveryRefused(f"origin {label} ref is absent or unreadable")
-            refs[label] = observed.oid
+            else:
+                refs[label] = observed.oid
         candidate = release["preserved_sha"]
-        allowed = {intent["expected_target"]}
-        if proof["record"]:
-            allowed.add(candidate)
+        allowed = {intent["expected_target"], candidate}
         if refs["target"] not in allowed:
             raise RecoveryRefused("parent target moved from the expected old tip")
-        if refs["source"] != intent["source_head"] or refs["preserved"] != candidate:
+        if (refs["source"] != intent["source_head"]
+            or (refs["preserved"] != candidate
+                and not (refs["preserved"] is None and refs["target"] == candidate))):
             raise RecoveryRefused("source or preserved origin ref moved")
         parents = await self.promotion.git.arun_git_result(
             ["show", "-s", "--format=%P", candidate],

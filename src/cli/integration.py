@@ -31,6 +31,21 @@ def integration() -> None:
     """Inspect integration Subjects and apply current recovery proofs."""
 
 
+@integration.command("migrate-provenance-refs")
+@click.argument("project_id")
+@click.option("--apply/--dry-run", default=False, help="Copy verified refs, then delete old heads.")
+@click.option("--limit", default=50, type=click.IntRange(1, 1000), help="Refs per page; repeat apply.")
+@click.option("--checkout", type=click.Path(exists=True, file_okay=False),
+              help="Also migrate local legacy heads in this checkout.")
+@click.pass_context
+@_handle_errors
+def integration_migrate_provenance_refs(ctx, project_id, apply, limit, checkout):
+    """Move existing provenance into refs/aq/provenance (local operator only)."""
+    _execute(ctx, "integration_migrate_provenance_refs", {
+        "project_id": project_id, "dry_run": not apply, "limit": limit, "checkout": checkout,
+    })
+
+
 def _cutover(ctx, command, project_id, flow_file, reverse, allow_epics,
              apply=False, expected_generation=None, plan_file=None):
     import json

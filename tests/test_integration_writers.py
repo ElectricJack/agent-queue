@@ -551,7 +551,7 @@ async def test_changed_stop_identity_during_preservation_keeps_lease(
     assert result.outcome == expected
     owner = await BranchOwnership(env.db).get_owner(fence.target)
     assert owner["handoff_state"] == "attached"
-    assert remote_sha(env.origin, f"aq/preserved/{owner['id']}")
+    assert remote_sha(env.origin, owner["ref"])
     async with env.db._engine.connect() as conn:
         assert (
             await conn.scalar(

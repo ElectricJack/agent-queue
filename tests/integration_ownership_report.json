@@ -2367,6 +2367,9 @@
         100
       ]
     },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_migrate_provenance_refs']": {
+      "reason": "Integration import, registered surface, schema, policy or adapter."
+    },
     "src/cli/client.py::_COMMAND_TIMEOUTS['integration_migrate_provenance']": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -7909,6 +7912,9 @@
         735
       ]
     },
+    "src/orchestrator/workspace.py::WorkspaceMixin._operator_handoff_start": {
+      "reason": "Exact-origin operator handoff start under the owner fence; resumes audited progress on the owned task branch through owner recovery without publication."
+    },
     "src/orchestrator/workspace.py::WorkspaceMixin._prepare_exact_origin_workspace": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -8240,6 +8246,9 @@
         1396,
         1488
       ]
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.reset_slot_for_task": {
+      "reason": "Slot preparation resumes owner-recovery snapshots onto the task branch before a stopped writer restarts; merges proven progress, never publishes or resets it."
     },
     "src/playbooks/artifact_diff.py::_rule_rows": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
@@ -9584,6 +9593,15 @@
     },
     "src/commands/project_onboarding_commands.py::ProjectOnboardingCommandsMixin._execute_onboard_project": {
       "reason": "Onboarding command adapter injects integration_app_verify as the repository access verifier before first binding and initial publication. Delegates to the existing onboarding saga; adds no storage, delivery state or publication authority."
+    },
+    "src/database/queries/hierarchy_queries.py::HierarchyQueryMixin.abandon_subtree": {
+      "reason": "Queues an explicit branch retirement for each abandoned descendant in the abandon transaction via src.integration.branch_retirement; adds no delivery state or publication authority."
+    },
+    "src/database/queries/result_queries.py::ResultQueryMixin.save_task_completion": {
+      "reason": "Queues an explicit branch retirement for a failed or abandoned close in the completion transaction via src.integration.branch_retirement; adds no delivery state or publication authority."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose.close": {
+      "reason": "Queues an explicit branch retirement for a superseded task in the obsolete-close transaction via src.integration.branch_retirement, replacing the removed branch_abandon callback; adds no delivery state or publication authority."
     }
   },
   "shared_state": {

@@ -221,6 +221,7 @@
       "description": "Development delivery: the development integration path on real git, validation outcomes, delivery preconditions and end-to-end delivery, delivering a blocked task's pushed branch by hand, branch discard and the push-before-close rule for unpushed work.",
       "modules": [
         "tests/test_branch_discard.py",
+        "tests/test_branch_retirement.py",
         "tests/test_close_unpushed_work.py",
         "tests/test_delivery_consumers.py",
         "tests/test_delivery_integration.py",
@@ -2995,19 +2996,49 @@
       "markers": [],
       "summary": "Tests for branch-isolated workspace mode (Roadmap 7.4.4)."
     },
+    "tests/test_branch_retirement.py": {
+      "areas": [
+        "development-delivery"
+      ],
+      "default_arm": true,
+      "digest": "sha256:5380253282498d18518588bd2b5719f60177ffcc0ace0003aec2958671dff1de",
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.branch_retirement",
+        "src.integration.cleanup",
+        "src.integration.train_sources",
+        "src.models",
+        "src.sessions.obsolete"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Explicit decisions delete real Git refs only after a durable SHA audit."
+    },
     "tests/test_branch_sweep.py": {
       "areas": [
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:8f3f0a7b95101f306b29fad41e18318f4ee346070e8f6d782d7cf75c9624ada4",
+      "digest": "sha256:2ea50676f18ad351e90271289c226391655b0ab0a375afa61325826c91fcc111",
       "imports": [
+        "src.database",
+        "src.database.tables",
         "src.git.manager",
+        "src.integration",
         "src.integration.branch_sweep",
+        "src.integration.lock",
+        "src.integration.models",
+        "src.models",
         "src.orchestrator"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "The daily branch sweep deletes only refs with exact Git proof."
     },
@@ -6774,9 +6805,11 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:a08793eae8439f5ab8e067079236d4357908e8750b7b06b69a0bb50fc788f8b5",
+      "digest": "sha256:2037abd2c044e71ea0839264832b8e2e15bbdc0b084d6dd0d40db5d04c0839f7",
       "imports": [
         "src.claim_file",
+        "src.commands.integration_commands",
+        "src.commands.principal",
         "src.config",
         "src.database",
         "src.database.queries.task_queries",
@@ -6786,6 +6819,7 @@
         "src.integration.delivery_truth",
         "src.integration.development",
         "src.integration.provenance",
+        "src.integration.provenance_migration",
         "src.models"
       ],
       "markers": [
@@ -8495,7 +8529,7 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:7196c0702bcf3926295c917881f614e3f2f6ac105de5b8ab7ea068425c65383d",
+      "digest": "sha256:797ea82c8ab48d4c5e67a82c140cc978a187915c5af02b6889752e92f3947fb2",
       "imports": [
         "src.api.auth",
         "src.commands.handler",
@@ -8510,6 +8544,7 @@
         "src.models",
         "src.orchestrator",
         "src.orchestrator.core",
+        "src.orchestrator.worktree_manager",
         "src.sessions",
         "src.sessions.fake",
         "src.sessions.provider",

@@ -150,7 +150,10 @@ async def completed_branch_tasks(conn: Any, branches: Iterable[str]) -> set[str]
     )
 
 
-async def live_branch_references(conn: Any, *, delivery: Any = None) -> dict[str, str]:
+async def live_branch_references(
+    conn: Any, *, delivery: Any = None, retiring_task_id: str | None = None,
+    retiring_owner_id: str | None = None,
+) -> dict[str, str]:
     """Every branch something still needs, mapped to the first reason found.
 
     Deliberately fleet-wide and by *name*: task ids are unique, so
@@ -221,6 +224,8 @@ async def live_branch_references(conn: Any, *, delivery: Any = None) -> dict[str
         if delivery is not None and completed else {}
     )
     for row in completed:
+        if row["id"] == retiring_task_id:
+            continue  # The explicit retirement decision waives this task's delivery.
         evidence = verified.get(row["id"])
         if evidence is not None and evidence.satisfied:
             continue
@@ -288,6 +293,8 @@ async def live_branch_references(conn: Any, *, delivery: Any = None) -> dict[str
             integration_branch_owners.c.handoff_state,
         ).where(integration_branch_owners.c.handoff_state != "released")
     ):
+        if row["owner_id"] == retiring_owner_id:
+            continue
         hold(
             row["ref"],
             f"integration owner {row['owner_id']} is {row['handoff_state']}",
@@ -372,6 +379,8 @@ async def live_branch_references(conn: Any, *, delivery: Any = None) -> dict[str
             )
         )
     ):
+        if row["task_id"] == retiring_task_id:
+            continue
         hold(
             row["branch_name"],
             "branch discard is pending"

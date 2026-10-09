@@ -213,10 +213,8 @@ class ArchiveQueryMixin:
         terminal = set(TERMINAL_STATUSES)
         if archive_reason and archive_reason.strip():
             terminal.update({"DEFINED", "READY", "PAUSED"})
-        # Archiving moves a task out of the active view; it never destroys
-        # work, so the branch always stays on the remote.  Retiring the
-        # origin is what lets a task whose branch was materialized leave the
-        # queue at all (deletion-with-materialized-branches §2 decision 2).
+        # Admission still protects live and undelivered work. An admitted
+        # archive now queues audited branch retirement before removing rows.
         await self.guard_integration_mutation(
             task_id,
             "archive",
@@ -242,8 +240,9 @@ class ArchiveQueryMixin:
                 await conn.execute(insert(task_comments).values(
                     id="comment-" + uuid.uuid4().hex, task_id=task_id, project_id=project_id,
                     author_kind="agent", author_id="integration-reconciliation", kind="note",
-                    body="Obsolete integration delegate archived; branches and stage history "
-                         f"preserved. Retirement proof {index}/{len(chunks)}: " + chunk,
+                    body="Obsolete integration delegate archived; audited branch retirement "
+                         f"queued and stage history preserved. Retirement proof "
+                         f"{index}/{len(chunks)}: " + chunk,
                     created_at=time.time(),
                 ))
         ids = await self.subtree_ids(task_id, conn=conn)
@@ -470,6 +469,11 @@ class ArchiveQueryMixin:
             return
         task = await self._get_task_conn(task_id, conn=conn)
         now = time.time()
+        from src.integration.branch_retirement import request_task_retirement_on
+
+        await request_task_retirement_on(
+            conn, task_id, request_id=f"archive:{task_id}:{now}", reason="task archived", now=now,
+        )
         # Insert into archive (skip if already archived).
         # on_conflict_do_nothing requires dialect-specific insert.
         _insert = pg_insert

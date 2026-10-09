@@ -168,7 +168,7 @@ async def test_seal_requires_current_retained_completion_and_keeps_source_histor
                               completion_id="close-1", has_recorded_source=True)
     assert await service.freeze(batch, members, requests={"task": request},
                                 snapshot=await snapshot()) == batch
-    retained = git(ops.git.remote_path, "rev-parse", f"refs/heads/{identity.branch}^")
+    retained = git(ops.git.remote_path, "rev-parse", f"{identity.ref}^")
     assert retained == head
     assert git(ops.git.remote_path, "merge-base", "--is-ancestor", base, retained) == ""
     with pytest.raises(ValueError, match="not retained"):

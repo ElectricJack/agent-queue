@@ -2548,7 +2548,7 @@ def s20_train_delivery(state: dict) -> str:
     completion = shown.get("completion") or {}
     check(completion.get("commits") == [head], f"S20 final source was not recorded: {completion}")
     refs = _git_text(str(remote), "for-each-ref", "--format=%(refname)",
-                     "refs/heads/aq-provenance/completions/").splitlines()
+                     "refs/aq/provenance/completions/").splitlines()
     check(refs, "S20 ordinary train close published no completion provenance")
     records = [json.loads(_git_text(str(remote), "show", "-s", "--format=%B", ref)) for ref in refs]
     check(any(record.get("source_oid") == head and

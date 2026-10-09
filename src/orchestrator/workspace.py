@@ -408,7 +408,7 @@ class WorkspaceMixin:
         #   steps in the chain accumulate commits on a single branch.
         #   This is what enables the "one PR for the whole plan" workflow
         #   in _complete_workspace.
-        if integration_origin is not None:
+        if integration_origin is not None or task.branch_name:
             branch_name = task.branch_name
         elif task.is_plan_subtask and task.parent_task_id:
             parent = await self.db.get_task(task.parent_task_id)
@@ -503,15 +503,28 @@ class WorkspaceMixin:
                     # lock provider for branch-isolated workspaces.
                     if await self.git.ahas_remote(workspace):
                         await self.git.afetch_origin(workspace, repository_url=repo_url)
-                    try:
-                        await self.git._arun(["checkout", default_branch], cwd=workspace)
-                    except GitError:
-                        pass  # May already be on default branch
-                    if await self.git.ahas_remote(workspace):
-                        await self.git._arun(
-                            ["reset", "--hard", f"origin/{default_branch}"],
-                            cwd=workspace,
-                        )
+                    if task.branch_name:
+                        from src.integration.owner_recovery import resume_recovery_snapshots
+
+                        if task.repo_id:
+                            await resume_recovery_snapshots(
+                                self.db, self.git, workspace, task.repo_id, branch_name,
+                                repository_url=repo_url,
+                            )
+                        start = await self.git.arev_parse(workspace, f"origin/{default_branch}")
+                        start = start or await self.git.arev_parse(workspace, default_branch)
+                        if start is None:
+                            raise GitError("resume base is unavailable")
+                        await self.git.aprepare_child_branch(workspace, branch_name, start)
+                    else:
+                        try:
+                            await self.git._arun(["checkout", default_branch], cwd=workspace)
+                        except GitError:
+                            pass  # May already be on default branch
+                        if await self.git.ahas_remote(workspace):
+                            await self.git._arun(
+                                ["reset", "--hard", f"origin/{default_branch}"], cwd=workspace,
+                            )
                 else:
                     raise GitError(f"workspace is not a valid Git checkout: {workspace}")
 
@@ -544,7 +557,7 @@ class WorkspaceMixin:
         # 2. A new task failing to write its own plan because the file already exists
         # This covers both archived plans (.claude/plans/) and primary plan files
         # (.claude/plan.md, plan.md, etc.).
-        if integration_origin is None:
+        if integration_origin is None and not task.branch_name:
             # Its plan-deletion commits land on the task branch, which the
             # worker will publish: they carry the project's identity.
             project = await self.db.get_project(task.project_id)
@@ -839,22 +852,19 @@ class WorkspaceMixin:
             return head
         progress = origin.get("preserved_progress")
         if progress:
-            preserved = await self.git.als_remote_ref(workspace, progress["ref"])
-            from src.git.manager import RemoteRefState
+            from src.integration.owner_recovery import consume_recovery_progress
 
-            if (
-                preserved.state is not RemoteRefState.PRESENT
-                or preserved.oid != progress["sha"]
-                or progress["sha"] != origin["base_sha"]
-                or await self.git.ais_ancestor(
-                    workspace, progress["base_sha"], progress["sha"], strict=True
-                ) is not True
-                or await self.git.ais_ancestor(
-                    workspace, head, progress["sha"], strict=True
-                ) is not True
-            ):
+            if (progress["sha"] != origin["base_sha"]
+                or not await self.git.ais_ancestor(
+                    workspace, progress["base_sha"], progress["sha"], strict=True,
+                )):
                 raise GitError("preserved repair tip or canonical branch lineage changed")
-            return progress["sha"]
+            try:
+                return await consume_recovery_progress(
+                    self.git, workspace, branch, progress, repository_url=repository_url,
+                )
+            except GitError as exc:
+                raise GitError(f"preserved repair tip is unusable: {exc}") from exc
         if not is_valid_git_oid(head):
             raise GitError("repair branch no longer descends from its frozen starting commit")
         if await self.git.ais_ancestor(
@@ -962,6 +972,13 @@ class WorkspaceMixin:
         async with BranchOwnership(self.db).mutation_exclusion(
             fence, expected_role=role
         ):
+            from src.integration.owner_recovery import resume_recovery_snapshots
+
+            if role in {"worker", "repair"}:
+                await resume_recovery_snapshots(
+                    self.db, self.git, workspace, fence.target.repository_id, branch,
+                    repository_url=project.repo_url or "",
+                )
             if origin.get("stack_repair_inputs"):
                 inputs = origin["stack_repair_inputs"]
                 await self.git._arun(
@@ -981,7 +998,7 @@ class WorkspaceMixin:
                         workspace, origin, fence, repository_url=project.repo_url or ""
                     )
                 preserve = {"preserve_branch": True} if (
-                    role == "worker" and origin.get("prerequisite_head")
+                    role == "worker"
                 ) else {}
                 await self._worktree_slots().reset_slot_for_task(
                     ws,
@@ -1027,7 +1044,7 @@ class WorkspaceMixin:
                 await self.git._arun(
                     ["fetch", "--no-tags", str(origin["stack_store"]), base_sha], cwd=workspace,
                 )
-            if role == "worker" and origin.get("prerequisite_head"):
+            if role == "worker":
                 await self.git.aprepare_child_branch(workspace, branch, base_sha)
                 return fence.target.branch
             await self.git._arun(["checkout", "-B", branch, base_sha], cwd=workspace)
@@ -1039,26 +1056,18 @@ class WorkspaceMixin:
         return fence.target.branch
 
     async def _operator_handoff_start(self, workspace, origin, fence, *, repository_url):
-        """Use preserved progress or its published descendant, refusing divergence."""
-        from src.git.manager import RemoteRefState
+        """Resume audited progress on the owned task branch, merging divergence."""
+        from src.integration.owner_recovery import consume_recovery_progress
 
         progress = origin["operator_handoff"]
         await self.git.afetch_origin(workspace, repository_url=repository_url)
-        preserved = await self.git.als_remote_ref(workspace, progress["ref"])
-        if preserved.state is not RemoteRefState.PRESENT or preserved.oid != progress["sha"]:
-            raise GitError("operator handoff preserved ref changed or is unavailable")
         sha = progress["sha"]
         if await self.git.ais_ancestor(workspace, origin["base_sha"], sha, strict=True) is not True:
             raise GitError("operator handoff progress does not descend from the canonical origin")
-        branch = fence.target.branch.removeprefix("refs/heads/")
-        head = await self.git._arun(
-            ["rev-parse", "--verify", f"refs/remotes/origin/{branch}"], cwd=workspace
+        return await consume_recovery_progress(
+            self.git, workspace, fence.target.branch, progress,
+            repository_url=repository_url,
         )
-        if await self.git.ais_ancestor(workspace, sha, head, strict=True) is True:
-            return head
-        if await self.git.ais_ancestor(workspace, head, sha, strict=True) is True:
-            return sha
-        raise GitError("operator handoff progress and canonical branch diverged")
 
     async def _ensure_control_files_excluded(self, workspace: str) -> bool:
         """Write and verify the managed block at Git's exact exclude path.
@@ -1236,6 +1245,8 @@ class WorkspaceMixin:
         lands as one PR — that maps to the continuation/resume path rather
         than a fresh ``aq/<task_id>`` (worktree-execution §6.1).
         """
+        if task.branch_name:
+            return task.branch_name.removeprefix("refs/heads/")
         if not (task.is_plan_subtask and task.parent_task_id):
             return None
         parent = await self.db.get_task(task.parent_task_id)

@@ -96,6 +96,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_eject`](integration_eject.md) | Integration Eject | Authenticated hierarchical integration operational control. |
 | [`integration_engine_transfer`](integration_engine_transfer.md) | Integration Engine Transfer | Authenticated hierarchical integration operational control. |
 | [`integration_file_children`](integration_file_children.md) | File isolated child tasks | Reserve child origins and advance the parent integration generation atomically. |
+| [`integration_migrate_provenance_refs`](integration_migrate_provenance_refs.md) | Move Git provenance out of branches | Local operator copies and verifies immutable provenance refs before deleting legacy heads. |
 | [`integration_mutate_hierarchy`](integration_mutate_hierarchy.md) | Mutate integration hierarchy | Apply a guarded hierarchy change and invalidate affected parent generations. |
 | [`integration_parent_verify`](integration_parent_verify.md) | Integration Parent Verify | Record one parent verification against its exact checkpoint head and evidence. |
 | [`integration_pause_batch`](integration_pause_batch.md) | Integration Pause Batch | Authenticated hierarchical integration operational control. |

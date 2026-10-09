@@ -2070,6 +2070,59 @@ are materialized so a crash between the two leaves an auditable row.
 | `created_at` | REAL | NOT NULL | Unix timestamp |
 | `materialized_at` | REAL | nullable | When the remote branch appeared |
 
+### Table: `branch_retirements`
+
+Explicit branch retirement decisions and their reconciliation state
+(`docs/specs/design/branch-retirement.md`). A cancel, failed or abandoned
+close, obsolete close, container abandon or aborted batch queues a row in the
+same transaction; the retirement drain deletes the remote, local and
+origin-tracking refs under owner fences and SHA leases, preserving unmerged
+work in a verified bundle first. No foreign keys: the decision and its audit
+outlive tasks and repositories.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Retirement id |
+| `request_id` | TEXT | NOT NULL | Idempotency key of the deciding transition; UNIQUE with `repository_id`, `branch` |
+| `project_id` | TEXT | NOT NULL | Owning project (logical reference) |
+| `repository_id` | TEXT | NOT NULL | Repository the branch lives in |
+| `task_id` | TEXT | nullable | Task whose branch is retired, NULL for batch candidates |
+| `branch` | TEXT | NOT NULL | Branch name to retire |
+| `reason` | TEXT | NOT NULL | Why the branch is retired (cancel, failed close, superseded, …) |
+| `claim_epoch` | INTEGER | nullable | Claim epoch the decision was made under |
+| `requested_at` | REAL | NOT NULL | Unix timestamp |
+| `state` | TEXT | NOT NULL DEFAULT 'pending' | One of: pending, complete, conflict, withdrawn (`ck_branch_retirements_state`) |
+| `attempts` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Reconcile attempts (`ck_branch_retirements_attempts`) |
+| `next_attempt_at` | REAL | NOT NULL DEFAULT 0 | Next reconcile time; `ix_branch_retirements_due` indexes `(state, next_attempt_at)` |
+| `last_error` | TEXT | nullable | Last reconcile failure |
+| `evidence` | JSONB | NOT NULL DEFAULT '{}' | Pre-delete SHAs, bundle identities and per-ref outcomes |
+
+### Table: `branch_deletion_audit`
+
+Retained predecessor audit history: the name and head SHA of every abandoned
+branch, recorded before anything was deleted, so an unmerged branch stays
+identifiable and restorable from its verified bundle after the ref is gone.
+Unfinished rows are imported once into `branch_retirements` with their
+original SHA as a deletion precondition. No foreign key to `tasks`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Audit id |
+| `project_id` | TEXT | NOT NULL | Owning project; `ix_branch_deletion_audit_branch` indexes `(project_id, branch)` |
+| `repository_id` | TEXT | nullable | Repository the branch lived in |
+| `task_id` | TEXT | nullable | Task whose branch was abandoned |
+| `branch` | TEXT | NOT NULL | Branch name |
+| `head_sha` | TEXT | NOT NULL | 40-character lowercase SHA (`ck_branch_deletion_audit_head_sha`) |
+| `reason` | TEXT | NOT NULL | One of: obsolete_close, cancel, fail_close, supersede, abort, delete (`ck_branch_deletion_audit_reason`) |
+| `detail` | TEXT | nullable | Human explanation from the deciding transition |
+| `outcome` | TEXT | NOT NULL | One of: pending, deleted, held, failed, moved (`ck_branch_deletion_audit_outcome`) |
+| `detail_reason` | TEXT | nullable | Why a held/failed/moved row was not deleted |
+| `backup_path` | TEXT | nullable | Bundle holding the tip when it was not reachable from the default branch |
+| `attempts` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Delete attempts (`ck_branch_deletion_audit_attempts`) |
+| `next_attempt_at` | REAL | nullable | Next retry; `ix_branch_deletion_audit_due` is partial on `outcome = 'pending'` |
+| `recorded_at` | REAL | NOT NULL | Unix timestamp |
+| `deleted_at` | REAL | nullable | When the ref was confirmed gone |
+
 ### Table: `integration_branch_owners`
 
 Exclusive, fenced ownership of a ref in the integration repository.  Every

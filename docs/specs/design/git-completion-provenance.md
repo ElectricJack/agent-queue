@@ -50,7 +50,7 @@ reachable from the fetched target: an abbreviated SHA, a substring, one commit o
 multi-commit source and the previous generation of a reopened task are each a
 different identity and prove nothing.
 
-The namespace is `refs/heads/aq-provenance/completions/<subject-hash>/<generation-hash>`.
+The namespace is `refs/aq/provenance/completions/<subject-hash>/<generation-hash>`.
 The subject hash covers project/repository/task; the generation hash covers the
 completion ID. The metadata commit has exactly one parent (the final source),
 the source's tree, and a bounded JSON body:
@@ -62,8 +62,30 @@ the source's tree, and a bounded JSON body:
 Metadata objects are deterministic, immutable and independently published with
 an exact absent-ref lease. Conflicting bindings fail closed. They retain source
 objects through archive and deletion of `aq/<task-id>`; cleanup must preserve
-the `aq-provenance/` namespace. Normal clone/fetch head refspecs fetch the evidence.
+the `refs/aq/provenance/` namespace. Authorized origin fetches explicitly import
+`+refs/aq/provenance/*:refs/aq/provenance/*`, including isolated authenticated
+fetches. Fetched delivery snapshots pin these refs alongside remote branch tips.
+Provenance writers never create branch refs or remote-tracking branch refs.
+Readers accept the old `refs/heads/aq-provenance/` namespace during migration.
 No DB delivery flag or new Git mapping is introduced.
+
+`aq integration migrate-provenance-refs PROJECT` previews migration of existing Git
+provenance refs; `--apply` is restricted to the local operator. It inventories and
+validates records in a temporary checkout, copies the exact metadata OID into the
+new namespace with an absent-ref lease, verifies it remotely, and only then deletes
+the old branch with its exact old-OID lease. A conflicting destination, invalid
+record, changed source ref or failed copy leaves the old ref intact and reports a
+blocked row. Repeating apply resumes safely after partial transfers. Dry-run changes
+no durable local/remote refs, configuration, index or database rows. Optional
+`--checkout PATH` also migrates that checkout's local legacy heads with the same
+copy-before-delete rule; attached worktree branches are held. Fetch with pruning
+removes obsolete remote-tracking copies after the remote migration.
+
+The daily per-project branch backstop also runs this bounded namespace migration.
+It rechecks live tasks, owners, protected targets and attached worktrees under
+the shared ref exclusion before deleting an old branch, records a pre-delete
+audit entry and reports migrated/blocked counts to the project supervisor. It
+does not infer completion bindings for unlabelled sources.
 
 Close allocates its completion ID before verification, verifies the clean,
 exactly pushed final task source, publishes the provenance ref, verifies that
@@ -186,7 +208,7 @@ tested for containment. Multi-commit work, another generation's trailer, a
 partial cherry-pick and an empty copied marker therefore cannot prove delivery.
 
 An explicit replacement record lives under
-`refs/heads/aq-provenance/replacements/<record-content-hash>`. It retains the
+`refs/aq/provenance/replacements/<record-content-hash>`. It retains the
 replacement source as its sole parent, with the same tree, and records:
 
 ```json
@@ -219,10 +241,9 @@ an unlabelled source the bridge cannot bind refuses close as an operator blocker
 (`precondition:provenance_migration`). Completion recording uses the same
 delivery-refusal path as pipeline verification: it retains the live task, claim,
 session and workspace, sets `needs_attention:delivery_provenance_migration`, and
-emits `task.needs_attention`. The refusal names the operator remedy
-`aq integration migrate-provenance <project-id> --apply`, scoped with
-`--task-id <repair>` for an unlabelled source; inventory can report ambiguous
-evidence that still needs operator resolution.
+emits `task.needs_attention`. The refusal names a task-scoped read for operator
+diagnosis. The current namespace migration moves existing Git records; it does
+not infer bindings for an unlabelled source.
 
 `authority:operator` additionally requires an authorized operator/equivalence
 operation and a reason. Git cannot establish semantic equivalence of arbitrary
@@ -234,6 +255,11 @@ evidence through an authorized operation; copying trailers is insufficient.
 Ancestry-preserving external merges need no replacement record.
 
 ## Legacy migration primitive
+
+The completion-generation backfill described below is historical: its command
+and implementation were retired. The current `migrate-provenance-refs` command only
+moves existing Git refs, as specified under [Identity and retention](#identity-and-retention).
+These rules describe retained legacy records and their original admission checks.
 
 `aq integration migrate-provenance <project-id>` inventories legacy completion
 generations and exact repair bindings. Add `--apply` to publish verified Git

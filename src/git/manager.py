@@ -1936,8 +1936,11 @@ class GitManager:
         """Fetch an explicitly authorized origin without credentials in the checkout."""
         fetch_args = (
             ["fetch", "--no-tags", "--prune", "origin",
-             "+refs/heads/*:refs/remotes/origin/*"]
-            if all_heads else ["fetch", "origin"]
+             "+refs/heads/*:refs/remotes/origin/*",
+             "+refs/aq/provenance/*:refs/aq/provenance/*"]
+            if all_heads else ["fetch", "origin",
+                              "+refs/heads/*:refs/remotes/origin/*",
+                              "+refs/aq/provenance/*:refs/aq/provenance/*"]
         )
         if self._uses_existing_ssh(repository_url):
             from src.projects.github import GitHubError, parse_github_repository
@@ -2031,7 +2034,7 @@ class GitManager:
             if borrowable_objects is not None:
                 seeded_tips = await self._alend_fetch_objects(
                     imported, destination_git_dir, borrowable_objects,
-                    patterns=("refs/remotes/origin", "refs/tags"),
+                    patterns=("refs/remotes/origin", "refs/tags", "refs/aq/provenance"),
                     home=home, deadline=deadline,
                 )
             mode = "incremental" if borrowable_objects is not None else "full"
@@ -2043,7 +2046,8 @@ class GitManager:
                     # the checkout (and so reading its worker-writable config).
                     ["-c", "core.alternateRefsCommand=true", "-c", "maintenance.auto=false",
                      f"--git-dir={imported}", "fetch", "--no-tags", "--force", source_url,
-                     "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"],
+                     "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*",
+                     "+refs/aq/provenance/*:refs/aq/provenance/*"],
                     home=home,
                     repository_url=source_url,
                     token=token,
@@ -2060,7 +2064,8 @@ class GitManager:
             await self._run_isolated_import_git(
                 ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
                  f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force", "--prune",
-                 str(imported), "+refs/heads/*:refs/remotes/origin/*"],
+                 str(imported), "+refs/heads/*:refs/remotes/origin/*",
+                 "+refs/aq/provenance/*:refs/aq/provenance/*"],
                 home=home,
                 deadline=deadline,
             )
@@ -2073,12 +2078,13 @@ class GitManager:
             )
             imported_refs = await self._run_isolated_import_git(
                 [f"--git-dir={imported}", "for-each-ref", "--format=%(objectname) %(refname)",
-                 "refs/heads", "refs/tags"],
+                 "refs/heads", "refs/tags", "refs/aq/provenance"],
                 home=home, deadline=deadline,
             )
             destination_refs = await self._run_isolated_import_git(
                 [f"--git-dir={destination_git_dir}", "for-each-ref",
-                 "--format=%(objectname) %(refname)", "refs/remotes/origin", "refs/tags"],
+                 "--format=%(objectname) %(refname)", "refs/remotes/origin", "refs/tags",
+                 "refs/aq/provenance"],
                 home=home, deadline=deadline,
             )
             imported_map = dict(
@@ -3179,14 +3185,14 @@ class GitManager:
         self,
         checkout_path: str,
         pr_url: str,
-        method: str = "squash",
+        method: str = "merge",
         *,
         expected_head_oid: str | None = None,
         expected_base_ref: str | None = None,
         repository: GitHubRepositoryBinding | None = None,
     ) -> dict:
         """Merge only the validated head and base through the shared client."""
-        if method not in ("squash", "merge", "rebase"):
+        if method not in ("merge", "squash", "rebase"):
             return {"success": False, "sha": None, "error": f"invalid method: {method}"}
         if expected_head_oid is not None:
             expected_head_oid = expected_head_oid.lower()
@@ -3469,9 +3475,9 @@ class GitManager:
 
     async def apush_new_refs(
         self, checkout_path: str, tips: Mapping[str, str], *, remote: str = "origin",
-        repository_url: str | None = None,
+        repository_url: str | None = None, qualified: bool = False,
     ) -> dict[str, RemoteRefResult]:
-        """Create absent heads at exact commits in one transfer; read each back.
+        """Create absent heads or qualified provenance refs; read each back.
 
         Every head is leased to absence, so no existing head ever moves. The
         push is not atomic, so the returned post-transfer read settles each
@@ -3482,6 +3488,8 @@ class GitManager:
         for branch, tip in tips.items():
             if not isinstance(tip, str) or _OID_RE.fullmatch(tip) is None:
                 raise GitError("invalid immutable push tip")
+            if qualified and not branch.startswith("refs/aq/provenance/"):
+                raise GitError("immutable qualified push must name a provenance ref")
             updates.append((tip, _validate_ref(branch), _ZERO_OID))
         if not updates:
             return {}
@@ -3491,10 +3499,12 @@ class GitManager:
                 checkout_path, remote, repository_url=repository_url
             )
             if destination_url is None:
+                refs = {branch: branch if qualified else f"refs/heads/{branch}"
+                        for _tip, branch, _old in updates}
                 result = await self.arun_git_result(
                     ["push", remote,
-                     *(f"--force-with-lease=refs/heads/{branch}:{old}" for _t, branch, old in updates),
-                     *(f"{tip}:refs/heads/{branch}" for tip, branch, _old in updates)],
+                     *(f"--force-with-lease={refs[branch]}:{old}" for _t, branch, old in updates),
+                     *(f"{tip}:{refs[branch]}" for tip, branch, _old in updates)],
                     cwd=checkout_path,
                 )
                 if result.returncode != 0:
@@ -3504,10 +3514,12 @@ class GitManager:
                     checkout_path, destination_url=destination_url, token=token,
                     updates=updates,
                     _deadline=asyncio.get_running_loop().time() + APP_AUTH_PUSH_TIMEOUT_SECONDS,
+                    _qualified_refs=qualified,
                 )
         except (GitError, GitHubAccessError, TimeoutError) as exc:
             failure = str(exc) or "git push failed"
-        observed = await self.als_remote_refs(
+        observe = self.als_remote_qualified_refs if qualified else self.als_remote_refs
+        observed = await observe(
             checkout_path, [branch for _tip, branch, _old in updates], remote=remote,
             repository_url=repository_url,
         )
@@ -3566,11 +3578,11 @@ class GitManager:
         self, checkout_path: str, refs: Sequence[str], *, remote: str = "origin",
         repository_url: str | None = None,
     ) -> dict[str, RemoteRefResult]:
-        """Read exact branch/tag refs, including a tag's peeled commit, with read authority."""
+        """Read exact branch/tag/provenance refs with repository read authority."""
         for ref in refs:
             plain = ref.removesuffix("^{}")
-            if not plain.startswith(("refs/heads/", "refs/tags/")):
-                raise GitError("qualified ref must be a branch or tag")
+            if not plain.startswith(("refs/heads/", "refs/tags/", "refs/aq/provenance/")):
+                raise GitError("qualified ref must be a branch, tag or provenance ref")
             _validate_ref(plain)
         try:
             destination, token = await self._apush_destination(
@@ -4273,6 +4285,17 @@ class GitManager:
             raise GitError("invalid expected target OID")
         await self._arun(["update-ref", "-d", ref, expected_old_oid], cwd=checkout_path)
 
+    async def adelete_remote_tracking_ref_exact(
+        self, checkout_path: str, *, ref: str, expected_old_oid: str
+    ) -> None:
+        """Remove an audited origin observation only when its tip is unchanged."""
+        ref = _validate_ref(ref, field="ref")
+        if not ref.startswith("refs/remotes/origin/"):
+            raise GitError("cleanup tracking ref must belong to origin")
+        if _OID_RE.fullmatch(expected_old_oid) is None:
+            raise GitError("invalid expected target OID")
+        await self._arun(["update-ref", "-d", ref, expected_old_oid], cwd=checkout_path)
+
     async def afetch_exact_oid_with_app_auth(
         self,
         destination_git_dir: str,
@@ -4909,8 +4932,10 @@ class GitManager:
         validated: list[tuple[str | None, str, str]] = []
         for tip_oid, branch, expected_old_oid in updates:
             branch = _validate_ref(branch)
-            if _qualified_refs and not branch.startswith(("refs/heads/", "refs/tags/")):
-                raise GitError("qualified ref must be a branch or tag")
+            if _qualified_refs and not branch.startswith(
+                ("refs/heads/", "refs/tags/", "refs/aq/provenance/")
+            ):
+                raise GitError("qualified ref must be a branch, tag or provenance ref")
             for label, oid in (("expected target", expected_old_oid),):
                 if not (_qualified_refs and oid == "") and (
                     not isinstance(oid, str) or _OID_RE.fullmatch(oid) is None
@@ -4960,13 +4985,18 @@ class GitManager:
             )
             if imports:
                 # One import carries every tip's graph; shared history is
-                # copied once rather than once per head.
+                # copied once rather than once per head.  Git 2.47+ ends a
+                # fetch with a detached ``maintenance run --auto``: it calls
+                # setsid, so killpg cannot reach it, and until it closes its
+                # inherited stdout it holds this command's pipe open.
                 await self._run_isolated_import_git(
                     [
                         "-c",
                         "protocol.allow=never",
                         "-c",
                         "protocol.file.allow=always",
+                        "-c",
+                        "maintenance.auto=false",
                         f"--git-dir={repository}",
                         "fetch",
                         "--no-tags",

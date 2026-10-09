@@ -13,6 +13,7 @@ from src.database.tables import (
     integration_branch_owners,
     integration_candidate_member_results,
     integration_candidate_revisions,
+    integration_owner_recoveries,
     integration_repair_stages,
     integration_review_evidence,
     playbook_artifacts,
@@ -217,7 +218,7 @@ async def test_deadline_rollover_preserves_and_resumes_exact_progress(env, monke
     assert owner["fence_token"] == case.owner["fence_token"] + 2
 
     # The real origin/fence resolver and checkout-start path must choose the
-    # preservation ref instead of the unchanged partial on canonical origin.
+    # task branch containing the recovered progress instead of the old partial.
     orch = Orchestrator.__new__(Orchestrator)
     orch.db, orch.git = case.db, case.recovery.git
     task = await case.db.get_task(next_id)
@@ -241,7 +242,30 @@ async def test_deadline_rollover_preserves_and_resumes_exact_progress(env, monke
     assert len([r for r in await env.audits(case.owner["id"])
                 if r["outcome"] == "preserved_and_released"]) == 1
     assert await _stage(case, 1) == after
-    assert remote_sha(env.origin, case.target.branch) == case.partial
+    assert remote_sha(env.origin, case.target.branch) == tip
+
+
+async def test_rollover_replays_a_snapshot_already_consumed_by_workspace_preparation(env):
+    case = await _batch_writer(env)
+    await case.db.update_session("old-session", state="stopped", desired_state="stopped")
+    await case.db.update_task(case.primary, status=TaskStatus.BLOCKED)
+    assert (await case.repair.expire(case.operation, 0, now=130.0))["stage"] == 1
+    recovered = await case.recovery.recover(case.owner["id"], principal="sweep")
+    # A divergent recovery uses a temporary ref. Model its consumed audit:
+    # workspace preparation published the commit and deleted that exact ref.
+    ref = f"aq/recovery/{case.owner['id']}/{case.head}"
+    evidence = recovered.evidence | {"preserved_ref": ref}
+    async with case.db.immediate() as conn:
+        await conn.execute(update(integration_owner_recoveries).where(
+            integration_owner_recoveries.c.owner_row_id == case.owner["id"],
+        ).values(evidence=evidence))
+    assert remote_sha(env.origin, ref) is None
+    assert remote_sha(env.origin, case.target.branch) == case.head
+    result = await case.repair.dispatch(case.operation, 1)
+    assert result["outcome"] == "dispatched"
+    progress = (await _stage(case, 1))["dossier"]["preserved_progress"]
+    assert (progress["ref"], progress["sha"]) == (ref, case.head)
+    assert progress["completed_member_ordinals"] == [0, 1]
 
 
 async def test_restart_of_a_dead_batch_writer_resumes_its_preserved_commits(env):
