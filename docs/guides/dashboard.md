@@ -158,30 +158,36 @@ AQ never runs `tailscale serve`, never widens a bind and never changes network p
 
 Open `/focus`, or **Focus view** in the rail. It is the same app laid out for a small screen, at every width ([FocusHome.tsx](../../dashboard/src/pages/focus/FocusHome.tsx)):
 
-- **Live sessions**: each card opens that agent's terminal, the same terminal and colours as on a desktop ([PhoneTerminal.tsx](../../dashboard/src/components/PhoneTerminal.tsx)).
-  - Its columns and rows fit the phone, in portrait and landscape and with the keyboard up or down, and the agent's tmux window follows them. When the phone leaves, the window gets its earlier size back ([terminals reference](../reference/terminals-and-claims.md#from-a-phone)).
-  - Drag to scroll back through earlier output, including the pane's tmux history from before you opened it. A flick keeps scrolling. The ↓ button at the bottom right returns to the latest output.
-  - `A−`/`A+` change the text size (12–20 px). On a narrow screen the text shrinks (not below 10 px) to keep 40 columns, and the toolbar says so. **Full screen** fills the phone (Back leaves it).
-  - If the connection drops, the screen stays and reconnects by itself; **Reconnect now** retries at once.
-- **Typing from a phone**: tap the screen. The keyboard opens under an input bar, above a key strip. There is no mode to switch.
-  - Type a line and press the keyboard's Send key or **Send**. The line goes to the agent, then Enter. Shift+Enter adds a line, and a pasted block keeps its lines and goes as one paste.
-  - The key strip has the keys a phone lacks: **Esc**, **Tab**, **Ctrl-C**, **↑**, **↓**, **Enter**, and **1**/**2**/**3** for numbered permission and choice prompts. Tapping a key keeps the keyboard up.
-  - While the keyboard is open, the terminal fills the space above it and stays on the agent's prompt.
-  - A session that has ended is watch only. So is a viewer the daemon refuses to attach (the credential, origin and loopback rules of a desktop terminal): it watches the live pane, with **Retry** when that drops.
+- **Live sessions**: each card opens the same terminal component as **Host shell**
+  ([InteractiveTerminal.tsx](../../dashboard/src/components/InteractiveTerminal.tsx)).
+  It has the same colors, fixed 12 px font, Type focus control and details menu
+  on phones and desktops. There is no watch/type mode or extra phone toolbar.
+  Columns and rows follow the terminal area, rotation and the on-screen keyboard;
+  the agent's tmux window follows them. A compact attach restores the earlier
+  window size when the phone leaves ([terminals reference](../reference/terminals-and-claims.md#from-a-phone)).
+  Drag down to reach earlier output; a flick continues with momentum. Drag up
+  to return to current output. Dropped connections retry automatically.
+- **Typing from a phone**: tap the terminal or Type. xterm's own textarea takes
+  keyboard input and paste, just as on the host shell. Enter and Ctrl+C are in
+  the terminal's details menu. The visible grid shrinks above the keyboard.
+  A refused attach reports its error and disables input. An ended session links
+  to its transcript.
 - **Providers**: the quota cards with their age; a stale reading says so ([ProviderUsage.tsx](../../dashboard/src/pages/metrics/ProviderUsage.tsx)).
 - **Tasks**: the Tasks tab's list and filters as cards, 50 per page. A task opens as a full page; Back returns to the same page and scroll ([FocusTaskList.tsx](../../dashboard/src/pages/focus/FocusTaskList.tsx)).
 
-Posted task and morning-report links open these pages ([src/dashboard_paths.py](../../src/dashboard_paths.py)); **Full** at the top opens the full dashboard page ([FocusShell.tsx](../../dashboard/src/pages/focus/FocusShell.tsx)). Below 768 px the rest of the dashboard is one column: the menu opens the rail as a drawer ([TopBar.tsx](../../dashboard/src/shell/TopBar.tsx)), panes and the activity list fill the screen, and the agents and session pages show the same phone terminal ([AgentTerminal.tsx](../../dashboard/src/pages/agents/AgentTerminal.tsx), [SessionDetail.tsx](../../dashboard/src/pages/SessionDetail.tsx)). A phone in landscape 768 px or wider gets the desktop pages and the desktop terminal; the focus view always uses the phone terminal. Reaching the dashboard from a phone is the same question as from any other machine ([above](#reaching-it-from-another-machine)). Nothing the phone opens is saved to your roaming preferences.
+Posted task and morning-report links open these pages ([src/dashboard_paths.py](../../src/dashboard_paths.py)); **Full** at the top opens the full dashboard page ([FocusShell.tsx](../../dashboard/src/pages/focus/FocusShell.tsx)). Below 768 px the rest of the dashboard is one column: the menu opens the rail as a drawer ([TopBar.tsx](../../dashboard/src/shell/TopBar.tsx)), panes and the activity list fill the screen, and the agents and session pages show the same shared terminal ([AgentTerminal.tsx](../../dashboard/src/pages/agents/AgentTerminal.tsx), [SessionDetail.tsx](../../dashboard/src/pages/SessionDetail.tsx)). Every viewport uses the host shell's terminal component, including focus view. Reaching the dashboard from a phone is the same question as from any other machine ([above](#reaching-it-from-another-machine)). Nothing the phone opens is saved to your roaming preferences.
 
 #### Checking a release on a real phone
 
 On iPhone Safari and Android Chrome, after an update that touched the dashboard. First note an agent's window size on the AQ host: `tmux display -p -t <session> '#{window_width}x#{window_height}'`.
 
+Before the checklist: the browser is served a **built** SPA from `src/dashboard_assets/dist/`, never the dashboard source, so a dashboard source update also needs the build/staging step in `aq update` (or `aq install --restart-from dashboard.build`). `aq doctor --check dashboard.server.bundle` checks the bundle's manifest and base path; its OK result alone does not prove it matches the updated sources. Check the served assets after rebuilding.
+
 1. `/focus` loads with no sideways scroll; sessions, providers and tasks show.
-2. Open a live session. The colours match the same session on a desktop, and there is no Type or Watch button. The text fills the width without sideways scrolling, and on the host the window size now matches the phone.
-3. Drag down: earlier output scrolls into view, a flick keeps going, and the page itself does not move. Keep going back past the first screen into older history. Tap ↓ to return.
-4. `A+` twice, Full screen, rotate and rotate back, press Back: the columns follow each rotation, full screen closes, the page stays.
-5. Tap the screen: the keyboard opens under the input bar, the terminal shrinks to the space above it, and the agent's prompt stays in view. Send a short line (the agent receives it and Enter), tap **Esc**, and at a permission prompt tap **1**. The keyboard stays up between taps. Paste two lines and send them: the agent receives one paste.
+2. Open a live session, then open **Host shell** on the same phone. They are the same terminal, so the two screens are the same colours, the same font and the same column count; the terminal controls match as well; page headers can leave different amounts of space for the grid. The text fills the width without sideways scrolling, and on the host the window size now matches the phone.
+3. Drag down: earlier output scrolls into view, a flick keeps going, and the page itself does not move. Keep going back past the first screen into older history. Drag up to return.
+4. Rotate and rotate back: the columns and rows follow each rotation, the font stays the host shell's size, and the page stays.
+5. Tap the screen or Type: the keyboard opens and all terminal rows fit above it, including on a full session page or docked pane. Type a short line and Enter; the agent receives both. Check Enter and Ctrl+C in the details menu. Paste two lines; xterm forwards the paste.
 6. Airplane mode for ten seconds, then back online: the terminal reconnects by itself (or tap **Reconnect now**) and the history is there again, once.
 7. Leave the session page. On the host the window is back to the size you noted.
 8. Tasks page 2, scroll, open a task, Back: same page, same scroll; a long title wraps and nothing runs off the screen.
@@ -338,9 +344,9 @@ The dashboard package's `predev`, `prebuild`, and `pretypecheck` hooks regenerat
 ### Page and component families
 
 * `pages/command-center/` renders project graph/list workspaces, including the server-backed layout-v2 canvas and live graph refresh.
-* `pages/agents/` renders the global flock, workers, terminals, and pool configuration. `components/InteractiveTerminal.tsx` and `api/useTerminalInput.ts` are its input boundary.
+* `pages/agents/` renders the global flock, workers, terminals, and pool configuration. `components/InteractiveTerminal.tsx` is the same shared terminal used by Host shell and every agent terminal route.
 * `pages/project/` provides project overview/configuration/workspace/onboarding surfaces; `pages/settings/` and `pages/system/` are settings curation routes and legacy-compatible page implementations.
-* `pages/focus/` is the phone-first focus view (`/focus`): its own shell, the home page, and the task, session and report pages. It reuses the Tasks tab's rows and the phone terminal (`components/PhoneTerminal.tsx`): the desktop's attach socket and theme (`components/terminalSetup.ts`), sized to the phone, with tmux history prefilled and touch scrolling (`components/terminalTouchScroll.ts`). A viewer the daemon will not attach watches the pane stream instead.
+* `pages/focus/` is the phone-first focus view (`/focus`): its own shell, home page, and task, session and report pages. It reuses the Tasks tab's rows and `components/InteractiveTerminal.tsx`, including the host shell's attach socket, palette, options, fit logic, input handling and touch scrolling.
 * `pages/metrics/` turns durable metric queries plus a raw event feed into chart data; `pages/playbook-graph-v2/` renders the semantic playbook graph and run overlays.
 * `components/` contains shared task, modal, markdown, terminal, profile, navigation, and workspace controls. `shell/` is global navigation, keyboard shortcuts, palette, activity drawer, and right surface.
 * `panes/` registers contextual, lazy-compatible views; every pane has a manifest and arguments/state owned by the pane store. `ws/` owns the shared event and terminal sockets, not individual pages.

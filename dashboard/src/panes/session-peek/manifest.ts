@@ -11,7 +11,7 @@ export type SessionPeekArgs = z.infer<typeof sessionPeekArgsSchema>;
 export const manifest: PaneManifest<SessionPeekArgs> = {
   id: "session-peek",
   name: "Session Peek",
-  description: "Live tmux peek stream for one session.",
+  description: "Interactive terminal for one live tmux session.",
   icon: CommandLineIcon,
   args_schema: sessionPeekArgsSchema,
   // open_shortcut omitted per interface spec — undefined means "no shortcut",

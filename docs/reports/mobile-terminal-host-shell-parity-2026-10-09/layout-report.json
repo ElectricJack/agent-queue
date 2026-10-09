@@ -1,0 +1,143 @@
+{
+  "chrome": "Chrome/150.0.7871.46",
+  "results": [
+    {
+      "check": "agents-terminal",
+      "profile": "phone-320",
+      "ok": true,
+      "ms": 1398
+    },
+    {
+      "check": "agents-terminal",
+      "profile": "phone-390",
+      "ok": true,
+      "ms": 1604
+    },
+    {
+      "check": "agents-terminal",
+      "profile": "phone-landscape",
+      "ok": true,
+      "ms": 1768
+    },
+    {
+      "check": "agents-terminal",
+      "profile": "desktop",
+      "ok": true,
+      "ms": 1698
+    },
+    {
+      "check": "agents-terminal",
+      "profile": "desktop-zoom200",
+      "ok": true,
+      "ms": 1436
+    },
+    {
+      "check": "focus-session",
+      "profile": "phone-320",
+      "ok": true,
+      "ms": 9769
+    },
+    {
+      "check": "focus-session",
+      "profile": "phone-390",
+      "ok": true,
+      "ms": 2970
+    },
+    {
+      "check": "focus-session",
+      "profile": "phone-landscape",
+      "ok": true,
+      "ms": 2780
+    },
+    {
+      "check": "focus-session",
+      "profile": "desktop",
+      "ok": true,
+      "ms": 2184
+    },
+    {
+      "check": "focus-session",
+      "profile": "desktop-zoom200",
+      "ok": true,
+      "ms": 3493
+    },
+    {
+      "check": "phone-terminal",
+      "profile": "phone-320",
+      "ok": true,
+      "ms": 14055
+    },
+    {
+      "check": "phone-terminal",
+      "profile": "phone-390",
+      "ok": true,
+      "ms": 12739
+    },
+    {
+      "check": "phone-terminal",
+      "profile": "android-412",
+      "ok": true,
+      "ms": 11538
+    },
+    {
+      "check": "phone-terminal",
+      "profile": "phone-landscape",
+      "ok": true,
+      "ms": 21455
+    },
+    {
+      "check": "terminal-headers",
+      "profile": "phone-320",
+      "ok": true,
+      "ms": 2216
+    },
+    {
+      "check": "terminal-headers",
+      "profile": "phone-390",
+      "ok": true,
+      "ms": 2789
+    },
+    {
+      "check": "terminal-headers",
+      "profile": "phone-landscape",
+      "ok": true,
+      "ms": 3490
+    },
+    {
+      "check": "terminal-headers",
+      "profile": "desktop",
+      "ok": true,
+      "ms": 3031
+    },
+    {
+      "check": "terminal-headers",
+      "profile": "desktop-zoom200",
+      "ok": true,
+      "ms": 3015
+    },
+    {
+      "check": "terminal-parity",
+      "profile": "phone-320",
+      "ok": true,
+      "ms": 11400
+    },
+    {
+      "check": "terminal-parity",
+      "profile": "phone-390",
+      "ok": true,
+      "ms": 9220
+    },
+    {
+      "check": "terminal-parity",
+      "profile": "android-412",
+      "ok": true,
+      "ms": 8956
+    },
+    {
+      "check": "terminal-parity",
+      "profile": "phone-landscape",
+      "ok": true,
+      "ms": 16696
+    }
+  ]
+}
