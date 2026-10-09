@@ -1,11 +1,14 @@
 """Authorized, fixed-generation terminal WebSockets with bounded raw-byte flow.
 
 These routes never launch an agent. ``/ws/terminal/{id}`` owns only a disposable
-tmux attach client. ``/ws/terminal/{id}/input`` (phones) never attaches: it types
-through tmux commands against the fenced session, so it cannot resize the agent's
-window, and it sends no output. Both run the same origin, credential, operator,
-loopback, generation and connection-limit checks. Input is ephemeral: no command
-dispatch, transcripts, replay, or input logging.
+tmux attach client. Two opt-in query parameters serve phones: ``history=N`` sends
+up to N lines of the pane's scrollback ahead of the attach output (and has tmux
+scroll with line feeds, so later lines reach the viewer's scrollback too), and
+``restore_size=1`` puts the agent's window size back when the last client leaves.
+``/ws/terminal/{id}/input`` never attaches: it types through tmux commands against
+the fenced session and sends no output. Both run the same origin, credential,
+operator, loopback, generation and connection-limit checks. Input is ephemeral: no
+command dispatch, transcripts, replay, or input logging.
 """
 from __future__ import annotations
 
@@ -41,6 +44,7 @@ _ACTIVE_TASKS = {
 _INPUT_FRAME_LIMIT = 64 * 1024
 _INPUT_QUEUE_LIMIT = 128 * 1024
 _OUTPUT_CHUNK = 16 * 1024
+_HISTORY_LINES = 10_000
 
 
 class TerminalAccessResponse(BaseModel):
@@ -82,14 +86,29 @@ def _dimensions(cols, rows) -> tuple[int, int]:
     return cols, rows
 
 
+def _phone_options(query) -> tuple[int, bool]:
+    """``history`` (0..10000 lines) and ``restore_size`` (0/1); absent means off."""
+    history = query.get("history", "0")
+    restore = query.get("restore_size", "0")
+    if (
+        not history.isascii() or not history.isdigit() or int(history) > _HISTORY_LINES
+        or restore not in {"0", "1"}
+    ):
+        raise TerminalStreamError("Invalid terminal options", 4400)
+    return int(history), restore == "1"
+
+
 def _generation(row):
     return row.id, row.name, row.provider, row.instance_token, row.agent_id, row.started_at
 
 
-async def _attach(provider, row, *, cols, rows):
+async def _attach(provider, row, *, cols, rows, restore_size=False, scrollback=False):
     # POSIX imports are deliberately confined to the platform-specific helper.
     from src.sessions.terminal_pty import PtyTmuxClient
-    return await PtyTmuxClient.attach(provider, row, cols=cols, rows=rows)
+    return await PtyTmuxClient.attach(
+        provider, row, cols=cols, rows=rows, restore_size=restore_size,
+        scrollback=scrollback,
+    )
 
 
 async def _attach_input(provider, row):
@@ -290,6 +309,7 @@ class TerminalStreamService:
                     )
                 except (TypeError, ValueError):
                     raise TerminalStreamError("Invalid terminal dimensions", 4400) from None
+                history, restore_size = _phone_options(ws.query_params)
             row, generation = await self._session(session_id)
             await ws.accept(subprotocol=_PROTOCOL if _PROTOCOL in ws.scope.get("subprotocols", []) else None)
             accepted = True
@@ -304,12 +324,22 @@ class TerminalStreamService:
                 client = await self.attach_input(provider, row)
                 ready = {"type": "ready", "session_id": session_id, "mode": "input"}
             else:
-                client = await self.attach(provider, row, cols=cols, rows=rows)
+                # Only a phone asks for these; other attach backends need not
+                # know the keywords.
+                options = {}
+                if restore_size:
+                    options["restore_size"] = True
+                if history:
+                    options["scrollback"] = True
+                client = await self.attach(provider, row, cols=cols, rows=rows, **options)
                 ready = {"type": "ready", "session_id": session_id, "cols": cols, "rows": rows}
             await self._session(session_id, generation)
             await self._authorize(ws, token, host_shell=host_shell)
             if not await client.verify():
                 raise TerminalStreamError("Terminal session instance has changed")
+            # Captured after the generation checks, so it is this instance's
+            # history; it goes out first, under the same output credit.
+            pending = b"" if input_only or not history else await client.history(history, rows)
             await asyncio.wait_for(ws.send_json(ready), self.ack_timeout)
 
             outstanding = 0
@@ -371,7 +401,7 @@ class TerminalStreamService:
                     queued_input -= len(data)
 
             async def read_output():
-                nonlocal outstanding
+                nonlocal outstanding, pending
                 while True:
                     while outstanding >= self.output_limit:
                         credit.clear()
@@ -379,9 +409,13 @@ class TerminalStreamService:
                             await asyncio.wait_for(credit.wait(), self.ack_timeout)
                         except TimeoutError:
                             raise TerminalStreamError("Terminal output acknowledgement timed out", 4408) from None
-                    data = await client.read(min(_OUTPUT_CHUNK, self.output_limit - outstanding))
-                    if not data:
-                        return "exit"
+                    budget = min(_OUTPUT_CHUNK, self.output_limit - outstanding)
+                    if pending:
+                        data, pending = pending[:budget], pending[budget:]
+                    else:
+                        data = await client.read(budget)
+                        if not data:
+                            return "exit"
                     outstanding += len(data)
                     try:
                         await asyncio.wait_for(ws.send_bytes(data), self.ack_timeout)

@@ -16,7 +16,7 @@ interface LivePaneConsoleProps {
   status: PaneStatus;
   error?: string | null;
   attempt?: number;
-  /** Shows the "Reconnecting… Reconnect now" line; a caller with its own status and Retry (WatchTerminal) omits it. */
+  /** Shows the "Reconnecting… Reconnect now" line; a caller with its own status and Retry omits it. */
   reconnect?: () => void;
   className?: string;
   /** CSS px (12–20 in watch mode). Rendering only: never the tmux window's size. */

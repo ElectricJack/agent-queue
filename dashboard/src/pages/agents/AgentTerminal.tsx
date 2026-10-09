@@ -4,7 +4,7 @@ import { useStartAgentTerminal, type FlockAgent } from "../../api/agents";
 import { useProjects } from "../../api/hooks";
 import type { SessionSummary } from "../../api/hooks";
 import InteractiveTerminal from "../../components/InteractiveTerminal";
-import WatchTerminal from "../../components/WatchTerminal";
+import PhoneTerminal from "../../components/PhoneTerminal";
 import { useCompactViewport } from "../../hooks/useCompactViewport";
 import { focusSessionHref } from "../focus/routes";
 
@@ -77,12 +77,11 @@ export default function AgentTerminal({ agent, focusRequest }: { agent: FlockAge
       </div>
     );
   }
-  // Below 768 px, never attach: an attach sizes the agent's real tmux window to
-  // this viewer (`window-size latest`), and a trusted LAN or tailnet origin may
-  // open that socket. Mobile dashboard spec §2.3, plan D1. The phone terminal
-  // watches, and types through the input-only socket once Type is on.
+  // Below 768 px, the phone terminal: an attach sized to the phone, which gives
+  // the agent's window its size back when the phone leaves (mobile terminal
+  // spec, docs/superpowers/specs/2026-10-08-mobile-terminal-design.md).
   if (compact) {
-    return <WatchTerminal key={agent.session_id} sessionId={agent.session_id!} name={agent.name}
+    return <PhoneTerminal key={agent.session_id} sessionId={agent.session_id!} name={agent.name}
       focusHref={focusSessionHref(agent.session_id!)} />;
   }
   return <InteractiveTerminal key={agent.session_id} sessionId={agent.session_id!} name={agent.name} focusRequest={focusRequest} />;
@@ -117,9 +116,9 @@ export function PoolInstanceTerminal({ instance, focusRequest }: { instance: Ses
       </div>
     );
   }
-  // Never attached below 768 px, as in AgentTerminal; the link pins this process.
+  // The phone terminal below 768 px, as in AgentTerminal; the link pins this process.
   if (compact) {
-    return <WatchTerminal key={instance.id} sessionId={instance.id} name={instance.name}
+    return <PhoneTerminal key={instance.id} sessionId={instance.id} name={instance.name}
       focusHref={focusSessionHref(instance.id, { started: instance.started_at })} />;
   }
   return <InteractiveTerminal key={instance.id} sessionId={instance.id} name={instance.name} focusRequest={focusRequest} />;

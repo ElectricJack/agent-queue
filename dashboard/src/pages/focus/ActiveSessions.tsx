@@ -14,7 +14,7 @@ interface Card {
   started?: number | null;
 }
 
-/** Live tmux sessions — agents and pool workers — each a link to the phone terminal (watch only until Type). */
+/** Live tmux sessions — agents and pool workers — each a link to the phone terminal. */
 export default function ActiveSessions() {
   const { data: agents = [], isLoading, error } = useAgentFlock();
   const { entries } = usePoolFlock();
