@@ -1058,7 +1058,9 @@ class SessionReconciler:
                 rapid_crash_window=float(self.sessions_config.restart_window_seconds),
                 opencode=self._runs_opencode(row),
             )
-            await self._apply_verdict(provider, row, task, verdict, now)
+            # ``peek`` holds the whole pane plus scrollback: the hand-off
+            # note's screen tail when the provider explains this death.
+            await self._apply_verdict(provider, row, task, verdict, now, screen=peek)
 
     async def _renew_live_session_leases(self, row: SessionRecord, now: float) -> None:
         """Process existence grants only the first stall interval and backoff.
@@ -1145,6 +1147,8 @@ class SessionReconciler:
         task,
         verdict: ExitVerdict,
         now: float,
+        *,
+        screen: str | None = None,
     ) -> None:
         await self._emit(
             "session.exited",
@@ -1166,7 +1170,7 @@ class SessionReconciler:
                 resets_at=verdict.resets_at,
             )
 
-        if await self._apply_provider_failover(row, task, verdict, now):
+        if await self._apply_provider_failover(row, task, verdict, now, screen=screen):
             return
 
         if row.lifecycle == "pool":
@@ -1341,7 +1345,13 @@ class SessionReconciler:
                 )
 
     async def _apply_provider_failover(
-        self, row: SessionRecord, task, verdict: ExitVerdict, now: float
+        self,
+        row: SessionRecord,
+        task,
+        verdict: ExitVerdict,
+        now: float,
+        *,
+        screen: str | None = None,
     ) -> bool:
         """A mid-task death its provider explains (provider-failover D13).
 
@@ -1363,7 +1373,8 @@ class SessionReconciler:
            READY for the ``provider-failover`` sweep; first, uncorroborated
            signal -> a ``launch.suspect_backoff_seconds`` pause with its
            ``provider_pause`` record.
-        4. The hand-off note, once the outcome is written.
+        4. The hand-off note, once the outcome is written, quoting the tail
+           of *screen* (the stopped session's last pane capture).
 
         Returns False, having done nothing, for every other exit, which keeps
         the verdict handling below exactly as it was.
@@ -1401,7 +1412,7 @@ class SessionReconciler:
         verdict_name = str(verdict.verdict)
         # A pool claim still being prepared: the daemon owns that slot.
         checkpoint = await orch.provider_failover_checkpoint(
-            task, preserve=not pool or row.claim_phase == "active"
+            task, preserve=not pool or row.claim_phase == "active", reason=verdict.reason
         )
 
         async def handoff(outcome: str, *, held: bool = False) -> None:
@@ -1415,6 +1426,7 @@ class SessionReconciler:
                 disposition=outcome,
                 held=held,
                 now=now,
+                screen=screen,
             )
 
         if verdict.verdict is Verdict.RATE_LIMIT:
@@ -2000,6 +2012,11 @@ class SessionReconciler:
             screen.line,
             now - (row.last_activity or row.started_at),
         )
+        from src.providers.inflight import HANDOFF_SCREEN_LINES
+
+        # Read before the stop takes the pane with it: the next worker's
+        # hand-off note quotes what this one was doing.
+        last_screen = await self._peek(provider, row, HANDOFF_SCREEN_LINES)
         try:
             await provider.stop(self._handle(row), grace=2.0)
         except Exception:
@@ -2020,7 +2037,7 @@ class SessionReconciler:
             usage_exhausted=screen.usage_exhausted,
             resets_at=now + screen.retry_after if screen.retry_after else None,
         )
-        await self._apply_verdict(provider, row, task, verdict, now)
+        await self._apply_verdict(provider, row, task, verdict, now, screen=last_screen)
         return True
 
     async def _step_stall_ladder(self, live: list[SessionRecord], now: float) -> None:

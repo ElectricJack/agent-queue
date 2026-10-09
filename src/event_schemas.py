@@ -297,6 +297,12 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
         "required": ["task_id", "project_id", "title", "reason"],
         "optional": ["session_id"],
     },
+    # A worker stopped on its provider (usage limit, outage): its work was
+    # checkpointed and the task handed on; ``aq prime`` carries the note.
+    "task.handoff": {
+        "required": ["task_id", "project_id", "title", "reason", "disposition", "checkpoint"],
+        "optional": ["session_id", "provider", "harness", "branch", "head"],
+    },
     "task.closed": {
         "required": ["task_id", "project_id", "title", "outcome", "status"],
         "optional": ["work_outcome", "pr_url", "retry_count"],

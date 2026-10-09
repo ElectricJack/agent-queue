@@ -15546,6 +15546,7 @@
     "src/orchestrator/merge_slot.py::renew_merge_slot": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/stranded_work.py::UNMERGED_BRANCH_META": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/stranded_work.py::UNMERGED_COMMIT_META": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/stranded_work.py::save_wip_to_task_branch": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/stranded_work.py::unpushed_close_issues": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/task_checkpoint.py::CHECKPOINT_META": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/task_checkpoint.py::_lock_sentinel_ignored": "Generic dependency; integration-specific definitions in this file are charged independently.",
