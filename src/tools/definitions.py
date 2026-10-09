@@ -6497,8 +6497,10 @@ _ALL_TOOL_DEFINITIONS = [
             "that do not exist, or if it would introduce a dependency cycle "
             "against the project's current graph. Returns a proposal_id for "
             "task_batch_update / _commit / _discard. A live spec-ingest role "
-            "holding the matching approved vault path may commit immediately; "
-            "those batches require epics with children and leaf dependency edges."
+            "holding the matching approved vault path needs no approval step: "
+            "that batch is applied live in the same call and returns its "
+            "task_ids, and a later task_batch_commit is an idempotent replay. "
+            "Those batches require epics with children and leaf dependency edges."
         ),
         "input_schema": {
             "type": "object",

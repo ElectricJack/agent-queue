@@ -2,8 +2,10 @@
 
 Registers four CommandHandler commands:
 
-- ``task_batch_propose`` — validate + persist a proposed batch, emit
-  ``proposal.ready``.
+- ``task_batch_propose`` — validate + persist a proposed batch and emit
+  ``proposal.ready``.  A batch carrying a live spec-ingest assignment's
+  approved-document authority is applied live in the same transaction, so it
+  needs no proposal gate and no separate commit call.
 - ``task_batch_update`` — replace the payload while status is draft/ready
   and no approval gate awaits the proposal yet.
 - ``task_batch_discard`` — soft-drop the proposal.
@@ -236,6 +238,7 @@ class TaskProposalCommandsMixin:
         if ingest and ingest["spec_kind"] == "design":
             tasks_in, edges_in = self._design_spec_batch(ingest["spec_path"])
             change_set = {"tasks": tasks_in, "edges": edges_in}
+        committed = notifications = None
         try:
             async with task_changes.boundary(self.db, project_id) as conn:
                 if ingest:
@@ -253,13 +256,35 @@ class TaskProposalCommandsMixin:
                     conn=conn,
                     status="ready",
                 )
+                if ingest:
+                    # An approved document is its own authority: the validated
+                    # graph goes live in the proposing transaction. A staged
+                    # proposal awaiting a commit call is a graph nobody
+                    # publishes, which is how an approved spec used to end up
+                    # waiting for an operator to commit it by hand.
+                    committed, notifications = await self._materialize_proposal(
+                        conn, proposal_id, gate_id=None, project_id=project_id
+                    )
+                    if notifications is None:
+                        raise task_changes.ChangeSetError(
+                            committed.get("error") or "ingestion batch was not applied"
+                        )
         except Exception as exc:
             return self._change_set_failure(exc)
-        # An ingestion batch already carries its authority; it awaits no gate.
-        if not ingest:
-            await self._emit_proposal_event(
-                "proposal.ready", {"project_id": project_id, "proposal_id": proposal_id}
+        if committed is not None:
+            await self._publish_committed(
+                proposal_id, project_id, committed["task_ids"], notifications
             )
+            return {
+                "success": True,
+                "proposal_id": proposal_id,
+                "committed": True,
+                "task_ids": committed["task_ids"],
+                "diff": payload["diff"],
+            }
+        await self._emit_proposal_event(
+            "proposal.ready", {"project_id": project_id, "proposal_id": proposal_id}
+        )
         return {"success": True, "proposal_id": proposal_id, "diff": payload["diff"]}
 
     async def _cmd_task_batch_update(self, args: dict) -> dict:
@@ -406,83 +431,111 @@ class TaskProposalCommandsMixin:
         project_id = row["project_id"]
         try:
             async with task_changes.boundary(self.db, project_id) as conn:
-                current = (
-                    (
-                        await conn.execute(
-                            select(task_proposals)
-                            .where(task_proposals.c.id == proposal_id)
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one()
-                )
-                if current["status"] == "discarded":
-                    raise task_changes.ChangeSetError("proposal was discarded")
-                approval_error = await self._proposal_approval_error(
-                    row, gate_id=args.get("gate_id"), project_id=args.get("project_id")
-                )
-                if approval_error:
-                    return {"success": False, "not_approved": True, "error": approval_error}
-                stored = json.loads(current["payload"])
-                if current["status"] == "committed":
-                    return {
-                        "success": True,
-                        "already_committed": True,
-                        "task_ids": stored["receipt"]["task_ids"]
-                        if "receipt" in stored
-                        else await self._proposal_task_ids(proposal_id),
-                    }
-                if current["status"] != "ready":
-                    raise task_changes.ChangeSetError("proposal not in 'ready' state")
-                payload = task_changes.normalize(stored)
-                ingest = stored.get(SPEC_INGEST_META)
-                if ingest:
-                    await self._validate_ingest_graph(conn, payload)
-                expected, rows, project = await task_changes.snapshot(
+                result, notifications = await self._materialize_proposal(
                     conn,
-                    project_id,
-                    payload,
-                    previous=stored.get("expected"),
+                    proposal_id,
+                    gate_id=args.get("gate_id"),
+                    project_id=args.get("project_id"),
                 )
-                if "expected" in stored and expected != stored["expected"]:
-                    raise task_changes.ChangeSetError(
-                        "change set conflicts with task versions or graph state; propose a fresh revision",
-                        "change_set.conflict",
-                    )
-                receipt, notifications = await task_changes.apply(
-                    self, conn, project_id, payload, expected, rows, project, current["source"]
-                )
-                for task_id in receipt["task_ids"]:
-                    await self.db._upsert_meta(task_id, PROPOSAL_ID_META, proposal_id, conn=conn)
-                stored["receipt"] = receipt
-                if ingest:
-                    stored[SPEC_INGEST_META] = {**ingest, "task_ids": receipt["task_ids"]}
-                await conn.execute(
-                    update(task_proposals)
-                    .where(task_proposals.c.id == proposal_id)
-                    .values(status="committed", payload=json.dumps(stored), updated_at=time.time())
-                )
-                await conn.execute(
-                    insert(events).values(
-                        event_type="task.change_set_committed",
-                        project_id=project_id,
-                        payload=json.dumps(
-                            {
-                                "proposal_id": proposal_id,
-                                "source": current["source"],
-                                "diff": stored.get("diff"),
-                                "receipt": receipt,
-                                "actor": (self._current_scope or {}).get("session_id")
-                                or "operator",
-                            }
-                        ),
-                        timestamp=time.time(),
-                    )
-                )
+                if notifications is None:
+                    return result
         except Exception as exc:
             logger.info("task change set %s refused: %s", proposal_id, exc)
             return self._change_set_failure(exc, "task_batch_commit")
+        await self._publish_committed(proposal_id, project_id, result["task_ids"], notifications)
+        return result
+
+    async def _materialize_proposal(
+        self, conn, proposal_id: str, *, gate_id: str | None, project_id: str | None
+    ) -> tuple[dict, dict | None]:
+        """Write a ready proposal's graph, receipt and audit into ``conn``.
+
+        ``conn`` is the caller's commit boundary, so the graph, the proposal
+        status, the routing gates and the audit become durable together.  The
+        second element is the notifications to publish once that transaction
+        commits, and is ``None`` when nothing was materialised: a refusal, or a
+        replay of an already committed proposal.
+        """
+        # The authority check reads the stamp from the payload, so decode first.
+        current = dict(
+            (
+                await conn.execute(
+                    select(task_proposals)
+                    .where(task_proposals.c.id == proposal_id)
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .one()
+        )
+        current["payload"] = stored = json.loads(current["payload"])
+        if current["status"] == "discarded":
+            raise task_changes.ChangeSetError("proposal was discarded")
+        approval_error = await self._proposal_approval_error(
+            current, gate_id=gate_id, project_id=project_id
+        )
+        if approval_error:
+            return {"success": False, "not_approved": True, "error": approval_error}, None
+        if current["status"] == "committed":
+            return {
+                "success": True,
+                "already_committed": True,
+                "task_ids": stored["receipt"]["task_ids"]
+                if "receipt" in stored
+                else await self._proposal_task_ids(proposal_id),
+            }, None
+        if current["status"] != "ready":
+            raise task_changes.ChangeSetError("proposal not in 'ready' state")
+        payload = task_changes.normalize(stored)
+        ingest = stored.get(SPEC_INGEST_META)
+        if ingest:
+            await self._validate_ingest_graph(conn, payload)
+        expected, rows, project = await task_changes.snapshot(
+            conn,
+            current["project_id"],
+            payload,
+            previous=stored.get("expected"),
+        )
+        if "expected" in stored and expected != stored["expected"]:
+            raise task_changes.ChangeSetError(
+                "change set conflicts with task versions or graph state; propose a fresh revision",
+                "change_set.conflict",
+            )
+        receipt, notifications = await task_changes.apply(
+            self, conn, current["project_id"], payload, expected, rows, project, current["source"]
+        )
+        for task_id in receipt["task_ids"]:
+            await self.db._upsert_meta(task_id, PROPOSAL_ID_META, proposal_id, conn=conn)
+        stored["receipt"] = receipt
+        if ingest:
+            stored[SPEC_INGEST_META] = {**ingest, "task_ids": receipt["task_ids"]}
+        await conn.execute(
+            update(task_proposals)
+            .where(task_proposals.c.id == proposal_id)
+            .values(status="committed", payload=json.dumps(stored), updated_at=time.time())
+        )
+        await conn.execute(
+            insert(events).values(
+                event_type="task.change_set_committed",
+                project_id=current["project_id"],
+                payload=json.dumps(
+                    {
+                        "proposal_id": proposal_id,
+                        "source": current["source"],
+                        "diff": stored.get("diff"),
+                        "receipt": receipt,
+                        "actor": (self._current_scope or {}).get("session_id") or "operator",
+                    }
+                ),
+                timestamp=time.time(),
+            )
+        )
+        return {"success": True, "task_ids": receipt["task_ids"]}, notifications
+
+    async def _publish_committed(
+        self, proposal_id: str, project_id: str, task_ids: list[str], notifications: dict
+    ) -> None:
+        """Announce a committed change set. Runs only after its transaction commits."""
         # No task/routing event is emitted until every change and its audit
         # are durable. A failing listener cannot turn this commit into failure.
         await self._emit_proposal_event(
@@ -498,7 +551,7 @@ class TaskProposalCommandsMixin:
             for tid in notifications["updated"]:
                 task = await self.db.get_task(tid)
                 if task:
-                    if tid in receipt["task_ids"]:
+                    if tid in task_ids:
                         await self.orchestrator._emit_task_event(
                             "task.created",
                             task,
@@ -524,7 +577,6 @@ class TaskProposalCommandsMixin:
                     await self._notify_task_comment(task, comment)
         except Exception:
             logger.exception("post-commit notifications failed for %s", proposal_id)
-        return {"success": True, "task_ids": receipt["task_ids"]}
 
     @staticmethod
     def _proposal_task(project_id: str, spec: dict) -> Task:
