@@ -6774,9 +6774,11 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:a08793eae8439f5ab8e067079236d4357908e8750b7b06b69a0bb50fc788f8b5",
+      "digest": "sha256:2037abd2c044e71ea0839264832b8e2e15bbdc0b084d6dd0d40db5d04c0839f7",
       "imports": [
         "src.claim_file",
+        "src.commands.integration_commands",
+        "src.commands.principal",
         "src.config",
         "src.database",
         "src.database.queries.task_queries",
@@ -6786,6 +6788,7 @@
         "src.integration.delivery_truth",
         "src.integration.development",
         "src.integration.provenance",
+        "src.integration.provenance_migration",
         "src.models"
       ],
       "markers": [

@@ -8,8 +8,6 @@ surface.  Currently contains:
   callable only by profiles that grant ``pr_merge``.  A merge is also where the daemon
   learns *which branch* the work actually landed on — see
   :meth:`GitCommandsMixin._record_pr_base`.
-- ``integration_migrate_provenance`` — inventory or retain verified legacy
-  completion/repair identities in Git without changing delivery rows.
 - ``task_deliver`` — merge a BLOCKED task's pushed branch into its default
   branch by hand and complete it; the supervisor's control for work whose
   close stopped at delivery (a project with no pull-request host).

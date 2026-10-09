@@ -1589,6 +1589,7 @@ class TestEndToEndOnFakeProvider:
             await git._arun(["push", "origin", "--delete", "aq/t1"], cwd=wd)
         retained = str(tmp_path / "retained")
         await git._arun(["clone", repo.url, retained], cwd=str(tmp_path))
+        await git.afetch_origin(retained, repository_url=repo.url, all_heads=True)
         store = GitProvenance(git, retained, repository_url=repo.url)
         record = await store.read_completion(CompletionIdentity("p1", "repo", "t1", completion.id))
         assert record["source_oid"] == base
@@ -1900,7 +1901,7 @@ class TestEndToEndOnFakeProvider:
         original = CompletedSource(CompletionIdentity("p1", "repo", source_id, "source-close"), source)
         assert (await store.read_completion(original.identity))["source_oid"] == source
         refs = (await store.run("for-each-ref", "--format=%(refname)",
-                                "refs/remotes/origin/" + PREFIX + "replacements/")).split()
+                                PREFIX + "replacements/")).split()
         assert len(refs) == 1
         record = await store._read(refs[0])
         # The replacement names the main commit the repair built on, not the

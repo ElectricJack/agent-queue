@@ -101,7 +101,8 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     "integration_trust_manifest": 90.0,
     # Binding, token mint, and a bounded set of reads (variables, workflow files).
     "integration_app_verify": 180.0,
-    # A page stops starting Git batches after 45s (provenance_migration).
+    # A namespace-migration page validates, copies and leases each old head's deletion.
+    "integration_migrate_provenance_refs": 600.0,
     # Doctor runs every check concurrently, each under its own timeout (the
     # longest, git.stale_branches and integration.legacy_deliveries, allow 300s);
     # the read timeout must outlast them or a

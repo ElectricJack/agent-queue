@@ -1040,9 +1040,9 @@ class StepAdmission:
                 "promotion:" + meta["request_id"],
             )
             repository_url = f"https://github.com/{repo.binding.full_name}.git"
-            retained = await self.gitops.git.als_remote_ref(
-                str(repo.store), identity.branch, repository_url=repository_url,
-            )
+            provenance = GitProvenance(self.gitops.git, str(repo.store),
+                                       repository_url=repository_url)
+            retained_ref, retained = await provenance.remote_completion(identity)
             if retained.state is RemoteRefState.ERROR:
                 raise GitError(retained.error or "promotion retention cannot be observed")
             if retained.state is not RemoteRefState.PRESENT:
@@ -1055,10 +1055,7 @@ class StepAdmission:
                     str(repo.store), repository=repo.binding, oid=retained.oid,
                     destination_ref="refs/aq/promotion-sources/" + retained.oid,
                 )
-            record = await GitProvenance(
-                self.gitops.git, str(repo.store), repository_url=repo.binding.clone_url
-                if hasattr(repo.binding, "clone_url") else f"https://github.com/{repo.binding.full_name}.git",
-            ).read_completion(identity, refs={"refs/remotes/origin/" + identity.branch: retained.oid})
+            record = await provenance.read_completion(identity, refs={retained_ref: retained.oid})
             if record is None or record["source_oid"] != member.source_sha:
                 raise ValueError("promotion source is not retained under its request generation")
             if meta.get("kind") == "backmerge":

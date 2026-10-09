@@ -645,7 +645,8 @@ async def test_identical_oid_pairs_in_different_repositories_are_separate(reposi
     snapshot = await repo.snapshot()
     assert (await snapshot.is_delivered(request)).satisfied
     other_remote = tmp_path / "other.git"
-    await repo.git._arun(["clone", "--bare", str(repo.remote), str(other_remote)], cwd=str(tmp_path))
+    # Mirror all evidence, including provenance outside the head namespace.
+    await repo.git._arun(["clone", "--mirror", str(repo.remote), str(other_remote)], cwd=str(tmp_path))
     await repo.run("remote", "set-url", "origin", str(other_remote))
     other_snapshot = await repo.truth.snapshot(
         str(repo.path), project_id="p", repository_id="r", repository_url=str(other_remote),
@@ -742,7 +743,7 @@ async def test_cached_only_proofs_withhold_cold_changed_and_evicted_inputs(repos
     # are unchanged. Only the newly pinned marker may bind this generation.
     refs = dict(display.observation.source_heads)
     identity = CompletionIdentity("p", "r", "task", "close-1")
-    refs["refs/remotes/origin/" + identity.branch] = repo.base
+    refs[identity.ref] = repo.base
     moved_marker = replace(display, observation=replace(display.observation, source_heads=refs))
     assert not (await moved_marker.is_delivered(request)).satisfied
     other_store = replace(display, observation=replace(display.observation,
@@ -784,7 +785,7 @@ async def test_pinned_completion_ref_and_two_targets_share_one_fetch(repository,
     monkeypatch.setattr(repo.git, "afetch_origin", fetch)
     snapshot = await repo.snapshot()
     identity = CompletionIdentity("p", "r", "task", "close-1")
-    marker_ref = "refs/remotes/origin/" + identity.branch
+    marker_ref = identity.ref
     await repo.run("update-ref", "-d", marker_ref)
     # The marker was captured by OID and is still readable after local ref deletion.
     assert (await snapshot.is_delivered(request)).satisfied

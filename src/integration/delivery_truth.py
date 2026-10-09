@@ -891,7 +891,7 @@ async def delivery_snapshot(git, store, *, project_id, repository_id, repository
         await git.afetch_origin(str(store), repository_url=repository_url, all_heads=True)
         refs = await _run(
             git, store, "for-each-ref", "--format=%(refname) %(objectname)",
-            "refs/remotes/origin/",
+            "refs/remotes/origin/", "refs/aq/provenance/",
         )
         heads = dict(line.split(" ", 1) for line in refs.splitlines())
         target_oid = heads.get("refs/remotes/origin/" + target_ref.removeprefix("refs/heads/"))
