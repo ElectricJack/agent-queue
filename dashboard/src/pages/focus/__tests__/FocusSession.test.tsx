@@ -14,8 +14,7 @@ const data = vi.hoisted(() => ({
 }));
 vi.mock("../../../api/hooks", () => ({ useSession: () => data.session }));
 vi.mock("../../../api/agents", () => ({ useAgentFlock: () => ({ data: data.flock }) }));
-vi.mock("../../../components/PhoneTerminal", () => ({ default: ({ sessionId }: { sessionId: string }) => <p>Phone {sessionId}</p> }));
-vi.mock("../../../components/InteractiveTerminal", () => ({ default: () => { throw new Error("never in focus"); } }));
+vi.mock("../../../components/InteractiveTerminal", () => ({ default: ({ sessionId }: { sessionId: string }) => <p>Terminal {sessionId}</p> }));
 
 const live = (over: Partial<Session> = {}) => ({
   data: { id: "s1", name: "worker-a", state: "running", provider: "tmux", started_at: 100, ...over },
@@ -56,7 +55,7 @@ beforeEach(() => {
 describe("FocusSession", () => {
   it("opens the phone terminal on a live tmux session", () => {
     renderAt("/focus/sessions/s1");
-    expect(screen.getByText("Phone s1")).toBeInTheDocument();
+    expect(screen.getByText("Terminal s1")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("worker-a");
     expect(screen.getByRole("link", { name: "Open in full dashboard" })).toHaveAttribute("href", "/sessions/s1");
   });
@@ -64,24 +63,24 @@ describe("FocusSession", () => {
   it("shows a restart notice instead of following a different process", async () => {
     data.session = live({ started_at: 200 });
     renderAt("/focus/sessions/s1?started=100");
-    expect(screen.queryByText("Phone s1")).toBeNull();
+    expect(screen.queryByText("Terminal s1")).toBeNull();
     expect(screen.getByText(/restarted/i)).toBeInTheDocument();
     act(() => screen.getByRole("button", { name: "Watch the new process" }).click());
     await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent("/focus/sessions/s1?started=200"));
-    expect(screen.getByText("Phone s1")).toBeInTheDocument();
+    expect(screen.getByText("Terminal s1")).toBeInTheDocument();
   });
 
   it("a pinned link to the current process watches it", () => {
     renderAt("/focus/sessions/s1?started=100");
-    expect(screen.getByText("Phone s1")).toBeInTheDocument();
+    expect(screen.getByText("Terminal s1")).toBeInTheDocument();
   });
 
   it("an unpinned view pins the first process it saw", () => {
     const view = renderAt("/focus/sessions/s1");
-    expect(screen.getByText("Phone s1")).toBeInTheDocument();
+    expect(screen.getByText("Terminal s1")).toBeInTheDocument();
     data.session = live({ started_at: 999 });
     view.again();
-    expect(screen.queryByText("Phone s1")).toBeNull();
+    expect(screen.queryByText("Terminal s1")).toBeNull();
     expect(screen.getByText(/restarted/i)).toBeInTheDocument();
   });
 
@@ -89,7 +88,7 @@ describe("FocusSession", () => {
     data.session = live({ id: "old", state: "stopped", ended_at: 150, end_reason: "Task closed: pass", agent_id: "worker-a", task_id: "t-1" });
     data.flock = [{ id: "worker-a", name: "worker-a", session_id: "s2", session_state: "running" }];
     renderAt("/focus/sessions/old");
-    expect(screen.queryByText("Phone old")).toBeNull();
+    expect(screen.queryByText("Terminal old")).toBeNull();
     expect(screen.getByText(/Session ended/)).toBeInTheDocument();
     expect(screen.getByText("Task closed: pass")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Watch worker-a's current session" })).toHaveAttribute("href", "/focus/sessions/s2");
@@ -107,7 +106,7 @@ describe("FocusSession", () => {
   it("a starting session waits for its terminal", () => {
     data.session = live({ state: "starting" });
     renderAt("/focus/sessions/s1");
-    expect(screen.queryByText("Phone s1")).toBeNull();
+    expect(screen.queryByText("Terminal s1")).toBeNull();
     expect(screen.getByText(/is starting/)).toBeInTheDocument();
     expect(screen.queryByText(/Session ended/)).toBeNull();
   });
@@ -129,7 +128,7 @@ describe("FocusSession", () => {
   it("a non-tmux session says there is no terminal view", () => {
     data.session = live({ provider: "fake" });
     renderAt("/focus/sessions/s1");
-    expect(screen.queryByText("Phone s1")).toBeNull();
+    expect(screen.queryByText("Terminal s1")).toBeNull();
     expect(screen.getByText(/no terminal view/i)).toBeInTheDocument();
   });
 });

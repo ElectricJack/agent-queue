@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { attachTouchScroll } from "../terminalTouchScroll";
-import { fitFontSize, MIN_COLUMNS, MIN_FONT_SIZE } from "../terminalSetup";
 
 let element: HTMLDivElement;
 let frames: FrameRequestCallback[];
@@ -122,44 +121,5 @@ describe("terminal touch scrolling", () => {
     touch("touchend", null, 120);
     expect(onTap).not.toHaveBeenCalled();
     detach = () => {};
-  });
-});
-
-describe("phone font fit", () => {
-  /** A cell is 0.6 em wide on a host this many pixels across. */
-  const host = (width: number) => {
-    const tried: number[] = [];
-    const columnsAt = (font: number) => { tried.push(font); return Math.floor(width / (font * 0.6)); };
-    return { tried, columnsAt };
-  };
-
-  it("keeps the preferred size while at least the minimum columns fit", () => {
-    expect(fitFontSize(12, host(390).columnsAt)).toBe(12);
-    // 16 px on 390 px is exactly 40 columns.
-    expect(fitFontSize(16, host(390).columnsAt)).toBe(16);
-  });
-
-  it("shrinks the font so the minimum columns fit, never below the floor", () => {
-    const narrow = host(390);
-    expect(fitFontSize(20, narrow.columnsAt)).toBe(16);
-    expect(narrow.tried).toEqual([20, 16]);
-    expect(fitFontSize(12, host(200).columnsAt)).toBe(MIN_FONT_SIZE);
-  });
-
-  it("steps down again when the estimate rounds short of the minimum", () => {
-    // 14 px yields 39 columns here; one more step down fits.
-    const columns = new Map([[18, 31], [14, 39], [13, 42]]);
-    expect(fitFontSize(18, (font) => columns.get(font) ?? 0)).toBe(13);
-  });
-
-  it("the same width settles on the same size, whatever size it was at", () => {
-    const sizes = [12, 14, 16, 18, 20].map((preferred) => fitFontSize(preferred, host(844).columnsAt));
-    expect(sizes).toEqual([12, 14, 16, 18, 20]);
-    expect(fitFontSize(20, host(390).columnsAt)).toBe(fitFontSize(20, host(390).columnsAt));
-  });
-
-  it("an unmeasurable terminal keeps the preferred size", () => {
-    expect(fitFontSize(18, () => null)).toBe(18);
-    expect(MIN_COLUMNS).toBe(40);
   });
 });

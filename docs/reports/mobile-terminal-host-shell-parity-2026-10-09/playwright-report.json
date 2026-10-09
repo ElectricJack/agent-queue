@@ -1,0 +1,41 @@
+{
+  "browser": "150.0.7871.46",
+  "results": [
+    {
+      "profile": "phone-390",
+      "ok": true,
+      "initial": {
+        "cols": 50,
+        "rows": 44
+      },
+      "keyboard": {
+        "cols": 49,
+        "rows": 23
+      }
+    },
+    {
+      "profile": "android-412",
+      "ok": true,
+      "initial": {
+        "cols": 53,
+        "rows": 48
+      },
+      "keyboard": {
+        "cols": 53,
+        "rows": 26
+      }
+    },
+    {
+      "profile": "phone-320",
+      "ok": true,
+      "initial": {
+        "cols": 40,
+        "rows": 27
+      },
+      "keyboard": {
+        "cols": 40,
+        "rows": 13
+      }
+    }
+  ]
+}

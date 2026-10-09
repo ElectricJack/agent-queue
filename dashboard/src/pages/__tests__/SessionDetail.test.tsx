@@ -14,10 +14,6 @@ vi.mock("../../api/hooks", () => ({
 vi.mock("../../ws/useTranscriptStream", () => ({ useTranscriptStream: () => ({
   entries: [{ _idx: 0, type: "assistant", text: "Saved transcript" }], status: "open", clear: vi.fn(),
 }) }));
-vi.mock("../../ws/usePaneStream", () => ({ usePaneStream: () => ({ screen: null, status: "connecting" }) }));
-vi.mock("../../components/PhoneTerminal", () => ({
-  default: ({ sessionId, focusHref }: { sessionId: string; focusHref?: string }) => <p>Phone {sessionId} → {focusHref}</p>,
-}));
 vi.mock("@xterm/xterm", async () => ({ Terminal: (await import("../../testUtils/terminal")).TerminalMock }));
 vi.mock("@xterm/addon-fit", async () => ({ FitAddon: (await import("../../testUtils/terminal")).FitAddonMock }));
 
@@ -108,20 +104,20 @@ describe("Session terminal", () => {
   });
 });
 
-describe("Session terminal below 768 px", () => {
+describe("The session terminal is one window at every width", () => {
   const original = window.matchMedia;
-  beforeEach(() => {
-    Object.defineProperty(window, "matchMedia", {
-      configurable: true, writable: true,
-      value: (query: string) => ({ matches: query === "(max-width: 767.98px)", media: query,
-        addEventListener: () => {}, removeEventListener: () => {} }),
-    });
-  });
   afterEach(() => Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: original }));
 
-  it("the pane view watches and opens no terminal socket", async () => {
+  it.each(["(max-width: 767.98px)", "(min-width: 768px)"])("opens the host shell page's terminal at %s", async (query) => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true, writable: true,
+      value: (asked: string) => ({ matches: asked === query, media: asked,
+        addEventListener: () => {}, removeEventListener: () => {} }),
+    });
     render(page({ pathname: "/sessions/session-a", state: { terminalFocus: true } }));
-    expect(await screen.findByText("Phone session-a → /focus/sessions/session-a")).toBeInTheDocument();
-    expect(TerminalSocketMock.instances).toHaveLength(0);
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+    // One attach, from the same component the host shell page draws.
+    expect(TerminalSocketMock.instances[0]!.url).toContain("/ws/terminal/session-a");
+    expect(screen.getByRole("textbox", { name: "Worker terminal input" })).toBeInTheDocument();
   });
 });

@@ -2140,9 +2140,7 @@ def _s16_outage(state: dict) -> dict:
         _provb_session, what="a provb pool session for the moved task", profile_id=STD_B,
     )
     worker = Worker.adopt(sess["id"])
-    claimed = worker.claim_next()
-    check(claimed.get("result") == "claimed", f"provb worker claim: {claimed}")
-    check(worker.task_id == pref[0], f"provb worker claimed {worker.task_id}, not {pref[0]}")
+    claim_fixture(worker, pref[0], what=f"S16 provb worker to claim moved task {pref[0]}")
     worker.close(summary="S16 moved task done on provb")
     worker.drain_ack()
     note(f"provb session {sess['id']} claimed and closed {pref[0]}")
@@ -2197,6 +2195,23 @@ def _s16_outage(state: dict) -> dict:
     }
 
 
+def _claim_probation_canary(pinned: str, solo: str) -> tuple[Worker, dict, str]:
+    """Adopt prova's probation canary and claim the held task its pool owns.
+
+    Probation admits one launch -- whichever prova pool asks first.  Its
+    first authenticated call is the success that completes recovery, and
+    the task it claims is a held one, running on prova.
+    """
+    canary = wait_for(
+        lambda: next(iter(live_sessions_for(STD_A) + live_sessions_for(SOLO_A)), None),
+        what="prova's canary launch",
+    )
+    expected = pinned if canary["profile_id"] == STD_A else solo
+    worker = Worker.adopt(canary["id"])
+    claim_fixture(worker, expected, what=f"S16 prova canary {canary['id']} to claim held {expected}")
+    return worker, canary, expected
+
+
 def _s16_recovery(outage: dict) -> str:
     pref, pinned, solo, incident = (
         outage[key] for key in ("pref", "pinned", "solo", "incident")
@@ -2212,18 +2227,7 @@ def _s16_recovery(outage: dict) -> str:
         f"recheck should put prova on probation: {probation}",
     )
     note(f"recheck: probe authenticated -> {probation['state']} ({probation['reason_code']}), probation")
-    # Probation admits one launch -- whichever prova pool asks first.  Its
-    # first authenticated call is the success that completes recovery, and
-    # the task it claims is a held one, running on prova.
-    canary = wait_for(
-        lambda: next(iter(live_sessions_for(STD_A) + live_sessions_for(SOLO_A)), None),
-        what="prova's canary launch",
-    )
-    expected = pinned if canary["profile_id"] == STD_A else solo
-    worker_a = Worker.adopt(canary["id"])
-    claimed = worker_a.claim_next()
-    check(claimed.get("result") == "claimed", f"prova canary claim: {claimed}")
-    check(worker_a.task_id == expected, f"canary claimed {worker_a.task_id}, not {expected}")
+    worker_a, canary, expected = _claim_probation_canary(pinned, solo)
     recovered = wait_provider(PROVA, ("available",), what="the canary's first authenticated call")
     note(
         f"canary {canary['id']} ({canary['profile_id']}) claimed held {expected}; "
@@ -2238,8 +2242,7 @@ def _s16_recovery(outage: dict) -> str:
             profile_id=STD_A,
         )
         worker_p = Worker.adopt(sess_a["id"])
-        claimed = worker_p.claim_next()
-        check(worker_p.task_id == pinned, f"prova claimed {worker_p.task_id}, not the pin")
+        claim_fixture(worker_p, pinned, what=f"S16 prova worker to claim the pinned task {pinned}")
         worker_p.close(summary="S16 pinned task done on prova")
         worker_p.drain_ack()
         note(f"{sess_a['id']} claimed and closed the pinned task {pinned} on prova")

@@ -75,9 +75,10 @@ Every CLI subprocess is
 forced back to this disposable data directory and database even when the
 caller is a worker carrying production-refusal sentinels.
 
-S2, S3, S5, S18, S20 and both S19 fixture claims retry `no_ready_work` within the convergence
-deadline: PostgreSQL `SKIP LOCKED` can skip a READY fixture while another
-transaction holds its row. Other claim outcomes and claims of an unexpected
+S2, S3, S5, S18, S20, both S19 fixture claims and S16's three recovery claims
+(the `provb` worker, the probation canary and the pinned task) retry
+`no_ready_work` within the convergence deadline: PostgreSQL `SKIP LOCKED` can
+skip a READY fixture while another transaction holds its row. Other claim outcomes and claims of an unexpected
 task fail immediately. S2 and S3 accept only the remaining S1 fixtures, including
 when separate pytest items run them in different subprocesses. A timeout reports
 the last claim and the fixture state.
