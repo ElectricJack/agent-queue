@@ -6805,6 +6805,12 @@
         109
       ]
     },
+    "src/orchestrator/provider_failover.py::ProviderFailoverMixin._is_task_writer_owner": {
+      "reason": "Reads the branch ownership row so only the stopped task's own worker/repair writer has its checkout saved; a verifier or any other owner keeps owner recovery. Read-only: no storage, fence change or publication authority."
+    },
+    "src/orchestrator/provider_failover.py::ProviderFailoverMixin._integration_wip_checkpoint": {
+      "reason": "Saves a stopped hierarchy/train writer's checkout as a 'WIP saved by AQ' commit fast-forwarded onto its own task branch, confined to the project's integration repository, then records the resume point. A non-fast-forward branch, another owner or another repository is left integration_managed for owner recovery; the release still goes through arelease_integration_writer_for_retry. Creates no aq/preserved ref, lifecycle journal or delivery claim."
+    },
     "src/orchestrator/provider_failover.py::_INTEGRATION_MANAGED_MODES": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -7937,6 +7943,9 @@
         1475
       ]
     },
+    "src/sessions/reconciler.py::SessionReconciler._hand_back_pool_integration_owner": {
+      "reason": "Reconciler adapter that hands a pool train writer's attached owner back through the existing arelease_integration_writer_for_retry(pool=True) once its WIP is saved clean and pushed; adds no storage, fence semantics or publication authority."
+    },
     "src/sessions/reconciler.py::SessionReconciler._claim_starting_reconciliation": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -8513,6 +8522,12 @@
     },
     "src/commands/project_onboarding_commands.py::ProjectOnboardingCommandsMixin._execute_onboard_project": {
       "reason": "Onboarding command adapter injects integration_app_verify as the repository access verifier before first binding and initial publication. Delegates to the existing onboarding saga; adds no storage, delivery state or publication authority."
+    },
+    "src/orchestrator/stranded_work.py::RESUME_POINT_META": {
+      "reason": "Task metadata key for the saved-WIP resume point, read only by exact-origin preparation; vocabulary with no storage or authority of its own."
+    },
+    "src/orchestrator/stranded_work.py::record_resume_point": {
+      "reason": "Records the commit a stopped hierarchy/train writer's work was saved at, pinned to the task's canonical origin (repository, branch, base SHA). Exact-origin preparation honours it only while Git proves base, saved commit and origin/<branch> are in order, and the launch deletes it; no publication, ref replay or lifecycle journal."
     }
   },
   "exclusions": {
@@ -14336,31 +14351,40 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/orchestrator/provider_failover.py::ProviderFailoverMixin._failover_checkpoint::713028401618ab2c2f7f76e041399199b6df5e6f0ba300c6ae98644c6fb93952": {
-      "line": 104,
+      "line": 100,
       "owner": "ProviderFailoverMixin._failover_checkpoint",
       "call": "set_task_meta",
-      "owner_fingerprint": "b5f3aa5feacbbb01663166b8c05ee7438c8ca8f4f617196c76728b582d1f7454",
+      "owner_fingerprint": "57dcf15cedbd1018d4d584d390809ed0a06a9c47f1f6a3ad824a7258d0f9d6a3",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: UNMERGED_BRANCH_META"
     },
     "src/orchestrator/provider_failover.py::ProviderFailoverMixin._failover_checkpoint::810ed2b1389333bde41953c10bcf7e8f7dd3d4610c3fcf37f23bc796fe8143bf": {
-      "line": 106,
+      "line": 102,
       "owner": "ProviderFailoverMixin._failover_checkpoint",
       "call": "set_task_meta",
-      "owner_fingerprint": "b5f3aa5feacbbb01663166b8c05ee7438c8ca8f4f617196c76728b582d1f7454",
+      "owner_fingerprint": "57dcf15cedbd1018d4d584d390809ed0a06a9c47f1f6a3ad824a7258d0f9d6a3",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: UNMERGED_COMMIT_META"
     },
     "src/orchestrator/provider_failover.py::ProviderFailoverMixin.provider_failover_handoff::823c7e7f13ed7ac2b0b3fd2b3746c824cd2b5d2f90e5260c7087a984a4ece4cd": {
-      "line": 149,
+      "line": 235,
       "owner": "ProviderFailoverMixin.provider_failover_handoff",
       "call": "set_task_meta",
-      "owner_fingerprint": "2e48c0ace65cb5bc46e418e86ca20426917c9a39b4b9b3882c40a78ab0e92bb7",
+      "owner_fingerprint": "bdef87ee4d0e467c93b5c9f7a2cfe6fdceec3e927eaec2a25ebedc6a3498476f",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: inflight.HANDOFF_META"
+    },
+    "src/orchestrator/stranded_work.py::record_resume_point::2b663916202a6ce99dfb412d74a9f87ff533f98c03da3562610da15ffad30cec": {
+      "line": 219,
+      "owner": "record_resume_point",
+      "call": "set_task_meta",
+      "owner_fingerprint": "15a47e712dfda75d5465809af27b89b6048181736a10185d40ac585c214bb06f",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Records the saved-WIP resume point (repository, branch, canonical base SHA, saved commit) for the next exact-origin preparation, which re-proves Git ancestry before continuing from origin/<branch> and otherwise starts from the filing base; the launch deletes it. Not a durable assertion of ref state: no publication, ref replay or duplicate lifecycle. Metadata key: RESUME_POINT_META"
     },
     "src/orchestrator/provider_failover.py::ProviderFailoverMixin.provider_failover_hold::e28dbe2cefe0d666f2fd5b9d60f9ca4b676775de757bf61913eb5099f562da68": {
       "line": 201,
@@ -14498,10 +14522,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
     },
     "src/sessions/reconciler.py::SessionReconciler._apply_verdict::d0667d61d923ef69bf1ebe2b78426b134485aee6cccd32b75095d7e45a868885": {
-      "line": 1249,
+      "line": 1290,
       "owner": "SessionReconciler._apply_verdict",
       "call": "set_task_meta",
-      "owner_fingerprint": "2ab7c9b3d12036e362d4c3902fe3318516ffcbaf1b1c96f151666027317d0204",
+      "owner_fingerprint": "f8e11a2905667de93ce7e6fbaab8256d67350f86ac50fa62d709edb143ab288b",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
@@ -14516,19 +14540,19 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'session_resume_key'"
     },
     "src/sessions/reconciler.py::SessionReconciler._exit_usage_limit_screen::2fc410e5e6cb875696994311109b55067ff1da9123f3889244bb579af7fdf5d0": {
-      "line": 1977,
+      "line": 2055,
       "owner": "SessionReconciler._exit_usage_limit_screen",
       "call": "set_task_meta",
-      "owner_fingerprint": "468f0e119ba2443bb0e18f5656b126a0b15491cb959b634d55715d6e4045ef7f",
+      "owner_fingerprint": "9bedd5ed7708c79f8018e3a7e021db6f9149fde8b4f2c32def029b62bf73715c",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_NUDGES"
     },
     "src/sessions/reconciler.py::SessionReconciler._exit_usage_limit_screen::6732ef9f714e4fd40a44bc09eb86d98df200c62ed9943329ff0c3deb8ca6103f": {
-      "line": 1978,
+      "line": 2056,
       "owner": "SessionReconciler._exit_usage_limit_screen",
       "call": "set_task_meta",
-      "owner_fingerprint": "468f0e119ba2443bb0e18f5656b126a0b15491cb959b634d55715d6e4045ef7f",
+      "owner_fingerprint": "9bedd5ed7708c79f8018e3a7e021db6f9149fde8b4f2c32def029b62bf73715c",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_LAST_ACTION"
@@ -15546,6 +15570,7 @@
     "src/orchestrator/merge_slot.py::renew_merge_slot": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/stranded_work.py::UNMERGED_BRANCH_META": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/stranded_work.py::UNMERGED_COMMIT_META": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/orchestrator/stranded_work.py::WIP_SAVED_PREFIX": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/stranded_work.py::save_wip_to_task_branch": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/stranded_work.py::unpushed_close_issues": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/orchestrator/task_checkpoint.py::CHECKPOINT_META": "Generic dependency; integration-specific definitions in this file are charged independently.",
@@ -15651,7 +15676,9 @@
     "src/providers/availability_service.py::ProviderAvailabilityService": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/providers/inflight.py::HANDOFF_META": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/providers/inflight.py::LAUNCH_REFUSED": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/providers/inflight.py::PRIME_SCREEN_BYTES": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/providers/inflight.py::ProviderFailure": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/providers/inflight.py::tail_within": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/providers/intent.py::CLASS_ONLY": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/providers/intent.py::resolve_intent": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/providers/reroute.py::ProviderRerouteService": "Generic dependency; integration-specific definitions in this file are charged independently.",

@@ -160,7 +160,7 @@ def detect_usage_limit_screen(
         exhausted = _FREE_EXHAUSTED_RE.match(match["message"]) is not None
         if not exhausted and seconds < 3600:
             continue  # A normal brief server retry is still working.
-        status = line[match.start("message") : match.end("status_end")]
+        status = line[match.span("message")[0] : match.span("status_end")[1]]
         return UsageLimitScreen(status, seconds or None, exhausted)
     return None
 
