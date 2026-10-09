@@ -18,7 +18,8 @@ export interface PoolEntry {
   instances: SessionSummary[];
   /**
    * Live *task*-lifecycle sessions on a route this pool serves — e.g. tasks
-   * launched on the profile before it switched to ``lifecycle: pool``. They
+   * launched on the profile before it switched to ``lifecycle: pool``, or a
+   * dedicated profile's task (spec-ingest) on the same harness and class. They
    * are not pool members and are not in ``pool``'s supply numbers, but they
    * are holding work the operator wants to watch. Oldest first, like
    * ``instances``.
@@ -200,6 +201,21 @@ export function outsideSessionAgent(session: OutsidePoolSession, roster: FlockAg
   return roster.find((agent) => !!agent.session_id && agent.session_id === session.session_id)
     ?? (session.task_id ? roster.find((agent) => agent.current_task_id === session.task_id) : undefined)
     ?? null;
+}
+
+/**
+ * What an outside-pool row is called.
+ *
+ * The agent running the session names it only when that agent belongs to the
+ * session's own profile. The push scheduler may run a dedicated task session
+ * (spec-ingest, say) on a stopped pool worker's agent row, and that row keeps
+ * its pool identity — ``deep-high-codex-0901`` on ``deep-high-codex`` — so
+ * its name would read as a pool worker listed outside its own pool. Such a
+ * row is named by the session's profile; one no agent runs, by its session.
+ */
+export function outsideSessionName(session: OutsidePoolSession, agent: FlockAgent | null): string {
+  if (!agent) return session.name;
+  return agent.profile_id === session.profile_id && agent.name ? agent.name : session.profile_id;
 }
 
 /**

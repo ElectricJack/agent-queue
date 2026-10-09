@@ -9,7 +9,7 @@ import type { FlockAgent } from "../../../api/agents";
 import type { PoolProjectStatus, PoolStatusRow, SessionSummary } from "../../../api/hooks";
 import { boundsOf, scaleRequest, validateBounds } from "../PoolScaleFields";
 import { PoolSupplyRow } from "../PoolMetadata";
-import { poolEntries, poolPlacement, poolProfileIds, isPoolAgent, formatIdle, outsideSessionAgent, splitBusyPoolEntries, useDebouncedBusyPoolEntries, type OutsidePoolSession } from "../pools";
+import { poolEntries, poolPlacement, poolProfileIds, isPoolAgent, formatIdle, outsideSessionAgent, outsideSessionName, splitBusyPoolEntries, useDebouncedBusyPoolEntries, type OutsidePoolSession } from "../pools";
 import { parseAgentSelection, poolSelectionKey, selectionAddress } from "../useAgentSelection";
 import { TerminalMock, FitAddonMock, TerminalSocketMock } from "../../../testUtils/terminal";
 import { createFakeDashboardStateServer, TestDashboardState } from "../../../testUtils/dashboardState";
@@ -245,6 +245,16 @@ describe("pool derivation", () => {
     expect(outsideSessionAgent(outside("s-3", { task_id: "task-9" }), [byTask, bySession])).toBeNull();
     // A session with no task never matches an idle agent through a null id.
     expect(outsideSessionAgent(outside("s-4"), [{ ...byTask, current_task_id: null }])).toBeNull();
+  });
+
+  it("names an outside session by its agent only when the agent belongs to the session's profile", () => {
+    const own = agent("own", "opencode-a", "worker-standard");
+    // A stopped pool worker reused for a dedicated task session keeps its pool name.
+    const borrowed = agent("borrowed", "deep-high-codex-0901", "deep-high-codex");
+    const ingest = outside("s-1", { profile_id: "spec-ingest", name: "s-solid-apex-97" });
+    expect(outsideSessionName(outside("s-2"), own)).toBe("opencode-a");
+    expect(outsideSessionName(ingest, borrowed)).toBe("spec-ingest");
+    expect(outsideSessionName(ingest, null)).toBe("s-solid-apex-97");
   });
 
   it("separates busy pools from configured pools without claimed work", () => {
@@ -517,6 +527,63 @@ describe("pools in the agent flock", () => {
       // A real pool member stays reachable through its pool only, as before.
       expect(screen.queryByRole("button", { name: /worker-standard-9f2a/ })).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Open Builder" })).toBeInTheDocument();
+    });
+  });
+
+  describe("a Codex pool with a dedicated task session on its route", () => {
+    // Live on 2026-10-08: the deep-high-codex pool had a busy member, and a
+    // spec-ingest task session (codex, deep-high) ran on the same route. The
+    // push scheduler had put that session on a stopped pool worker's agent
+    // row, which keeps its pool identity: name deep-high-codex-0901, profile
+    // deep-high-codex.
+    const codex = "deep-high-codex";
+    beforeEach(() => {
+      api.listAgents.mockResolvedValue({ data: { agents: [
+        agent("fixed", "Builder", "implementer"),
+        { ...agent("member", "deep-high-codex-45fb", codex), harness: "codex", intelligence_class: "deep-high",
+          state: "busy", session_id: "pool-s1", current_task_id: "task-pool", current_task_title: "Pool work" },
+        { ...agent("borrowed", "deep-high-codex-0901", codex), harness: "codex", intelligence_class: "deep-high",
+          state: "busy", session_id: "ingest-s1", current_task_id: "solid-apex-97", current_task_title: "Ingest spec" },
+      ], count: 3 } });
+      api.listProfiles.mockResolvedValue({ data: { profiles: [
+        { id: "implementer", name: "Implementer" },
+        { id: codex, name: "Deep high Codex", lifecycle: "pool" },
+        { id: "spec-ingest", name: "Spec ingest" },
+      ] } });
+      api.sessionList.mockResolvedValue({ data: { success: true, sessions: [
+        instance("pool-s1", { id: "pool-s1", name: "p-deep-high-codex--agent-queue--pool-s1", profile_id: codex,
+          harness: "codex", model: "gpt-5.5", intelligence_class: "deep-high", task_id: "task-pool" }),
+      ], count: 1 } });
+      api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool({
+        profile_id: codex, running_busy: 1, running_idle: 0, desired: 1, ready: 0,
+        outside_pools: [outside("ingest-s1", { profile_id: "spec-ingest", harness: "codex",
+          intelligence_class: "deep-high", name: "s-solid-apex-97", task_id: "solid-apex-97",
+          task_title: "Ingest spec" })],
+      })] } });
+    });
+
+    it("keeps the pool member inside its pool and names the outside row by its own profile", async () => {
+      renderAgents("/");
+
+      const poolRow = await screen.findByRole("button", { name: "Open " + codex + " pool" }, SLOW);
+      expect(within(poolRow).getByText("1 live instance")).toBeInTheDocument();
+      const nested = await screen.findByRole("list", { name: "Sessions outside the " + codex + " pool" }, SLOW);
+      const rows = within(nested).getAllByRole("listitem");
+      // Only the dedicated session is outside the pool, named for what it is.
+      expect(rows).toHaveLength(1);
+      expect(within(rows[0]!).getByRole("button", { name: "Open spec-ingest (outside pool)" })).toBeInTheDocument();
+      expect(within(rows[0]!).getByText("spec-ingest")).toHaveAttribute("title", "s-solid-apex-97");
+      expect(within(rows[0]!).getByText("Outside pool")).toBeInTheDocument();
+      // No pool-worker identity is shown as outside the pool, and neither
+      // agent row is listed beside the pool.
+      expect(screen.queryByText("deep-high-codex-0901")).not.toBeInTheDocument();
+      expect(screen.queryByText("deep-high-codex-45fb")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /deep-high-codex-/ })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Open Builder" })).toBeInTheDocument();
+
+      // The row still opens the agent window running the session.
+      fireEvent.click(within(rows[0]!).getByRole("button", { name: "Open spec-ingest (outside pool)" }));
+      await waitFor(() => expect(screen.getByLabelText("Current URL")).toHaveTextContent("agent=borrowed"), SLOW);
     });
   });
 
