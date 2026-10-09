@@ -1991,6 +1991,43 @@ async def test_isolated_app_push_of_several_heads_imports_once_and_leases_each(
 
 
 @pytest.mark.asyncio
+async def test_isolated_app_push_import_never_starts_detached_maintenance(
+    tmp_path, monkeypatch
+):
+    """Git 2.47+ ends a fetch with ``maintenance run --auto --detach``.
+
+    That process calls setsid, so the group kill cannot reach it, and it holds
+    the import's stdout pipe until it closes its inherited descriptors: a push
+    abandoned at its deadline could return with that pipe still open.
+    """
+    checkout, target, _, base, tip = _git_push_case(tmp_path)
+    manager = GitManager()
+    fetches = []
+    real_import = manager._run_isolated_import_git
+
+    async def watched(args, **kwargs):
+        if "fetch" in args:
+            fetches.append(args)
+        return await real_import(args, **kwargs)
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", watched)
+
+    await manager._apush_oid_with_app_auth_to_url(
+        str(checkout),
+        destination_url=target.as_uri(),
+        token="installation-token-sentinel",
+        tip_oid=tip,
+        branch="main",
+        expected_old_oid=base,
+    )
+
+    [fetch] = fetches
+    assert "maintenance.auto=false" in fetch
+    assert fetch.index("maintenance.auto=false") < fetch.index("fetch")
+    assert _git(["rev-parse", "refs/heads/main"], target) == tip
+
+
+@pytest.mark.asyncio
 async def test_new_heads_report_a_failed_transfer_per_head_and_never_move_one(
     tmp_path, monkeypatch
 ):

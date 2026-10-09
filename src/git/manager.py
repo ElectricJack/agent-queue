@@ -4974,13 +4974,18 @@ class GitManager:
             )
             if imports:
                 # One import carries every tip's graph; shared history is
-                # copied once rather than once per head.
+                # copied once rather than once per head.  Git 2.47+ ends a
+                # fetch with a detached ``maintenance run --auto``: it calls
+                # setsid, so killpg cannot reach it, and until it closes its
+                # inherited stdout it holds this command's pipe open.
                 await self._run_isolated_import_git(
                     [
                         "-c",
                         "protocol.allow=never",
                         "-c",
                         "protocol.file.allow=always",
+                        "-c",
+                        "maintenance.auto=false",
                         f"--git-dir={repository}",
                         "fetch",
                         "--no-tags",
