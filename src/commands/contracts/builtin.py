@@ -454,6 +454,9 @@ class TaskRoutePlanValue(CommandValue):
     reason: str | None = None
     policy_sha256: str | None = None
     class_clamped_from: str | None = None
+    #: ``{from, to, risk}`` when the policy's ``risk`` floor raised the class;
+    #: ``task_route_apply`` copies it into the route record.
+    class_raised_for_risk: dict[str, Any] | None = None
     classification: dict[str, Any] | None = None
     #: The policy's ``balance`` block, for ``task_route_apply``'s re-selection.
     balance: dict[str, Any] | None = None
@@ -1554,6 +1557,7 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
             "allowed_classes": "Classes the classifier may answer",
             "providers": "Unavailable providers",
             "class_clamped_from": "Hint clamped from",
+            "class_raised_for_risk": "Class raised for risk",
             "classification": "Classification",
             "balance": "Load-score weights",
         },

@@ -1034,9 +1034,16 @@ def test_routine_preference_falls_back_to_claude_without_raising_class(cause):
 def test_routine_preference_preserves_local_design_art_and_operator_rules():
     policy, digest = routine_policy()
     narrow = plan_route(_task(task_type="bugfix"), policy, _snapshot(),
-                        policy_sha256=digest, classification=NARROW_YES)
+                        policy_sha256=digest, classification={**NARROW_YES, "risk": "low"})
     assert narrow.value["provider"] == "opencode"
     assert narrow.value["decision"]["mode"] == "lane_preference"
+    # The shipped narrow lanes take only work classified low risk: narrow and
+    # test-verified alone, or with no risk answer, no longer qualifies.
+    for classification in (NARROW_YES, {**NARROW_YES, "risk": "medium"}):
+        hosted = plan_route(_task(task_type="bugfix"), policy, _snapshot(),
+                            policy_sha256=digest, classification=classification)
+        assert hosted.value["provider"] == "codex", classification
+        assert {c["harness"] for c in hosted.value["candidates"]} <= {"claude", "codex"}
     assert routine_plan(task_type="design").value["profile_id"] == "deep-high-claude"
     assert routine_plan(task_type="art").value["provider_intent"] == "pinned"
     assert routine_plan(_snapshot(out={"codex"}), task_type="art").outcome == "held"
@@ -1103,8 +1110,10 @@ def test_origin_can_disable_hosted_preference_without_changing_class_fit():
     body = policy.model_dump(mode="json", by_alias=True)
     body["origins"]["integration_repair"]["prefer_harnesses"] = []
     policy, digest = parse_policy(json.dumps(body))
+    # A repair's risk could raise its class, so the plan needs the risk answer.
     result = plan_route(_task(task_type="bugfix", created_by_kind="integration_repair"),
-                        policy, _snapshot(busy={"standard-high-codex": 1}), policy_sha256=digest)
+                        policy, _snapshot(busy={"standard-high-codex": 1}), policy_sha256=digest,
+                        classification={**NARROW_NO, "risk": "medium"})
     assert result.value["profile_id"] == "standard-high-claude"
     assert result.value["intelligence_class"] == "standard-high"
 
@@ -1158,6 +1167,11 @@ def test_replay_routes_a_projected_repair_on_its_routed_origin():
 # -- the per-task preference (mandatory routing §4) -------------------------------
 
 
+#: A research task classified medium risk: the shipped policy's risk table
+#: could raise research, so the plan needs the risk answer before it routes.
+RESEARCH_MEDIUM = {**NARROW_NO, "task_type": "research", "risk": "medium"}
+
+
 def _preferred_plans(snapshot=None, **task_changes):
     """``{'soft': plan, 'strict': plan}`` for the same task against one snapshot."""
     policy, digest = routine_policy()
@@ -1167,6 +1181,7 @@ def _preferred_plans(snapshot=None, **task_changes):
         mode: plan_route(
             _task(**{**task_changes, "prefer_mode": mode}),
             policy, snapshot or _snapshot(), policy_sha256=digest,
+            classification=RESEARCH_MEDIUM,
         )
         for mode in ("soft", "strict")
     }
@@ -1239,8 +1254,10 @@ def test_a_preference_outranks_a_lane_preference_but_not_a_hold_lane():
     policy, digest = routine_policy()
     narrow = plan_route(
         _task(task_type="bugfix", prefer_target="claude", prefer_mode="soft"),
-        policy, _snapshot(), policy_sha256=digest, classification=NARROW_YES,
+        policy, _snapshot(), policy_sha256=digest,
+        classification={**NARROW_YES, "risk": "low"},
     )
+    assert "narrow" in {c["lane"] for c in narrow.value["candidates"]}
     assert narrow.value["profile_id"] == "standard-high-claude"
     assert narrow.value["decision"]["mode"] == "task_preference"
     art = plan_route(
@@ -1384,7 +1401,8 @@ def _risk_plan(text: str, task: TaskFacts, snapshot: Snapshot | None = None,
 def test_a_policy_without_risk_keys_keeps_its_digest() -> None:
     # Pinned before the risk keys existed: an optional key at its default is
     # left out of the canonical JSON, so no existing policy's digest moves.
-    # SHIPPED_POLICY is the default routing playbook's policy.
+    # SHIPPED_POLICY is the default routing playbook's policy before the
+    # risk-aware revision; the shipped playbook now uses the risk keys.
     assert DIGEST == "sha256:d9655c554de53d0b7579a30baab409a3a25c178f80339e705315c8bc07f2ab03"
     assert parse_policy(SHIPPED_POLICY)[1] == (
         "sha256:af27b036017f783c1784e7e11c1c3800fa9ab971fdd9db241e9a0a619cd4f63e"

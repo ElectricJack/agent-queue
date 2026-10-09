@@ -47,7 +47,7 @@ CLASSES = {
         "anthropic": {"model": f"claude-{class_id}"},
         "codex": {"model": f"gpt-{class_id}"},
     })
-    for class_id in ("standard-high", "deep-high")
+    for class_id in ("standard-high", "deep-low", "deep-high")
 }
 
 NARROW_DESIGN = {
@@ -183,8 +183,13 @@ def _steps(runs) -> list[str]:
 async def test_a_task_whose_kind_and_hint_decide_the_route_needs_no_llm(
     handler, monkeypatch,
 ):
-    """Acceptance: the kind and the hint decide, so no classification is asked."""
-    task = await _create(handler, "hinted", task_type=TaskType.BUGFIX, class_hint="standard-high")
+    """Acceptance: the kind and the hint decide, so no classification is asked.
+
+    Under the shipped ``risk`` table that takes a class at or above every risk
+    floor, with every candidate already on Claude or Codex: no risk answer
+    could change the route.
+    """
+    task = await _create(handler, "hinted", task_type=TaskType.BUGFIX, class_hint="deep-high")
     llm = _ScriptedLlm(NARROW_DESIGN)
 
     result, runs = await _dispatch(handler, task, llm, monkeypatch)
@@ -198,12 +203,59 @@ async def test_a_task_whose_kind_and_hint_decide_the_route_needs_no_llm(
     assert "route-task--classify" not in steps
     routed = await handler.db.get_task("hinted")
     assert routed.route_source == ROUTER
-    # Equal pressure on both standard-high pools; ``tie_order`` puts Codex first.
-    assert (routed.profile_id, routed.intelligence_class) == (
-        "standard-high-codex", "standard-high",
-    )
+    # ``reserved`` keeps deep-high Claude for design, so Codex takes it.
+    assert (routed.profile_id, routed.intelligence_class) == ("deep-high-codex", "deep-high")
     assert routed.route["rule"] == "kinds.bugfix"
     assert routed.route["classification"] is None
+
+
+@pytest.mark.parametrize(
+    ("answer", "routed_to", "raised"),
+    [
+        # Low risk has no rule: the hint stands.
+        ({"risk": "low"}, ("standard-high-codex", "standard-high"), None),
+        # Very high risk floors at deep-low, beating the hint...
+        ({"risk": "very_high"}, ("deep-low-codex", "deep-low"),
+         {"from": "standard-high", "to": "deep-low", "risk": "very_high"}),
+        # ...unless the change is narrow and test-verified.
+        ({"risk": "very_high", "narrow": True, "test_verified": True},
+         ("standard-high-codex", "standard-high"), None),
+    ],
+    ids=["low", "very_high", "very_high_narrow_tested"],
+)
+async def test_a_hinted_task_below_the_top_risk_floor_is_classified_for_its_risk(
+    handler, monkeypatch, answer, routed_to, raised,
+):
+    """Risk-aware routing: a risk floor could raise the hint, so the risk is asked.
+
+    The raise travels from ``task_route_plan`` through the playbook's binding
+    into the route record ``task_route_apply`` writes.
+    """
+    for harness in ("claude", "codex"):
+        await handler.db.create_profile(AgentProfile(
+            id=f"deep-low-{harness}", name="", lifecycle="pool", harness=harness,
+            default_class="deep-low", max_active=1,
+        ))
+    task = await _create(handler, "risky", task_type=TaskType.BUGFIX, class_hint="standard-high")
+    llm = _ScriptedLlm({
+        **NARROW_DESIGN, "task_type": "bugfix", "intelligence_class": "standard-high",
+        "risk_reason": "deletes branches on origin", **answer,
+    })
+
+    _result, runs = await _dispatch(handler, task, llm, monkeypatch)
+
+    (run,) = runs.snapshots.values()
+    assert run.lifecycle.value == "completed", run.error
+    assert len(llm.prompts) == 1
+    # Typed and hinted: only the risk and the flags its relax reads are asked.
+    assert llm.inputs["questions"] == ["narrow", "risk", "test_verified"]
+    assert "route-task--apply_b" in _steps(runs)
+    routed = await handler.db.get_task("risky")
+    assert (routed.profile_id, routed.intelligence_class) == routed_to
+    assert routed.route.get("class_raised_for_risk") == raised
+    assert routed.route["classification"]["risk"] == answer["risk"]
+    assert routed.route["classification"]["risk_reason"] == "deletes branches on origin"
+    assert {c["harness"] for c in routed.route["candidates"]} <= {"claude", "codex"}
 
 
 @pytest.mark.parametrize("origin", ["integration_repair", "development_repair", "ordinary"])
@@ -245,8 +297,10 @@ async def test_shipped_router_keeps_bugfix_repairs_off_local_and_hosted_opencode
             handler, "repair", task_type=TaskType.BUGFIX, class_hint="standard-high",
             created_by_kind=origin,
         )
+    # Narrow, test-verified and low risk: the strongest case for a narrow
+    # lane, which a repair origin still never takes.
     llm = _ScriptedLlm({**NARROW_DESIGN, "task_type": "bugfix", "narrow": True,
-                        "test_verified": True})
+                        "test_verified": True, "risk": "low", "risk_reason": "one file"})
 
     _result, runs = await _dispatch(handler, task, llm, monkeypatch)
 
@@ -258,7 +312,9 @@ async def test_shipped_router_keeps_bugfix_repairs_off_local_and_hosted_opencode
     assert routed.route["rule"] == f"kinds.bugfix+origins.{effective_origin}"
     assert {c["harness"] for c in routed.route["candidates"]} == {"codex", "claude"}
     assert routed.profile_id in {"standard-high-codex", "standard-high-claude"}
-    assert llm.prompts == []
+    # A risk floor could raise the hint, so the router asks for the risk.
+    assert len(llm.prompts) == 1
+    assert routed.route["classification"]["risk"] == "low"
     assert routed.created_by_kind == task.created_by_kind
 
 
@@ -300,7 +356,8 @@ async def test_an_unhinted_task_is_classified_then_routed(handler, monkeypatch):
     (run,) = runs.snapshots.values()
     assert run.lifecycle.value == "completed", run.error
     assert len(llm.prompts) == 1 and llm.prompts[0].startswith("## Classifying a task")
-    # §6.5: the classifier never sees a profile, a provider or a load.
+    # §6.5: the classifier never sees a profile, a provider, a load or the
+    # task's priority.
     assert set(llm.inputs) == {
         "title", "description", "task_type", "class_hint",
         "questions", "allowed_kinds", "allowed_classes",
@@ -352,10 +409,17 @@ async def test_a_legacy_route_goes_back_through_the_router(handler, monkeypatch)
         profile_id="standard-high-claude", intelligence_class="standard-high",
     )
 
-    _result, runs = await _dispatch(handler, task, _ScriptedLlm(NARROW_DESIGN), monkeypatch)
+    # The research kind could be raised by a risk floor, so it is classified.
+    llm = _ScriptedLlm({
+        **NARROW_DESIGN, "task_type": "research", "intelligence_class": "standard-high",
+        "risk": "medium", "risk_reason": "reads the scheduler",
+    })
+
+    _result, runs = await _dispatch(handler, task, llm, monkeypatch)
 
     (run,) = runs.snapshots.values()
     assert run.lifecycle.value == "completed", run.error
+    assert len(llm.prompts) == 1
     routed = await handler.db.get_task("old")
     assert routed.route_source == ROUTER
     assert routed.profile_id == "standard-high-codex"
