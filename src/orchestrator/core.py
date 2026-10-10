@@ -1810,6 +1810,11 @@ class Orchestrator(
                     "Seeded or refreshed reviewed playbook bundles in the vault: %s",
                     ", ".join(written),
                 )
+            source_backfill = await self._command_handler._backfill_playbook_sources()
+            if source_backfill["restored"]:
+                logger.info("Restored %d retained playbook source(s)", len(source_backfill["restored"]))
+            if source_backfill["errors"]:
+                logger.warning("Playbook source backfill errors: %s", source_backfill["errors"])
             self.required_playbook_reconciler = RequiredPlaybookReconciler(
                 config=self.config, db=self.db, handler=self._command_handler
             )

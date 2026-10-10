@@ -149,6 +149,8 @@ def policy_export(ctx, project_id, path, name, yes):
     if name:
         args["name"] = name
     preview = execute(ctx, "policy_export", args)
+    for warning in preview.get("warnings", []):
+        console.print(warning["message"], markup=False)
     for entry in preview["files"]:
         console.print(f"{entry['path']}\n{entry['content']}", markup=False)
     if not yes:

@@ -40,6 +40,7 @@ function plus a factory returning the :class:`DoctorCheck` list.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 from pathlib import Path
@@ -53,6 +54,60 @@ INVALID_CHECK_ID = "playbooks.activation_invalid"
 REPLAY_POLICY_CHECK_ID = "playbooks.pending_event_replay_policy"
 REVIEWED_BUNDLES_CHECK_ID = "playbooks.reviewed_bundles"
 ORPHANED_RUNS_CHECK_ID = "playbooks.orphaned_runs"
+SOURCE_CHECK_ID = "playbooks.source_unavailable"
+
+
+async def _check_source_unavailable(ctx: DoctorContext) -> CheckResult:
+    """Name enabled artifacts without verified retained Markdown; never repair."""
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.run_state import ArtifactVerificationFailed
+
+    playbooks = getattr(ctx.config, "playbooks", None)
+    if playbooks is None or not getattr(playbooks, "enabled", False):
+        return CheckResult(
+            id=SOURCE_CHECK_ID, severity=Severity.INFO, detail="playbooks.enabled is false"
+        )
+    if ctx.db is None or not hasattr(ctx.db, "list_playbook_activations"):
+        return CheckResult(
+            id=SOURCE_CHECK_ID, severity=Severity.INFO, detail="V2 artifact tables are not available"
+        )
+    store = ArtifactStore(ctx.config.compiled_root)
+    activations = await ctx.db.list_playbook_activations(enabled_only=True)
+    faults = []
+    for row in activations:
+        sha = row.get("active_artifact_sha256")
+        problem = None
+        if not sha:
+            problem = "no_artifact"
+        else:
+            try:
+                await asyncio.to_thread(store.load_source, sha)
+            except FileNotFoundError:
+                problem = "source_missing"
+            except (ArtifactVerificationFailed, ValueError, UnicodeError):
+                problem = "source_invalid"
+            except OSError:
+                problem = "source_unreadable"
+        if problem:
+            playbook_id = row["playbook_id"]
+            faults.append({
+                "playbook_id": playbook_id,
+                "scope": row["scope"],
+                "scope_identifier": row.get("scope_identifier", ""),
+                "artifact_sha256": sha,
+                "problem": problem,
+                "remediation": f"recompile and reactivate {playbook_id}",
+            })
+    return CheckResult(
+        id=SOURCE_CHECK_ID,
+        severity=Severity.WARN if faults else Severity.OK,
+        detail=(
+            f"{len(faults)} enabled activation(s) have source unavailable; "
+            "recompile and reactivate the named playbooks"
+            if faults else f"{len(activations)} enabled activation(s) have verified retained source"
+        ),
+        data={"checked": len(activations), "count": len(faults), "faults": faults},
+    )
 
 
 async def _check_orphaned_runs(ctx: DoctorContext) -> CheckResult:
@@ -447,6 +502,7 @@ def playbook_v2_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(id=ORPHANED_RUNS_CHECK_ID, run=_check_orphaned_runs, owner=OWNER),
         DoctorCheck(id=CHECK_ID, run=_check_artifact_integrity, fix=None, owner=OWNER),
+        DoctorCheck(id=SOURCE_CHECK_ID, run=_check_source_unavailable, fix=None, owner=OWNER),
         DoctorCheck(id=STALE_CHECK_ID, run=_check_activation_stale, fix=None, owner=OWNER),
         DoctorCheck(id=INVALID_CHECK_ID, run=_check_activation_invalid, fix=None, owner=OWNER),
         DoctorCheck(

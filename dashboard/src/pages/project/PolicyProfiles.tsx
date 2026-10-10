@@ -97,6 +97,9 @@ export function PolicyDialog({ projectId, mode = "import", onClose }: {
       {receipt ? <p role="status">{receipt}</p> : mode === "export" ? <>
         <button className={button} disabled={busy} onClick={() => void run(async () => { await exportPolicy.mutateAsync({ project_id: projectId }); })}>Preview exact files</button>
         {exportPolicy.data && <>
+          {exportPolicy.data.warnings?.map(warning => <p key={warning.item_id} role="status" className="text-sm text-amber-300">
+            {warning.message}
+          </p>)}
           {exportPolicy.data.files.map(file => <details key={file.path} className="rounded border border-gray-700 p-2">
             <summary>{file.path}</summary><pre className="overflow-auto whitespace-pre-wrap text-xs">{file.content}</pre>
           </details>)}

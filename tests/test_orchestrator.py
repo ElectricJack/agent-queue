@@ -67,6 +67,41 @@ class MockAdapterFactory:
         return MockAdapter(result=self.result, tokens=self.tokens, on_wait=self.on_wait)
 
 
+async def test_startup_backfills_legacy_playbook_sources_including_inactive_artifacts(tmp_path):
+    from pathlib import Path
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.definition import PlaybookDefinition, source_digest
+    from tests.playbook_v2_helpers import twin
+
+    config = AppConfig(
+        database=DatabaseConfig(url=lease_dsn("source-backfill.db")),
+        workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
+    )
+    config.playbooks.enabled = True
+    source = "# Legacy inactive policy\n"
+    path = Path(config.vault_root) / "system/playbooks/legacy-inactive.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(source)
+    definition = PlaybookDefinition.model_validate(twin()).model_copy(
+        update={"source_hash": source_digest(source)}
+    )
+    store = ArtifactStore(config.compiled_root)
+    ref = store.put(
+        definition, source_digest=definition.source_hash,
+        contract_fingerprint="sha256:" + "b" * 64,
+        profile_fingerprint="profile", compiler_build="test",
+    )
+    assert not store.source_path_for(ref.artifact_sha256).exists()
+    orch = Orchestrator(config, runtimes=MockAdapterFactory())
+    orch.set_command_handler(CommandHandler(orch, config))
+    try:
+        await orch.initialize()
+        assert store.load_source(ref.artifact_sha256) == source
+    finally:
+        await orch.shutdown()
+
+
 async def _drain_running_tasks(orch: Orchestrator) -> None:
     """Wait for all background tasks launched by the orchestrator to complete.
 

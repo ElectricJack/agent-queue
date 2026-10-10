@@ -15,6 +15,18 @@ Enabled system playbooks and referenced profile templates accompany project poli
 system-origin labels. Required playbook dependencies must have reviewed artifacts.
 Derived worker rungs are regenerated locally rather than exported or overwritten.
 
+Legacy compiled artifacts may lack retained Markdown. Startup backfills missing
+source files once per artifact using only digest-matching sources from the fixed
+vault playbook directories and reviewed bundle catalogues, including inactive
+artifacts. Existing retained sources are never replaced. Export uses retained
+source first, falling back to a digest-matching vault or catalogue source without
+writing during preview. When no exact source is available, export omits that
+playbook and any playbooks requiring it, and displays per-item warnings in the CLI
+and dashboard preview with instructions to recompile and reactivate the affected
+id. Missing compiled artifacts produce a contextual export error, never a raw
+filesystem exception. The read-only `playbooks.source_unavailable` doctor check
+reports enabled activations whose retained source is missing or fails verification.
+
 The manifest has format/version, name, AQ version, typed item identifiers,
 original scope, payload checksums and declared placeholders. Project id,
 repository, branch and workspace values become placeholders with no source-value

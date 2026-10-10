@@ -12101,7 +12101,7 @@
         "orchestrator"
       ],
       "default_arm": true,
-      "digest": "sha256:f0d840e88db281bca133e442151f776569e19e88c8ad6c526971ec88ec47503d",
+      "digest": "sha256:163e3be8b7eb76d9e1a0840c366084fdcdc491b8eb22023ea9b7c4ea89924340",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -12117,6 +12117,7 @@
         "src.models",
         "src.orchestrator",
         "src.playbooks.artifact_store",
+        "src.playbooks.definition",
         "src.playbooks.run_state",
         "src.playbooks.runtime",
         "src.playbooks.services",
@@ -12378,7 +12379,7 @@
         "playbook-definition"
       ],
       "default_arm": true,
-      "digest": "sha256:f878a993a9978c1dbcbc04cd543fff627837edd5d681ffea5b0737d2c89707d2",
+      "digest": "sha256:e14b2e4a52e262870970a062c048919c09a1706b874292e11730214cfb065893",
       "imports": [
         "src.config",
         "src.playbooks",
@@ -12388,7 +12389,9 @@
         "src.playbooks.retention",
         "src.playbooks.run_state"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Content-addressed Playbook V2 artifact storage."
     },
     "tests/test_playbook_compiler_scope.py": {
@@ -12881,16 +12884,20 @@
         "policy-profiles"
       ],
       "default_arm": true,
-      "digest": "sha256:60aea7e4d492ad3d7a20810f91a2637d4844c445b84359c0bce46926a05fb09c",
+      "digest": "sha256:c2fdc3f46f019471cf0bbbfeb7f9a00f2d3f3e2415bbd047b8e36e1ccb63ae62",
       "imports": [
         "src.api",
         "src.api.app",
         "src.api.dependencies",
         "src.commands.principal",
         "src.database.tables",
+        "src.doctor",
+        "src.doctor.models",
+        "src.doctor.playbook_v2_checks",
         "src.event_bus",
         "src.integration.promotion_steps",
         "src.models",
+        "src.playbooks.artifact_store",
         "src.playbooks.definition",
         "src.policy_profiles.archive",
         "src.policy_profiles.models",

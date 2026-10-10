@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from uuid import uuid4
 
@@ -26,6 +27,33 @@ from src.playbooks.run_state import (
 )
 
 
+def index_playbook_sources(vault_root: Path) -> dict[str, str]:
+    """Index only playbook source locations, never arbitrary vault content."""
+    from src.playbooks.definition import source_digest
+
+    sources: dict[str, str] = {}
+    roots = (
+        (vault_root, (
+            "system/playbooks/*.md",
+            "agent-types/*/playbooks/*.md",
+            "projects/*/playbooks/*.md",
+            "reviewed-playbooks/*/source.md",
+        )),
+        (Path(__file__).resolve().parents[1] / "prompts/reviewed_playbooks", ("*/source.md",)),
+    )
+    for root, patterns in roots:
+        for pattern in patterns:
+            for path in sorted(root.glob(pattern)):
+                if not path.resolve().is_relative_to(root.resolve()):
+                    continue
+                try:
+                    source = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeError):
+                    continue
+                sources.setdefault(source_digest(source), source)
+    return sources
+
+
 class ArtifactStore:
     """Store canonical artifact bytes beneath ``<compiled_root>/artifacts``."""
 
@@ -45,6 +73,9 @@ class ArtifactStore:
             raise ValueError(f"invalid artifact SHA-256: {artifact_sha256!r}")
         return str(self._root / f"{artifact_sha256[7:]}.json")
 
+    def source_path_for(self, artifact_sha256: str) -> Path:
+        return Path(self.path_for(artifact_sha256)).with_suffix(".md")
+
     def put_source(self, artifact_sha256: str, source: str) -> None:
         """Retain reviewed Markdown separately from the immutable compiled schema."""
         from src.playbooks.definition import source_digest
@@ -52,16 +83,40 @@ class ArtifactStore:
         definition = self.load(artifact_sha256)
         if source_digest(source) != definition.source_hash:
             raise ArtifactVerificationFailed("source does not match the reviewed artifact")
-        path = Path(self.path_for(artifact_sha256)).with_suffix(".md")
+        path = self.source_path_for(artifact_sha256)
         self._write_atomically(path, source.encode("utf-8"))
 
     def load_source(self, artifact_sha256: str) -> str:
         from src.playbooks.definition import source_digest
 
-        source = Path(self.path_for(artifact_sha256)).with_suffix(".md").read_text(encoding="utf-8")
+        source = self.source_path_for(artifact_sha256).read_text(encoding="utf-8")
         if source_digest(source) != self.load(artifact_sha256).source_hash:
             raise ArtifactVerificationFailed("retained source does not match the reviewed artifact")
         return source
+
+    def backfill_sources(self, sources: Mapping[str, str]) -> dict:
+        """Restore missing sources for legacy artifacts, including inactive ones.
+
+        Run once at startup. Digest verification and the normal atomic source
+        writer preserve artifact identity; subsequent starts never rewrite a
+        retained source. Unrecoverable or damaged artifacts do not block startup.
+        """
+        restored, unavailable, errors = [], [], []
+        for path in sorted(self._root.glob("*.json")):
+            sha = "sha256:" + path.stem
+            if not SHA256_RE.fullmatch(sha) or self.source_path_for(sha).exists():
+                continue
+            try:
+                definition = self.load(sha)
+                source = sources.get(definition.source_hash)
+                if source is None:
+                    unavailable.append(sha)
+                    continue
+                self.put_source(sha, source)
+                restored.append(sha)
+            except (OSError, ValueError, UnicodeError, ArtifactVerificationFailed) as exc:
+                errors.append({"artifact_sha256": sha, "error": str(exc)})
+        return {"restored": restored, "unavailable": unavailable, "errors": errors}
 
     def layout_path_for(self, artifact_sha256: str) -> str:
         if not SHA256_RE.fullmatch(artifact_sha256):

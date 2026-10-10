@@ -53204,6 +53204,14 @@
           "archive": {
             "type": "string",
             "title": "Archive"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/PolicyExportWarning"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "default": []
           }
         },
         "type": "object",
@@ -53214,6 +53222,29 @@
           "archive"
         ],
         "title": "PolicyExportResponse"
+      },
+      "PolicyExportWarning": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "title": "Item Id"
+          },
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "playbook_id",
+          "message"
+        ],
+        "title": "PolicyExportWarning"
       },
       "PolicyFilePreview": {
         "properties": {

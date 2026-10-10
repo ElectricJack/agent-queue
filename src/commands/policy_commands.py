@@ -36,11 +36,23 @@ class PolicyCommandsMixin:
         workspace = await self.db.get_project_workspace_path(project_id)
         return PolicyFiles(Path(self.config.vault_root), project, workspace)
 
-    async def _policy_export_bundle(self, adapter: PolicyFiles, name: str | None) -> Bundle:
+    async def _backfill_playbook_sources(self) -> dict:
+        from src.playbooks.artifact_store import ArtifactStore, index_playbook_sources
+
+        def backfill():
+            sources = index_playbook_sources(Path(self.config.vault_root))
+            return ArtifactStore(self.config.compiled_root).backfill_sources(sources)
+
+        return await asyncio.to_thread(backfill)
+
+    async def _policy_export_bundle(
+        self, adapter: PolicyFiles, name: str | None, warnings: list[dict]
+    ) -> Bundle:
         from sqlalchemy import select
         from src.database.tables import projects
-        from src.playbooks.artifact_store import ArtifactStore
+        from src.playbooks.artifact_store import ArtifactStore, index_playbook_sources
         from src.playbooks.definition import referenced_profile_ids
+        from src.playbooks.run_state import ArtifactVerificationFailed
         from src.policy_profiles.service import contained, read_profile
 
         entries = []
@@ -59,6 +71,7 @@ class PolicyCommandsMixin:
         if bound not in relevant and bound in all_rows:
             relevant[bound] = all_rows[bound]
         store = ArtifactStore(self.config.compiled_root)
+        sources = None
         profiles = set()
         visited = set()
         queue = list(relevant.values())
@@ -72,8 +85,35 @@ class PolicyCommandsMixin:
                 raise ValueError(
                     f"Required playbook {row['playbook_id']!r} has no reviewed artifact"
                 )
-            definition = await asyncio.to_thread(store.load, sha)
-            source = await asyncio.to_thread(store.load_source, sha)
+            try:
+                definition = await asyncio.to_thread(store.load, sha)
+            except (OSError, ArtifactVerificationFailed):
+                raise ValueError(
+                    f"Required playbook {row['playbook_id']!r} compiled artifact unavailable; "
+                    f"recompile and reactivate {row['playbook_id']}"
+                ) from None
+            entry_name = (
+                definition.id.removeprefix(adapter.project.id + ".")
+                if row["scope"] == "project"
+                else definition.id
+            )
+            scope = "project" if row["scope"] == "project" else "system"
+            try:
+                source = await asyncio.to_thread(store.load_source, sha)
+            except (OSError, UnicodeError, ArtifactVerificationFailed):
+                if sources is None:
+                    sources = await asyncio.to_thread(index_playbook_sources, adapter.vault)
+                source = sources.get(definition.source_hash)
+                if source is None:
+                    warnings.append({
+                        "item_id": f"playbook:{scope}:{entry_name}",
+                        "playbook_id": definition.id,
+                        "message": (
+                            f"Skipped {definition.id}: source unavailable, "
+                            f"recompile and reactivate {definition.id}"
+                        ),
+                    })
+                    continue
             dependencies = set()
 
             def collect(value):
@@ -100,21 +140,35 @@ class PolicyCommandsMixin:
                         f"Required playbook {dependency!r} has no reviewed active artifact"
                     )
                 queue.append(all_rows[dependency])
-            entry_name = (
-                definition.id.removeprefix(adapter.project.id + ".")
-                if row["scope"] == "project"
-                else definition.id
-            )
             entries.append(
                 item(
                     entry_name,
-                    "project" if row["scope"] == "project" else "system",
+                    scope,
                     PlaybookPolicy(
                         source=source, artifact=artifact, dependencies=sorted(dependencies)
                     ),
                 )
             )
             profiles.update(referenced_profile_ids(definition))
+        # A portable bundle must not leave references to omitted dependencies.
+        while True:
+            available = {entry.payload.artifact["id"] for entry in entries}
+            omitted = [
+                entry for entry in entries if set(entry.payload.dependencies) - available
+            ]
+            if not omitted:
+                break
+            for entry in omitted:
+                missing = sorted(set(entry.payload.dependencies) - available)
+                warnings.append({
+                    "item_id": entry.id,
+                    "playbook_id": entry.payload.artifact["id"],
+                    "message": (
+                        f"Skipped {entry.payload.artifact['id']}: required playbook source "
+                        f"unavailable; recompile and reactivate {', '.join(missing)}"
+                    ),
+                })
+                entries.remove(entry)
         routing = None
         for entry in entries:
             if entry.type == "playbook" and entry.payload.artifact["id"] == bound:
@@ -183,7 +237,8 @@ class PolicyCommandsMixin:
         try:
             request = ExportRequest.model_validate(args)
             adapter = await self._policy_files(request.project_id)
-            bundle = await self._policy_export_bundle(adapter, request.name)
+            warnings = []
+            bundle = await self._policy_export_bundle(adapter, request.name, warnings)
             digest = checksum(bundle.model_dump(mode="json"))
             preview_files = await asyncio.to_thread(files, bundle)
             written = []
@@ -201,6 +256,13 @@ class PolicyCommandsMixin:
                 ],
                 "archive": base64.b64encode(await asyncio.to_thread(pack, bundle)).decode(),
                 "written": written,
+                "warnings": sorted(warnings, key=lambda warning: warning["item_id"]),
+            }
+        except FileNotFoundError:
+            return {
+                "success": False,
+                "error": "Policy export input is unavailable; restore the missing policy file "
+                "and preview again",
             }
         except (ValueError, OSError, KeyError) as exc:
             return {"success": False, "error": str(exc)}
