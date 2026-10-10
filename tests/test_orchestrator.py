@@ -648,24 +648,70 @@ async def test_configured_orchestrator_installs_shared_repository_client(
     monkeypatch.setattr(orchestrator.github_access, "bind_repository", bind_repository)
     await orchestrator.initialize()
     try:
-        repository = RepoConfig(
-            id="repo",
-            project_id="p",
-            source_type=RepoSourceType.CLONE,
-            url="https://github.com/acme/widgets.git",
+        references = (
+            "https://github.com/acme/widgets.git",
+            "https://github.com/acme/widgets",
+            "https://github.com/acme/widgets.git/",
+            "https://github.com/acme/widgets/",
+            "HTTPS://GitHub.com/acme/widgets",
+            "https://www.github.com/acme/widgets",
+            "https://github.com:443/acme/widgets.git",
+            "git@github.com:acme/widgets.git",
+            "ssh://git@github.com/acme/widgets",
+            "ssh://git@github.com:22/acme/widgets.git",
+            "acme/widgets",
+            "github.com/acme/widgets",
         )
-        resolved = await orchestrator.github_repository_binding_resolver(repository)
-        client = orchestrator.github_client_factory(binding)
+        client = None
+        for reference in references:
+            repository = RepoConfig(
+                id="repo", project_id="p", source_type=RepoSourceType.CLONE, url=reference,
+            )
+            resolved = await orchestrator.github_repository_binding_resolver(repository)
+            resolved_client = orchestrator.github_client_factory(binding)
 
-        assert resolved == binding
-        assert isinstance(client, GitHubClient)
-        assert client.repository == binding
-        assert client.access is orchestrator.github_access
+            assert resolved == binding, reference
+            assert isinstance(resolved_client, GitHubClient)
+            assert resolved_client.repository == binding
+            assert resolved_client.access is orchestrator.github_access
+            if client is not None:
+                assert resolved_client is client
+            client = resolved_client
+            assert orchestrator.github_access.credential_identity.mode is (
+                GitHubCredentialMode.APP if use_app else GitHubCredentialMode.EXISTING_LOGIN
+            )
+        assert bind_repository.await_count == len(references)
+        assert all(call.args == ("acme/widgets",) for call in bind_repository.await_args_list)
+
+        # Rejected input must not select credentials or construct another client.
+        for reference in (
+            "https://gitlab.com/acme/widgets.git",
+            "git@other.example:acme/widgets.git",
+            str(tmp_path / "local.git"),
+            "http://github.com/acme/widgets.git",
+            "https://user:password@github.com/acme/widgets.git",
+            "https://github.com:8443/acme/widgets.git",
+            "ssh://root@github.com/acme/widgets.git",
+            "https://github.com/acme/widgets.git?token=secret",
+            "https://github.com/acme/widgets.git#fragment",
+            "https://github.com/acme/widgets/tree/main.git",
+            "https://github.com/acme/../widgets.git",
+            "https://github.com/acme/widgets%2fother.git",
+        ):
+            repository.url = reference
+            assert await orchestrator.github_repository_binding_resolver(repository) is None
+        assert bind_repository.await_count == len(references)
         assert orchestrator.github_client_factory(binding) is client
-        assert orchestrator.github_access.credential_identity.mode is (
-            GitHubCredentialMode.APP if use_app else GitHubCredentialMode.EXISTING_LOGIN
-        )
-        bind_repository.assert_awaited_once_with("acme/widgets")
+
+        # A validated URL still requires successful binding with the selected
+        # authority; provider failures must propagate without ambient fallback.
+        from src.git.github_contracts import GitHubAccessError
+
+        bind_repository.side_effect = GitHubAccessError("credentials", "binding denied")
+        repository.url = "git@github.com:acme/widgets.git"
+        with pytest.raises(GitHubAccessError, match="binding denied"):
+            await orchestrator.github_repository_binding_resolver(repository)
+        assert orchestrator.github_client_factory(binding) is client
     finally:
         await orchestrator.shutdown()
 
