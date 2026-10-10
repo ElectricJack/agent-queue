@@ -874,14 +874,37 @@ def s19_claim_surfaces(monkeypatch, tmp_path):
         if "--dry-run" in args:
             return {"parent_id": "planner-task"}
         created = True
+        # Model an immediate router decision and scheduler assignment. The
+        # production override must still refuse a child that already started.
+        clock.child_running = not clock.scheduling_paused
         return {"created": True, "request_id": "graph-request",
                 "nodes": [{"task_id": "child-task"}]}
 
     def fake_api(command, _args, **_kwargs):
+        if command == "set_project_constraint":
+            assert _args == {"project_id": smoke.PROJECT, "pause_scheduling": True}
+            assert not _kwargs.get("token")
+            clock.scheduling_paused = True
+            clock.scheduling_events.append("pause")
+            return {"constraint_set": True}
+        if command == "release_project_constraint":
+            assert _args == {"project_id": smoke.PROJECT, "fields": ["pause_scheduling"]}
+            assert not _kwargs.get("token")
+            clock.scheduling_paused = False
+            clock.scheduling_events.append("release")
+            return {"constraint_released": True}
         if command == "task_children":
             return {"count": int(created)}
         assert command == "create_task_graph"
         return {"code": "graph.root_needs_parent"}
+
+    def fake_override(task_id, profile, intelligence_class):
+        assert (task_id, profile, intelligence_class) == (
+            "child-task", smoke.POOL_PROFILE, smoke.POOL_CLASS,
+        )
+        if clock.child_running:
+            raise smoke.Failure("routing.not_routable: child already started")
+        clock.scheduling_events.append("override")
 
     class ChecklistReached(Exception):
         pass
@@ -905,9 +928,11 @@ def s19_claim_surfaces(monkeypatch, tmp_path):
         "profile_id": smoke.PLANNER_PROFILE if task_id == "planner-task" else smoke.POOL_PROFILE,
         "route_source": "router", "is_blocked": False,
     })
-    monkeypatch.setattr(smoke, "override_route", lambda *_args: None)
+    monkeypatch.setattr(smoke, "override_route", fake_override)
     monkeypatch.setattr(smoke, "run_aq", stop_at_checklist)
-    clock = SimpleNamespace(now=0.0)
+    clock = SimpleNamespace(
+        now=0.0, scheduling_paused=False, child_running=False, scheduling_events=[],
+    )
     monkeypatch.setattr(smoke, "time", SimpleNamespace(
         monotonic=lambda: clock.now,
         sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
@@ -915,6 +940,46 @@ def s19_claim_surfaces(monkeypatch, tmp_path):
     monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 1)
     monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.25))
     return smoke, workers, responses, claims, clock, ChecklistReached
+
+
+def test_s19_routes_child_before_scheduler_can_assign(s19_claim_surfaces):
+    smoke, _workers, _responses, claims, clock, reached = s19_claim_surfaces
+
+    with pytest.raises(reached):
+        smoke.s19_scoped_planner_graph({})
+
+    assert clock.scheduling_events == ["pause", "override", "release"]
+    assert not clock.scheduling_paused and not clock.child_running
+    assert claims == ["planner", "child"]
+
+
+@pytest.mark.parametrize("stage", ["create", "override"])
+def test_s19_releases_scheduling_pause_after_graph_setup_failure(
+    s19_claim_surfaces, monkeypatch, stage
+):
+    smoke, _workers, _responses, claims, clock, _reached = s19_claim_surfaces
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("graph setup failed")
+
+    if stage == "create":
+        original = smoke.aq
+
+        def fail_create(*args, **kwargs):
+            if args[:2] == ("task", "create") and "--dry-run" not in args:
+                return fail()
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(smoke, "aq", fail_create)
+    else:
+        monkeypatch.setattr(smoke, "override_route", fail)
+
+    with pytest.raises(RuntimeError, match="graph setup failed"):
+        smoke.s19_scoped_planner_graph({})
+
+    assert clock.scheduling_events == ["pause", "release"]
+    assert not clock.scheduling_paused
+    assert claims == ["planner"]
 
 
 @pytest.mark.parametrize("stage", ["planner", "child"])
