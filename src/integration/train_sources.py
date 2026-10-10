@@ -104,6 +104,23 @@ MEMBER_LIMIT = 200
 PROMOTION_RESOLUTION_TTL_SECONDS = 900.0
 
 
+async def _finish_on_cancel(operation):
+    """Join a mutation even if its visit is cancelled; never orphan a pushed head."""
+    writing = asyncio.create_task(operation)
+    try:
+        return await asyncio.shield(writing)
+    except asyncio.CancelledError:
+        # Shield repeatedly: shutdown can cancel a visit that is already
+        # finishing a write after the visit deadline cancelled it once.
+        while not writing.done():
+            try:
+                await asyncio.shield(writing)
+            except asyncio.CancelledError:
+                continue
+        writing.result()
+        raise
+
+
 def _push_branch_allowed(push: dict, ref: str) -> bool | None:
     """Diagnose simple branch globs; unfamiliar syntax remains unknown.
 
@@ -713,7 +730,8 @@ class DatabaseBatches:
                     task_branch_origins.c.stack_snapshot.is_not(None)))).scalars().all()
         for task_id in stacked_ids:
             with selection_stage("stack_refresh", items=1):
-                outcome = await stacks.refresh(task_id, service.gitops, snapshot=snapshot)
+                outcome = await _finish_on_cancel(
+                    stacks.refresh(task_id, service.gitops, snapshot=snapshot))
             if outcome in {"refreshed", "changed", "repair_filed"}:
                 return BatchSelection(blockers=({"code": "stack_" + outcome, "task_id": task_id,
                     "ref": task_id, "detail": "Prerequisite stack changed; take a fresh Git view"},))
@@ -733,7 +751,7 @@ class DatabaseBatches:
                                          gate_pr=current is None,
                                          include_ids={member.task_id for member in frozen_members},
                                          candidate_ids=candidates, delivered_ids=delivered_ids)
-            await self._refresh_conflicting_epics(target, snapshot, blockers)
+            await _finish_on_cancel(self._refresh_conflicting_epics(target, snapshot, blockers))
         if current is not None:
             if target.kind == "root":
                 await self._clear_admissions(target)
