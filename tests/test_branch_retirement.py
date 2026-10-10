@@ -14,9 +14,12 @@ from src.database.tables import (
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitError, GitManager
 from src.integration.branch_retirement import (
+    ATTEMPT_LEASE_SECONDS,
+    SUPERSEDED,
     BranchRetirementService,
     request_branch_retirement_on,
     request_task_retirement_on,
+    retirement_report,
 )
 from src.integration.cleanup import IntegrationCleanupService
 from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
@@ -485,3 +488,61 @@ async def test_tracking_cleanup_cannot_delete_local_heads_or_other_remotes(setup
     with pytest.raises(GitError):
         await git.adelete_remote_tracking_ref_exact(str(checkout), ref=ref, expected_old_oid=head)
     assert await git.arev_parse(str(checkout), "refs/heads/" + BRANCH) == head
+
+
+async def test_claimed_attempt_stays_leased_from_its_claim_while_in_flight(setup):
+    db, git, service, _checkout, remote, _head = setup
+    await request(db)
+    identity = next(row["id"] for row in await rows(db) if row["branch"] == BRANCH)
+    leases = []
+
+    async def observe_lease(branch, sha):
+        if branch == BRANCH:
+            row = next(row for row in await rows(db) if row["branch"] == BRANCH)
+            leases.append(row["next_attempt_at"] - service.clock())
+
+    git.before_delete = observe_lease
+    # A long backstop passes the time its loop started, well before this claim.
+    assert (await service.advance(identity, now=service.clock() - 3600))[0] == "complete"
+    assert leases and leases[0] > ATTEMPT_LEASE_SECONDS - 60
+    assert await git.arev_parse(str(remote), BRANCH) is None
+
+
+async def test_failed_attempt_backs_off_from_the_attempt_end(setup):
+    db, git, service, _checkout, _remote, _head = setup
+    await request(db)
+    git.fail_delete = True
+    assert (await service.drain_due())[0][0] == "pending"
+    row = next(row for row in await rows(db) if row["branch"] == BRANCH)
+    assert row["next_attempt_at"] - service.clock() <= service._backoff(row["attempts"])
+
+
+async def test_superseded_attempt_defers_to_the_newer_attempt(setup, monkeypatch):
+    db, git, service, _checkout, remote, head = setup
+    await request(db)
+
+    async def newer_attempt_claims(row):
+        async with db.immediate() as conn:
+            await conn.execute(update(branch_retirements).values(
+                attempts=branch_retirements.c.attempts + 1, last_error=None,
+            ))
+        raise GitError("ref lease holder or fence is stale")
+
+    monkeypatch.setattr(service, "_retire", newer_attempt_claims)
+    assert (await service.drain_due())[0] == ("pending", SUPERSEDED)
+    row = next(row for row in await rows(db) if row["branch"] == BRANCH)
+    assert row["state"] == "pending" and row["last_error"] is None
+    assert await git.arev_parse(str(remote), BRANCH) == head
+
+
+def test_retirement_report_counts_superseded_apart_and_groups_errors():
+    lines = retirement_report([
+        ("complete", None), ("pending", SUPERSEDED), ("pending", "live owner"),
+        ("pending", "live owner"), ("conflict", "remote branch moved"),
+    ])
+    assert lines[0] == ("Retirement decisions: 1 complete, 3 held/conflicted, "
+                        "1 continued by a concurrent attempt.")
+    assert lines[1:] == [
+        "  retirement pending (2): live owner",
+        "  retirement conflict (1): remote branch moved",
+    ]

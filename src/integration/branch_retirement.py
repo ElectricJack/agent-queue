@@ -7,6 +7,7 @@ import inspect
 import json
 import time
 import uuid
+from collections import Counter
 from pathlib import Path
 
 from sqlalchemy import select, update
@@ -37,9 +38,28 @@ from src.integration.delivery_branches import (
     live_branch_references,
     repository_protected_branches,
 )
-from src.integration.lock import BranchLock
+from src.integration.lock import DEFAULT_TTL_SECONDS, BranchLock
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchBusy
+
+# A newer attempt on the same decision took over; it owns the outcome.
+SUPERSEDED = "retirement attempt was superseded"
+# A claimed attempt stays leased for one ref-lease term, so a concurrent drain
+# does not claim a decision again while its attempt is still in flight.
+ATTEMPT_LEASE_SECONDS = DEFAULT_TTL_SECONDS
+
+
+def retirement_report(results) -> list[str]:
+    """Summarize a backstop's ``advance`` results, one line per distinct error."""
+    held = Counter((state, error) for state, error in results
+                   if state != "complete" and error != SUPERSEDED)
+    complete = sum(state == "complete" for state, _ in results)
+    superseded = sum(error == SUPERSEDED for _, error in results)
+    lines = [(f"Retirement decisions: {complete} complete, {sum(held.values())} "
+              f"held/conflicted, {superseded} continued by a concurrent attempt.")]
+    lines.extend(f"  retirement {state} ({count}): {error}"
+                 for (state, error), count in held.most_common() if error)
+    return lines
 
 
 async def request_branch_retirement_on(
@@ -259,8 +279,15 @@ class BranchRetirementService(BranchDiscardService):
                 return row["state"], row["last_error"]
             row = dict(row)
             row["attempts"] += 1
+            # Lease the attempt from its claim, not from a caller's loop start,
+            # and for as long as it may hold its ref lease: otherwise a long
+            # backstop leaves claimed rows due, and a concurrent drain claims
+            # them again and supersedes the attempt in flight.
             await conn.execute(update(retirements).where(retirements.c.id == identity).values(
-                attempts=row["attempts"], next_attempt_at=now + self._backoff(row["attempts"]),
+                attempts=row["attempts"],
+                next_attempt_at=max(now, self.clock()) + max(
+                    self._backoff(row["attempts"]), ATTEMPT_LEASE_SECONDS,
+                ),
             ))
         state, error = "complete", None
         try:
@@ -271,10 +298,18 @@ class BranchRetirementService(BranchDiscardService):
             state, error = "conflict", str(exc)
         except Exception as exc:
             state, error = "pending", str(exc) or type(exc).__name__
+        values = {"state": state, "last_error": error}
+        if state == "pending":
+            # Retry backoff counts from the end of the attempt, not its claim.
+            values["next_attempt_at"] = self.clock() + self._backoff(row["attempts"])
         async with self.db.immediate() as conn:
-            await conn.execute(update(retirements).where(
+            result = await conn.execute(update(retirements).where(
                 retirements.c.id == identity, retirements.c.attempts == row["attempts"],
-            ).values(state=state, last_error=error))
+            ).values(**values))
+            if result.rowcount != 1:
+                # Whatever this attempt saw (often the fence the newer attempt
+                # rotated), the newer attempt records the decision's outcome.
+                return "pending", SUPERSEDED
             if state == "complete" and row["request_id"].startswith("origin:"):
                 await conn.execute(update(task_branch_origins).where(
                     task_branch_origins.c.id == row["request_id"].removeprefix("origin:"),
@@ -293,7 +328,7 @@ class BranchRetirementService(BranchDiscardService):
             retirements.c.id == row["id"], retirements.c.state == "pending",
         ).with_for_update())
         if current != row["attempts"]:
-            raise BranchBusy("retirement attempt was superseded")
+            raise BranchBusy(SUPERSEDED)
         branch = row["branch"]
         protected = await repository_protected_branches(
             conn, row["repository_id"], default_branch="main",
@@ -497,7 +532,7 @@ class BranchRetirementService(BranchDiscardService):
                 retirements.c.id == row["id"], retirements.c.attempts == row["attempts"],
             ).values(evidence=evidence))
             if result.rowcount != 1:
-                raise BranchBusy("retirement attempt was superseded")
+                raise BranchBusy(SUPERSEDED)
 
     async def _checkout_paths(self, row, repository):
         async with self.db._engine.connect() as conn:

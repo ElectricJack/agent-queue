@@ -1170,7 +1170,8 @@
         "tests/test_supervisor_global_token_loopback.py",
         "tests/test_supervisor_inbox_commands.py",
         "tests/test_supervisor_recovery.py",
-        "tests/test_supervisor_recovery_api.py"
+        "tests/test_supervisor_recovery_api.py",
+        "tests/test_supervisor_stall_sweep_script.py"
       ]
     },
     "task-activity": {
@@ -16322,6 +16323,18 @@
         "asyncio"
       ],
       "summary": "Recovery permissions and response contracts through both HTTP surfaces."
+    },
+    "tests/test_supervisor_stall_sweep_script.py": {
+      "areas": [
+        "supervisor"
+      ],
+      "default_arm": true,
+      "digest": "sha256:5e5e447232ac93f9e156ba89b9d6ff792cdf81ba1ca5a0bb2b384ac1fdb627a9",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Project isolation of the supervisor stall sweep (scripts/operator-checks/stall-sweep.py)."
     },
     "tests/test_surface_commands.py": {
       "areas": [
