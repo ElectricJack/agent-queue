@@ -265,6 +265,18 @@ command. Local callers and elevated supervisor tokens are unrestricted.
 "not found" for a message outside the caller's mailboxes. It is on the agent
 surface because the idle-session nudge names `aq message status <id>`, and
 by then the row is delivered, so `message_inbox` no longer lists it.
+A project-pinned caller also sees only its project's view
+(`_message_in_project`): rows stamped with its project, plus rows another
+project addressed to one of its mailboxes — `supervisor-<project>`,
+`n-supervisor--<project>`, or one of its sessions or tasks. A row keeps its
+sender's project (another project's supervisor escalating to
+`supervisor-agent-queue` pins its own), so without the second half the
+recipient was nudged to a body its own token answered "not found" for
+(clear-zenith-84). The global supervisor's mailbox is no project's.
+`agent_message --reply-to` still threads only onto the target worker's own
+project's messages; a readable row from another project is refused with the
+`aq message reply <id>` that answers it, and an unreadable one stays
+"not found".
 
 **Supervisor addresses** (`_supervisor_mailbox`): `message_send` stores a
 `session:supervisor-<suffix>` recipient only as a mailbox a supervisor reads.

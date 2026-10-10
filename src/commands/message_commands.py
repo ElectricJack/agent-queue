@@ -155,6 +155,29 @@ class MessageCommandsMixin:
             return session.project_id if session else None
         return None
 
+    async def _message_in_project(self, message: Message, project_id: str) -> bool:
+        """Whether *message* is in *project_id*'s view.
+
+        A row keeps its sender's project: CHAT-1 keeps ``supervisor-<another
+        project>`` verbatim, and an elevated sender's token pins its own
+        project.  So the view is the project's own rows plus those addressed
+        to its mailboxes — its supervisor's (``supervisor-<project>`` or
+        ``n-supervisor--<project>``, the addresses ``message_inbox`` reads), or
+        one of its sessions or tasks — the mailboxes the delivery engine nudges
+        with this row's id.  The global supervisor's mailbox is no project's.
+        """
+        if message.project_id == project_id:
+            return True
+        if (
+            message.to_kind == "session"
+            and message.to_id != _GLOBAL_SUPERVISOR_ADDRESS
+            and message.to_id
+            in (_SUPERVISOR_ADDRESS_PREFIX + project_id, f"n-supervisor--{project_id}")
+            and project_id != "global"
+        ):
+            return True
+        return await self._recipient_project_id(message.to_kind, message.to_id) == project_id
+
     async def _supervisor_mailbox(self, to_id: str, project_id: str | None) -> str | None:
         """The supervisor address to store for *to_id*, or None if it names none.
 
@@ -216,7 +239,7 @@ class MessageCommandsMixin:
 
         # A task, or a session addressed by id, belongs to one project, and its
         # readers are fenced to that project: a durable message wait matches
-        # only same-project rows and ``message_status`` hides the rest.  When
+        # only same-project rows.  When
         # the caller names no project the recipient supplies it, so the global
         # supervisor's reply lands where the waiting worker can see it.
         requested_project_id = args.get("project_id") or (
@@ -753,7 +776,7 @@ class MessageCommandsMixin:
         project_id = args.get("project_id")
         if (
             message is None
-            or (project_id is not None and message.project_id != project_id)
+            or (project_id is not None and not await self._message_in_project(message, project_id))
             # A plain session reads only what was addressed to it — the
             # message a nudge pointed it at.  Answered as "not found" so the
             # fence does not confirm another recipient's id exists.

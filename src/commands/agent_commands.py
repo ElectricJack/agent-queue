@@ -65,6 +65,21 @@ class AgentCommandsMixin(FlockCommandsMixin):
             # message wait it registered there; a threadless answer cannot.
             original = await self.db.get_message(reply_to.strip())
             if original is None or original.project_id != session.project_id:
+                # A message the caller can read — another project's report to
+                # its supervisor mailbox — is refused for what it is, not as
+                # missing (clear-zenith-84).  Anything else stays "not found"
+                # so the refusal never confirms a foreign id exists.
+                if original is not None and (
+                    project_id is None or await self._message_in_project(original, project_id)
+                ):
+                    return {
+                        "error": (
+                            f"Message '{reply_to}' is not a message of the target's project "
+                            f"'{session.project_id}': reply_to threads guidance onto that "
+                            f"worker's own message. Send without reply_to, and answer "
+                            f"'{reply_to}' with `aq message reply {reply_to}`."
+                        )
+                    }
                 return {"error": f"Message '{reply_to}' not found"}
         result = await self._queue_supervisor_message(session, body, wait, reply_to=original)
         if "error" not in result:
