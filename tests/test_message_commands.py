@@ -7,15 +7,19 @@ same way every other emitter's do).
 
 from __future__ import annotations
 
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.api.auth import RequestScope
+from src.api.scope import check_command_scope
 from src.commands.handler import CommandHandler
 from src.commands.message_commands import MESSAGES_DISABLED_ERROR, message_to_dict
 from src.config import MessagesConfig
 from src.database import Database
 from src.event_schemas import validate_payload
+from src.messages.delivery import MessageDeliveryEngine
 from src.models import Agent, AgentState, Message, Project, SessionRecord, Task, TaskStatus
 from tests.db_fixtures import lease_dsn
 
@@ -438,13 +442,63 @@ class TestSupervisorAgentMessage:
         handler, db, _bus = setup
         await _create_live_worker(db, project_id="p1", suffix="w")
         await db.create_project(Project(id="p2", name="other"))
-        foreign = await handler._cmd_message_send(_send_args(project_id="p2", thread_id="t"))
+        foreign = await handler._cmd_message_send(
+            _send_args(project_id="p2", to_id="supervisor-p2", thread_id="t")
+        )
 
+        # A project-pinned caller is told "not found" for anything outside its
+        # view, so the refusal never confirms a foreign id exists.
         for reply_to in ("msg-missing", foreign["message_id"]):
             result = await handler._cmd_agent_message(
-                {"target": "task-w", "body": "filed", "reply_to": reply_to}
+                {"target": "task-w", "body": "filed", "reply_to": reply_to, "project_id": "p1"}
             )
             assert result == {"error": f"Message '{reply_to}' not found"}
+        assert (
+            await handler._cmd_agent_message(
+                {"target": "task-w", "body": "filed", "reply_to": "msg-missing"}
+            )
+        ) == {"error": "Message 'msg-missing' not found"}
+        # An unscoped caller can read the row, so it is refused for what it is.
+        unscoped = await handler._cmd_agent_message(
+            {"target": "task-w", "body": "filed", "reply_to": foreign["message_id"]}
+        )
+        assert "not a message of the target's project 'p1'" in unscoped["error"]
+        assert await db.list_messages(to_kind="session", to_id="session-w") == []
+
+    async def test_reply_to_another_projects_report_names_the_supported_answer(self, setup):
+        """2026-10-09 clear-zenith-84: supervisor-agent-queue read another
+        project's report from its inbox, then ``aq agent message <task>
+        --reply-to <that id>`` answered "not found" for the body it held."""
+        handler, db, _bus = setup
+        await _create_live_worker(db, project_id="p1", suffix="w")
+        await db.create_project(Project(id="p2", name="other"))
+        report = await handler._cmd_message_send(
+            _send_args(
+                project_id="p2",
+                from_kind="session",
+                from_id="supervisor-p2",
+                to_id="supervisor-p1",
+            )
+        )
+        assert report["message"]["project_id"] == "p2", report
+
+        result = await handler._cmd_agent_message(
+            {
+                "target": "task-w",
+                "body": "filed",
+                "reply_to": report["message_id"],
+                "project_id": "p1",
+            }
+        )
+
+        assert result == {
+            "error": (
+                f"Message '{report['message_id']}' is not a message of the target's project "
+                f"'p1': reply_to threads guidance onto that worker's own message. Send "
+                f"without reply_to, and answer '{report['message_id']}' with "
+                f"`aq message reply {report['message_id']}`."
+            )
+        }
         assert await db.list_messages(to_kind="session", to_id="session-w") == []
 
     async def test_reply_to_cannot_broadcast(self, setup):
@@ -468,10 +522,20 @@ class TestSupervisorAgentMessage:
         await db.mark_read(sent["message_id"])
         assert (await handler._cmd_message_status({"message_id": sent["message_id"]}))["state"] == "acknowledged"
 
-    async def test_status_hides_messages_from_other_projects(self, setup):
+    @pytest.mark.parametrize("to_kind", ["supervisor", "session", "task"])
+    async def test_status_hides_messages_from_other_projects(self, setup, to_kind):
+        """Another project's traffic to its own mailboxes stays out of view."""
         handler, db, _bus = setup
         await db.create_project(Project(id="p2", name="other"))
-        sent = await handler._cmd_message_send(_send_args(project_id="p2"))
+        worker = await _create_live_worker(db, project_id="p2", suffix="p2")
+        to_id = {"supervisor": "supervisor-p2", "session": worker.id, "task": worker.task_id}
+        sent = await handler._cmd_message_send(
+            _send_args(
+                project_id="p2",
+                to_kind="session" if to_kind == "supervisor" else to_kind,
+                to_id=to_id[to_kind],
+            )
+        )
 
         result = await handler._cmd_message_status(
             {"message_id": sent["message_id"], "project_id": "p1"}
@@ -1082,6 +1146,134 @@ class TestStatusMailboxFence:
             {"message_id": sent["message_id"], "_scope": _session_scope(elevated=True)},
         )
         assert result["state"] == "queued"
+
+
+def _supervisor_scope(project_id: str) -> dict:
+    return _session_scope(
+        session_id=f"sess-sup-{project_id}", task_id=None, project_id=project_id, elevated=True
+    )
+
+
+async def _execute_as(handler, command: str, args: dict, scope: dict) -> dict:
+    """Run *command* through the API's scope gate, then the handler — the live path."""
+    args = dict(args)
+    assert check_command_scope(command, args, RequestScope(**scope)) is None
+    return await handler.execute(command, {**args, "_scope": scope})
+
+
+class TestStatusRecipientProject:
+    """A project-pinned reader sees what other projects addressed to its mailboxes.
+
+    2026-10-09 clear-zenith-84: other projects' supervisors escalated to
+    ``session:supervisor-agent-queue``.  Each row kept its sender's project
+    (CHAT-1; the sender's elevated token pins its own), the delivery engine
+    nudged ``Handle `aq message status <id> --json`.`` and marked it delivered,
+    and the addressed supervisor — whose token injects its own ``project_id`` —
+    was told "not found" for the body it had just been handed.
+    """
+
+    async def test_nudged_cross_project_report_is_readable_by_its_recipient(self, setup):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other"))
+        await db.create_project(Project(id="p3", name="third"))
+        sent = await _execute_as(
+            handler,
+            "message_send",
+            {
+                "to_kind": "session",
+                "to_id": "supervisor-p1",
+                "from_kind": "session",
+                "from_id": "supervisor-p2",
+                "body": "registry investigation needed",
+            },
+            _supervisor_scope("p2"),
+        )
+        assert sent["message"]["project_id"] == "p2", sent
+        assert sent["message"]["to_id"] == "supervisor-p1"
+
+        sessions = _NudgeRecorder()
+        engine = MessageDeliveryEngine(
+            db=db, sessions=sessions, config=MessagesConfig(enabled=True), bus=None
+        )
+        assert (await engine.run_delivery_pass())["delivered"] == 1
+        [(kind, target_id, text)] = sessions.nudges
+        assert (kind, target_id) == ("session", "supervisor-p1")
+        pointer = re.fullmatch(r"Handle `aq message status (\S+) --json`\.", text)
+        assert pointer and pointer.group(1) == sent["message_id"], text
+
+        result = await _execute_as(
+            handler, "message_status", {"message_id": pointer.group(1)}, _supervisor_scope("p1")
+        )
+        assert "error" not in result, result
+        assert (result["state"], result["via"]) == ("delivered", "nudge")
+        assert result["message"]["body"] == "registry investigation needed"
+
+        # The supported answer reaches the sender's mailbox in its project.
+        reply = await _execute_as(
+            handler,
+            "message_reply",
+            {"message_id": pointer.group(1), "body": "filed"},
+            _supervisor_scope("p1"),
+        )
+        assert "error" not in reply, reply
+        assert (reply["reply"]["to_id"], reply["reply"]["project_id"]) == ("supervisor-p2", "p2")
+
+        # The boundary holds for every project the row was not addressed to.
+        outsider = await _execute_as(
+            handler, "message_status", {"message_id": pointer.group(1)}, _supervisor_scope("p3")
+        )
+        assert outsider == {"error": f"Message '{sent['message_id']}' not found"}
+
+    @pytest.mark.parametrize("mailbox", ["supervisor", "named_supervisor", "session", "task"])
+    async def test_another_projects_row_to_an_own_mailbox_is_readable(self, setup, mailbox):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other"))
+        worker = await _create_live_worker(db, project_id="p1", suffix="own")
+        to_kind, to_id = {
+            "supervisor": ("session", "supervisor-p1"),
+            "named_supervisor": ("session", "n-supervisor--p1"),
+            "session": ("session", worker.id),
+            "task": ("task", worker.task_id),
+        }[mailbox]
+        sent = await handler._cmd_message_send(
+            _send_args(project_id="p2", to_kind=to_kind, to_id=to_id)
+        )
+        assert sent["message"]["project_id"] == "p2", sent
+
+        result = await handler._cmd_message_status(
+            {"message_id": sent["message_id"], "project_id": "p1"}
+        )
+
+        assert "error" not in result, result
+        assert result["message"]["to_id"] == to_id
+
+    @pytest.mark.parametrize("to_id", ["supervisor-global", "n-supervisor--global"])
+    async def test_global_supervisor_mailbox_is_no_projects_mailbox(self, setup, to_id):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="global", name="named global"))
+        sent = await handler._cmd_message_send(_send_args(project_id="p1", to_id=to_id))
+        await db.mark_delivered(sent["message_id"], via="nudge")
+        result = await handler._cmd_message_status(
+            {"message_id": sent["message_id"], "project_id": "global"}
+        )
+        assert result == {"error": f"Message '{sent['message_id']}' not found"}
+
+
+class _NudgeRecorder:
+    """Every live target is idle; each nudge is recorded and confirmed."""
+
+    def __init__(self) -> None:
+        self.nudges: list[tuple[str, str, str]] = []
+
+    async def activity(self, *, kind, target_id, project_id):
+        return "idle"
+
+    async def ensure_started(self, *, kind, target_id, project_id):
+        return True
+
+    async def nudge(self, *, kind, target_id, project_id, text):
+        self.nudges.append((kind, target_id, text))
+        return True
 
 
 # ---------------------------------------------------------------------------

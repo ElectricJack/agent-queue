@@ -10895,8 +10895,10 @@
         "messages"
       ],
       "default_arm": true,
-      "digest": "sha256:ab35fd3463f48816015c6fb526431003827a6d5f6731ff085f3a791e0e508ca9",
+      "digest": "sha256:ea310eb7f44eccac63e2197e47ae499fc3f8fc87d470bc73b522742063c2997d",
       "imports": [
+        "src.api.auth",
+        "src.api.scope",
         "src.api.websocket",
         "src.cli.envelope",
         "src.commands.handler",
@@ -10904,6 +10906,7 @@
         "src.config",
         "src.database",
         "src.event_schemas",
+        "src.messages.delivery",
         "src.models"
       ],
       "markers": [

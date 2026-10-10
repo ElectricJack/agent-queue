@@ -107,7 +107,9 @@ prefer a keyed command when one exists.
      session addressed by its id — supplies its own project
      (`_recipient_project_id`). Its readers are fenced to that project: a
      durable message wait matches only same-project rows, and
-     `message_status` answers "not found" for the rest. Failing that, a global
+     `message_status` answers "not found" to a project-pinned caller for rows
+     neither stamped with its project nor addressed to one of its mailboxes
+     (`_message_in_project`). Failing that, a global
      elevated session with no project, an explicit `system_only`, or the
      `supervisor-global` address makes the message system-scoped
      (`project_id: None`) after `_system_message_scope_error` approves.
