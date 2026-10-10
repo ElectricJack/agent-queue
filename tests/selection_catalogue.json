@@ -8379,12 +8379,18 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:989ba4e117890970d4d77546626ce094fbd38eff8cb0d236ec1164c697ff905c",
+      "digest": "sha256:5b7d90fd06efcaa6d66e11db54802d0277c6b4081fc8867341f0f6dea4ead678",
       "imports": [
+        "src.config",
         "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
         "src.git.manager",
+        "src.integration.branch_retirement",
+        "src.integration.delivery_branches",
         "src.integration.legacy_backfill",
         "src.integration.provenance",
+        "src.integration.status",
         "src.integration.train_sources",
         "src.models"
       ],

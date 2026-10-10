@@ -104,7 +104,8 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     # A namespace-migration page validates, copies and leases each old head's deletion.
     "integration_migrate_provenance_refs": 600.0,
     # Doctor runs every check concurrently, each under its own timeout (the
-    # longest, git.stale_branches and integration.legacy_deliveries, allow 300s);
+    # longest, git.stale_branches, integration.legacy_deliveries and
+    # integration.completed_undelivered, allow 300s);
     # the read timeout must outlast them or a
     # full `aq doctor` reports "no complete response" while checks still run.
     "doctor": 330.0,

@@ -280,7 +280,7 @@ class ObsoleteClose:
                 "obsolete.unsupported_mode",
                 f"project {row['project_id']} integrates in {mode} mode, where a task's branch "
                 "belongs to its parent's collection; abandon it through the container close "
-                "or `aq task archive --abandon-undelivered` instead",
+                "or `aq task archive --disposition obsolete --reason ...` instead",
             )
         subject_id = await conn.scalar(
             select(integration_subjects.c.id)

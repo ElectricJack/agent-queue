@@ -1843,7 +1843,15 @@ class IntegrationCommandsMixin:
         )
         if refusal is not None:
             return _failure("unauthorized", refusal)
-        result = await RootAuthorization(self.db).run(
+        train = getattr(self.orchestrator, "integration_train", None)
+        train_blockers = None
+        if train is not None:
+            from src.integration.status import IntegrationStatusService
+
+            train_blockers = IntegrationStatusService(
+                self.db, git_first="active", train=train,
+            ).train_task_blockers
+        result = await RootAuthorization(self.db, train_blockers=train_blockers).run(
             request.task_id, dry_run=request.dry_run,
             expected_head_sha=request.expected_head_sha, reason=request.reason,
             operator_id=principal,

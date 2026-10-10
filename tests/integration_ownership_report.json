@@ -9623,6 +9623,18 @@
     },
     "src/orchestrator/stranded_work.py::record_resume_point": {
       "reason": "Records the commit a stopped hierarchy/train writer's work was saved at, pinned to the task's canonical origin (repository, branch, base SHA). Exact-origin preparation honours it only while Git proves base, saved commit and origin/<branch> are in order, and the launch deletes it; no publication, ref replay or lifecycle journal."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_archive_task": {
+      "reason": "Archive command adapter: requires an explicit delivery disposition (deliver|obsolete|retire) before undelivered work is archived, passes it through the existing guarded archive and its retirement request, and answers deliver without archiving. Adds no storage of its own, fence change or publication authority."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._keep_for_delivery": {
+      "reason": "The archive command's deliver disposition: keeps the task, names its undelivered holders and the root delivery answer from the existing authorize-root read, and records an ordinary comment and audit. Archives nothing and moves no ref."
+    },
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin.undelivered_holders": {
+      "reason": "Read-only list of a subtree's tasks whose integration state still holds undelivered work, from the same removal-guard query archive already enforces; no storage, fence or publication authority."
+    },
+    "src/doctor/stall_checks.py::_completed_undelivered_findings": {
+      "reason": "Stall-sweep line over the integration.completed_undelivered doctor read: reports COMPLETED task branches nothing will deliver or retire under a bounded budget. Read-only; no storage, fence or publication authority."
     }
   },
   "shared_state": {

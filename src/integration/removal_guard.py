@@ -35,6 +35,12 @@ from src.database.tables import (
 from src.models import TaskStatus
 
 HIERARCHY_MODES = frozenset({"hierarchy", "train"})
+#: How an operator resolves completed work that has not reached the default
+#: branch before it is abandoned or archived: keep it for the train to
+#: deliver, or archive it as obsolete (with a note) or retired. An archive
+#: always retires the subtree's branches through the audited path, which
+#: bundles each unmerged tip before deleting it.
+DELIVERY_DISPOSITIONS = ("deliver", "obsolete", "retire")
 _ACTIVE_BATCH_STATES = (
     "sealing",
     "sealed",
@@ -397,8 +403,9 @@ async def assert_integration_permits_removal(
         raise _error(
             "integration_undelivered",
             f"{len(undelivered)} task(s) under {root_id} have work that has not reached "
-            f"{branch}: {undelivered[0]['task_id']} ({undelivered[0]['holder']}). Deliver it, "
-            f"or abandon it with `aq task archive --task-id {root_id} "
-            "--abandon-undelivered --reason \"...\"`.",
+            f"{branch}: {undelivered[0]['task_id']} ({undelivered[0]['holder']}). Choose a "
+            f"disposition with `aq task archive --task-id {root_id} --disposition ...`: "
+            "`deliver` keeps it for the train, `obsolete --reason \"<note>\"` or "
+            "`retire --reason \"...\"` archives it and retires its branches after a backup.",
             {"mode": mode or "disabled", "default_branch": branch, "undelivered": undelivered},
         )

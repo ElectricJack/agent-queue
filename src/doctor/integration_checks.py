@@ -112,6 +112,78 @@ async def _check_legacy_deliveries(ctx: DoctorContext) -> CheckResult:
         data={"unreachable": findings, "unknown": unknown, "checked": len(rows)})
 
 
+def _doctor_observer(ctx: DoctorContext):
+    """The daemon's delivery observer, or a fresh one for an offline doctor run."""
+    from src.git.github import GitHubAccess
+    from src.git.manager import GitManager
+    from src.integration.delivery_observer import DeliveryObserver, prerequisite_observer
+
+    observer = prerequisite_observer(ctx.db) or getattr(ctx.db, "_delivery_observer", None)
+    if observer is None:
+        integration = getattr(ctx.config, "integration", None)
+        observer = DeliveryObserver(ctx.db, git=GitManager(GitHubAccess.from_config(
+            getattr(integration, "github_app", None))), data_dir=ctx.config.data_dir)
+    return observer
+
+
+async def completed_undelivered(ctx: DoctorContext, *, project_ids=None, now=None) -> dict:
+    """Why each COMPLETED task branch the default branch cannot reach is still on origin.
+
+    :func:`observe_completed_branches` over the daemon's observer; doctor and
+    the stall sweep share this read.
+    """
+    from src.integration.delivery_branches import observe_completed_branches
+
+    return await observe_completed_branches(
+        ctx.db, _doctor_observer(ctx), project_ids=project_ids, now=now,
+    )
+
+
+def _describe_completed(entry: dict) -> str:
+    archived = " (archived)" if entry["archived"] else ""
+    return f"{entry['task_id']}{archived} on {entry['branch']}: {entry['reason']}"
+
+
+async def _check_completed_undelivered(ctx: DoctorContext) -> CheckResult:
+    """List COMPLETED tasks whose branch holds work the default branch cannot reach."""
+    check_id = "integration.completed_undelivered"
+    if ctx.db is None:
+        return CheckResult(id=check_id, severity=Severity.INFO, detail="database unavailable")
+    inventory = await completed_undelivered(ctx)
+    entries = inventory["entries"]
+    stranded = [e for e in entries if not e["accounted"] and e["rule"] != "unknown"]
+    accounted = [e for e in entries if e["accounted"]]
+    unknown = [e for e in entries if e["rule"] == "unknown"] + inventory["unavailable"]
+    by_rule: dict[str, int] = {}
+    for entry in entries:
+        by_rule[entry["rule"]] = by_rule.get(entry["rule"], 0) + 1
+    data = {
+        "stranded": stranded[:100], "accounted": accounted[:100], "unknown": unknown[:100],
+        "by_rule": dict(sorted(by_rule.items())), "projects": inventory["projects"],
+    }
+    if stranded:
+        return CheckResult(
+            id=check_id, severity=Severity.WARN,
+            detail=(
+                f"{len(stranded)} COMPLETED task branch(es) hold work the default branch "
+                "cannot reach, and nothing on record will deliver or retire them — e.g. "
+                f"{_describe_completed(stranded[0])}. Settle it: {stranded[0]['remedy']}"
+            ),
+            data=data,
+        )
+    detail = "no COMPLETED task branch holds work that nothing will deliver or retire"
+    if accounted:
+        rules = ", ".join(
+            f"{count} {rule}" for rule, count in data["by_rule"].items() if rule != "unknown"
+        )
+        detail += f"; {len(accounted)} not yet on the default branch are accounted for ({rules})"
+    if unknown:
+        detail += f"; {len(unknown)} could not be read"
+    return CheckResult(
+        id=check_id, severity=Severity.INFO if unknown else Severity.OK, detail=detail, data=data,
+    )
+
+
 async def _check_trust(ctx: DoctorContext) -> CheckResult:
     """Run ``aq integration app-verify`` for every App-mode project not disabled.
 
@@ -492,6 +564,8 @@ async def _check_ci_source(ctx: DoctorContext) -> CheckResult:
 def integration_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(id="integration.legacy_deliveries", run=_check_legacy_deliveries,
+                    owner=OWNER, timeout_s=300.0),
+        DoctorCheck(id="integration.completed_undelivered", run=_check_completed_undelivered,
                     owner=OWNER, timeout_s=300.0),
         DoctorCheck(
             id="integration.finished_branch_owners", run=_check_finished_branch_owners,

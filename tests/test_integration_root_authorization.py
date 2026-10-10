@@ -296,3 +296,99 @@ async def test_missing_and_ineligible_roots_are_refused(case):
     await case["db"].update_project("p", hierarchical_integration_mode="disabled")
     assert (await _grant(case, "chore-root", case["second"]))["outcome"] == "not_eligible"
     assert await _grants(case) == []
+
+
+async def _train_collected(case) -> None:
+    """``e1`` as the train leaves an epic it collected itself (``EpicCompletions``).
+
+    The hierarchy checkpoint the grant is keyed on still awaits its children and
+    was never verified, exactly as fleet-ridge-45's was when its PR sat CLEAN.
+    """
+    async with case["db"].immediate() as conn:
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "e1").values(
+            state="awaiting_children", checkpoint_sha=case["base"], verified_sha=None,
+            verified_generation=None, current_verification_id=None))
+        assert await case["producer"]._pull_request_source_on(conn, "e1") is None
+
+
+def _train(*blockers):
+    calls = []
+
+    async def train_blockers(task_id):
+        calls.append(task_id)
+        return {"task_id": task_id, "blockers": list(blockers)}
+
+    train_blockers.calls = calls
+    return train_blockers
+
+
+async def test_train_collected_epic_root_is_answered_with_what_the_train_waits_on(case):
+    """fleet-ridge-45: a green, mergeable epic PR got a bare ``not_eligible``."""
+    await _continuous_policy(case)
+    await _train_collected(case)
+    queued = {"code": "queued_behind_open_batch", "ref": "batch-dev",
+              "detail": "refs/heads/main is held by open batch batch-dev (testing)"}
+    train = _train(queued)
+    service = RootAuthorization(case["db"], clock=lambda: 2000.0, train_blockers=train)
+
+    preview = await service.run("e1")
+    assert preview["outcome"] == "already_authorized"
+    assert preview.get("authorized_by") is None
+    assert (preview["task_type"], preview["pr_url"]) == (
+        "feature", "https://github.com/o/r/pull/7")
+    assert "admits this completed root without a per-source grant" in preview["reason"]
+    assert ("queued_behind_open_batch: refs/heads/main is held by open batch batch-dev"
+            in preview["reason"])
+    applied = await service.run("e1", dry_run=False, expected_head_sha=case["first"],
+                                reason="r", operator_id="supervisor session:s")
+    assert applied["outcome"] == "already_authorized"
+    assert train.calls == ["e1", "e1"]
+    assert await _grants(case) == []
+
+    quiet = await RootAuthorization(case["db"], train_blockers=_train()).run("e1")
+    assert "no train blocker is recorded" in quiet["reason"]
+    # Without the train only a verified exact source is admitted; still say why.
+    bare = await _service(case).run("e1")
+    assert bare["outcome"] == "not_eligible"
+    assert "not verified at its head" in bare["reason"]
+
+
+@pytest.mark.parametrize(("change", "reason"), [
+    ("pr", "the root has no PR; `aq integration redrive-root` opens it"),
+    ("origin", "the root has no live branch origin"),
+    ("status", "the root is IN_PROGRESS, not COMPLETED"),
+    ("mode", "project integration mode is 'disabled', not 'train'"),
+    ("branch", "the root has no recorded branch"),
+    ("child", "not a root: its parent e1 carries it"),
+])
+async def test_train_root_refusal_names_the_condition_that_failed(case, change, reason):
+    await _continuous_policy(case)
+    await _train_collected(case)
+    values = {"pr": {"pr_url": None}, "status": {"status": "IN_PROGRESS"},
+              "branch": {"branch_name": None}}.get(change)
+    async with case["db"].immediate() as conn:
+        if values:
+            await conn.execute(update(tasks).where(tasks.c.id == "e1").values(**values))
+        if change == "origin":
+            await conn.execute(update(task_branch_origins).where(
+                task_branch_origins.c.task_id == "e1").values(retired_at=1.0))
+    if change == "mode":
+        await case["db"].update_project("p", hierarchical_integration_mode="disabled")
+    train = _train()
+    result = await RootAuthorization(case["db"], train_blockers=train).run(
+        "c1" if change == "child" else "e1")
+    assert (result["outcome"], result["reason"]) == ("not_eligible", reason)
+    assert train.calls == []
+
+
+async def test_train_root_under_reviewed_admission_waits_for_an_approved_review(case):
+    policy = await _continuous_policy(case)
+    policy["root"]["admission"] = "reviewed"
+    await case["db"].update_project("p", hierarchical_integration_policy=policy)
+    await _train_collected(case)
+    red = {"code": "pr_checks_red", "detail": "root e1 PR admission: pr_checks_red", "ref": "e1"}
+    result = await RootAuthorization(case["db"], train_blockers=_train(red)).run("e1")
+    assert result["outcome"] == "blocked"
+    assert "after an approved review of its PR head" in result["reason"]
+    assert "pr_checks_red: root e1 PR admission" in result["reason"]

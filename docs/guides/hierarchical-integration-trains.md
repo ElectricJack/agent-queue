@@ -545,3 +545,14 @@ Parent readiness still requires the existing child dispositions and trusted
 verification receipts. Reconciler decisions use those facts through the shared
 ports. Historical development operation rows remain audit and recovery inputs;
 they do not restart an autonomous publisher.
+
+COMPLETED therefore does not mean delivered. `aq doctor --check
+integration.completed_undelivered` lists every COMPLETED task, archived ones
+included, whose branch tip the default branch cannot reach, with the rule that
+accounts for it (in a live batch, a pending retirement, a recorded re-landing,
+a root PR still inside its delivery window) or the remedy when nothing does. The
+`stall.sweep` patrol and `aq task explain` carry the same findings. A train root
+whose PR is green yet not delivering answers `aq integration authorize-root`
+with the condition it fails or the train blocker it waits on, never a bare
+`not_eligible`. Re-landed content and archive dispositions are recorded as in
+[branch retirement](../specs/design/branch-retirement.md#re-landed-content).

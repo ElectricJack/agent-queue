@@ -872,8 +872,12 @@ export function useDeleteTask() {
 export function useArchiveTask() {
   const cb = useTaskMutationCallbacks();
   return useMutation({
-    mutationFn: async (input: { task_id: string; reason?: string; abandon_undelivered?: boolean }) =>
-      (await archiveTask({ body: input, throwOnError: true })).data,
+    mutationFn: async (input: {
+      task_id: string;
+      reason?: string;
+      abandon_undelivered?: boolean;
+      disposition?: "deliver" | "obsolete" | "retire";
+    }) => (await archiveTask({ body: input, throwOnError: true })).data,
     ...cb,
   });
 }

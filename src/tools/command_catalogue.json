@@ -1988,7 +1988,16 @@
           "abandon_undelivered": {
             "type": "boolean",
             "default": false,
-            "description": "Single-task archive only: explicitly abandon completed work that has not reached the default branch. Requires reason and an elevated/operator caller."
+            "description": "Single-task archive only: explicitly abandon completed work that has not reached the default branch. Requires disposition, reason and an elevated/operator caller."
+          },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "deliver",
+              "obsolete",
+              "retire"
+            ],
+            "description": "Single-task only: what happens to completed work that has not reached the default branch. deliver keeps the task for the train and reports what its delivery waits on; obsolete (reason is the note) and retire archive it, retiring its branches after a backup bundle."
           },
           "reason": {
             "type": "string",

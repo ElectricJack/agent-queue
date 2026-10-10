@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 from collections import Counter
@@ -25,11 +26,16 @@ from src.database.tables import (
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.models import ProjectStatus, TaskStatus
 
+logger = logging.getLogger(__name__)
+
 CHECK_ID = "stall.sweep"
 _STUCK_CHILD_AFTER_SECONDS = 5 * 60
 _MAX_PR_PROBES = 20
 _PARENT_PR_PROBE_SECONDS = 2.0
 _PARENT_PR_PROBE_BUDGET_SECONDS = 10.0
+#: The completed-undelivered read shares one repository snapshot per project;
+#: past this the sweep leaves it to ``aq doctor --check integration.completed_undelivered``.
+_COMPLETED_UNDELIVERED_BUDGET_SECONDS = 30.0
 _READY_AGE = 20 * 60
 _DEFINED_AGE = 30 * 60
 _DELIVERY_LAG = 45 * 60
@@ -389,6 +395,43 @@ async def _unmaterialized_pr_findings(ctx: DoctorContext, active: set[str]) -> l
     ]
 
 
+async def _completed_undelivered_findings(
+    ctx: DoctorContext, active: set[str], now: float,
+) -> list[dict]:
+    """COMPLETED tasks whose branch holds work nothing will deliver or retire.
+
+    The same read as ``integration.completed_undelivered``; only its findings
+    surface here.  A repository that cannot be read in the budget, or at all,
+    is that check's to report, not a stall.
+    """
+    from src.doctor.integration_checks import completed_undelivered
+
+    try:
+        inventory = await asyncio.wait_for(
+            completed_undelivered(ctx, project_ids=active, now=now),
+            _COMPLETED_UNDELIVERED_BUDGET_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning("stall sweep: completed-undelivered read exceeded %ss",
+                       _COMPLETED_UNDELIVERED_BUDGET_SECONDS)
+        return []
+    except Exception:
+        # The only sweep line that fetches a repository: its failure is the
+        # doctor check's to report, never a reason to lose every other line.
+        logger.warning("stall sweep: completed-undelivered read failed", exc_info=True)
+        return []
+    return [
+        _finding(
+            "completed_undelivered", entry["project_id"],
+            f"{entry['task_id']} is COMPLETED but {entry['branch']} holds work the default "
+            f"branch cannot reach: {entry['reason']}; {entry['remedy']}",
+            **{key: value for key, value in entry.items() if key != "project_id"},
+        )
+        for entry in inventory["entries"]
+        if not entry["accounted"] and entry["rule"] != "unknown"
+    ]
+
+
 async def _conversation_findings(ctx: DoctorContext, now: float) -> list[dict]:
     """Conversation inputs no supervisor session is live to answer.
 
@@ -463,6 +506,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _delivery_findings(ctx, active, tasks, now),
         _provider_findings(ctx, tasks),
         _unmaterialized_pr_findings(ctx, active),
+        _completed_undelivered_findings(ctx, active, now),
         _unadmitted_parent_findings(ctx, active),
         _stranded_child_findings(ctx, now),
         _reviewed_file_guard_findings(ctx, active),
