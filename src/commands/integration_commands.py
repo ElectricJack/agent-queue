@@ -1291,6 +1291,27 @@ class IntegrationCommandsMixin:
         try:
             policy = HierarchicalIntegrationPolicy.model_validate(raw_policy)
         except (ValidationError, TypeError, ValueError) as exc:
+            # Development settings share this column but contain local
+            # commands/budgets, not the hosted check and producer identities
+            # needed by either App-mode diagnostic. Do not infer that trust
+            # from commands or silently fall back when --policy is supplied.
+            from src.integration.development import DevelopmentPolicy
+
+            try:
+                DevelopmentPolicy.model_validate(raw_policy).checked()
+            except (ValidationError, TypeError, ValueError):
+                pass
+            else:
+                source = "supplied" if supplied is not None else "bound"
+                return _failure(
+                    "policy_missing",
+                    f"{project_id}'s {source} development policy defines local validation, "
+                    "but has no hosted required check names, check-set version, or CI producer "
+                    "App id. Pass --policy FILE with a reviewed hierarchical integration "
+                    "policy: parent.required_checks and root.required_checks must include "
+                    "the exact names, version, and the same numeric producer_id. This reads "
+                    "the candidate policy without changing the project's bound policy.",
+                ), {}
             return _failure("policy_invalid", f"the integration policy is invalid: {exc}"), {}
 
         repository_id = str(args.get("repository_id") or project.integration_repository_id or "")

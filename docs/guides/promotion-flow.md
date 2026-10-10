@@ -60,6 +60,18 @@ attestation names. App verification, functional preflight and
 the committed manifest. Missing or different promotion names remain a trust
 failure; projects without a flow keep the original manifest format.
 
+Manifest generation takes a hierarchical CI policy from `--policy FILE`, or
+from the project's bound policy when that has the same format. A bound
+development policy supplies local validation commands and budgets; it has no
+hosted required check names, check-set version or CI producer App identity.
+For that format, the renderer returns `policy_missing` with instructions to
+supply a reviewed hierarchical policy JSON through `--policy FILE`. It does
+not change the project's binding or activate a flow. Both
+`parent.required_checks` and `root.required_checks` must name the same numeric
+producer App, and the root's exact names and version become the manifest's
+required checks. Preserve all required checks, including platform-specific
+checks; an added Linux check does not replace a required Windows check.
+
 A delivery-branch push validated by the fallback reusable workflow produces
 checks named `unattested-ci / <required name>`. To allow that evidence when
 requesting a promotion, commit `check_sets.promotion-source-audit` in
