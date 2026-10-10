@@ -15,7 +15,8 @@ only on Git proof, tried in this order:
 
 Anything else is ``undelivered`` and stays open.  The dry run only reads;
 applying needs the head it reported and a reason, proves again under the
-retained repository's lock, posts one marked proof comment, re-reads the head,
+retained repository's lock, excludes unfinished tasks and attached writers,
+posts one marked proof comment, re-reads the head,
 closes the PR and records ``integration.pr_closed_delivered``.  Tasks,
 completions, receipts and branches are never changed.
 """
@@ -26,9 +27,10 @@ import json
 import time
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
-from src.database.tables import tasks
+from src.database.queries.integration_state_queries import session_attached_clause
+from src.database.tables import sessions, tasks, workspaces
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 from src.integration.promotion_contracts import PromotionError
@@ -77,40 +79,50 @@ class DeliveredPullRequestClosure:
             }
         marker = _marker(pr_number, observed["head_sha"])
         try:
-            if not await client.has_comment_marker(number=pr_number, marker=marker):
-                await client.comment_pull_request(
-                    number=pr_number, marker=marker, body=_comment(marker, observed)
+            async with self.db.immediate() as conn:
+                await self.db.lock_hierarchy_project(conn, project_id)
+                task_ids, live_task_ids = await self._tracking_tasks(
+                    project_id, observed["pr_url"], observed["branch"],
+                    observed["repository_id"], conn=conn,
                 )
-            current = await client.exact_pull_request(number=pr_number)
-            if current is None or current["head_sha"] != observed["head_sha"]:
-                return {
-                    **observed,
-                    "outcome": "changed",
-                    "reason": "the PR head moved before it was closed; run the dry run again",
-                }
-            if current["state"] != "closed":
-                await client.close_pull_request(number=pr_number)
+                observed["task_ids"] = task_ids
+                if live_task_ids:
+                    return self._held_by_tasks(observed, live_task_ids)
+                if not await client.has_comment_marker(number=pr_number, marker=marker):
+                    await client.comment_pull_request(
+                        number=pr_number, marker=marker, body=_comment(marker, observed)
+                    )
+                current = await client.exact_pull_request(number=pr_number)
+                if current is None or current["head_sha"] != observed["head_sha"]:
+                    return {
+                        **observed,
+                        "outcome": "changed",
+                        "reason": "the PR head moved before it was closed; run the dry run again",
+                    }
+                if current["state"] != "closed":
+                    await client.close_pull_request(number=pr_number)
+                await self.db.log_event(
+                    PR_CLOSED_DELIVERED_EVENT,
+                    project_id=project_id,
+                    task_id=task_ids[0] if len(task_ids) == 1 else None,
+                    payload=json.dumps(
+                        {
+                            "pr_number": pr_number,
+                            "pr_url": observed["pr_url"],
+                            "branch": observed["branch"],
+                            "head_sha": observed["head_sha"],
+                            "target_sha": observed["target_sha"],
+                            "proof": observed["proof"],
+                            "task_ids": task_ids,
+                            "operator_id": operator_id,
+                            "reason": reason,
+                            "at": self.clock(),
+                        }
+                    ),
+                    conn=conn,
+                )
         except _OBSERVATION_FAILURES as exc:
             return {**observed, "outcome": "blocked", "reason": f"GitHub write failed: {exc}"}
-        await self.db.log_event(
-            PR_CLOSED_DELIVERED_EVENT,
-            project_id=project_id,
-            task_id=observed["task_ids"][0] if len(observed["task_ids"]) == 1 else None,
-            payload=json.dumps(
-                {
-                    "pr_number": pr_number,
-                    "pr_url": observed["pr_url"],
-                    "branch": observed["branch"],
-                    "head_sha": observed["head_sha"],
-                    "target_sha": observed["target_sha"],
-                    "proof": observed["proof"],
-                    "task_ids": observed["task_ids"],
-                    "operator_id": operator_id,
-                    "reason": reason,
-                    "at": self.clock(),
-                }
-            ),
-        )
         return {**observed, "outcome": "closed"}
 
     async def _observe(self, project_id: str, pr_number: int) -> tuple[dict[str, Any], Any]:
@@ -152,8 +164,12 @@ class DeliveredPullRequestClosure:
             branch=head["ref"],
             head_sha=head["sha"],
             state="merged" if pull.get("merged_at") else pull.get("state"),
-            task_ids=await self._tracking_tasks(project_id, pr_url),
+            repository_id=repo.id,
         )
+        task_ids, live_task_ids = await self._tracking_tasks(
+            project_id, pr_url, head["ref"], repo.id
+        )
+        base["task_ids"] = task_ids
         if pull.get("state") != "open":
             return {
                 **base,
@@ -172,6 +188,8 @@ class DeliveredPullRequestClosure:
                 "outcome": "not_eligible",
                 "reason": "the PR head is not a branch of the designated repository",
             }, None
+        if live_task_ids:
+            return self._held_by_tasks(base, live_task_ids), None
         store = str(resolved.retained_git_dir)
         try:
             async with self.git.arepository_transaction(store):
@@ -267,14 +285,52 @@ class DeliveredPullRequestClosure:
             list(args), cwd=store, env={"LC_ALL": "C"}, lock_held=True
         )
 
-    async def _tracking_tasks(self, project_id: str, pr_url: str) -> list[str]:
-        async with self.db._engine.connect() as conn:
-            rows = await conn.execute(
-                select(tasks.c.id)
-                .where(tasks.c.project_id == project_id, tasks.c.pr_url == pr_url)
-                .order_by(tasks.c.id)
-            )
-            return [row[0] for row in rows]
+    async def _tracking_tasks(
+        self, project_id: str, pr_url: str, branch: str, repository_id: str, *, conn=None
+    ) -> tuple[list[str], list[str]]:
+        if conn is None:
+            async with self.db._engine.connect() as reader:
+                return await self._tracking_tasks_on(
+                    reader, project_id, pr_url, branch, repository_id
+                )
+        return await self._tracking_tasks_on(
+            conn, project_id, pr_url, branch, repository_id, lock=True
+        )
+
+    async def _tracking_tasks_on(
+        self, conn, project_id, pr_url, branch, repository_id, *, lock=False
+    ) -> tuple[list[str], list[str]]:
+        live_writer = select(sessions.c.id).where(
+            sessions.c.task_id == tasks.c.id, session_attached_clause()
+        ).exists()
+        locked_workspace = select(workspaces.c.id).where(
+            workspaces.c.locked_by_task_id == tasks.c.id
+        ).exists()
+        live = or_(
+            tasks.c.status.not_in(("COMPLETED", "FAILED")),
+            tasks.c.assigned_agent_id.is_not(None), live_writer, locked_workspace,
+        )
+        statement = select(tasks.c.id, live.label("live")).where(
+            tasks.c.project_id == project_id,
+            or_(
+                tasks.c.pr_url == pr_url,
+                and_(
+                    or_(tasks.c.repo_id == repository_id, tasks.c.repo_id.is_(None)),
+                    tasks.c.branch_name.in_((branch, "refs/heads/" + branch)),
+                ),
+            ),
+        ).order_by(tasks.c.id)
+        if lock:
+            statement = statement.with_for_update(of=tasks)
+        rows = (await conn.execute(statement)).all()
+        return [row.id for row in rows], [row.id for row in rows if row.live]
+
+    @staticmethod
+    def _held_by_tasks(observed: dict[str, Any], task_ids: list[str]) -> dict[str, Any]:
+        return {
+            **observed, "outcome": "not_eligible", "live_task_ids": task_ids,
+            "reason": "unfinished tasks or attached writers still hold the PR",
+        }
 
 
 def _all_marked(output: str, expected: int) -> bool:
