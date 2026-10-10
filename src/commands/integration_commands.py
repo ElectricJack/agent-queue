@@ -1257,7 +1257,7 @@ class IntegrationCommandsMixin:
 
 
     async def _integration_app_inputs(
-        self, args: dict
+        self, args: dict, *, allow_hosted_check_policy: bool = False
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
         """``(refusal, inputs)`` shared by the read-only App-mode commands.
 
@@ -1270,7 +1270,7 @@ class IntegrationCommandsMixin:
         from pydantic import ValidationError
 
         from src.git.github_contracts import credential_identity_from_client
-        from src.integration.models import HierarchicalIntegrationPolicy
+        from src.integration.models import HierarchicalIntegrationPolicy, HostedCheckPolicy
 
         project_id = str(args.get("project_id") or "")
         if not project_id:
@@ -1283,13 +1283,22 @@ class IntegrationCommandsMixin:
             return _failure("not_found", f"project {project_id} does not exist"), {}
 
         supplied = args.get("policy")
-        raw_policy = supplied if supplied is not None else project.hierarchical_integration_policy
+        hosted = args.get("hosted_check_policy")
+        if hosted is not None and (not allow_hosted_check_policy or supplied is not None):
+            return _failure(
+                "policy_invalid", "hosted_check_policy is only supported for trust-manifest "
+                "and is mutually exclusive with policy",
+            ), {}
+        raw_policy = (hosted if hosted is not None else supplied if supplied is not None
+                      else project.hierarchical_integration_policy)
         if raw_policy is None:
             return _failure(
                 "policy_missing", f"{project_id} has no bound integration policy; pass --policy FILE"
+                + (" or --hosted-check-policy FILE" if allow_hosted_check_policy else ""),
             ), {}
         try:
-            policy = HierarchicalIntegrationPolicy.model_validate(raw_policy)
+            policy_model = HostedCheckPolicy if hosted is not None else HierarchicalIntegrationPolicy
+            policy = policy_model.model_validate(raw_policy)
         except (ValidationError, TypeError, ValueError) as exc:
             return _failure("policy_invalid", f"the integration policy is invalid: {exc}"), {}
 
@@ -1339,7 +1348,8 @@ class IntegrationCommandsMixin:
             "project": project,
             "project_id": project_id,
             "policy": policy,
-            "policy_source": "argument" if supplied is not None else "bound",
+            "policy_source": ("hosted_check_policy" if hosted is not None
+                              else "argument" if supplied is not None else "bound"),
             "repository_id": repository_id,
             "repository": repository,
             "binding": binding,
@@ -1361,7 +1371,7 @@ class IntegrationCommandsMixin:
         from src.integration.preflight import read_committed_trust_manifest
         from src.integration.promotion_steps import read_stored_promotion_flow
 
-        refusal, inputs = await self._integration_app_inputs(args)
+        refusal, inputs = await self._integration_app_inputs(args, allow_hosted_check_policy=True)
         if refusal is not None:
             return refusal
         binding, identity = inputs["binding"], inputs["identity"]
@@ -1380,7 +1390,10 @@ class IntegrationCommandsMixin:
             flow = await read_stored_promotion_flow(self.db, inputs["project_id"])
             if flow is None:
                 flow = getattr(inputs["project"], "promotion_flow", None)
-            manifest = trust_manifest.manifest_for_policy(
+            builder = (trust_manifest.manifest_for_hosted_check_policy
+                       if inputs["policy_source"] == "hosted_check_policy"
+                       else trust_manifest.manifest_for_policy)
+            manifest = builder(
                 inputs["policy"],
                 canonical_repository_id=inputs["repository_id"],
                 repository_id=binding.repository_id,
@@ -1418,7 +1431,9 @@ class IntegrationCommandsMixin:
                 else:
                     if committed_trust.check_sets:
                         manifest["check_sets"] = {
-                            name: list(checks) for name, checks in committed_trust.check_sets.items()
+                            **{name: list(checks)
+                               for name, checks in committed_trust.check_sets.items()},
+                            **manifest.get("check_sets", {}),
                         }
                         text = trust_manifest.canonical_text(manifest)
             committed.update(sha=sha, **trust_manifest.compare(manifest, raw).as_dict())

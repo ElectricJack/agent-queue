@@ -816,7 +816,8 @@ def integration_recover_candidate_member(ctx: click.Context, reservation_id: str
 
 
 def _trust_manifest_write_command(
-    project_id: str, policy_path: str | None, repository_id: str | None
+    project_id: str, policy_path: str | None, repository_id: str | None,
+    hosted_check_policy_path: str | None = None,
 ) -> str:
     import shlex
 
@@ -825,6 +826,8 @@ def _trust_manifest_write_command(
     parts = ["aq", "integration", "trust-manifest", project_id]
     if policy_path:
         parts += ["--policy", policy_path]
+    if hosted_check_policy_path:
+        parts += ["--hosted-check-policy", hosted_check_policy_path]
     if repository_id:
         parts += ["--repository-id", repository_id]
     parts += ["--write", TRUST_MANIFEST_PATH]
@@ -835,6 +838,9 @@ def _trust_manifest_write_command(
 @click.argument("project_id")
 @click.option("--policy", "policy_path", type=click.Path(exists=True, dir_okay=False),
               help="Build from this policy JSON instead of the project's bound policy.")
+@click.option("--hosted-check-policy", "hosted_check_policy_path",
+              type=click.Path(exists=True, dir_okay=False),
+              help="Build from CI-only JSON (version, names, producer_id, optional check_sets).")
 @click.option("--repository-id",
               help="Integration repository id (default: the project's designated one).")
 @click.option("--write", "write_path", type=click.Path(dir_okay=False),
@@ -849,6 +855,7 @@ def integration_trust_manifest(
     ctx: click.Context,
     project_id: str,
     policy_path: str | None,
+    hosted_check_policy_path: str | None,
     repository_id: str | None,
     write_path: str | None,
     check: bool,
@@ -856,7 +863,8 @@ def integration_trust_manifest(
 ) -> None:
     """Render PROJECT_ID's App-mode trust manifest (.github/agent-queue-integration.json).
 
-    The daemon builds it from the policy (--policy FILE, else the bound one),
+    The daemon builds it from --policy FILE, --hosted-check-policy FILE
+    (CI inputs without hierarchical routes), or the bound policy,
     the authenticated GitHub binding and its own App, and compares the copy
     committed on the default branch.  --write writes the canonical text,
     --print prints it, and --check exits 1 when the committed copy is missing
@@ -872,13 +880,28 @@ def integration_trust_manifest(
     ) if chosen]
     if len(modes) != 1:
         raise click.UsageError("pass exactly one of --write PATH, --check and --print")
+    if policy_path and hosted_check_policy_path:
+        raise click.UsageError("--policy and --hosted-check-policy are mutually exclusive")
     mode = modes[0]
     args: dict[str, Any] = {"project_id": project_id}
-    if policy_path:
+
+    def unique_fields(pairs):
+        document = {}
+        for name, value in pairs:
+            if name in document:
+                raise ValueError(f"duplicate field {name!r}")
+            document[name] = value
+        return document
+
+    input_path = hosted_check_policy_path or policy_path
+    if input_path:
         try:
-            args["policy"] = json.loads(Path(policy_path).read_text(encoding="utf-8"))
+            document = json.loads(
+                Path(input_path).read_text(encoding="utf-8"), object_pairs_hook=unique_fields,
+            )
         except (OSError, ValueError) as exc:
-            raise click.UsageError(f"cannot read the policy {policy_path}: {exc}") from exc
+            raise click.UsageError(f"cannot read the policy {input_path}: {exc}") from exc
+        args["hosted_check_policy" if hosted_check_policy_path else "policy"] = document
     if repository_id:
         args["repository_id"] = repository_id
 
@@ -892,7 +915,9 @@ def integration_trust_manifest(
     if mode == "write":
         Path(write_path).write_text(data["text"], encoding="utf-8")
         data["written"] = write_path
-    fix = _trust_manifest_write_command(project_id, policy_path, repository_id)
+    fix = _trust_manifest_write_command(
+        project_id, policy_path, repository_id, hosted_check_policy_path,
+    )
     data["write_command"] = fix
     emit(ctx, data, render=lambda value: _render_trust_manifest(value, mode=mode, fix=fix))
     if mode == "check" and not _check_verdict(data.get("committed") or {})[0]:

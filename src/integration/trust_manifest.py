@@ -33,6 +33,7 @@ from src.integration.ci import (
     IntegrationTrustManifest,
     is_numeric_producer_id,
 )
+from src.integration.models import HostedCheckPolicy
 
 SCHEMA = "aq.integration-trust.v1"
 ATTESTATION_NAME = "Agent Queue Integration Attestation"
@@ -184,6 +185,34 @@ def manifest_for_policy(
     except ValidationError as exc:
         # The identities come from the binding and the App: a failure here is
         # the policy's (an empty check set) or an App that is its own producer.
+        raise TrustManifestRefusal(
+            "trust_manifest_invalid", f"the manifest would not validate: {exc}"
+        ) from exc
+
+
+def manifest_for_hosted_check_policy(
+    policy: HostedCheckPolicy,
+    *,
+    canonical_repository_id: str,
+    repository_id: int,
+    full_name: str,
+    attestation_app_id: int,
+    promotion_flow: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Build from validated CI inputs and independently resolved identities."""
+    try:
+        return build_trust_manifest(
+            canonical_repository_id=canonical_repository_id,
+            repository_id=repository_id,
+            full_name=full_name,
+            ci_producer_app_id=int(policy.producer_id),
+            attestation_app_id=attestation_app_id,
+            checks=policy.names,
+            check_version=policy.version,
+            promotion_attestation_names=flow_attestation_names(promotion_flow),
+            check_sets=policy.check_sets,
+        )
+    except ValidationError as exc:
         raise TrustManifestRefusal(
             "trust_manifest_invalid", f"the manifest would not validate: {exc}"
         ) from exc
@@ -429,6 +458,7 @@ __all__ = [
     "compare",
     "flow_attestation_names",
     "manifest_for_policy",
+    "manifest_for_hosted_check_policy",
     "policy_producer_app_id",
     "text_sha256",
 ]

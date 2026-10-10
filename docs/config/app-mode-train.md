@@ -38,7 +38,7 @@ agent-queue; §9.7 covers every other project.
 ## Commands
 
 ```text
-aq integration trust-manifest PROJECT [--policy FILE] [--repository-id ID] (--write PATH | --check | --print) [--json]
+aq integration trust-manifest PROJECT [--policy FILE | --hosted-check-policy FILE] [--repository-id ID] (--write PATH | --check | --print) [--json]
 aq integration app-verify PROJECT [--policy FILE] [--repository-id ID] [--json]
 aq integration app-setup PROJECT [--policy FILE] [--repository-id ID] [--apply]
 aq integration onboard-train PROJECT [--write-policy PATH] [--write-trust-manifest PATH] [--write-audit-workflow PATH] [--write-ruleset PATH]
@@ -56,6 +56,11 @@ aq doctor --check integration.app_mode
 - Each takes the policy from `--policy FILE`, so the anchors can be prepared
   before the policy is bound, else the project's bound policy. `--repository-id`
   defaults to the project's designated integration repository.
+- For trust bootstrap without hierarchical routing artifacts, `trust-manifest`
+  also accepts a strictly validated CI-only `--hosted-check-policy FILE`.
+  See the [current bootstrap example](../guides/promotion-flow.md#a-realistic-example).
+  Repository and attestation App identities still come from the daemon;
+  this input never binds policy, changes integration mode or activates a flow.
 - `app-verify` reports one item per concern, each `ok`, `warn` or `fail` with
   a code, what was expected, what GitHub showed and the exact fix: `credential`,
   `repository`, `producer`, `manifest`, `variables`, `protection`,
