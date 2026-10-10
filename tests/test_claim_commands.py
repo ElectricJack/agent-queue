@@ -4162,15 +4162,34 @@ async def test_development_waits_for_requires_current_child_delivery(
     assert (await observe_admission(db, ["dependent"], env.service)).allowed == {"dependent"}
 
 
+@pytest.mark.parametrize("wait_seconds", [1, 10])
 async def test_development_long_poll_observes_external_merge_without_event(
-    handler, db, tmp_path, development_admission
+    handler, db, tmp_path, development_admission, monkeypatch, wait_seconds
 ):
     env = development_admission
     sid, _ = await pool_session(db, tmp_path)
-    claim = asyncio.create_task(scoped(handler, sid)._cmd_task_claim({"next": True, "wait": 1}))
-    await asyncio.sleep(0.5)
-    env.git(env.source, "push", "origin", "prerequisite:main")
-    result = await asyncio.wait_for(claim, timeout=10)
+    handler.config.swarm.claim_wait_max = wait_seconds
+    # Git/DB latency must not exhaust the poll before the external merge.
+    # Keep the claim clock local so asyncio deadlines and lease time stay real.
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(
+        "src.commands.claim_commands.time",
+        SimpleNamespace(time=time.time, monotonic=lambda: clock.now),
+    )
+
+    async def merge_on_timeout(timeout):
+        assert env.git(env.remote, "rev-parse", "main") == env.base
+        env.git(env.source, "push", "origin", "prerequisite:main")
+        clock.now += timeout
+        return None  # No daemon event wakes the frontier waiter.
+
+    with patch("src.event_bus.EventWaiter.wait", new_callable=AsyncMock) as poll:
+        poll.side_effect = merge_on_timeout
+        result = await asyncio.wait_for(
+            scoped(handler, sid)._cmd_task_claim({"next": True, "wait": wait_seconds}),
+            timeout=10,
+        )
+    poll.assert_awaited_once_with(min(wait_seconds, 5.0))
     assert result["result"] == "claimed"
     assert result["task"]["id"] == "dependent"
 
