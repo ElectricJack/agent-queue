@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps 
 import { createPortal } from "react-dom";
 import type { ExtraProps } from "react-markdown";
 
-import { useCommentReview, useDecideReview, useImportReviewEdits, useReview, type ReviewAttachment } from "../../api/reviews";
+import { useCommentReview, useDecideReview, useImportReviewEdits, useReopenReview, useReview, type ReviewAttachment } from "../../api/reviews";
+import WithdrawReviewModal from "../../pages/reviews/WithdrawReviewModal";
 import MarkdownPreview from "../../components/MarkdownPreview";
 import { useRawEventSubscription } from "../../ws/useEventStream";
 import type { NotifyEvent } from "../../ws/types";
@@ -26,6 +27,10 @@ type ReviewRecord = {
   state: string;
   current_revision: number;
   decider: string;
+  withdrawn_by?: string | null;
+  withdrawn_at?: number | null;
+  withdrawn_via?: string | null;
+  withdrawal_reason?: string | null;
 };
 
 type ReviewResponse = {
@@ -37,6 +42,8 @@ type ReviewResponse = {
   diff?: { op: "equal" | "added" | "removed"; text: string }[] | null;
   attachments?: ReviewAttachment[];
   response_route: ResponseRoute;
+  dependent_task_ids?: string[];
+  gate?: { status: string } | null;
 };
 
 type CommentTarget = {
@@ -102,6 +109,8 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
   const [selection, setSelection] = useState<CommentTarget | null>(null);
   const [commentTarget, setCommentTarget] = useState<CommentTarget | null>(null);
   const [revisedSinceOpen, setRevisedSinceOpen] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [reopenError, setReopenError] = useState<string | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const tocRef = useRef<HTMLDivElement>(null);
   const approveRef = useRef<HTMLButtonElement>(null);
@@ -116,6 +125,7 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
   const comment = useCommentReview();
   const decide = useDecideReview();
   const importEdits = useImportReviewEdits();
+  const reopen = useReopenReview();
 
   useEffect(() => {
     if (response && selectedRevision == null) setSelectedRevision(response.review.current_revision);
@@ -322,7 +332,50 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
       <div className="border-b border-gray-800 p-4">
         <h1 className="mb-2 text-xl font-semibold">{title}</h1>
         <MetaCard data={parsed.data} onCompanionClick={() => {}} />
+        {response.review.withdrawn_by && (
+          <p className="mt-2 text-sm text-gray-400">
+            Last withdrawn by {response.review.withdrawn_by} via {response.review.withdrawn_via ?? "unknown surface"}
+            {response.review.withdrawn_at != null && ` on ${new Date(response.review.withdrawn_at * 1000).toLocaleString()}`}.
+            {response.review.withdrawal_reason && ` Reason: ${response.review.withdrawal_reason}`}
+          </p>
+        )}
+        {response.review.state === "withdrawn" && (
+          <div className="mt-3 space-y-2 text-sm text-amber-200">
+            <p>This review was withdrawn. Its approval gate is {response.gate?.status ?? "cancelled"}.
+              Dependent work still requires approval.</p>
+            <p>Dependent tasks: {(response.dependent_task_ids ?? []).length === 0 ? "none" :
+              (response.dependent_task_ids ?? []).map((taskId, index) => (
+                <span key={taskId}>{index > 0 && ", "}<a className="underline" href={`/tasks/${encodeURIComponent(taskId)}`}>{taskId}</a></span>
+              ))}</p>
+            <button type="button" disabled={reopen.isPending}
+              className="rounded bg-indigo-700 px-3 py-1.5 text-sm text-white disabled:opacity-50"
+              onClick={async () => {
+                setReopenError(null);
+                try {
+                  const result = await reopen.mutateAsync({
+                    review_id: response.review.id, revision: response.review.current_revision,
+                  });
+                  setSelectedRevision(result.revision);
+                  setRevisedSinceOpen(false);
+                  setShowDiff(false);
+                } catch (error) {
+                  setReopenError(error instanceof Error ? error.message : String(error));
+                }
+              }}>
+              {reopen.isPending ? "Reopening…" : "Reopen review"}
+            </button>
+            {reopenError && <p role="alert" className="text-red-300">{reopenError}</p>}
+          </div>
+        )}
+        {["in_review", "changes_requested", "rejected"].includes(response.review.state) && (
+          <button type="button" onClick={() => setClosing(true)}
+            className="mt-3 rounded border border-gray-700 px-3 py-1.5 text-sm text-gray-300">
+            Close review
+          </button>
+        )}
       </div>
+      {closing && <WithdrawReviewModal review={response.review} onClose={() => setClosing(false)}
+        onWithdrawn={() => setClosing(false)} />}
       {showDiff && <DiffBlocks blocks={response.diff} />}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {toc.length > 0 && (

@@ -142,6 +142,7 @@ somehow declares none.
     "review_submit",
     "github_issue_close_rejected",
     "review_withdraw",
+    "review_reopen",
     "project_ready",
     "session_drain_ack",
     "task_claim",

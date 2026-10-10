@@ -79,6 +79,12 @@ LOCAL_SCOPE = RequestScope(kind="local")
 _operator_viewer_allowed: ContextVar[bool] = ContextVar(
     "operator_viewer_allowed", default=True,
 )
+_request_surface: ContextVar[str] = ContextVar("request_surface", default="cli")
+
+
+def request_surface() -> str:
+    """Transport provenance for operator audit, derived by HTTP middleware."""
+    return _request_surface.get()
 
 
 def operator_viewer_allowed() -> bool:
@@ -114,12 +120,14 @@ def request_remote_dashboard_viewer(request) -> bool:
 
 
 @contextmanager
-def operator_viewer_context(allowed: bool) -> Iterator[None]:
+def operator_viewer_context(allowed: bool, *, surface: str = "cli") -> Iterator[None]:
     token = _operator_viewer_allowed.set(allowed)
+    surface_token = _request_surface.set(surface)
     try:
         yield
     finally:
         _operator_viewer_allowed.reset(token)
+        _request_surface.reset(surface_token)
 
 
 def _hash(token: str) -> str:

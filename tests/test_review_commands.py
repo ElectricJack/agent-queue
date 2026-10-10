@@ -124,7 +124,7 @@ async def env(command_handler_factory, tmp_path):
             # request-scope boundary independently from profile discovery.
             # Shipped worker profiles deliberately retain only the first four.
             aq_commands=[
-                "review_submit", "review_show", "review_list", "review_withdraw",
+                "review_submit", "review_show", "review_list", "review_withdraw", "review_reopen",
                 "review_decide", "review_comment", "review_delegate", "review_import_edits",
             ],
             harness_tools=[],
@@ -138,7 +138,7 @@ async def env(command_handler_factory, tmp_path):
             harness="codex",
             lifecycle="named",
             aq_commands=[
-                "review_submit", "review_show", "review_list", "review_withdraw", "review_decide",
+                "review_submit", "review_show", "review_list", "review_withdraw", "review_reopen", "review_decide",
                 "review_comment", "review_delegate", "review_import_edits", "edit_project",
             ],
             harness_tools=[],
@@ -1136,6 +1136,7 @@ async def test_dashboard_close_withdraws_over_http_and_tells_the_author(env, mon
     ) as client:
         response = await client.post(
             "/api/review/withdraw", json={"review_id": review_id, "reason": " superseded by v2 "},
+            headers={"x-aq-dashboard-viewer": "operator"},
         )
         again = await client.post(
             "/api/review/withdraw", json={"review_id": review_id, "reason": ""},
@@ -1149,8 +1150,10 @@ async def test_dashboard_close_withdraws_over_http_and_tells_the_author(env, mon
     assert (review["state"], review["decided_by"], review["decision_note"]) == (
         "withdrawn", "human:local-operator", "superseded by v2",
     )
-    # Exactly the CLI's withdrawal: the gate stays open and its waiter is flagged.
-    assert (await db.get_gate(gate_id))["status"] == "open"
+    assert review["withdrawn_via"] == "dashboard"
+    assert review["withdrawn_by"] == "human:local-operator"
+    # Withdrawal cancels the gate and flags its waiter without granting approval.
+    assert (await db.get_gate(gate_id))["status"] == "cancelled"
     assert await db.get_task_meta("impl", "needs_attention") == "review_withdrawn"
 
     [comment] = (await db.list_task_comments("author"))["comments"]
@@ -1163,6 +1166,24 @@ async def test_dashboard_close_withdraws_over_http_and_tells_the_author(env, mon
 
     assert again.status_code == 422
     assert "withdrawn" in again.json()["error"]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        refused = await client.post(
+            "/api/review/reopen", json={"review_id": review_id, "revision": 1},
+            headers={"x-aq-dashboard-viewer": "other"},
+        )
+        reopened = await client.post(
+            "/api/review/reopen", json={"review_id": review_id, "revision": 1},
+            headers={"x-aq-dashboard-viewer": "operator"},
+        )
+    assert refused.status_code == 403
+    assert reopened.status_code == 200, reopened.text
+    assert reopened.json()["revision"] == 2
+    assert (await db.get_review(review_id))["gate_id"] == gate_id
+    assert (await db.get_gate(gate_id))["status"] == "open"
+    assert (await db.get_task("impl")).is_blocked
+    assert (await db.get_review(review_id))["withdrawn_via"] == "dashboard"
 
 
 async def test_author_withdrawing_its_own_review_is_not_told_about_it(env):
@@ -1183,6 +1204,47 @@ async def test_author_withdrawing_its_own_review_is_not_told_about_it(env):
     )
     assert (await db.list_task_comments("author"))["comments"] == []
     assert await db.get_pending_messages("task", "author") == []
+    assert review["withdrawn_via"] == "agent"
+    [notice] = await db.get_pending_messages("session", "supervisor-p")
+    assert submitted["review_id"] in notice.body
+
+
+async def test_withdraw_notifies_supervisor_and_reopen_is_author_scoped(env):
+    handler, db = env
+    result = await _scoped(handler, "review_submit", {
+        "task_id": "author", "kind": "spec", "title": "Recover", "content": "# Recover\n",
+    }, session_id="worker")
+    rid = result["review_id"]
+    gid = (await db.get_review(rid))["gate_id"]
+    await db.create_task(Task(
+        id="impl", project_id="p", title="Implementation", description="Dependent work",
+    ))
+    async with db.immediate() as conn:
+        await db.attach_gate_waiters(gid, ["impl"], conn=conn)
+    assert (await handler.execute("review_withdraw", {"review_id": rid, "reason": "oops"}))["success"]
+    [notice] = await db.get_pending_messages("session", "supervisor-p")
+    assert rid in notice.body and "impl" in notice.body
+    assert "aq review reopen" in notice.body
+    assert (await db.get_review(rid))["withdrawn_via"] == "cli"
+    shown = await handler.execute("review_show", {"review_id": rid})
+    assert shown["dependent_task_ids"] == ["impl"]
+    assert shown["gate"]["status"] == "cancelled"
+    refused = await _scoped(handler, "review_reopen", {"review_id": rid, "revision": 1},
+                            session_id="peer-worker")
+    assert refused["error_code"] == "not_your_task"
+    other = await _scoped(handler, "review_reopen", {"review_id": rid, "revision": 1},
+                          session_id="other-worker", project_id="other")
+    assert "another project" in other["error"] or "scope" in other["error"]
+    reopened = await _scoped(handler, "review_reopen", {"review_id": rid, "revision": 1},
+                             session_id="worker")
+    assert reopened["success"], reopened
+    assert reopened["revision"] == 2
+    assert (await db.get_review(rid))["gate_id"] == gid
+    assert (await handler.execute("review_withdraw", {"review_id": rid}))["success"]
+    supervisor = await _scoped(handler, "review_reopen", {"review_id": rid, "revision": 2},
+                               session_id="supervisor")
+    assert supervisor["success"], supervisor
+    assert supervisor["revision"] == 3
 
 
 @pytest.mark.parametrize("purpose", ["candidate", "score", "probe", "capture", "plateau",

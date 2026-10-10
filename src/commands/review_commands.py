@@ -22,7 +22,7 @@ from src.api.auth import RequestScope
 from src.api.scope import held_task_for_session
 
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
-from src.api.auth import operator_viewer_allowed
+from src.api.auth import operator_viewer_allowed, request_surface
 from src.database.queries.pull_request_queries import (
     list_known_pull_requests, read_pull_request_snapshot,
 )
@@ -877,13 +877,63 @@ class ReviewCommandsMixin:
         reason = str(args.get("reason") or "").strip()
         try:
             result = await self._review_service().withdraw(
-                review_id=review["id"], reason=reason, by=by
+                review_id=review["id"], reason=reason, by=by,
+                via=request_surface() if principal.kind is PrincipalKind.LOCAL else "agent",
             )
         except ReviewError as error:
             return _error(error.code, error.message)
         if not by_author:
             await self._tell_author_review_withdrawn(review, reason, by)
+        # Authors can already be archived, and a task comment alone never
+        # reaches the project supervisor. Queue a durable recovery notice.
+        try:
+            notice = await self._cmd_message_send({
+                "project_id": review["project_id"], "to_kind": "session",
+                "to_id": f"supervisor-{review['project_id']}", "from_kind": "system",
+                "from_id": f"review:{review['id']}",
+                "subject": f"Review {review['id']} withdrawn: dependent work needs attention",
+                "body": (
+                    f"Review {review['id']} ({review['title']}) withdrawn by {by}. "
+                    f"Reason: {reason or '(none given)'}. Gate {review['gate_id']} cancelled; "
+                    "approval is still required. Dependent tasks: "
+                    f"{', '.join(result['flagged_task_ids']) or '(none)'}. "
+                    f"Reopen with aq review reopen --review-id {review['id']} "
+                    f"--revision {review['current_revision']}, or decide the dependent tasks' fate."
+                ),
+            })
+            if notice.get("success") is False or "error" in notice:
+                logger.error("review %s: withdrawal notice failed: %s", review["id"], notice)
+        except Exception:
+            logger.exception("review %s: withdrawal notice failed", review["id"])
         return {"success": True, **result}
+
+    async def _cmd_review_reopen(self, args: dict) -> dict:
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind is PrincipalKind.LOCAL and not operator_viewer_allowed():
+            return _error("unauthorized", "only the local operator may reopen from the dashboard")
+        review, error = await self._review_for_caller(args.get("review_id"))
+        if error:
+            return error
+        submitted_task_id = None
+        if self._is_worker():
+            held, error = await self._worker_held_task()
+            if error:
+                return error
+            if review["author_task_id"] != held.id:
+                return _error("not_your_task", "only the author task may reopen this review")
+            submitted_task_id = held.id
+        revision = args.get("revision")
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+            return _error("bad_revision", "revision must be a positive integer")
+        by = "human:local-operator" if principal.kind is PrincipalKind.LOCAL else principal.describe()
+        try:
+            result = await self._review_service().reopen(
+                review_id=review["id"], revision=revision, by=by,
+                submitted_task_id=submitted_task_id,
+            )
+            return {"success": True, **result}
+        except ReviewError as error:
+            return _error(error.code, error.message)
 
     async def _tell_author_review_withdrawn(self, review: dict, reason: str, by: str) -> None:
         """Comment on the authoring task, which also wakes its live session.
@@ -898,9 +948,10 @@ class ReviewCommandsMixin:
             f"Review {review['id']} ({review['title']}) was withdrawn by {by}.",
             f"Reason: {reason or '(none given)'}",
             (
-                "Its gate stays open, so nothing waiting on it is released, and the waiting "
-                "tasks are flagged needs_attention=review_withdrawn. The review cannot be "
-                "resubmitted; a replacement document is a new `aq review submit`."
+                "Its gate is cancelled; approval is still required for dependent work. "
+                "Waiting tasks are flagged needs_attention=review_withdrawn. "
+                f"Reopen with `aq review reopen --review-id {review['id']} "
+                f"--revision {review['current_revision']}` to retain the dependent links."
             ),
         ])
         try:

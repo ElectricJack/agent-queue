@@ -189,6 +189,7 @@ HIERARCHY_REFUSAL_COMMANDS: frozenset[str] = frozenset(
 
 # Non-default statuses keyed by the command and its stable command error code.
 ERROR_STATUS: dict[tuple[str, str], int] = {
+    ("review_reopen", "unauthorized"): 403,
     ("edit_intelligence_class", "revision_conflict"): 409,
     ("delete_intelligence_class", "revision_conflict"): 409,
     ("delete_intelligence_class", "class_referenced"): 409,

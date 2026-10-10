@@ -29,6 +29,10 @@ class ReviewRecord(BaseModel):
     vault_path: str
     gate_id: str | None = None
     decider: str = "user"
+    withdrawn_by: str | None = None
+    withdrawn_at: float | None = None
+    withdrawn_via: str | None = None
+    withdrawal_reason: str | None = None
 
 
 class ReviewSubmitResponse(BaseModel):
@@ -66,6 +70,8 @@ class ReviewShowResponse(BaseModel):
     dispatches: list[dict[str, Any]] = []
     response_route: ReviewResponseRoute
     attachments: list[dict[str, Any]] = []
+    dependent_task_ids: list[str] = []
+    gate: dict[str, Any] | None = None
 
 
 class ReviewAttachmentAddResponse(BaseModel):
@@ -162,6 +168,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "review_show": ReviewShowResponse,
     "review_list": ReviewListResponse,
     "review_withdraw": ReviewWithdrawResponse,
+    "review_reopen": ReviewSubmitResponse,
     "review_decide": ReviewDecideResponse,
     "approve_pull_request": PullRequestApproveResponse,
     "review_comment": ReviewCommentResponse,

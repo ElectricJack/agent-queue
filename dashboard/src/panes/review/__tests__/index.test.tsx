@@ -11,6 +11,8 @@ const hooks = vi.hoisted(() => ({
   decide: { mutateAsync: vi.fn().mockResolvedValue({}), isPending: false },
   importEdits: { mutateAsync: vi.fn().mockResolvedValue({}), isPending: false },
   attach: { mutateAsync: vi.fn().mockResolvedValue({}), isPending: false },
+  reopen: { mutateAsync: vi.fn().mockResolvedValue({ revision: 3 }), isPending: false },
+  withdraw: { mutateAsync: vi.fn().mockResolvedValue({}), isPending: false },
   listener: null as ((event: { event_type: string; review_id?: string }) => void) | null,
 }));
 
@@ -20,6 +22,8 @@ vi.mock("../../../api/reviews", () => ({
   useDecideReview: () => hooks.decide,
   useImportReviewEdits: () => hooks.importEdits,
   useAttachReviewImage: () => hooks.attach,
+  useReopenReview: () => hooks.reopen,
+  useWithdrawReview: () => hooks.withdraw,
 }));
 vi.mock("../../../api/hooks", () => ({
   useIntelligenceClasses: () => ({ data: { classes: [
@@ -68,6 +72,28 @@ beforeEach(() => {
 });
 
 describe("review pane", () => {
+  it("shows withdrawal audit and dependents and reopens the displayed revision", async () => {
+    hooks.useReview.mockReturnValue({ data: { ...response,
+      review: { ...response.review, state: "withdrawn", withdrawn_by: "human:local-operator",
+        withdrawn_via: "dashboard", withdrawn_at: 1791594413, withdrawal_reason: "Accidental" },
+      dependent_task_ids: ["impl-1", "impl-2"], gate: { status: "cancelled" },
+    } });
+    renderPane();
+    expect(screen.getByText(/Last withdrawn by human:local-operator via dashboard/)).toHaveTextContent("Accidental");
+    expect(screen.getByRole("link", { name: "impl-1" })).toHaveAttribute("href", "/tasks/impl-1");
+    fireEvent.click(screen.getByRole("button", { name: "Reopen review" }));
+    await waitFor(() => expect(hooks.reopen.mutateAsync).toHaveBeenCalledWith({ review_id: "rev-x", revision: 2 }));
+  });
+
+  it("requires confirmation and permits cancelling withdrawal", async () => {
+    renderPane();
+    fireEvent.click(screen.getByRole("button", { name: "Close review" }));
+    expect(screen.getByRole("dialog", { name: "Close review" })).toBeInTheDocument();
+    expect(hooks.withdraw.mutateAsync).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(hooks.withdraw.mutateAsync).not.toHaveBeenCalled();
+  });
   describe("Markdown download", () => {
     let downloads: { filename: string; href: string; connected: boolean }[];
 

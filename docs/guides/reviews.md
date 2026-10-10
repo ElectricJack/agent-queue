@@ -51,9 +51,20 @@ is [the document review design spec](../../superpowers/specs/2026-09-21-document
   For kind `spec` or `plan`, approval also sets the vault status to `approved`
   and emits `spec.approved`, starting one deep-high spec-ingest task per path
   (`spec-ingest:<absolute vault path>`). Other documents do not ingest.
-- `withdrawn` — the review is closed with no decision; the gate is kept open
-  so nothing downstream is released, and the authoring task is put back to a
-  state where it can resubmit.
+- `withdrawn` — the review's gate is cancelled in the same transaction. Its
+  dependent tasks remain held for approval and are flagged for attention;
+  their IDs appear in the response and review detail and are sent to the
+  project supervisor. The dashboard asks for confirmation before withdrawing.
+  The review records the withdrawal actor, surface, timestamp and reason.
+- `aq review reopen --review-id <id> --revision N` reopens a withdrawn review
+  as revision N+1, copying its last submitted content and any playbook pin.
+  It reopens the same gate and keeps all dependent links. Approval is still
+  required to release work. Withdrawal audit fields survive reopening.
+  Use `aq review submit --review-id <id> --file <draft.md>` afterward to revise
+  the text. An approved review cannot be reopened. The dashboard offers the
+  same action on the withdrawn review's detail page. Only the author task,
+  project supervisor or local operator may reopen it; the displayed revision
+  must still be current. Earlier withdrawal events retain the full history.
 
 Every transition checks the review's state and the revision it was issued
 for, so two decisions racing on different revisions cannot both succeed.
@@ -100,7 +111,8 @@ harness when updating it.
 | `aq review decide --review-id <id> --revision N --decision request_changes --note "…" [--responder-class <class>]` | yes | Reject the revision and file a new revision task with the note as feedback. The revision task is routed by the project's router; `--responder-class` is its class hint. A responder profile is refused (`routing.choice_forbidden`). |
 | `aq review comment --review-id <id> --revision N --body "…" [--quote "…"] [--heading-path "…"]` | yes | Add one anchored comment without deciding. The author sees it in the thread the next time they `aq review show --comments`. |
 | `aq review dispatch --review-id <id> [--count N] [--class <class>] [--revision N] [--no-comments] [--focus "…"] [--force]` | yes | Send one fixed revision (the current one by default) to `--count` adversarial reviewer tasks (default 1). Each is filed unrouted with the `--class` hint (default `deep-high`) and the constraint `exclude_providers: [<provider the author revision ran on>]`, so the project's router picks each reviewer's profile on another family. A dispatch never names a profile; `--to` is refused (`routing.choice_forbidden`). The default `--with-comments` includes prior comments; `--no-comments` gives a clean read. A second dispatch of the same revision needs `--force`. |
-| `aq review withdraw --review-id <id> --reason "…"` | yes (`local_operator_only`) | Close the review with no decision. The gate stays open and the tasks waiting on it are flagged `needs_attention=review_withdrawn`. The reason (it may be empty) is recorded as the review's `decision_note`, with `decided_by`. When anyone but the author withdraws it, the author task gets a comment with the reason, which also wakes its live session. The dashboard's Reviews page does the same thing from the **Close** button on each open review, with an optional reason. |
+| `aq review withdraw --review-id <id> --reason "…"` | yes | Cancel the review gate, flag dependent tasks for attention and notify the supervisor. Actor, surface, time and reason are recorded. Other callers also notify the author task. The dashboard requires confirmation. |
+| `aq review reopen --review-id <id> --revision N` | yes | Copy the current withdrawn revision into N+1 and reopen the same approval gate. Also available to the author task and project supervisor. |
 | `aq review delegate --review-id <id> --to supervisor\|user` | yes (`local_operator_only`) | Change `decider` on one review. `supervisor` lets the live named supervisor session approve it. |
 | `aq review import-edits --review-id <id>` | yes (`local_operator_only`) | Turn your out-of-band Obsidian edit into revision N+1. Refuses if the current revision is already decided. |
 
@@ -569,7 +581,7 @@ most likely to meet:
 | `not_your_task` | The reviewer (worker or supervisor) tried to act on a review in a project they do not hold. | Re-run from the session that holds the task, or have the authoring task resubmit. |
 | `not_in_review` | A decision was attempted while the review was not in a state that accepts it (or the `--decision` value was not `approve` / `request_changes`). | `aq review show --review-id <id>` to see the actual state, then `withdraw` or wait. |
 | `stale_revision` | `--revision` does not match the review's current revision. | `aq review show --review-id <id>` to read the latest, then decide or comment with that revision. |
-| `review_closed` | A `submit --review-id` was called after the review had been approved or withdrawn. | Submit a new review (a fresh `--task-id`). |
+| `review_closed` | A `submit --review-id` was called after the review had been approved or withdrawn. | Reopen a withdrawn review with `aq review reopen --review-id <id> --revision N`, then revise it. An approved review requires a new review. |
 | `empty` | The file was empty after decoding. | Fill in the draft and retry. |
 | `not_utf8` | The file was not valid UTF-8 text. | Convert the source file and retry. |
 | `bad_title` / `bad_kind` | `--title` was missing or too short, or `--kind` was not one of `spec`, `plan`, `other`. | Re-run with a sensible title and a known kind. |
@@ -600,9 +612,10 @@ and the vault:
   review: the check reports it and `--fix` repairs the safe direction
   (resolving the gate on an approved review, or flagging the unresolved
   case for you to unwind).
-- A task waiting on the gate of a withdrawn review: the check reports it;
-  either resubmit the review (new `--review-id`) or `aq task edit
-  --after-review ""` on the task to release it from the gate.
+- A legacy open gate on a withdrawn review: the check reports its waiters;
+  reopen the same review with `aq review reopen --review-id <id> --revision N`
+  to preserve its dependent links and submit it for approval again. If the
+  dependent work is obsolete, the operator or supervisor decides its fate.
 
 ## Discord, and what reviews are not
 

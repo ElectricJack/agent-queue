@@ -12718,6 +12718,24 @@
     "0fd0a0a34069c2e79b5510f495eaf1c6835f7fcb0203ac05799e7f631ff82327"
   ],
   "storage_sinks": {
+    "src/database/queries/review_queries.py::ReviewQueriesMixin.set_review_gate_state::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 89,
+      "owner": "ReviewQueriesMixin.set_review_gate_state",
+      "call": "delete",
+      "owner_fingerprint": "cb2bc3795aa538cc5c2769ce40f9314f04fd023027f4932f336975582291269c",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Clears only needs_attention=review_withdrawn after reopening when no other withdrawn review holds the task; ordinary approval recovery state with no OIDs, ref replay authority or duplicate integration lifecycle."
+    },
+    "src/database/queries/review_queries.py::ReviewQueriesMixin.set_review_gate_state::be3be394bad4eaa21aa8a28db135b02557490ddb64be7fdc9e1c1efef1d879ec": {
+      "line": 77,
+      "owner": "ReviewQueriesMixin.set_review_gate_state",
+      "call": "pg_insert",
+      "owner_fingerprint": "cb2bc3795aa538cc5c2769ce40f9314f04fd023027f4932f336975582291269c",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Flags dependent tasks with needs_attention=review_withdrawn on withdrawal while preserving existing attention reasons; ordinary approval recovery state with no OIDs, ref replay authority or duplicate integration lifecycle."
+    },
     "src/api/host_shell.py::audit_host_shell::d71ee6e4a340780de2532bfca9177cd80d4b0ac848427deaa9ea807392a56034": {
       "line": 81,
       "owner": "audit_host_shell",

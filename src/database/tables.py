@@ -737,7 +737,7 @@ integration_source_ci = Table(
 # ---------------------------------------------------------------------------
 
 GATE_TYPES = ("human", "timer", "pr-merged", "ci-run", "event", "task", "routing", "review")
-GATE_STATUSES = ("open", "resolved", "expired")
+GATE_STATUSES = ("open", "resolved", "expired", "cancelled")
 
 gates = Table(
     "gates",
@@ -749,7 +749,7 @@ gates = Table(
     Column("question", Text, nullable=False, server_default=""),
     Column("await_id", Text, nullable=True),
     Column("timeout_at", Float, nullable=True),
-    Column("status", Text, nullable=False, server_default="open"),  # open|resolved|expired
+    Column("status", Text, nullable=False, server_default="open"),
     Column("resolved_by", Text, nullable=True),
     Column("resolution", Text, nullable=True),
     Column("created_at", Float, nullable=False),
@@ -843,6 +843,11 @@ doc_reviews = Table(
     Column("decided_by", Text, nullable=True),
     Column("decided_at", Float, nullable=True),
     Column("decision_note", Text, nullable=True),
+    # The last withdrawal survives reopening; events retain earlier withdrawals.
+    Column("withdrawn_by", Text, nullable=True),
+    Column("withdrawn_at", Float, nullable=True),
+    Column("withdrawn_via", Text, nullable=True),
+    Column("withdrawal_reason", Text, nullable=True),
     # The last revision announced on Discord: the review outbox (spec §9).
     Column("notified_revision", Integer, nullable=False, server_default="0"),
     Column("created_at", Float, nullable=False),

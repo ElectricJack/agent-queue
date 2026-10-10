@@ -112,6 +112,7 @@ EXPECTED_AGENT_COMMANDS = {
     "review_show",
     "review_list",
     "review_withdraw",
+    "review_reopen",
     "review_comment",
     "review_attachment_add",
     "review_attachment_list",

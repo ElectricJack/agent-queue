@@ -276,6 +276,7 @@ start code work, tests or QA from a digest author turn.
     "review_show",
     "review_submit",
     "review_withdraw",
+    "review_reopen",
     "session_drain_ack",
     "session_kill",
     "session_list",
