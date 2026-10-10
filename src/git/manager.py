@@ -76,7 +76,7 @@ import subprocess
 import tempfile
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
@@ -4624,7 +4624,7 @@ class GitManager:
                 command.extend(git_url if arg == repository_url else arg for arg in args)
                 async with operation_timeout:
                     phase = "subprocess_spawn"
-                    process = await asyncio.create_subprocess_exec(
+                    process = await self._spawn_isolated_git(
                         self._APP_GIT_EXECUTABLE,
                         *command,
                         cwd=str(home),
@@ -4752,6 +4752,23 @@ class GitManager:
                 raise GitError("authenticated Git acquisition failed: " + "; ".join(reasons))
             return output
 
+    async def _spawn_isolated_git(self, *args: str, **kwargs: Any) -> asyncio.subprocess.Process:
+        """Retain the process handle if cancellation interrupts subprocess startup."""
+        spawn = asyncio.create_task(asyncio.create_subprocess_exec(*args, **kwargs))
+        try:
+            return await asyncio.shield(spawn)
+        except asyncio.CancelledError:
+            # The child can already be running while asyncio connects its pipes.
+            # Finish acquiring its handle before closing inherited credential FDs
+            # or returning cancellation to the operation's caller.
+            process = None
+            # Preserve cancellation if startup itself failed.
+            with suppress(Exception):
+                process = await asyncio.shield(spawn)
+            if process is not None:
+                await self._kill_app_git_group(process)
+            raise
+
     @staticmethod
     async def _kill_app_git_group(process: asyncio.subprocess.Process) -> None:
         """Terminate and reap the isolated privileged process group."""
@@ -4840,7 +4857,7 @@ class GitManager:
             async with timeout:
                 if deadline is not None:
                     self._remaining_app_push_budget(deadline)
-                process = await asyncio.create_subprocess_exec(
+                process = await self._spawn_isolated_git(
                     "/usr/bin/git",
                     *args,
                     cwd=str(home),
@@ -5110,7 +5127,7 @@ class GitManager:
             try:
                 self._remaining_app_push_budget(_deadline)
                 async with asyncio.timeout_at(_deadline):
-                    process = await asyncio.create_subprocess_exec(
+                    process = await self._spawn_isolated_git(
                         self._APP_GIT_EXECUTABLE,
                         *arguments,
                         cwd=str(home),
