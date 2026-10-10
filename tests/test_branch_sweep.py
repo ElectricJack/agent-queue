@@ -301,6 +301,39 @@ async def test_daily_retry_skips_projects_already_reported_before_restart(tmp_pa
     assert (tmp_path / "maintenance/git-branch-sweep-last-date").read_text().strip() == "2026-10-09"
 
 
+def _reporting_orchestrator(tmp_path, result):
+    orchestrator = object.__new__(Orchestrator)
+    orchestrator.db = SimpleNamespace(
+        list_projects=AsyncMock(return_value=[SimpleNamespace(id="p", name="One")]),
+        list_repos=AsyncMock(return_value=[]), list_workspaces=AsyncMock(return_value=[]),
+    )
+    orchestrator.config = SimpleNamespace(data_dir=str(tmp_path), vault_projects=str(tmp_path))
+    orchestrator._command_handler = SimpleNamespace(execute=AsyncMock(return_value=result))
+    return orchestrator
+
+
+async def test_queued_supervisor_report_marks_day_complete(tmp_path):
+    # message_send answers a queued send with no "success" key; reading that
+    # as a refusal re-sent every project's report on each tick (2026-10-10).
+    queued = {"message_id": "msg-1", "state": "queued", "message": {"id": "msg-1"}}
+    await _reporting_orchestrator(tmp_path, queued)._run_daily_git_branch_sweep("2026-10-09")
+    assert (tmp_path / "maintenance/git-branch-sweeps/p").read_text().strip() == "2026-10-09"
+    assert (tmp_path / "maintenance/git-branch-sweep-last-date").read_text().strip() == (
+        "2026-10-09"
+    )
+    restarted = _reporting_orchestrator(tmp_path, queued)
+    await restarted._run_daily_git_branch_sweep("2026-10-09")
+    restarted._command_handler.execute.assert_not_awaited()
+
+
+async def test_refused_supervisor_report_without_success_key_is_retried(tmp_path):
+    orchestrator = _reporting_orchestrator(tmp_path, {"error": "Project 'p' not found"})
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+    assert orchestrator._last_git_branch_sweep_date is None
+    assert not (tmp_path / "maintenance/git-branch-sweeps/p").exists()
+    assert not (tmp_path / "maintenance/git-branch-sweep-last-date").exists()
+
+
 async def test_daily_backstop_sweeps_registered_checkout_with_fresh_holds(guarded_repo, tmp_path):
     db, git, checkout, origin = guarded_repo
     await db.create_task(Task(
@@ -350,3 +383,66 @@ async def test_sweep_rechecks_task_that_resumes_after_git_proof(guarded_repo, tm
     )
     assert report.local_deleted == report.remote_deleted == []
     assert report.local_held == report.remote_held == 1
+
+
+async def test_sweep_lists_stashes_of_a_bare_store_read_only(tmp_path):
+    origin, checkout, store = tmp_path / "origin.git", tmp_path / "checkout", tmp_path / "store.git"
+    _git(tmp_path, "init", "--bare", "--initial-branch=main", str(origin))
+    _git(tmp_path, "clone", str(origin), str(checkout))
+    _commit(checkout, "base", "README", "base\n")
+    _git(checkout, "push", "origin", "main")
+    _git(tmp_path, "clone", "--bare", str(origin), str(store))
+    sweep = {"repository_url": str(origin), "default_branch": "main", "holds": {},
+             "backup_path": tmp_path / "audit.tsv"}
+
+    assert (await sweep_checkout(GitManager(), str(store), **sweep)).stashes == []
+
+    # A linked worktree's stash lives in the bare store's shared refs/stash.
+    linked = tmp_path / "linked"
+    _git(store, "worktree", "add", "--detach", str(linked), "main")
+    (linked / "README").write_text("stashed change\n")
+    _git(linked, "stash", "push", "-m", "linked stash")
+    expected = _git(linked, "stash", "list", "--format=%gd %H %s").splitlines()
+    report = await sweep_checkout(GitManager(), str(store), **sweep)
+    assert report.stashes == expected and "linked stash" in expected[0]
+    assert _git(linked, "stash", "list", "--format=%gd %H %s").splitlines() == expected
+
+
+async def test_daily_backstop_skips_job_snapshots_and_reports_unregistered_origin_once(tmp_path):
+    other, snapshot_source = tmp_path / "other.git", tmp_path / "snapshot-source.git"
+    for bare in (other, snapshot_source):
+        _git(tmp_path, "init", "--bare", "--initial-branch=main", str(bare))
+    paths = {name: tmp_path / name for name in ("first", "second", "snapshot")}
+    _git(tmp_path, "clone", str(other), str(paths["first"]))
+    _git(tmp_path, "clone", str(other), str(paths["second"]))
+    _git(tmp_path, "clone", str(snapshot_source), str(paths["snapshot"]))
+    workspaces = [
+        SimpleNamespace(workspace_path=str(paths["snapshot"]), kind_id="job-snapshot",
+                        is_slot=False, enabled=False),
+        SimpleNamespace(workspace_path=str(paths["first"]), kind_id=None, is_slot=False),
+        SimpleNamespace(workspace_path=str(paths["second"]), kind_id=None, is_slot=False),
+    ]
+    registered = SimpleNamespace(id="repo", url=str(tmp_path / "registered.git"),
+                                 checkout_base_path=str(tmp_path / "absent"),
+                                 default_branch="main")
+    orchestrator = object.__new__(Orchestrator)
+    orchestrator.db = SimpleNamespace(
+        list_projects=AsyncMock(return_value=[SimpleNamespace(id="p", name="One")]),
+        list_repos=AsyncMock(return_value=[registered]),
+        list_workspaces=AsyncMock(return_value=workspaces),
+        resolve_workspace_kind=AsyncMock(side_effect=AssertionError("snapshot inspected")),
+    )
+    orchestrator.git = GitManager()
+    orchestrator.config = SimpleNamespace(data_dir=str(tmp_path / "state"),
+                                          vault_projects=str(tmp_path / "vault"))
+    orchestrator._command_handler = SimpleNamespace(
+        execute=AsyncMock(return_value={"success": True}),
+    )
+
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+
+    body = orchestrator._command_handler.execute.call_args.args[1]["body"]
+    assert "Failures (1): " in body
+    assert body.count("origin has no unique registered repository") == 1
+    assert "skipped 2 checkouts of it" in body
+    assert str(paths["snapshot"]) not in body

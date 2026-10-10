@@ -3688,6 +3688,7 @@ class Orchestrator(
         from types import SimpleNamespace
 
         from src.git.manager import repository_urls_match
+        from src.integration.branch_retirement import retirement_report
         from src.integration.branch_sweep import (
             BranchSweepReport, SweepSafety, _append_backup, record_sweep_date, sweep_checkout,
         )
@@ -3723,6 +3724,7 @@ class Orchestrator(
                                exc_info=True)
             reports: list[BranchSweepReport] = []
             failures: list[str] = []
+            unregistered: dict[str, list[str]] = {}
             retired: list[tuple[str, str | None]] = []
             migrations: list[dict] = []
             retirement = getattr(self, "branch_retirement_service", None)
@@ -3753,7 +3755,9 @@ class Orchestrator(
             workspaces.sort(key=lambda ws: bool(getattr(ws, "is_slot", False)))
             for workspace in workspaces:
                 checkout = workspace.workspace_path
-                if not Path(checkout).is_dir():
+                # Job snapshots are detached clones of the local store; job
+                # retention owns them and they carry no delivery refs.
+                if workspace.kind_id == "job-snapshot" or not Path(checkout).is_dir():
                     continue
                 kind = None
                 if workspace.kind_id:
@@ -3782,7 +3786,8 @@ class Orchestrator(
                 matches = [repo for repo in repositories
                            if repository_urls_match(repository_url, repo.url, base=checkout)]
                 if len(matches) != 1:
-                    failures.append(f"{checkout}: origin has no unique registered repository")
+                    # Ref exclusion needs a repository identity: skip, reported once.
+                    unregistered.setdefault(repository_url, []).append(checkout)
                     continue
                 repository = matches[0]
                 seen_common_dirs.add(common_path)
@@ -3835,8 +3840,14 @@ class Orchestrator(
                     )
                     failures.append(f"{project.name} ({checkout}): {exc}")
 
+            for paths in unregistered.values():
+                failures.append(
+                    f"{paths[0]}: origin has no unique registered repository; skipped "
+                    f"{len(paths)} checkout{'s' if len(paths) > 1 else ''} of it"
+                )
             unique = {(row.checkout, branch, sha) for row in reports
                       for branch, sha in row.unique_unmerged}
+            retirement_lines = retirement_report(retired)
             lines = [
                 f"Daily branch backstop for {project.name} ({date} UTC)",
                 f"Checkouts: {len(reports)}; local heads "
@@ -3848,8 +3859,7 @@ class Orchestrator(
                 f"Held {sum(r.local_held for r in reports)} local and "
                 f"{sum(r.remote_held for r in reports)} remote live/attached refs; "
                 f"kept {len(unique)} unique unmerged refs.",
-                f"Retirement decisions: {sum(s == 'complete' for s, _ in retired)} complete, "
-                f"{sum(s != 'complete' for s, _ in retired)} held/conflicted.",
+                retirement_lines[0],
                 f"Provenance refs: {sum(r['action'] == 'migrated' for r in migrations)} migrated, "
                 f"{sum(r['action'] == 'blocked' for r in migrations)} blocked.",
                 f"Pruned {sum(r.stale_worktrees_pruned for r in reports)} stale registrations; "
@@ -3857,9 +3867,7 @@ class Orchestrator(
             ]
             if failures:
                 lines.append(f"Failures ({len(failures)}): " + "; ".join(failures[:10]))
-            for state, error in retired:
-                if state != "complete" and error:
-                    lines.append(f"  retirement {state}: {error}")
+            lines.extend(retirement_lines[1:])
             for row in migrations:
                 if row["action"] == "blocked":
                     lines.append(f"  provenance {row['old_ref']}: {row['error']}")
@@ -3871,8 +3879,10 @@ class Orchestrator(
                     "subject": f"Daily branch backstop: {project.name}",
                     "body": "\n".join(lines), "archive_after_inject": True,
                 })
-                if not result.get("success"):
-                    raise RuntimeError(result.get("error", "report was not accepted"))
+                # A queued send carries no "success" key; only an error or an
+                # explicit refusal leaves the day open for a retry.
+                if result.get("error") or result.get("success") is False:
+                    raise RuntimeError(result.get("error") or "report was not accepted")
                 record_sweep_date(project_marker, date)
             except Exception:
                 reports_delivered = False
