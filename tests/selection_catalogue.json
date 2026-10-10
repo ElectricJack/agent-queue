@@ -1699,8 +1699,8 @@
       "areas": [
         "integration-trains"
       ],
-      "default_arm": true,
-      "digest": "sha256:01e7677455e89710de7e84287dbefe5b51a87d6dcbc784867f0fd668aba60013",
+      "default_arm": false,
+      "digest": "sha256:698cc3e4d19bd866494bf846f2c6dc8b4698a97020f77b230e8f81e7ee1c40e7",
       "imports": [
         "src.database.tables",
         "src.integration.git_truth",
