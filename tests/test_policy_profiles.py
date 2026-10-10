@@ -78,6 +78,119 @@ async def reviewed(handler, vault, identifier="morning-report"):
     assert approved["success"] and approved["playbook"]["activated"], approved
 
 
+async def legacy_source_path(handler, identifier):
+    from src.playbooks.artifact_store import ArtifactStore
+
+    row = next(
+        row for row in await handler.db.list_playbook_activations()
+        if row["playbook_id"] == identifier
+    )
+    store = ArtifactStore(handler.config.compiled_root)
+    return store.source_path_for(row["active_artifact_sha256"])
+
+
+@pytest.mark.parametrize("retained", ["missing", "invalid"])
+async def test_export_recovers_matching_vault_source_without_writing_during_preview(env, retained):
+    handler, vault, _ = env
+    await reviewed(handler, vault, "legacy-vault")
+    path = await legacy_source_path(handler, "legacy-vault")
+    if retained == "missing":
+        path.unlink()
+    else:
+        path.write_text("corrupted retained source")
+    exported = await handler.execute("policy_export", {"project_id": "source"})
+    assert exported["success"] and exported["warnings"] == [], exported
+    entry = next(row for row in exported["bundle"]["items"] if row["name"] == "legacy-vault")
+    assert entry["payload"]["source"] == (vault / "system/playbooks/legacy-vault.md").read_text()
+    assert not path.exists() if retained == "missing" else path.read_text() == "corrupted retained source"
+
+
+@pytest.mark.parametrize("vault_state", ["changed", "missing"])
+async def test_export_omits_unavailable_source_with_per_item_warning_and_keeps_other_policy(env, vault_state):
+    handler, vault, _ = env
+    await reviewed(handler, vault, "lost-source")
+    await reviewed(handler, vault, "healthy-source")
+    (await legacy_source_path(handler, "lost-source")).unlink()
+    source = vault / "system/playbooks/lost-source.md"
+    if vault_state == "changed":
+        source.write_text(source.read_text() + "\nChanged behavior\n")
+    else:
+        source.unlink()
+    put(vault / "projects/source", "templates/spec/example.md", "# Example")
+    result = await handler.execute("policy_export", {"project_id": "source"})
+    assert result["success"], result
+    names = {entry["name"] for entry in result["bundle"]["items"]}
+    assert "lost-source" not in names and {"healthy-source", "spec.example"} <= names
+    assert result["warnings"] == [{
+        "item_id": "playbook:system:lost-source",
+        "playbook_id": "lost-source",
+        "message": "Skipped lost-source: source unavailable, recompile and reactivate lost-source",
+    }]
+    assert read_bundle(pack(Bundle.model_validate(result["bundle"]))).items
+
+
+async def test_export_prefers_retained_source_when_vault_has_changed(env):
+    handler, vault, _ = env
+    await reviewed(handler, vault, "retained-source")
+    retained = (await legacy_source_path(handler, "retained-source")).read_text()
+    (vault / "system/playbooks/retained-source.md").write_text("changed vault source")
+    result = await handler.execute("policy_export", {"project_id": "source"})
+    assert result["success"] and not result["warnings"], result
+    entry = next(row for row in result["bundle"]["items"] if row["name"] == "retained-source")
+    assert entry["payload"]["source"] == retained
+
+
+async def test_export_missing_compiled_artifact_returns_contextual_error(env):
+    handler, vault, _ = env
+    await reviewed(handler, vault, "missing-artifact")
+    (await legacy_source_path(handler, "missing-artifact")).with_suffix(".json").unlink()
+    result = await handler.execute("policy_export", {"project_id": "source"})
+    assert not result["success"]
+    assert "missing-artifact" in result["error"] and "recompile and reactivate" in result["error"]
+    assert "Errno" not in result["error"] and handler.config.compiled_root not in result["error"]
+
+
+async def test_export_disappearing_policy_file_never_surfaces_raw_filesystem_error(env, monkeypatch):
+    from src.policy_profiles.service import PolicyFiles
+
+    handler, _, _ = env
+
+    def disappeared(_adapter):
+        raise FileNotFoundError(2, "No such file or directory", "/private/path.md")
+
+    monkeypatch.setattr(PolicyFiles, "read_local", disappeared)
+    result = await handler.execute("policy_export", {"project_id": "source"})
+    assert not result["success"] and "preview again" in result["error"]
+    assert "Errno" not in result["error"] and "/private/path" not in result["error"]
+
+
+async def test_source_doctor_reports_enabled_missing_and_invalid_sources_without_repair(env):
+    from src.doctor import default_registry
+    from src.doctor.models import DoctorContext, Severity
+    from src.doctor.playbook_v2_checks import SOURCE_CHECK_ID, _check_source_unavailable
+
+    handler, vault, _ = env
+    await reviewed(handler, vault, "doctor-source")
+    ctx = DoctorContext(config=handler.config, db=handler.db)
+    assert (await _check_source_unavailable(ctx)).severity is Severity.OK
+    path = await legacy_source_path(handler, "doctor-source")
+    original = path.read_text()
+    path.unlink()
+    result = await _check_source_unavailable(ctx)
+    assert result.severity is Severity.WARN and result.data["count"] == 1
+    assert result.data["faults"][0]["problem"] == "source_missing"
+    assert result.data["faults"][0]["remediation"] == "recompile and reactivate doctor-source"
+    assert not path.exists() and not result.fixable
+    path.write_text("wrong source")
+    assert (await _check_source_unavailable(ctx)).data["faults"][0]["problem"] == "source_invalid"
+    path.write_text(original)
+    assert (await _check_source_unavailable(ctx)).severity is Severity.OK
+    handler.config.playbooks.enabled = False
+    assert (await _check_source_unavailable(ctx)).severity is Severity.INFO
+    check = next(row for row in default_registry().checks() if row.id == SOURCE_CHECK_ID)
+    assert check.fix is None and check.owner == "playbook-v2"
+
+
 async def preview(handler, bundle, **extra):
     args = {"project_id": "target", "bundle": bundle, **extra}
     data = await handler.execute("policy_diff", args)
@@ -378,12 +491,17 @@ async def test_export_preview_acknowledgement_is_required_and_checked(env):
     )
 
 
-async def test_typed_routes_support_dashboard_archive_and_operator_authority(env):
+@pytest.mark.parametrize("missing_source", [False, True])
+async def test_typed_routes_support_dashboard_archive_and_operator_authority(env, missing_source):
     from src.api.app import create_app
     from src.api import dependencies as deps
     from src.commands.principal import ExecutionPrincipal, principal_context
 
-    handler, _, _ = env
+    handler, vault, _ = env
+    if missing_source:
+        await reviewed(handler, vault, "api-lost-source")
+        (await legacy_source_path(handler, "api-lost-source")).unlink()
+        (vault / "system/playbooks/api-lost-source.md").unlink()
     saved = (
         deps._orchestrator,
         deps._command_handler,
@@ -397,6 +515,9 @@ async def test_typed_routes_support_dashboard_archive_and_operator_authority(env
         ) as client:
             exported = await client.post("/api/policy/export", json={"project_id": "source"})
             assert exported.status_code == 200, exported.text
+            assert bool(exported.json()["warnings"]) == missing_source
+            if missing_source:
+                assert exported.json()["warnings"][0]["playbook_id"] == "api-lost-source"
             args = {"project_id": "target", "archive": exported.json()["archive"]}
             diff = await client.post("/api/policy/diff", json=args)
             assert diff.status_code == 200, diff.text
@@ -418,6 +539,48 @@ async def test_typed_routes_support_dashboard_archive_and_operator_authority(env
             deps._token_store,
             deps._require_session_token,
         ) = saved
+
+
+@pytest.mark.parametrize("inner_dependency_missing", [False, True])
+async def test_export_omits_playbooks_with_unavailable_transitive_dependencies(env, inner_dependency_missing):
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.definition import load_definition_json
+
+    handler, vault, _ = env
+    store = ArtifactStore(handler.config.compiled_root)
+    for identifier in ("outer", "middle", "inner"):
+        await reviewed(handler, vault, identifier)
+    references = [("outer", "middle"), ("middle", "inner")]
+    if inner_dependency_missing:
+        references.append(("inner", "not-installed"))
+    for identifier, dependency in references:
+        path = await legacy_source_path(handler, identifier)
+        definition = load_definition_json(path.with_suffix(".json").read_text())
+        artifact = definition.model_dump(mode="json", exclude_none=True)
+        command = next(step for step in artifact["steps"].values() if step["type"] == "command")
+        command["inputs"]["playbook_id"] = {"type": "literal", "value": dependency}
+        definition = load_definition_json(json.dumps(artifact))
+        ref = store.put(
+            definition, source_digest=definition.source_hash,
+            contract_fingerprint="sha256:" + "b" * 64,
+            profile_fingerprint="profile", compiler_build="test",
+        )
+        store.put_source(ref.artifact_sha256, path.read_text())
+        await handler.db.upsert_playbook_artifact(
+            ref, scope="system", path=store.path_for(ref.artifact_sha256), size_bytes=1
+        )
+        await handler.db.set_playbook_activation(
+            playbook_id=identifier, scope="system", scope_identifier="",
+            artifact_sha256=ref.artifact_sha256, enabled=True,
+            activated_by="test", health="ready", reasons="[]",
+        )
+    (await legacy_source_path(handler, "inner")).unlink()
+    (vault / "system/playbooks/inner.md").unlink()
+    result = await handler.execute("policy_export", {"project_id": "source"})
+    assert result["success"], result
+    assert not any(entry["type"] == "playbook" for entry in result["bundle"]["items"])
+    assert {warning["playbook_id"] for warning in result["warnings"]} == {"outer", "middle", "inner"}
+    assert all("recompile and reactivate" in warning["message"] for warning in result["warnings"])
 
 
 async def test_imported_flow_activates_only_after_repository_trust_setup_and_existing_generation_fence(

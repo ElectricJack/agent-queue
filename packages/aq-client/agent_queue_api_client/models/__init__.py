@@ -1141,6 +1141,7 @@ from .policy_diff_response_422 import PolicyDiffResponse422
 from .policy_diff_response_values import PolicyDiffResponseValues
 from .policy_export_response import PolicyExportResponse
 from .policy_export_response_422 import PolicyExportResponse422
+from .policy_export_warning import PolicyExportWarning
 from .policy_file_preview import PolicyFilePreview
 from .policy_review_receipt import PolicyReviewReceipt
 from .pool_gauges import PoolGauges
@@ -3010,6 +3011,7 @@ __all__ = (
     "PolicyDiffResponseValues",
     "PolicyExportResponse",
     "PolicyExportResponse422",
+    "PolicyExportWarning",
     "PolicyFilePreview",
     "PolicyReviewReceipt",
     "PoolGauges",

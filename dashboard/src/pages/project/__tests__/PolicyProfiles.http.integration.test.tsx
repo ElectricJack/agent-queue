@@ -18,7 +18,7 @@ beforeEach(() => {
     const text = typeof init?.body === "string" ? init.body : request ? await request.clone().text() : "";
     const body = text ? JSON.parse(text) as Record<string, unknown> : {};
     requests.push({ path, body });
-    if (path === "/api/policy/export") return response({ success: true, checksum: "preview", archive: "", bundle: {}, files: [{ path: "manifest.json", content: "EXACT MANIFEST" }, { path: "items/0000.json", content: "EXACT PAYLOAD" }] });
+    if (path === "/api/policy/export") return response({ success: true, checksum: "preview", archive: "", bundle: {}, warnings: [{ item_id: "playbook:system:legacy", playbook_id: "legacy", message: "Skipped legacy: source unavailable, recompile and reactivate legacy" }], files: [{ path: "manifest.json", content: "EXACT MANIFEST" }, { path: "items/0000.json", content: "EXACT PAYLOAD" }] });
     if (path === "/api/policy/diff") {
       const selections = body.selections as Record<string, { scope?: string; overwrite?: boolean }> | undefined;
       return response({ success: true, name: "Demo profile", project_id: "target", placeholders: [{ name: "branch", description: "Release branch" }], values: { branch: "" }, items: [
@@ -68,6 +68,7 @@ it("previews every export file before offering the download", async () => {
   expect(screen.queryByRole("button", { name: "Download .aqpolicy" })).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Preview exact files" }));
   await user.click(await screen.findByText("manifest.json"));
+  expect(screen.getByRole("status")).toHaveTextContent("Skipped legacy: source unavailable, recompile and reactivate legacy");
   expect(screen.getByText("EXACT MANIFEST")).toBeVisible();
   await user.click(screen.getByText("items/0000.json"));
   expect(screen.getByText("EXACT PAYLOAD")).toBeVisible();

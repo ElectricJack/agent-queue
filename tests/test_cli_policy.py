@@ -136,6 +136,30 @@ def test_export_shows_exact_files_before_acknowledged_write(tmp_path):
     )
 
 
+def test_export_displays_source_warnings_before_acknowledged_write(tmp_path):
+    from src.cli.app import cli
+
+    calls = []
+    client = client_for(calls)
+    original = client.execute.side_effect
+    message = "Skipped legacy: source unavailable, recompile and reactivate legacy"
+
+    async def execute(command, args):
+        data = await original(command, args)
+        data["warnings"] = [{"item_id": "playbook:system:legacy", "playbook_id": "legacy", "message": message}]
+        return data
+
+    client.execute.side_effect = execute
+    with patch("src.cli.policy._get_client", return_value=client):
+        result = CliRunner().invoke(
+            cli, ["policy", "export", "--project", "p", "--out", str(tmp_path / "example")],
+            input="y\n",
+        )
+    assert result.exit_code == 0, result.output
+    assert result.output.index("source unavailable") < result.output.index("Write these files")
+    assert calls[-1][1]["expected_checksum"] == "sha256:preview"
+
+
 @pytest.mark.parametrize("command", ["export", "apply", "create"])
 def test_interactive_json_mode_rejected_before_any_mutation(tmp_path, command):
     from src.cli.app import cli
