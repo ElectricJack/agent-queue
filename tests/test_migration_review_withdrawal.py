@@ -14,8 +14,52 @@ from src.database import Database
 from src.database.tables import doc_reviews, metadata
 from src.models import Project, Task, TaskStatus
 from tests.db_fixtures import lease_dsn
+from tests.pg_dsn import create_scratch_database
 
 pytestmark = pytest.mark.migration
+
+
+@pytest.mark.parametrize("minimal_gates", [False, True])
+async def test_upgrade_and_downgrade_preserve_sparse_restored_gates(minimal_gates):
+    revision = importlib.import_module(
+        "migrations.versions.a00000000090_review_withdrawal_recovery"
+    )
+    db = Database(await create_scratch_database("review_withdrawal_sparse"))
+    await db.initialize()
+    try:
+        async with db.immediate() as conn:
+            await conn.exec_driver_sql("DROP TABLE gates CASCADE")
+            if minimal_gates:
+                await conn.exec_driver_sql(
+                    "CREATE TABLE gates (id text PRIMARY KEY, created_at float)"
+                )
+                await conn.exec_driver_sql("INSERT INTO gates VALUES ('original', 1)")
+
+            def verify(bind):
+                with Operations.context(MigrationContext.configure(bind)):
+                    for _ in range(2):
+                        revision.upgrade()
+                        revision.upgrade()
+                        assert set(revision.AUDIT_COLUMNS) <= {
+                            col["name"] for col in sa.inspect(bind).get_columns("doc_reviews")
+                        }
+                        revision.downgrade()
+                        assert not set(revision.AUDIT_COLUMNS) & {
+                            col["name"] for col in sa.inspect(bind).get_columns("doc_reviews")
+                        }
+                        assert sa.inspect(bind).has_table("gates") == minimal_gates
+                        if minimal_gates:
+                            assert bind.execute(sa.text(
+                                "SELECT id, created_at FROM gates"
+                            )).one() == ("original", 1.0)
+                            assert {col["name"] for col in sa.inspect(bind).get_columns(
+                                "gates"
+                            )} == {"id", "created_at"}
+                            assert not sa.inspect(bind).get_check_constraints("gates")
+
+            await conn.run_sync(verify)
+    finally:
+        await db.close()
 
 
 @pytest.mark.parametrize("old_status", ["open", "expired"])

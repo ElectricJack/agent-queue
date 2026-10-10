@@ -30,7 +30,11 @@ def upgrade() -> None:
                 withdrawal_reason = decision_note
             WHERE state = 'withdrawn' AND withdrawn_at IS NULL
         """))
-    if inspector.has_table("gates"):
+    # Restored scratch schemas may contain only the backup bookkeeping columns.
+    # Leave those tables intact; there is no gate status to migrate yet.
+    if inspector.has_table("gates") and "status" in {
+        col["name"] for col in inspector.get_columns("gates")
+    }:
         if "ck_gates_status" in {
             item["name"] for item in inspector.get_check_constraints("gates")
         }:
@@ -61,7 +65,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     inspector = sa.inspect(op.get_bind())
-    if inspector.has_table("gates"):
+    if inspector.has_table("gates") and "status" in {
+        col["name"] for col in inspector.get_columns("gates")
+    }:
         op.execute(sa.text("UPDATE gates SET status = 'open' WHERE status = 'cancelled'"))
         op.drop_constraint("ck_gates_status", "gates", type_="check")
         op.create_check_constraint(
