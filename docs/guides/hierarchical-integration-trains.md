@@ -80,6 +80,11 @@ currently eligible members immediately. It leaves building, checks, reviews
 and publication to the train. If a batch already owns the target, the command
 reports `existing_batch` with that batch's identity rather than `sealed`.
 
+Selection still refreshes stacked members and conflicting epics before it freezes
+a batch. A visit cancelled by its deadline or by shutdown while such a refresh is
+running waits for the refresh to finish recording any pushed source before the
+visit is released, so a fenced push never lands without its completion record.
+
 For a misbehaving batch, first use `aq integration pause-batch BATCH_ID --apply`.
 It preserves the frozen inputs and blocks candidate and target publication.
 `aq integration resume-batch BATCH_ID --apply` restores open intent.

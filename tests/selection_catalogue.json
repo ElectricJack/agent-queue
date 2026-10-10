@@ -583,6 +583,7 @@
     "integration-trains": {
       "description": "Hierarchical integration trains: durable integration state, the reconciliation service and schedules, settling and sealing, candidate construction, the outbox, integration mode policy, attestations, CI and cleanup.",
       "modules": [
+        "tests/perf/test_train_selection.py",
         "tests/test_attestation_check_run_id.py",
         "tests/test_branch_sweep.py",
         "tests/test_hosted_attestation.py",
@@ -1693,6 +1694,23 @@
         "skipif"
       ],
       "summary": "Layout perf on PostgreSQL (spec §9). Skipped without POSTGRES_TEST_DSN."
+    },
+    "tests/perf/test_train_selection.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:01e7677455e89710de7e84287dbefe5b51a87d6dcbc784867f0fd668aba60013",
+      "imports": [
+        "src.database.tables",
+        "src.integration.git_truth",
+        "src.integration.selection_metrics",
+        "src.models"
+      ],
+      "markers": [
+        "perf"
+      ],
+      "summary": "Production-shaped root selection over real Git and disposable PostgreSQL."
     },
     "tests/task_graph/layout/test_active_expansion.py": {
       "areas": [
@@ -9326,7 +9344,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:a8bf6be73e01388d9cc2388ea40fa4b06e06b59e2479db5904fa5114f873b930",
+      "digest": "sha256:e2d4f2a2fa77801d804d2d9621b3655208dbabd1557a85ecde9ab51b55c6d898",
       "imports": [
         "src.database.queries.claim_queries",
         "src.database.tables",
@@ -9335,6 +9353,7 @@
         "src.integration.branch_materialization",
         "src.integration.gitops",
         "src.integration.hierarchy",
+        "src.integration.provenance",
         "src.integration.stacked_branches",
         "src.integration.train",
         "src.integration.train_controls",
