@@ -15,7 +15,7 @@ from uuid import uuid4
 import click
 
 from .app import cli, console, _run, _get_client, _handle_errors
-from .envelope import emit
+from .envelope import emit, reject_json_mode
 
 
 def _getval(obj: Any, key: str, default: Any = None) -> Any:
@@ -32,6 +32,49 @@ def _getval(obj: Any, key: str, default: Any = None) -> Any:
 def project() -> None:
     """Project management commands."""
     pass
+
+
+@project.command("create")
+@click.option("--name", required=True)
+@click.option(
+    "--from-policy", type=click.Path(exists=True), help="Open policy item selection after creation."
+)
+@click.option("--repo-url")
+@click.option("--default-branch")
+@click.option("--create-repo")
+@click.option("--private/--public", default=True)
+@click.option("--root-id")
+@click.option("--relative-path")
+@click.option("--request-id")
+@click.option("--credit-weight", type=float, default=1.0)
+@click.option("--max-concurrent-agents", type=int, default=2)
+@click.pass_context
+@_handle_errors
+def project_create(ctx, name, from_policy, **options):
+    from src.cli import app
+    from src.cli.policy import select_and_apply
+
+    if from_policy:
+        reject_json_mode(ctx, "project create --from-policy", "policy selection is interactive")
+
+    async def create():
+        async with app._get_client((ctx.obj or {}).get("api_url")) as client:
+            return await client.execute(
+                "create_project",
+                {
+                    "name": name,
+                    **{key: value for key, value in options.items() if value is not None},
+                },
+            )
+
+    result = app._run(create())
+    emit(
+        ctx,
+        result,
+        render=lambda data: console.print(f"Created project {data['created']}", markup=False),
+    )
+    if from_policy and result.get("success") is not False:
+        select_and_apply(ctx, from_policy, result["created"])
 
 
 @project.command("onboard")

@@ -808,6 +808,16 @@ class WorkspaceMixin:
                 ):
                     raise ValueError("operator handoff checkpoint no longer matches the canonical origin")
                 origin = dict(origin) | {"operator_handoff": progress}
+            elif prerequisite_head is None:
+                # A stopped writer's saved work (provider failover, ``aq task
+                # stop``). A stacked child already merges its published branch.
+                from src.orchestrator.stranded_work import RESUME_POINT_META
+
+                resume = await self.db.get_task_meta(task.id, RESUME_POINT_META)
+                if resume and (
+                    resume.get("repository_id"), resume.get("branch"), resume.get("base_sha")
+                ) == (repository_id, branch.removeprefix("refs/heads/"), canonical_base_sha):
+                    origin = dict(origin) | {"resume_point": resume}
         return (
             origin,
             Fence(target=target, owner_id=task.id, token=int(owner["fence_token"])),
@@ -988,6 +998,10 @@ class WorkspaceMixin:
                 base_sha = await self._operator_handoff_start(
                     workspace, origin, fence, repository_url=project.repo_url or ""
                 )
+            if ws.is_slot and origin.get("resume_point"):
+                base_sha = await self._resume_point_start(
+                    workspace, origin, fence, repository_url=project.repo_url or ""
+                )
             if ws.is_slot:
                 if origin.get("stack_store"):
                     await self.git._arun(
@@ -1047,6 +1061,10 @@ class WorkspaceMixin:
             if role == "worker":
                 await self.git.aprepare_child_branch(workspace, branch, base_sha)
                 return fence.target.branch
+            if origin.get("resume_point"):
+                base_sha = await self._resume_point_start(
+                    workspace, origin, fence, repository_url=project.repo_url or ""
+                )
             await self.git._arun(["checkout", "-B", branch, base_sha], cwd=workspace)
             actual_head = await self.git._arun(["rev-parse", "HEAD"], cwd=workspace)
             if actual_head != base_sha:
@@ -1068,6 +1086,31 @@ class WorkspaceMixin:
             self.git, workspace, fence.target.branch, progress,
             repository_url=repository_url,
         )
+
+    async def _resume_point_start(self, workspace, origin, fence, *, repository_url):
+        """Continue from the published branch while it still holds the saved WIP.
+
+        A branch rewound or rewritten since the save is someone else's call
+        now: start from the filing base as an ordinary preparation would.
+        """
+        resume = origin["resume_point"]
+        base_sha = str(origin["base_sha"])
+        branch = fence.target.branch.removeprefix("refs/heads/")
+        await self.git.afetch_origin(workspace, repository_url=repository_url)
+        head = await self.git.arev_parse(workspace, f"refs/remotes/origin/{branch}")
+        sha = resume.get("sha")
+        if (
+            is_valid_git_oid(sha)
+            and is_valid_git_oid(head)
+            and await self.git.ais_ancestor(workspace, base_sha, sha, strict=True) is True
+            and await self.git.ais_ancestor(workspace, sha, head, strict=True) is True
+        ):
+            return head
+        logger.warning(
+            "origin/%s no longer holds the saved WIP %s; starting from its origin %s",
+            branch, sha, base_sha,
+        )
+        return base_sha
 
     async def _ensure_control_files_excluded(self, workspace: str) -> bool:
         """Write and verify the managed block at Git's exact exclude path.
@@ -1496,7 +1539,9 @@ class WorkspaceMixin:
         else:
             await self.db.release_workspace(ws.id)
 
-    async def aconfirm_integration_owner_handoff(self, owner: dict) -> bool:
+    async def aconfirm_integration_owner_handoff(
+        self, owner: dict, *, save_wip_reason: str | None = None
+    ) -> bool:
         """Stop and detach an attached integration writer before fencing it out.
 
         A database unlock is not termination evidence: slot worktrees retain
@@ -1504,6 +1549,14 @@ class WorkspaceMixin:
         uncached ``confirm_stopped`` probe, then requires a slot to be truly
         detached before releasing it.  If any proof is unavailable, retain
         the lock and return ``False`` so the ownership record stays fenced.
+
+        By default a dirty or unpushed checkout is refused before the writer
+        is stopped.  ``save_wip_reason`` is for a writer that cannot save its
+        own work -- out of usage, or stopped by an operator: the writer is
+        stopped first, then the whole checkout is committed as ``WIP saved by
+        AQ: <reason>`` and fast-forwarded onto the task's own branch, and the
+        ordinary proof runs on the result.  A branch that cannot fast-forward
+        stays fenced, for owner recovery to preserve.
         """
         session_id = owner.get("session_id")
         workspace_id = owner.get("workspace_id")
@@ -1630,6 +1683,13 @@ class WorkspaceMixin:
         # subsequent probe/detach will race a checkout that is no longer under
         # the writer's control.  Proving the Git state first lets us refuse
         # cleanly while the writer is still intact.
+        # Only the task's own writer has its checkout saved onto the task
+        # branch: a verifier's scratch edits are not the task's work.
+        may_save_wip = (
+            save_wip_reason is not None
+            and owner.get("owner_role") in RETRYABLE_INTEGRATION_OWNER_ROLES
+            and owner.get("owner_id") == task.id
+        )
         try:
             from src.orchestrator.workspace_attachments import (
                 probe_slot_for_integration_handoff,
@@ -1655,7 +1715,7 @@ class WorkspaceMixin:
                     repository_url=repository.url,
                     default_branch=repository.default_branch,
                 )
-            if not probed:
+            if not probed and not may_save_wip:
                 logger.warning(
                     "Refusing integration handoff %s: checkout not clean and pushed "
                     "before writer stop (workspace=%s, branch=%s)",
@@ -1681,6 +1741,57 @@ class WorkspaceMixin:
         except Exception:
             logger.warning("Could not confirm integration writer %s stopped", session_id, exc_info=True)
             return False
+        if not probed:
+            from src.git.manager import commit_identity
+            from src.orchestrator.stranded_work import save_wip_to_task_branch
+
+            project = await self.db.get_project(task.project_id)
+            with commit_identity(self.git.resolve_commit_identity(project)):
+                saved = await save_wip_to_task_branch(
+                    self.git,
+                    workspace.workspace_path,
+                    str(owner["ref"]),
+                    save_wip_reason,
+                    repository_url=repository.url,
+                    event_bus=self.bus,
+                    project_id=task.project_id,
+                )
+            if saved.status not in {"pushed", "clean"}:
+                # The writer is gone; say so, so owner recovery can preserve
+                # the checkout instead of waiting on a session that is dead.
+                await self.db.update_session(
+                    session.id,
+                    state="stopped",
+                    desired_state="stopped",
+                    end_reason="integration_handoff_wip_unsaved",
+                )
+                logger.warning(
+                    "Integration handoff %s stopped its writer but could not save WIP "
+                    "onto %s: %s",
+                    owner.get("id"), owner.get("ref"), saved.error,
+                )
+                return False
+        if (
+            save_wip_reason is not None
+            and owner.get("owner_role") == "worker"
+            and owner.get("owner_id") == task.id
+        ):
+            # The next worker continues from the saved (or already pushed)
+            # head instead of restarting at the branch's filing base.  The
+            # writer is already stopped: a missing resume point only costs
+            # the next worker its start, never this handoff.
+            from src.orchestrator.stranded_work import record_resume_point
+
+            try:
+                head = (
+                    saved.commit if not probed
+                    else await self.git.arev_parse(workspace.workspace_path, "HEAD")
+                )
+                await record_resume_point(
+                    self.db, task.id, repository.id, str(owner["ref"]), head
+                )
+            except Exception:
+                logger.warning("Task %s: resume point not recorded", task.id, exc_info=True)
 
         try:
             from src.orchestrator.workspace_attachments import (
@@ -2270,6 +2381,7 @@ class WorkspaceMixin:
         pool: bool = False,
         roles: frozenset[str] = RETRYABLE_INTEGRATION_OWNER_ROLES,
         retained_preparation=None,
+        save_wip_reason: str | None = None,
     ) -> bool | None:
         """Prove an enabled writer stopped, then restore its task reservation.
 
@@ -2307,6 +2419,10 @@ class WorkspaceMixin:
         include ``verifier``; see that constant for why the exclusion does
         not apply when a task returns to the frontier still owning its own
         branch.
+
+        ``save_wip_reason`` lets the stop proof save a dirty or unpushed
+        checkout onto the task branch instead of refusing; see
+        :meth:`aconfirm_integration_owner_handoff`.  Pool handoffs ignore it.
         """
         project = await self.db.get_project(task.project_id)
         if getattr(project, "hierarchical_integration_mode", "disabled") not in {
@@ -2323,13 +2439,14 @@ class WorkspaceMixin:
                 owner, retained_preparation=retained_preparation,
             )
 
+        async def confirm_stop(owner):
+            return await self.aconfirm_integration_owner_handoff(
+                owner, save_wip_reason=save_wip_reason,
+            )
+
         ownership = BranchOwnership(
             self.db,
-            confirm_handoff=(
-                confirm_pool
-                if pool
-                else self.aconfirm_integration_owner_handoff
-            ),
+            confirm_handoff=confirm_pool if pool else confirm_stop,
         )
         owner = await ownership.get_owner(target)
         if owner is None and not task.branch_name.startswith("refs/heads/"):

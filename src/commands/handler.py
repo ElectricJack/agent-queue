@@ -51,6 +51,7 @@ from src.commands.collaboration_lifecycle import CollaborationLifecycleMixin
 from src.commands.system_commands import SystemCommandsMixin
 from src.commands.git_identity_commands import GitIdentityCommandsMixin
 from src.commands.project_commands import ProjectCommandsMixin
+from src.commands.policy_commands import PolicyCommandsMixin
 from src.commands.project_onboarding_commands import ProjectOnboardingCommandsMixin
 from src.commands.task_commands import TaskCommandsMixin
 from src.commands.routing_commands import RoutingCommandsMixin
@@ -356,6 +357,7 @@ class CommandHandler(
     SystemCommandsMixin,
     GitIdentityCommandsMixin,
     ProjectCommandsMixin,
+    PolicyCommandsMixin,
     ProjectOnboardingCommandsMixin,
     TaskCommandsMixin,
     RoutingCommandsMixin,

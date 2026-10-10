@@ -11150,6 +11150,147 @@
         }
       }
     },
+    "/api/policy/apply": {
+      "post": {
+        "tags": [
+          "policy"
+        ],
+        "summary": "Copy selected policy with explicit placement/overwrite choices; playbooks await review, flows remain drafts.",
+        "description": "Copy selected policy with explicit placement/overwrite choices; playbooks await review, flows remain drafts.",
+        "operationId": "policy_apply",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyApplyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/policy/diff": {
+      "post": {
+        "tags": [
+          "policy"
+        ],
+        "summary": "Preview every portable policy item, placement, placeholders and overwrite diff.",
+        "description": "Preview every portable policy item, placement, placeholders and overwrite diff.",
+        "operationId": "policy_diff",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyDiffResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/policy/export": {
+      "post": {
+        "tags": [
+          "policy"
+        ],
+        "summary": "Preview allow-listed project policy; write a directory/zip only with the preview checksum.",
+        "description": "Preview allow-listed project policy; write a directory/zip only with the preview checksum.",
+        "operationId": "policy_export",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyExportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/pool/rename": {
       "post": {
         "tags": [
@@ -21083,6 +21224,134 @@
         ],
         "title": "AddWorkspaceResponse"
       },
+      "AgentConfig": {
+        "properties": {
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
+          },
+          "default_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Class"
+          },
+          "needs_workspace": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Workspace"
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "task",
+                  "pool"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle"
+          },
+          "workspaces": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspaces"
+          },
+          "permission_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permission Mode"
+          },
+          "codex_full_auto": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codex Full Auto"
+          },
+          "codex_service_tier": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "default",
+                  "fast"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codex Service Tier"
+          },
+          "claude_dangerously_skip_permissions": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claude Dangerously Skip Permissions"
+          },
+          "read_only": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read Only"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "AgentConfig"
+      },
       "AgentMessageRequest": {
         "properties": {
           "target": {
@@ -22382,6 +22651,33 @@
         ],
         "title": "ArchiveTaskResponse"
       },
+      "Area": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "match": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Match"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "description",
+          "match"
+        ],
+        "title": "Area"
+      },
       "ArtifactRefDTO": {
         "properties": {
           "playbook_id": {
@@ -22918,6 +23214,145 @@
         ],
         "title": "BrowseProjectRootResponse"
       },
+      "Bundle": {
+        "properties": {
+          "format": {
+            "type": "string",
+            "const": "aq.policy.v1",
+            "title": "Format",
+            "default": "aq.policy.v1"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Version",
+            "default": 1
+          },
+          "source_aq_version": {
+            "type": "string",
+            "title": "Source Aq Version"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Item"
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "title": "Items"
+          },
+          "placeholders": {
+            "items": {
+              "$ref": "#/components/schemas/Placeholder"
+            },
+            "type": "array",
+            "title": "Placeholders",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "source_aq_version",
+          "items"
+        ],
+        "title": "Bundle"
+      },
+      "CIPolicy": {
+        "properties": {
+          "required_checks": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RequiredChecks"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "check_sets": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Check Sets",
+            "default": {}
+          },
+          "promotion_attestation_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Promotion Attestation Names",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CIPolicy"
+      },
+      "CITestPolicy": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "ci_test",
+            "title": "Type",
+            "default": "ci_test"
+          },
+          "ci": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CIPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selection_rules": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SelectionRules"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selection_areas": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SelectionAreas"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selection_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SelectionPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CITestPolicy"
+      },
       "CancelPlaybookRunRequest": {
         "properties": {
           "run_id": {
@@ -22984,6 +23419,37 @@
           "requested_at"
         ],
         "title": "CancellationFactsDTO"
+      },
+      "Capabilities": {
+        "properties": {
+          "harness_tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Harness Tools",
+            "default": []
+          },
+          "aq_commands": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Aq Commands",
+            "default": []
+          },
+          "plugin_tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Plugin Tools",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "Capabilities"
       },
       "CapabilityNamespacesDTO": {
         "properties": {
@@ -28495,6 +28961,112 @@
         "title": "DeletedBranch",
         "description": "One branch a ``branch_discard_required`` refusal is asking about."
       },
+      "DiffItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "playbook",
+              "agent_settings",
+              "promotion_flow",
+              "ci_test",
+              "routing",
+              "template"
+            ],
+            "title": "Type"
+          },
+          "original_scope": {
+            "type": "string",
+            "enum": [
+              "project",
+              "system"
+            ],
+            "title": "Original Scope"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "project",
+              "global",
+              "skip"
+            ],
+            "title": "Scope"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "new",
+              "identical",
+              "will overwrite"
+            ],
+            "title": "Status"
+          },
+          "selected": {
+            "type": "boolean",
+            "title": "Selected"
+          },
+          "requires_scope_choice": {
+            "type": "boolean",
+            "title": "Requires Scope Choice"
+          },
+          "current_checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Checksum"
+          },
+          "diff": {
+            "type": "string",
+            "title": "Diff",
+            "default": ""
+          },
+          "destinations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Destinations",
+            "default": []
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "copy",
+              "pending review",
+              "pending configuration",
+              "system template"
+            ],
+            "title": "State",
+            "default": "copy"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "type",
+          "original_scope",
+          "scope",
+          "status",
+          "selected",
+          "requires_scope_choice"
+        ],
+        "title": "DiffItem"
+      },
       "DigestEscalationSettings": {
         "properties": {
           "enabled": {
@@ -32803,6 +33375,53 @@
         },
         "type": "object",
         "title": "ExportProfileResponse"
+      },
+      "ExportRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "expected_checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Checksum"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "ExportRequest"
       },
       "ExtentResponse": {
         "properties": {
@@ -38800,6 +39419,90 @@
         "type": "object",
         "title": "ImportProfileResponse"
       },
+      "ImportRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "bundle": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Bundle"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archive": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 45000000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archive"
+          },
+          "values": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Values",
+            "default": {}
+          },
+          "selections": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Selection"
+            },
+            "type": "object",
+            "title": "Selections",
+            "default": {}
+          },
+          "only": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Only",
+            "default": []
+          },
+          "skip": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Skip",
+            "default": []
+          },
+          "no_overwrite": {
+            "type": "boolean",
+            "title": "No Overwrite",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "ImportRequest"
+      },
       "InspectPlaybookRunRequest": {
         "properties": {
           "run_id": {
@@ -39171,6 +39874,90 @@
         ],
         "title": "InventoryRootSpec",
         "description": "One scan root: an absolute path with a stable, path-free identity."
+      },
+      "Item": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_.:-]{0,160}$",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,100}$",
+            "title": "Name"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "playbook",
+              "agent_settings",
+              "promotion_flow",
+              "ci_test",
+              "routing",
+              "template"
+            ],
+            "title": "Type"
+          },
+          "original_scope": {
+            "type": "string",
+            "enum": [
+              "project",
+              "system"
+            ],
+            "title": "Original Scope"
+          },
+          "checksum": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Checksum"
+          },
+          "payload": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PlaybookPolicy"
+              },
+              {
+                "$ref": "#/components/schemas/PolicyAgentSettings"
+              },
+              {
+                "$ref": "#/components/schemas/PromotionPolicy"
+              },
+              {
+                "$ref": "#/components/schemas/CITestPolicy"
+              },
+              {
+                "$ref": "#/components/schemas/RoutingPreferences"
+              },
+              {
+                "$ref": "#/components/schemas/TemplatePolicy"
+              }
+            ],
+            "title": "Payload",
+            "discriminator": {
+              "propertyName": "type",
+              "mapping": {
+                "agent_settings": "#/components/schemas/PolicyAgentSettings",
+                "ci_test": "#/components/schemas/CITestPolicy",
+                "playbook": "#/components/schemas/PlaybookPolicy",
+                "promotion_flow": "#/components/schemas/PromotionPolicy",
+                "routing": "#/components/schemas/RoutingPreferences",
+                "template": "#/components/schemas/TemplatePolicy"
+              }
+            }
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "type",
+          "original_scope",
+          "checksum",
+          "payload"
+        ],
+        "title": "Item"
       },
       "JobErrorResponse": {
         "properties": {
@@ -48097,6 +48884,35 @@
         ],
         "title": "ObjectScoreRecordResponse"
       },
+      "Omission": {
+        "properties": {
+          "choice": {
+            "type": "string",
+            "const": "unaffected",
+            "title": "Choice",
+            "default": "unaffected"
+          },
+          "min_probability": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Min Probability"
+          },
+          "min_confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Min Confidence"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "min_probability",
+          "min_confidence"
+        ],
+        "title": "Omission"
+      },
       "OnboardProjectRequest": {
         "properties": {
           "request_id": {
@@ -48725,6 +49541,31 @@
         ],
         "title": "OutsidePoolSessionStatus",
         "description": "A live task-lifecycle session shadowing this pool's execution route."
+      },
+      "PathAreas": {
+        "properties": {
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Paths"
+          },
+          "areas": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Areas"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "paths",
+          "areas"
+        ],
+        "title": "PathAreas"
       },
       "PauseProjectRequest": {
         "properties": {
@@ -49411,6 +50252,26 @@
         ],
         "title": "PhaseSummary",
         "description": "One phase as ``phase_list`` reports it."
+      },
+      "Placeholder": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "description"
+        ],
+        "title": "Placeholder"
       },
       "PlaybookActivateRequest": {
         "properties": {
@@ -50759,6 +51620,40 @@
         "type": "object",
         "title": "PlaybookPendingEventsRequest"
       },
+      "PlaybookPolicy": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "playbook",
+            "title": "Type",
+            "default": "playbook"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "artifact": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Artifact"
+          },
+          "dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dependencies",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source",
+          "artifact"
+        ],
+        "title": "PlaybookPolicy"
+      },
       "PlaybookRunOverlayRequest": {
         "properties": {
           "run_id": {
@@ -52023,6 +52918,248 @@
           "updated"
         ],
         "title": "PluginUpdateResponse"
+      },
+      "PolicyAgentSettings": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "agent_settings",
+            "title": "Type",
+            "default": "agent_settings"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "extends": {
+            "type": "string",
+            "title": "Extends",
+            "default": ""
+          },
+          "template": {
+            "type": "boolean",
+            "title": "Template",
+            "default": false
+          },
+          "config": {
+            "$ref": "#/components/schemas/AgentConfig"
+          },
+          "capabilities": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Capabilities"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "default": ""
+          },
+          "rules": {
+            "type": "string",
+            "title": "Rules",
+            "default": ""
+          },
+          "override": {
+            "type": "boolean",
+            "title": "Override",
+            "default": false
+          },
+          "allowed_tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Allowed Tools",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "PolicyAgentSettings"
+      },
+      "PolicyApplyResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "applied": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Applied"
+          },
+          "reviews": {
+            "items": {
+              "$ref": "#/components/schemas/PolicyReviewReceipt"
+            },
+            "type": "array",
+            "title": "Reviews",
+            "default": []
+          },
+          "pending_configuration": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Pending Configuration",
+            "default": []
+          },
+          "activated": {
+            "type": "boolean",
+            "title": "Activated",
+            "default": false
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DiffItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "applied",
+          "items"
+        ],
+        "title": "PolicyApplyResponse"
+      },
+      "PolicyDiffResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DiffItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "placeholders": {
+            "items": {
+              "$ref": "#/components/schemas/Placeholder"
+            },
+            "type": "array",
+            "title": "Placeholders"
+          },
+          "values": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Values"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "project_id",
+          "items",
+          "placeholders",
+          "values"
+        ],
+        "title": "PolicyDiffResponse"
+      },
+      "PolicyExportResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "bundle": {
+            "$ref": "#/components/schemas/Bundle"
+          },
+          "checksum": {
+            "type": "string",
+            "title": "Checksum"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/PolicyFilePreview"
+            },
+            "type": "array",
+            "title": "Files"
+          },
+          "written": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Written",
+            "default": []
+          },
+          "archive": {
+            "type": "string",
+            "title": "Archive"
+          }
+        },
+        "type": "object",
+        "required": [
+          "bundle",
+          "checksum",
+          "files",
+          "archive"
+        ],
+        "title": "PolicyExportResponse"
+      },
+      "PolicyFilePreview": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "path",
+          "content"
+        ],
+        "title": "PolicyFilePreview"
+      },
+      "PolicyReviewReceipt": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "title": "Item Id"
+          },
+          "review_id": {
+            "type": "string",
+            "title": "Review Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "review_id"
+        ],
+        "title": "PolicyReviewReceipt"
       },
       "PoolGauges": {
         "properties": {
@@ -54243,6 +55380,30 @@
           "project_id"
         ],
         "title": "PromoteNoteResponse"
+      },
+      "PromotionPolicy": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "promotion_flow",
+            "title": "Type",
+            "default": "promotion_flow"
+          },
+          "flow": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Flow"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "flow"
+        ],
+        "title": "PromotionPolicy"
       },
       "ProvenanceRef": {
         "properties": {
@@ -60968,6 +62129,28 @@
         ],
         "title": "ReportSubmitResponse"
       },
+      "RequiredChecks": {
+        "properties": {
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Names"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "version",
+          "names"
+        ],
+        "title": "RequiredChecks"
+      },
       "RerouteDecision": {
         "properties": {
           "task_id": {
@@ -62601,6 +63784,38 @@
         "title": "RoutePerf",
         "description": "Latency and status-class counters from the route middleware."
       },
+      "RoutingPreferences": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "routing",
+            "title": "Type",
+            "default": "routing"
+          },
+          "assignment_playbook_id": {
+            "type": "string",
+            "title": "Assignment Playbook Id"
+          },
+          "policy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "assignment_playbook_id"
+        ],
+        "title": "RoutingPreferences"
+      },
       "RuleClusterDTO": {
         "properties": {
           "rule_id": {
@@ -63008,6 +64223,25 @@
         "type": "object",
         "title": "ScanStubStalenessResponse"
       },
+      "ScopedConftest": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "subtree": {
+            "type": "string",
+            "title": "Subtree"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "path",
+          "subtree"
+        ],
+        "title": "ScopedConftest"
+      },
       "SearchFilesRequest": {
         "properties": {
           "pattern": {
@@ -63261,6 +64495,152 @@
           "project_id"
         ],
         "title": "SelectFilesForInspectionResponse"
+      },
+      "Selection": {
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "project",
+              "global",
+              "skip"
+            ],
+            "title": "Scope",
+            "default": "project"
+          },
+          "overwrite": {
+            "type": "boolean",
+            "title": "Overwrite",
+            "default": false
+          },
+          "expected_checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Checksum"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "Selection"
+      },
+      "SelectionAreas": {
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Version",
+            "default": 1
+          },
+          "areas": {
+            "items": {
+              "$ref": "#/components/schemas/Area"
+            },
+            "type": "array",
+            "title": "Areas"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "areas"
+        ],
+        "title": "SelectionAreas"
+      },
+      "SelectionPolicy": {
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Version",
+            "default": 1
+          },
+          "question_schema_version": {
+            "type": "integer",
+            "title": "Question Schema Version"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "omission": {
+            "$ref": "#/components/schemas/Omission"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "question_schema_version",
+          "model",
+          "omission"
+        ],
+        "title": "SelectionPolicy"
+      },
+      "SelectionRules": {
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Version",
+            "default": 1
+          },
+          "global_invalidators": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Global Invalidators",
+            "default": []
+          },
+          "scoped_conftests": {
+            "items": {
+              "$ref": "#/components/schemas/ScopedConftest"
+            },
+            "type": "array",
+            "title": "Scoped Conftests",
+            "default": []
+          },
+          "non_behavioral": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Non Behavioral",
+            "default": []
+          },
+          "ownership": {
+            "items": {
+              "$ref": "#/components/schemas/PathAreas"
+            },
+            "type": "array",
+            "title": "Ownership",
+            "default": []
+          },
+          "source_scanning": {
+            "items": {
+              "$ref": "#/components/schemas/SourceScan"
+            },
+            "type": "array",
+            "title": "Source Scanning",
+            "default": []
+          },
+          "critical": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Critical",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SelectionRules"
       },
       "SessionAttachRequest": {
         "properties": {
@@ -65579,6 +66959,31 @@
         ],
         "title": "SourceRefDTO",
         "description": "Where in the authoring Markdown this element came from."
+      },
+      "SourceScan": {
+        "properties": {
+          "modules": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Modules"
+          },
+          "triggers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Triggers"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "modules",
+          "triggers"
+        ],
+        "title": "SourceScan"
       },
       "SpecApproveRequest": {
         "properties": {
@@ -71079,6 +72484,36 @@
           "settled"
         ],
         "title": "TaskSubtasksResponse"
+      },
+      "TemplatePolicy": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "template",
+            "title": "Type",
+            "default": "template"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "spec",
+              "plan",
+              "formula"
+            ],
+            "title": "Kind"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "content"
+        ],
+        "title": "TemplatePolicy"
       },
       "TerminalAccessResponse": {
         "properties": {
