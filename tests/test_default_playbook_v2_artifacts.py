@@ -541,10 +541,10 @@ def _routing_policy_block(source: str) -> str:
 
 
 #: The ``## Routing policy`` digest of the shipped default router: the
-#: risk-aware revision approved as rev-azure-flare revision 1, with priority
-#: floors (``above_priority``) as decided in review rev-wise-impact.
+#: risk-aware revision approved as rev-azure-flare revision 1, with no
+#: priority gate on any lane, as decided in review rev-wise-impact.
 SHIPPED_ROUTING_POLICY_SHA256 = (
-    "sha256:734447ca476bd64c9e64bf39911488c7ac21faa86e1328d50cb75d18b6a4a4dd"
+    "sha256:42b499b0557a71d07b285ef0c4b913299b72fb795a21c490466d4ca3ed367f33"
 )
 
 ROUTING_BUNDLES = (

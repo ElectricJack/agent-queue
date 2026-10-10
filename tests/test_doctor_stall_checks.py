@@ -286,38 +286,6 @@ async def test_disabled_provider_with_queued_task(context):
     assert findings[0]["provider"] == "claude"
 
 
-async def test_high_priority_task_on_a_local_model(context):
-    providers = {"opencode": "ollama", "opencode-zen": "opencode", "claude": "anthropic"}
-    context.handler.orchestrator = SimpleNamespace(harness_registry=SimpleNamespace(
-        get=lambda harness_id, project_id=None: SimpleNamespace(
-            id=harness_id, provider=providers[harness_id],
-        ),
-    ))
-    context.db.profiles = [
-        SimpleNamespace(id=f"standard-high-{harness}", harness=harness) for harness in providers
-    ]
-    # A lower priority number is more important (the claim frontier takes it
-    # first): local models take only work numbered above the floor of 50.
-    rows = [
-        task("top-fix", profile="standard-high-opencode", priority=1,
-             status=TaskStatus.IN_PROGRESS),
-        task("queued-fix", project="two", profile="standard-high-opencode", priority=50),
-        task("docs", profile="standard-high-opencode", priority=100),
-        task("backlog", profile="standard-high-opencode", priority=298),
-        task("hosted", profile="standard-high-opencode-zen", priority=1),
-        task("claude", profile="standard-high-claude", priority=1),
-        task("done", profile="standard-high-opencode", priority=1,
-             status=TaskStatus.COMPLETED),
-    ]
-    findings = await module._local_model_findings(context, rows)
-    assert [(f["kind"], f["task_id"], f["project_id"]) for f in findings] == [
-        ("high_priority_local_model", "top-fix", "one"),
-        ("high_priority_local_model", "queued-fix", "two"),
-    ]
-    assert "stop it, then aq task route --task-id top-fix" in findings[0]["detail"]
-    assert findings[1]["detail"].endswith("> 50); aq task route --task-id queued-fix")
-
-
 def test_high_cost_non_design_route_across_projects():
     rows = [
         task("implement widget", project="two", profile="deep-high-claude"),

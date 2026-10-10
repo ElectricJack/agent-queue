@@ -540,18 +540,20 @@ async def test_plan_honours_exclude_providers_from_the_route_constraints(handler
 async def test_task_facts_carry_the_local_model_gate_inputs(handler, orch):
     from src.models import DepType
 
+    # A task's priority is not a gate input (rev-wise-impact): it never routes.
     await _create(orch.db, "fix", task_type=TaskType.BUGFIX, priority=290)
     await _create(orch.db, "waiter", task_type=TaskType.RESEARCH)
     await orch.db.add_dependency("waiter", "fix", DepType.BLOCKS.value)
     facts = await handler._routing_task_facts(
         await orch.db.get_task("fix"), await orch.db.get_project("p"),
     )
-    assert (facts.priority, facts.on_train, facts.blocks_work) == (290, False, True)
+    assert (facts.on_train, facts.blocks_work) == (False, True)
+    assert not hasattr(facts, "priority")
 
     # ``train`` needs an integration repository; the builder reads only the mode.
     train = replace(await orch.db.get_project("p"), hierarchical_integration_mode="train")
     facts = await handler._routing_task_facts(await orch.db.get_task("waiter"), train)
-    assert (facts.priority, facts.on_train, facts.blocks_work) == (100, True, False)
+    assert (facts.on_train, facts.blocks_work) == (True, False)
 
 
 # -- task_route_apply: only the bound router ----------------------------------------

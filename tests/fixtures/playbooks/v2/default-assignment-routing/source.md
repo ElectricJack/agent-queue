@@ -133,24 +133,19 @@ harness, never by rung id. Key by key:
   (LongCat 2.5 Preview free). Until a hosted model has a track record (see
   "Earning a wider lane"), the lane takes only work the classifier put in a
   fast class (trivial, localized, settled): narrow, test-verified, low-risk
-  chores, run on the model's one `standard-high` rung. Its `above_priority`
-  floor is stricter than the local one. The lane matches `opencode-zen*`, so
-  new Zen preview harnesses cannot become general candidates or take
-  integration/development repairs. Each
+  chores, run on the model's one `standard-high` rung. The lane matches
+  `opencode-zen*`, so new Zen preview harnesses cannot become general
+  candidates or take integration/development repairs. Each
   hosted model is its own harness, so each has an independent
   availability row (free-tier exhaustion is separate from local OpenCode's and
   from the other hosted models), and they share one lane so the lane can be
   tightened as a unit.
-- `local_models` and a lane's `above_priority`: a lower priority number is
-  more important, as on the claim frontier, which takes the lowest number
-  first. Priority is only a floor on the cheap lanes. A task whose priority
-  is at or below `local_models`' `above_priority` never runs on a local model,
-  and a task at or below a lane's `above_priority` never takes that lane.
-  Priority never chooses a class, a harness or a lane in any other way: an
-  unimportant task is not pushed to a cheap lane by its priority, and an
-  important one is not pushed up the ladder by it. The local value, 50, is
-  the policy default, written out here. The free hosted lane's 99 admits
-  default-priority (100) work and anything less important.
+- Priority is not a routing input. No lane and no local-model rule has a
+  priority floor or ceiling, so a task's priority never chooses its class,
+  harness, lane or model; it only orders the claim frontier. A cheap lane
+  admits work by its class, its `requires` flags and its `max_risk` alone.
+  The `local_models` gate keeps its defaults: an integration-train bug fix,
+  and work other tasks wait on, never run on a self-hosted model.
 - `reserved`: keeps deep-high Claude for code design and design review, so a
   hard bug fix hinted deep-high lands on deep-high Codex.
 - `balance`: the load score. A candidate's pressure is its live load plus one,
@@ -213,10 +208,7 @@ lanes:
     classes: {fast-high: standard-high, fast-low: standard-high}
     requires: [narrow, test_verified]
     max_risk: low
-    above_priority: 99
     prefer: true
-local_models:
-  above_priority: 50
 reserved:
   - {class: deep-high, harness: claude, only_lanes: [code-design, design-review]}
 balance:
@@ -230,11 +222,10 @@ balance:
 ## Earning a wider lane
 
 The free hosted models start on probation: the `narrow-hosted` lane above
-takes only trivial (fast-class), narrow, test-verified, low-risk work at
-priority 100 or less important (a number above 99). Nothing in the router
-measures a track record, and nothing widens a lane by itself. A record is
-evidence that an operator reads before approving a change to this playbook,
-the same reviewed flow as this revision.
+takes only trivial (fast-class), narrow, test-verified, low-risk work.
+Nothing in the router measures a track record, and nothing widens a lane by
+itself. A record is evidence that an operator reads before approving a change
+to this playbook, the same reviewed flow as this revision.
 
 - **Per harness.** Each hosted model is its own harness, so each earns its own
   record. One model's record never widens another's lane.
@@ -247,10 +238,9 @@ the same reviewed flow as this revision.
   route an operator overrode does not count either way. Stage 2 is a reviewed
   change that moves the proven harness into its own lane (for example
   `narrow-hosted-proven`). That lane adds `standard-high: standard-high`, so
-  ordinary narrow, test-verified, low-risk work qualifies, and it lowers the
-  priority floor to the local one (50). The `opencode-zen*` lane keeps every unproven
-  and newly installed Zen model on probation, and still keeps them out of the
-  general candidates.
+  ordinary narrow, test-verified, low-risk work qualifies. The `opencode-zen*`
+  lane keeps every unproven and newly installed Zen model on probation, and
+  still keeps them out of the general candidates.
 - **No stage 3.** Medium, high and very high risk work never goes to a free
   hosted or local model, however long its record. The `risk` table enforces
   this, not the lane.

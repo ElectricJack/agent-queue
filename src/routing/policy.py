@@ -17,9 +17,11 @@ Two kinds of lane share the ``lanes`` map:
 * a **narrow lane** (``narrow``, ``narrow-unverified-model``) has a
   ``classes`` map and ``requires`` flags, and is reached only through a kind
   marked ``narrow: true`` whose classification satisfies every flag.  It may
-  also cap the classified risk (``max_risk``) and floor the task's priority
-  (``above_priority``: a lower number is more important, as on the claim
-  frontier); an unknown risk does not meet the cap.
+  also cap the classified risk (``max_risk``); an unknown risk does not meet
+  the cap.
+
+A task's priority is not a routing input: no lane and no ``local_models``
+gate reads it, so priority never decides which model runs a task.
 
 The optional ``risk`` map (keyed by :data:`RISK_LEVELS`) is a safety floor
 for a classified risk: ``min_class`` raises the task's class (``relax`` names
@@ -87,12 +89,11 @@ def selector_matches(harness: str, selector: str) -> bool:
     return harness == selector
 
 
-#: ``below_priority`` read a higher number as more important, the reverse of
-#: the claim frontier; the floor that replaced it is not its rename.
-_BELOW_PRIORITY_RETIRED = (
-    "a lower priority number is more important; write 'above_priority', the "
-    "floor a task's priority must exceed (150 below became 50 above around "
-    "the default of 100)"
+#: Priority once gated the cheap lanes and the local models; it no longer
+#: routes at all (rev-wise-impact, 2026-10-09).
+_PRIORITY_RETIRED = (
+    "a task's priority does not route it; delete the key (a lane admits work "
+    "by its class, flags and risk)"
 )
 
 
@@ -171,13 +172,9 @@ class Lane(_Strict):
     #: Narrow lanes only: the riskiest classified risk the lane admits.  An
     #: unknown risk does not meet it, exactly like a missing flag.
     max_risk: str | None = None
-    #: Narrow lanes only: the lane admits a task whose priority number is
-    #: above this, that is less important work (an unknown priority is
-    #: admitted, as by ``local_models``).
-    above_priority: int | None = Field(default=None, ge=0)
 
-    _OMIT_AT_DEFAULT: ClassVar[tuple[str, ...]] = ("max_risk", "above_priority")
-    _RETIRED: ClassVar[dict[str, str]] = {"below_priority": _BELOW_PRIORITY_RETIRED}
+    _OMIT_AT_DEFAULT: ClassVar[tuple[str, ...]] = ("max_risk",)
+    _RETIRED: ClassVar[dict[str, str]] = {"below_priority": _PRIORITY_RETIRED}
 
     @property
     def narrow(self) -> bool:
@@ -209,8 +206,6 @@ class Lane(_Strict):
                 raise ValueError("a design lane's 'prefer' lists harnesses")
             if self.max_risk is not None:
                 raise ValueError("'max_risk' belongs to a narrow lane")
-            if self.above_priority is not None:
-                raise ValueError("'above_priority' belongs to a narrow lane")
             unknown = {
                 harness for harness in self.preferred_harnesses
                 if harness.endswith("*") or not self.admits(harness)
@@ -306,19 +301,16 @@ class LocalModels(_Strict):
     A profile is local when its harness declares a local provider
     (:data:`src.routing.planner.LOCAL_MODEL_PROVIDERS`) or its harness is
     named under ``harnesses``.  A local profile is a candidate only for a task
-    whose priority number is above ``above_priority`` (a lower number is more
-    important, as on the claim frontier), that is not one of the
-    ``train_kinds`` delivered through an integration train, and that no other
-    task waits on (unless ``allow_blocking``).  A policy without the block
-    gets these defaults.
+    that is not one of the ``train_kinds`` delivered through an integration
+    train and that no other task waits on (unless ``allow_blocking``).  A
+    policy without the block gets these defaults.
     """
 
     harnesses: tuple[str, ...] = ()
-    above_priority: int = Field(default=50, ge=0)
     train_kinds: tuple[str, ...] = ("bugfix",)
     allow_blocking: bool = False
 
-    _RETIRED: ClassVar[dict[str, str]] = {"below_priority": _BELOW_PRIORITY_RETIRED}
+    _RETIRED: ClassVar[dict[str, str]] = {"below_priority": _PRIORITY_RETIRED}
 
 
 class RoutingPolicy(_Strict):

@@ -148,14 +148,14 @@ literal `{"failed": true}` when classification failed.
      `preferred_provider`, pool profiles when the task needs a workspace
      kind other than `project-repo`/`vault`, and self-hosted models (a harness
      whose `provider` is `ollama`, or one `local_models.harnesses` names) for
-     a task the policy's `local_models` gate refuses: a priority number at or
-     below `above_priority` (default 50; a lower number is more important, as
-     on the claim frontier), a `train_kinds` kind (default `bugfix`)
-     in a project whose integration mode is `hierarchy`, `train` or
-     `development`, or a task an unfinished task waits on through a blocking
-     edge other than `parent-child` (unless `allow_blocking`). A narrow kind's OpenCode lanes
-     form the preferred tier when the classification satisfies their
-     `requires`; a harness a narrow lane names is never a general candidate.
+     a task the policy's `local_models` gate refuses: a `train_kinds` kind
+     (default `bugfix`) in a project whose integration mode is `hierarchy`,
+     `train` or `development`, or a task an unfinished task waits on through
+     a blocking edge other than `parent-child` (unless `allow_blocking`). A
+     narrow kind's OpenCode lanes form the preferred tier when the
+     classification satisfies their `requires` and `max_risk`; a harness a
+     narrow lane names is never a general candidate. A task's priority is not
+     an input to any step: it orders the claim frontier, never the route.
    - **Availability.** Unlaunchable providers leave the choice but stay in
      `candidates`; nothing launchable is `held`, before any classification.
    - **Classification.** `needs_classification` when the task has neither a

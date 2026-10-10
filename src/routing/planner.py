@@ -16,13 +16,12 @@ The steps, as the spec numbers them:
 2. **Candidates** — worker candidates for the lane (or the class), minus
    reserved cells, excluded providers, providers other than the project's
    ``preferred_provider``, for a task needing a non-pool workspace every
-   pool profile and, for work the ``local_models`` gate refuses (a priority
-   number at or below its floor, so more important work; a train bugfix;
-   work others wait on), every
-   self-hosted model, and every harness a classified risk's rule does not
-   list.  A narrow lane's candidates form the preferred tier when the
-   classification meets its ``requires``, its ``max_risk`` (an unknown risk
-   does not) and its ``above_priority``.
+   pool profile and, for work the ``local_models`` gate refuses (a train
+   bugfix; work others wait on), every self-hosted model, and every harness
+   a classified risk's rule does not list.  A narrow lane's candidates form
+   the preferred tier when the classification meets its ``requires`` and its
+   ``max_risk`` (an unknown risk does not).  A task's priority is not an
+   input: it orders the claim frontier, never the route.
 2b. **Preference** — the filer's ``prefer_target``, a harness or a profile:
    ``strict`` leaves only the candidates that serve it and refuses to fall
    back, ``soft`` flags them so :func:`reselect` prefers them while they have
@@ -186,8 +185,6 @@ class TaskFacts:
     needs_task_lifecycle: bool = False
     #: ``benchmark:<arm>`` task labels; multiple selectors are an error.
     benchmark_arms: tuple[str, ...] = ()
-    #: The task's priority; ``None`` (unknown) leaves the priority gate open.
-    priority: int | None = None
     #: The task delivers through its project's integration train.
     on_train: bool = False
     #: An unfinished task waits on this one through a blocking edge.
@@ -531,19 +528,6 @@ def _lane_admits_risk(lane: Lane, risk: str | None) -> bool:
     return risk is not None and risk_rank(risk) <= risk_rank(lane.max_risk)
 
 
-def _lane_admits_priority(lane: Lane, task: TaskFacts) -> bool:
-    """A narrow lane's ``above_priority`` is met; an unknown priority meets it.
-
-    A lower number is more important (the claim frontier takes it first), so
-    the floor keeps a lane to the less important work above it.
-    """
-    return (
-        lane.above_priority is None
-        or task.priority is None
-        or task.priority > lane.above_priority
-    )
-
-
 def _cells(
     snapshot: Snapshot,
     class_id: str,
@@ -592,8 +576,6 @@ def local_refusal(
     supplied; without it the task's own kind is used.
     """
     gate = policy.local_models
-    if task.priority is not None and task.priority <= gate.above_priority:
-        return f"priority {task.priority} is not above {gate.above_priority}"
     kind = kind or task.task_type
     if task.on_train and kind in gate.train_kinds:
         return f"a {kind} delivered through the integration train"
@@ -716,9 +698,7 @@ def _candidates(
     if rule.narrow:
         for name, lane in policy.narrow_lanes():
             mapped = (lane.classes or {}).get(rule.class_id)
-            if mapped is None or not _lane_admits_priority(lane, task):
-                # The priority floor is known before any classification, so
-                # a lane it refuses is not even a potential one.
+            if mapped is None:
                 continue
             lane_cells = [
                 _candidate(profile, mapped, tier=PREFERRED, lane=name)

@@ -1,13 +1,16 @@
-"""Dry-run the risk-aware routing draft against the shipped policy.
+"""Dry-run the worked examples under the installed default routing policy.
 
 Run from the repository root::
 
     PYTHONPATH=. python docs/superpowers/specs/2026-10-09-risk-aware-routing/dry-run.py
 
-Each worked example goes through :func:`src.routing.planner.plan_route` twice
-per policy, the way the playbook drives it: first with no classification (to
-show which questions the plan asks), then with the classifier answer recorded
-below.  The fleet is one derived rung per class on ``claude`` and ``codex``,
+Each worked example goes through :func:`src.routing.planner.plan_route` twice,
+the way the playbook drives it: first with no classification (to show which
+questions the plan asks), then with the classifier answer recorded below.
+The approval-time run compared the pre-revision policy with the draft; that
+output is in the history of ``dry-run.md`` (commit 8fecf5ef5).  The draft no
+longer parses (it writes the retired ``below_priority``), and the
+pre-revision routes came from a planner that still read priority.  The fleet is one derived rung per class on ``claude`` and ``codex``,
 the three local OpenCode rungs and the three free hosted OpenCode Zen rungs,
 all idle, so the result shows the policy and nothing else.  Prints a Markdown
 table; ``dry-run.md`` next to this file is its recorded output.
@@ -24,8 +27,7 @@ from src.routing.policy import parse_policy
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[3]
-SHIPPED = ROOT / "src/prompts/reviewed_playbooks/default-assignment-routing/source.md"
-DRAFT = HERE / "default-assignment-routing.md"
+INSTALLED = ROOT / "src/prompts/reviewed_playbooks/default-assignment-routing/source.md"
 
 
 def _policy(path: Path):
@@ -156,21 +158,20 @@ def _route(task, policy, digest, snapshot, answer) -> tuple[str, str]:
 
 
 def main() -> int:
-    shipped, shipped_digest = _policy(SHIPPED)
-    draft, draft_digest = _policy(DRAFT)
-    classes = frozenset(draft.class_order)
-    print(f"shipped policy {shipped_digest}  \ndraft policy {draft_digest}\n")
-    print("| Example | Prio | Risk | Shipped route | Draft asks | Draft route |")
-    print("|---|---|---|---|---|---|")
+    policy, digest = _policy(INSTALLED)
+    classes = frozenset(policy.class_order)
+    print(f"installed policy {digest}\n")
+    print("| Example | Prio | Risk | Asks | Route |")
+    print("|---|---|---|---|---|")
     for index, (label, fields, answer) in enumerate(EXAMPLES, 1):
-        # 100 is the column default (``tasks.priority``).
+        # 100 is the column default (``tasks.priority``).  The column records
+        # the example; priority is no longer a routing input (rev-wise-impact).
         fields = {"priority": 100, **fields}
-        task = TaskFacts(task_id=f"ex-{index}", title=label, description=label, **fields)
+        facts = {key: value for key, value in fields.items() if key != "priority"}
+        task = TaskFacts(task_id=f"ex-{index}", title=label, description=label, **facts)
         snapshot = _fleet(classes, local_busy=label.endswith(BUSY))
-        _, before = _route(task, shipped, shipped_digest, snapshot, answer)
-        asked, after = _route(task, draft, draft_digest, snapshot, answer)
-        print(f"| {label} | {fields['priority']} | {answer['risk']} | {before} | {asked} "
-              f"| {after} |")
+        asked, route = _route(task, policy, digest, snapshot, answer)
+        print(f"| {label} | {fields['priority']} | {answer['risk']} | {asked} | {route} |")
     return 0
 
 
