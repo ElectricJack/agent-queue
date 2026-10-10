@@ -14,9 +14,9 @@ mixin owns authorization and wiring; nothing here asks who the caller is.
   edited outside the review (*diverged*, §7) is never overwritten except by
   ``revise``, which copies it aside first.
 * **The review gate** (type ``review``, ``await_id`` = review id) is created
-  with the review and resolved only by an approval.  A rejection or a
-  withdrawal leaves it open, so dependent work never starts on a design that
-  was not approved.
+  with the review and resolved only by an approval. A rejection leaves it
+  open; withdrawal cancels it and flags its waiters. Reopening restores the same
+  gate; neither cancellation nor reopening grants approval.
 """
 
 from __future__ import annotations
@@ -306,6 +306,8 @@ class ReviewService:
         submitted_by: str,
         submitted_task_id: str | None,
         playbook: PlaybookPin | None = None,
+        reopen: bool = False,
+        expected_revision: int | None = None,
     ) -> dict:
         """Store revision N+1 and put the review back ``in_review``.
 
@@ -316,10 +318,13 @@ class ReviewService:
         new revision replaces it.
         """
         review = await self._get(review_id)
-        if review["state"] not in OPEN_STATES:
+        allowed = {"withdrawn"} if reopen else set(OPEN_STATES)
+        if review["state"] not in allowed:
             raise self._closed(review)
         body = _body(content)
         current = review["current_revision"]
+        if expected_revision is not None and current != expected_revision:
+            raise ReviewError("stale_revision", "review changed: reload it before reopening")
         previous = await self._get_revision(review_id, current)
         spec_kind = _spec_kind(content, previous.get("spec_kind"))
         now = self._clock()
@@ -328,9 +333,13 @@ class ReviewService:
         async with self.db.immediate() as conn:
             moved = await self.db.transition_review(
                 review_id,
-                from_states=set(OPEN_STATES),
+                from_states=allowed,
                 expected_revision=current,
-                values={"state": "in_review", "current_revision": new_revision, "updated_at": now},
+                values={
+                    "state": "in_review", "current_revision": new_revision, "updated_at": now,
+                    **({"decided_by": None, "decided_at": None, "decision_note": None}
+                       if reopen else {}),
+                },
                 conn=conn,
             )
             if moved:
@@ -351,6 +360,10 @@ class ReviewService:
                 await self.db.resolve_review_comments(
                     review_id, list(resolves or []), new_revision, conn=conn
                 )
+                if reopen:
+                    await self.db.set_review_gate_state(
+                        review_id, review["gate_id"], cancelled=False, by=submitted_by, conn=conn,
+                    )
         if not moved:
             raise await self._lost_race(review_id)
 
@@ -562,11 +575,22 @@ class ReviewService:
 
     # -- withdraw ------------------------------------------------------------
 
-    async def withdraw(self, *, review_id: str, reason: str, by: str) -> dict:
-        """Close the review unapproved; its gate stays open and waiters are flagged.
+    async def reopen(
+        self, *, review_id: str, revision: int, by: str, submitted_task_id: str | None = None,
+    ) -> dict:
+        """Copy the withdrawn revision into N+1 and reopen its existing gate."""
+        previous = await self._get_revision(review_id, revision)
+        return await self.revise(
+            review_id=review_id, content=previous["content"], changes_note="Reopened withdrawn review",
+            resolves=[], submitted_by=by, submitted_task_id=submitted_task_id,
+            playbook=PlaybookPin.from_revision(previous), reopen=True, expected_revision=revision,
+        )
 
-        The withdrawal is the review's last decision, so ``by`` and ``reason``
-        are recorded as ``decided_by`` / ``decision_note``.
+    async def withdraw(self, *, review_id: str, reason: str, by: str, via: str = "cli") -> dict:
+        """Cancel the gate without approval and flag its dependent tasks atomically.
+
+        Audit fields survive reopening. While withdrawn, the decision fields
+        also carry ``by`` and ``reason`` for older readers.
         """
         review = await self._get(review_id)
         if review["state"] not in OPEN_STATES:
@@ -584,20 +608,24 @@ class ReviewService:
                     "decided_by": by,
                     "decided_at": now,
                     "decision_note": reason or None,
+                    "withdrawn_by": by,
+                    "withdrawn_at": now,
+                    "withdrawn_via": via,
+                    "withdrawal_reason": reason or None,
                     "updated_at": now,
                 },
                 conn=conn,
             )
+            if moved:
+                flagged = await self.db.set_review_gate_state(
+                    review_id, review["gate_id"], cancelled=True, by=by, conn=conn,
+                )
         if not moved:
             raise await self._lost_race(review_id)
 
         review = await self._get(review_id)
         await self._rewrite_status(review)
-        flagged = (
-            sorted(await self.db.get_gate_waiters(review["gate_id"])) if review["gate_id"] else []
-        )
         for task_id in flagged:
-            await self.db.set_task_meta(task_id, "needs_attention", "review_withdrawn")
             task = await self.db.get_task(task_id)
             await self._emit(
                 "task.needs_attention",
@@ -615,6 +643,10 @@ class ReviewService:
                 **_base_payload(review),
                 "reason": reason,
                 "withdrawn_by": by,
+                "withdrawn_via": via,
+                "withdrawn_at": now,
+                "gate_id": review["gate_id"],
+                "gate_status": "cancelled",
                 "flagged_task_ids": flagged,
             },
         )
@@ -741,6 +773,11 @@ class ReviewService:
             "revision": {k: v for k, v in shown.items() if k != "playbook_artifact"},
             "revisions": await self.db.list_review_revisions(review_id),
             "vault_state": state,
+            "dependent_task_ids": (
+                sorted(await self.db.get_gate_waiters(review["gate_id"]))
+                if review["gate_id"] else []
+            ),
+            "gate": await self.db.get_gate(review["gate_id"]) if review["gate_id"] else None,
         }
         dispatches = await self.db.list_review_dispatches(review_id)
         for dispatch in dispatches:

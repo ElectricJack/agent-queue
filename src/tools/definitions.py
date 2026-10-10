@@ -126,6 +126,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "review_show": "review",
     "review_list": "review",
     "review_withdraw": "review",
+    "review_reopen": "review",
     "review_decide": "review",
     "approve_pull_request": "review",
     "review_comment": "review",
@@ -479,7 +480,7 @@ _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
             "task_id": {"type": "string", "description": "Filter by waiter task"},
             "status": {
                 "type": "string",
-                "enum": ["open", "resolved", "expired"],
+                "enum": ["open", "resolved", "expired", "cancelled"],
                 "description": "Filter by gate status",
             },
             "gate_type": {
@@ -7229,6 +7230,22 @@ _ALL_TOOL_DEFINITIONS.extend(
                     "kind": {"type": "string", "enum": ["spec", "plan", "other"]},
                     "task_id": {"type": "string"},
                 },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "review_reopen",
+            "description": (
+                "Reopen a withdrawn review as a new revision of its last content, "
+                "retaining its review ID, gate and dependent links. Does not grant approval."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "review_id": {"type": "string"},
+                    "revision": {"type": "integer", "minimum": 1},
+                },
+                "required": ["review_id", "revision"],
                 "additionalProperties": False,
             },
         },

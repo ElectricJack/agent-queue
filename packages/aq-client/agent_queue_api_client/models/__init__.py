@@ -1468,6 +1468,8 @@ from .review_list_request import ReviewListRequest
 from .review_list_response import ReviewListResponse
 from .review_list_response_422 import ReviewListResponse422
 from .review_record import ReviewRecord
+from .review_reopen_request import ReviewReopenRequest
+from .review_reopen_response_422 import ReviewReopenResponse422
 from .review_response_route import ReviewResponseRoute
 from .review_response_route_class_summaries import ReviewResponseRouteClassSummaries
 from .review_show_request import ReviewShowRequest
@@ -1477,6 +1479,7 @@ from .review_show_response_attachments_item import ReviewShowResponseAttachments
 from .review_show_response_comments_type_0_item import ReviewShowResponseCommentsType0Item
 from .review_show_response_diff_type_0_item import ReviewShowResponseDiffType0Item
 from .review_show_response_dispatches_item import ReviewShowResponseDispatchesItem
+from .review_show_response_gate_type_0 import ReviewShowResponseGateType0
 from .review_show_response_revision import ReviewShowResponseRevision
 from .review_show_response_revisions_item import ReviewShowResponseRevisionsItem
 from .review_submit_request import ReviewSubmitRequest
@@ -3328,6 +3331,8 @@ __all__ = (
     "ReviewListResponse",
     "ReviewListResponse422",
     "ReviewRecord",
+    "ReviewReopenRequest",
+    "ReviewReopenResponse422",
     "ReviewResponseRoute",
     "ReviewResponseRouteClassSummaries",
     "ReviewShowRequest",
@@ -3337,6 +3342,7 @@ __all__ = (
     "ReviewShowResponseCommentsType0Item",
     "ReviewShowResponseDiffType0Item",
     "ReviewShowResponseDispatchesItem",
+    "ReviewShowResponseGateType0",
     "ReviewShowResponseRevision",
     "ReviewShowResponseRevisionsItem",
     "ReviewSubmitRequest",

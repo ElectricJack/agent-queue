@@ -86,7 +86,7 @@ Cross-project dependencies are **allowed, explicitly** (todo §3b, decision 9). 
 
 `tasks.is_blocked` (0/1, default 0) is a pure projection:
 
-> `is_blocked(t) = 1` iff **any** blocking edge from *t* is unsatisfied (§3.1) **or** any gate attached to *t* via `task_gates` has `status ∈ {open, expired}` (§5.4).
+> `is_blocked(t) = 1` iff **any** blocking edge from *t* is unsatisfied (§3.1) **or** any gate attached to *t* via `task_gates` has `status ∈ {open, expired, cancelled}` (§5.4).
 
 It is *graph* blockedness only. Transient capacity reasons — no idle agent, workspace locked, budget, cooldown — are **not** persisted; they change per-tick and belong to explain (§9), not the row.
 
@@ -185,7 +185,22 @@ Blockedness is deliberately **not transitive through blockedness**: an open (non
 
 A **gate** is a first-class wait record — "something outside the graph must happen":
 
-`gates(id, project_id, gate_type, title, question, await_id, timeout_at, status, resolved_by, resolution, created_at)` with `gate_type ∈ {human, timer, pr-merged, ci-run, event, task}` and `status ∈ {open, resolved, expired}`. `task_gates(task_id, gate_id)` attaches waiters; one gate may block many tasks, one task may wait on many gates.
+`gates(id, project_id, gate_type, title, question, await_id, timeout_at, status, resolved_by, resolution, created_at)` with `gate_type ∈ {human, timer, pr-merged, ci-run, event, task, review}` and `status ∈ {open, resolved, expired, cancelled}`. `task_gates(task_id, gate_id)` attaches waiters; one gate may block many tasks, one task may wait on many gates.
+
+Withdrawing a document review cancels its approval gate atomically with the review
+state and the dependent tasks' `needs_attention=review_withdrawn` flags. Cancellation
+does not grant approval: the same unresolved-gate predicate continues to hold the
+tasks. The withdrawal records actor, surface, timestamp and reason, returns the
+dependent IDs and sends a durable message to the project supervisor. The dashboard
+requires confirmation and shows the audit and dependent task links.
+
+`review_reopen` accepts the current revision of a withdrawn review and creates its
+next revision from the last submitted text and playbook pin. It keeps the review ID,
+gate ID and waiter links, reopens the gate and clears only withdrawal attention
+that has no other withdrawn review cause. The author task, project supervisor and
+local operator may reopen within their project scope. Stale revisions and approved
+reviews are refused. Earlier withdrawal audit remains visible after reopening;
+approval of the new revision is required before dependents can run.
 
 | gate_type | `await_id` holds | Resolved when |
 |---|---|---|
@@ -195,6 +210,7 @@ A **gate** is a first-class wait record — "something outside the graph must ha
 | `ci-run` | run id / URL | `gh run` reports success (sweep) |
 | `event` | event type (+ optional payload-filter JSON) | a matching EventBus event fires (subscription resolves immediately; sweep is the restart-safe backstop against events missed while the daemon was down, re-checked from the persisted `events` table) |
 | `task` | task id (cross-project allowed) | that task reaches COMPLETED (sweep) |
+| `review` | document review id | the current revision is approved through `review_decide` |
 
 #### 5.1a Merged is not the same as "on the default branch"
 

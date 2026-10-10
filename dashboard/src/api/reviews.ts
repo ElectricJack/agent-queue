@@ -14,12 +14,14 @@ import {
   reviewList,
   reviewShow,
   reviewWithdraw,
+  reviewReopen,
   type ReviewCommentResponse,
   type ReviewDecideResponse,
   type ReviewImportEditsResponse,
   type ReviewListResponse,
   type ReviewShowResponse,
   type ReviewWithdrawResponse,
+  type ReviewSubmitResponse,
 } from "./client";
 
 export type ReviewAttachment = {
@@ -127,6 +129,23 @@ export function useDecideReview(): UseMutationResult<ReviewDecideResponse, Error
 }
 
 type WithdrawInput = { review_id: string; reason: string };
+
+export function useReopenReview(): UseMutationResult<
+  ReviewSubmitResponse, Error, { review_id: string; revision: number }
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input) => (await reviewReopen({
+      body: input, throwOnError: true,
+    })).data as ReviewSubmitResponse,
+    onSuccess: (_data, input) => {
+      void queryClient.invalidateQueries({ queryKey: ["reviews"] });
+      void queryClient.invalidateQueries({ queryKey: ["review", input.review_id] });
+      void queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      void queryClient.invalidateQueries({ queryKey: ["gates"] });
+    },
+  });
+}
 
 /** Close an open review with no decision, exactly as `aq review withdraw` does. */
 export function useWithdrawReview(): UseMutationResult<

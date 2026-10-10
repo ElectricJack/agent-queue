@@ -843,6 +843,7 @@
         "tests/test_migration_repair_stages.py",
         "tests/test_migration_retired_intelligence_classes.py",
         "tests/test_migration_review_playbook_pin.py",
+        "tests/test_migration_review_withdrawal.py",
         "tests/test_migration_root_main_promotion.py",
         "tests/test_migration_schema_ahead.py",
         "tests/test_migration_session_hooks_provisioned.py",
@@ -11687,6 +11688,23 @@
         "migration"
       ],
       "summary": "The review-playbook-pin revision adds its columns once and keeps them on rollback."
+    },
+    "tests/test_migration_review_withdrawal.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "digest": "sha256:a9e478107e1303477610d27715914d3347fd536f0ee39471712fd30aba421109",
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.models"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Upgrade legacy withdrawals without granting approval or inventing a surface."
     },
     "tests/test_migration_root_main_promotion.py": {
       "areas": [

@@ -98,7 +98,13 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
             scope = await _attach_derived_identity(scope)
 
         request.state.scope = scope
-        with operator_viewer_context(request_operator_viewer(request)):
+        # The dashboard edge replaces this marker; direct browser requests
+        # carry Origin. Agent identity takes precedence in the command layer.
+        surface = "dashboard" if (
+            request.headers.get("x-aq-dashboard-viewer") in {"operator", "other"}
+            or request.headers.get("origin")
+        ) else "cli"
+        with operator_viewer_context(request_operator_viewer(request), surface=surface):
             if scope.kind == "session" and scope.session_id:
                 with structlog.contextvars.bound_contextvars(session_id=scope.session_id):
                     return await call_next(request)

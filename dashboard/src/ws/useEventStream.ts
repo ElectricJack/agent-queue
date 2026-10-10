@@ -422,6 +422,8 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
     const reviewId = (event as { review_id?: string }).review_id;
     queryClient.invalidateQueries({ queryKey: ["reviews"] });
     if (reviewId) queryClient.invalidateQueries({ queryKey: ["review", reviewId] });
+    queryClient.invalidateQueries({ queryKey: ["gates"] });
+    queryClient.invalidateQueries({ queryKey: ["tasks"] });
     return;
   }
 

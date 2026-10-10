@@ -13,13 +13,15 @@ task's archive or delete.
 
 from __future__ import annotations
 
+import json
 import random
 
-from sqlalchemy import and_, exists, func, insert, or_, select, update
+from sqlalchemy import and_, delete, exists, func, insert, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
     doc_review_attachments, doc_review_comments, doc_review_dispatches,
-    doc_review_revisions, doc_reviews, gates, task_gates, tasks,
+    doc_review_revisions, doc_reviews, gates, task_gates, task_metadata, tasks,
 )
 from src.task_names import ADJECTIVES, NOUNS
 
@@ -44,6 +46,51 @@ class ReviewQueriesMixin:
     """
 
     # -- ids and paths ---------------------------------------------------
+
+    async def set_review_gate_state(
+        self, review_id: str, gate_id: str | None, *, cancelled: bool,
+        by: str, conn,
+    ) -> list[str]:
+        """Cancel/reopen a review's gate and attention flags with its transition.
+
+        Both states keep blocking. Refresh the blocked projection as well,
+        including for legacy gates that were incorrectly resolved.
+        Reopening clears only our attention flag, and only when no other
+        withdrawn review holds that task. The caller owns the review row lock.
+        """
+        if not gate_id:
+            return []
+        await conn.execute(update(gates).where(
+            gates.c.id == gate_id, gates.c.gate_type == "review", gates.c.await_id == review_id,
+        ).values(
+            status="cancelled" if cancelled else "open",
+            resolved_by=by if cancelled else None,
+            resolution="review_withdrawn" if cancelled else None,
+        ))
+        waiters = sorted((await conn.execute(select(task_gates.c.task_id).where(
+            task_gates.c.gate_id == gate_id,
+        ))).scalars().all())
+        if waiters:
+            await self.recompute_blocked(set(waiters), conn=conn)
+        if cancelled:
+            for task_id in waiters:
+                stmt = pg_insert(task_metadata).values(
+                    task_id=task_id, key="needs_attention", value=json.dumps("review_withdrawn"),
+                )
+                # Preserve an unrelated attention reason.
+                await conn.execute(stmt.on_conflict_do_nothing())
+        elif waiters:
+            other_withdrawal = exists(select(task_gates.c.task_id).join(
+                doc_reviews, doc_reviews.c.gate_id == task_gates.c.gate_id,
+            ).where(
+                task_gates.c.task_id == task_metadata.c.task_id,
+                doc_reviews.c.state == "withdrawn",
+            ))
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id.in_(waiters), task_metadata.c.key == "needs_attention",
+                task_metadata.c.value == json.dumps("review_withdrawn"), ~other_withdrawal,
+            ))
+        return waiters
 
     async def generate_review_id(self) -> str:
         """A fresh ``rev-<adjective>-<noun>`` id no review already has."""

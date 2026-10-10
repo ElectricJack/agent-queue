@@ -14523,6 +14523,53 @@
         }
       }
     },
+    "/api/review/reopen": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Reopen a withdrawn review as a new revision of its last content, retaining its review ID, gate and dependent links. Does not grant approval.",
+        "description": "Reopen a withdrawn review as a new revision of its last content, retaining its review ID, gate and dependent links. Does not grant approval.",
+        "operationId": "review_reopen",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewReopenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewSubmitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/review/show": {
       "post": {
         "tags": [
@@ -63174,6 +63221,50 @@
             "type": "string",
             "title": "Decider",
             "default": "user"
+          },
+          "withdrawn_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Withdrawn By"
+          },
+          "withdrawn_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Withdrawn At"
+          },
+          "withdrawn_via": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Withdrawn Via"
+          },
+          "withdrawal_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Withdrawal Reason"
           }
         },
         "additionalProperties": true,
@@ -63188,6 +63279,26 @@
           "vault_path"
         ],
         "title": "ReviewRecord"
+      },
+      "ReviewReopenRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "revision"
+        ],
+        "title": "ReviewReopenRequest"
       },
       "ReviewResponseRoute": {
         "properties": {
@@ -63398,6 +63509,26 @@
             "type": "array",
             "title": "Attachments",
             "default": []
+          },
+          "dependent_task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dependent Task Ids",
+            "default": []
+          },
+          "gate": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate"
           }
         },
         "additionalProperties": true,

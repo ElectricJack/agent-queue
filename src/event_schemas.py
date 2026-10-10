@@ -957,6 +957,7 @@ _REVIEW_SCHEMAS: dict[str, EventSchema] = {
         "optional": [
             "title", "kind", "revision", "author_task_id", "reason", "withdrawn_by",
             "flagged_task_ids", "seq", "decider",
+            "withdrawn_via", "withdrawn_at", "gate_id", "gate_status",
         ],
     },
     "review.commented": {
