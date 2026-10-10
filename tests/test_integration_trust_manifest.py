@@ -554,7 +554,7 @@ def test_hosted_builder_preserves_whitespace_and_order_without_normalizing():
         "version": " CI-v1 ", "names": ["Windows B ", " Windows A"], "producer_id": "4242",
         "check_sets": {"release": ["Release B ", " Release A"]},
     })
-    manifest = trust_manifest.manifest_for_hosted_check_policy(
+    manifest = trust_manifest.manifest_for_policy(
         policy, canonical_repository_id="demo", repository_id=123,
         full_name="demo/repo", attestation_app_id=5678,
     )
@@ -678,7 +678,7 @@ def _cli_result(committed_text: str | None = AGENT_QUEUE_MANIFEST) -> dict:
     }
 
 
-def _invoke(argv, result):
+def _invoke(argv, result, *, command="trust-manifest"):
     from src.cli.app import cli
 
     client = AsyncMock()
@@ -686,7 +686,7 @@ def _invoke(argv, result):
     client.__aexit__ = AsyncMock(return_value=False)
     client.execute = AsyncMock(return_value=result)
     with patch("src.cli.integration._get_client", return_value=client):
-        outcome = CliRunner().invoke(cli, ["integration", "trust-manifest", *argv])
+        outcome = CliRunner().invoke(cli, ["integration", command, *argv])
     return outcome, client
 
 
@@ -754,12 +754,19 @@ def test_cli_refuses_both_policy_files_without_request_or_write(tmp_path):
     ('{"version":"v1","version":"v2"}', "duplicate field"),
     ('{"check_sets":{"release":["A"],"release":["B"]}}', "duplicate field"),
 ])
-def test_cli_refuses_invalid_or_duplicate_hosted_json_before_request(tmp_path, text, error):
+@pytest.mark.parametrize("command,option", [
+    ("trust-manifest", "--hosted-check-policy"), ("trust-manifest", "--policy"),
+    ("app-verify", "--policy"), ("app-setup", "--policy"),
+])
+def test_cli_refuses_invalid_or_duplicate_policy_json_before_request(
+    tmp_path, text, error, command, option,
+):
     policy_path = tmp_path / "hosted.json"
     policy_path.write_text(text)
-    outcome, client = _invoke([
-        "agent-queue", "--hosted-check-policy", str(policy_path), "--print",
-    ], _cli_result())
+    argv = ["agent-queue", option, str(policy_path)]
+    if command == "trust-manifest":
+        argv.append("--print")
+    outcome, client = _invoke(argv, _cli_result(), command=command)
     assert outcome.exit_code == 2 and error in outcome.output
     client.execute.assert_not_awaited()
 

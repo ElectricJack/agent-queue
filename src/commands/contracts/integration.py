@@ -348,8 +348,6 @@ class IntegrationRedriveRootArgs(CommandArgs):
         return self
 
 
-
-
 class IntegrationAuthorizeRootArgs(IntegrationRedriveRootArgs):
     """Dry run by default; applying names the dry run's exact head and a reason."""
 
@@ -379,10 +377,6 @@ class IntegrationRedriveChildArgs(CommandArgs):
 
 class IntegrationReopenCollectionArgs(IntegrationRedriveChildArgs):
     """Dry run by default; applying names the parent branch head the dry run reported."""
-
-
-
-
 
 
 class IntegrationRebindRepairArgs(CommandArgs):
@@ -664,8 +658,6 @@ class IntegrationRedriveRootValue(CommandValue):
     checkpoint: dict[str, Any] | None = None
     owner: dict[str, Any] | None = None
     reason: str | None = None
-
-
 
 
 class IntegrationCloseDeliveredPrValue(CommandValue):
@@ -1620,7 +1612,6 @@ INTEGRATION_REOPEN_COLLECTION = _operational_contract(
     side_effect=SideEffectClass.COMPOSITE,
     result_model=IntegrationReopenCollectionValue,
 )
-
 
 
 INTEGRATION_REBIND_REPAIR = _operational_contract(
@@ -3069,8 +3060,6 @@ async def _redrive_root_adapter(args: IntegrationRedriveRootArgs, ctx: CommandCo
     )
 
 
-
-
 async def _authorize_root_adapter(
     args: IntegrationAuthorizeRootArgs, ctx: CommandContext | None
 ):
@@ -3100,8 +3089,6 @@ async def _reopen_collection_adapter(
         IntegrationReopenCollectionValue,
         set(REOPEN_COLLECTION_OUTCOMES),
     )
-
-
 
 
 async def _rebind_repair_adapter(args: IntegrationRebindRepairArgs, ctx: CommandContext | None):

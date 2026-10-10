@@ -16,14 +16,18 @@ from .claim_epoch import claim_epoch_option, resolve_claim_epoch
 from .envelope import emit
 
 
-def _execute(ctx: click.Context, command: str, args: dict[str, Any]) -> None:
+def _request(ctx: click.Context, command: str, args: dict[str, Any]) -> Any:
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
-    async def _request():
+    async def run():
         async with _get_client(api_url) as client:
             return await client.execute(command, args)
 
-    emit(ctx, _run(_request()), entity="integration")
+    return _run(run())
+
+
+def _execute(ctx: click.Context, command: str, args: dict[str, Any]) -> None:
+    emit(ctx, _request(ctx, command, args), entity="integration")
 
 
 @cli.group("integration")
@@ -388,8 +392,6 @@ def integration_resolve_candidate_member(
     _execute(ctx, "integration_resolve_candidate_member", args)
 
 
-
-
 @integration.command("reevaluate-repair")
 @click.argument("operation_id")
 @click.option("--apply", is_flag=True, help="Apply the exact preview; default is read-only.")
@@ -416,8 +418,6 @@ def integration_reevaluate_repair(ctx, operation_id, apply, head, episode, gener
     if snapshot is not None:
         args["expected_snapshot_digest"] = snapshot
     _execute(ctx, "integration_reevaluate_repair", args)
-
-
 
 
 @integration.command("release-owner")
@@ -547,8 +547,6 @@ def integration_redrive_root(
     if reason is not None:
         args["reason"] = reason
     _execute(ctx, "integration_redrive_root", args)
-
-
 
 
 @integration.command("authorize-root")
@@ -814,7 +812,6 @@ def integration_recover_candidate_member(ctx: click.Context, reservation_id: str
 # ---------------------------------------------------------------------------
 
 
-
 def _trust_manifest_write_command(
     project_id: str, policy_path: str | None, repository_id: str | None,
     hosted_check_policy_path: str | None = None,
@@ -872,7 +869,6 @@ def integration_trust_manifest(
     warning, because the frozen policy snapshot owns the check set.  Read-only;
     refused under existing-login credentials (not_app_mode).
     """
-    import json
     from pathlib import Path
 
     modes = [name for name, chosen in (
@@ -880,38 +876,10 @@ def integration_trust_manifest(
     ) if chosen]
     if len(modes) != 1:
         raise click.UsageError("pass exactly one of --write PATH, --check and --print")
-    if policy_path and hosted_check_policy_path:
-        raise click.UsageError("--policy and --hosted-check-policy are mutually exclusive")
     mode = modes[0]
-    args: dict[str, Any] = {"project_id": project_id}
-
-    def unique_fields(pairs):
-        document = {}
-        for name, value in pairs:
-            if name in document:
-                raise ValueError(f"duplicate field {name!r}")
-            document[name] = value
-        return document
-
-    input_path = hosted_check_policy_path or policy_path
-    if input_path:
-        try:
-            document = json.loads(
-                Path(input_path).read_text(encoding="utf-8"), object_pairs_hook=unique_fields,
-            )
-        except (OSError, ValueError) as exc:
-            raise click.UsageError(f"cannot read the policy {input_path}: {exc}") from exc
-        args["hosted_check_policy" if hosted_check_policy_path else "policy"] = document
-    if repository_id:
-        args["repository_id"] = repository_id
-
-    api_url = ctx.obj.get("api_url") if ctx.obj else None
-
-    async def _request():
-        async with _get_client(api_url) as client:
-            return await client.execute("integration_trust_manifest", args)
-
-    data = dict(_run(_request()))
+    args = _app_mode_args(project_id, policy_path, repository_id, hosted_check_policy_path)
+    args.pop("policy_path", None)
+    data = dict(_request(ctx, "integration_trust_manifest", args))
     if mode == "write":
         Path(write_path).write_text(data["text"], encoding="utf-8")
         data["written"] = write_path
@@ -924,32 +892,42 @@ def integration_trust_manifest(
         raise SystemExit(1)
 
 
+integration_trust_manifest._aq_backend_command = "integration_trust_manifest"
+
+
+def _unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    document: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in document:
+            raise ValueError(f"duplicate field {name!r}")
+        document[name] = value
+    return document
+
+
 def _app_mode_args(
-    project_id: str, policy_path: str | None, repository_id: str | None
+    project_id: str, policy_path: str | None, repository_id: str | None,
+    hosted_check_policy_path: str | None = None,
 ) -> dict[str, Any]:
     import json
     from pathlib import Path
 
+    if policy_path and hosted_check_policy_path:
+        raise click.UsageError("--policy and --hosted-check-policy are mutually exclusive")
     args: dict[str, Any] = {"project_id": project_id}
-    if policy_path:
+    input_path = hosted_check_policy_path or policy_path
+    if input_path:
         try:
-            args["policy"] = json.loads(Path(policy_path).read_text(encoding="utf-8"))
+            document = json.loads(
+                Path(input_path).read_text(encoding="utf-8"), object_pairs_hook=_unique_fields,
+            )
         except (OSError, ValueError) as exc:
-            raise click.UsageError(f"cannot read the policy {policy_path}: {exc}") from exc
+            raise click.UsageError(f"cannot read the policy {input_path}: {exc}") from exc
+        args["hosted_check_policy" if hosted_check_policy_path else "policy"] = document
+    if policy_path:
         args["policy_path"] = policy_path
     if repository_id:
         args["repository_id"] = repository_id
     return args
-
-
-def _app_verify(ctx: click.Context, args: dict[str, Any]) -> dict[str, Any]:
-    api_url = ctx.obj.get("api_url") if ctx.obj else None
-
-    async def _request():
-        async with _get_client(api_url) as client:
-            return await client.execute("integration_app_verify", args)
-
-    return dict(_run(_request()))
 
 
 def _app_item(data: dict[str, Any], item_id: str) -> dict[str, Any]:
@@ -1037,7 +1015,7 @@ def integration_app_verify(
     args = _app_mode_args(project_id, policy_path, repository_id)
     if repository_access_only:
         args["repository_access_only"] = True
-    data = _app_verify(ctx, args)
+    data = dict(_request(ctx, "integration_app_verify", args))
     emit(ctx, data, render=_render_app_verify)
     if not data.get("ready"):
         raise SystemExit(1)
@@ -1181,7 +1159,7 @@ def integration_app_setup(
     writes repository files and never applies a ruleset.
     """
     args = _app_mode_args(project_id, policy_path, repository_id)
-    verify = _app_verify(ctx, args)
+    verify = dict(_request(ctx, "integration_app_verify", args))
     full_name = verify.get("full_name")
     expected = verify.get("expected") or {}
 
@@ -1196,7 +1174,7 @@ def integration_app_setup(
         applied = [
             {"name": argv[3], "command": _shlex_join(argv), **_run_gh(argv)} for argv in commands
         ]
-        reverified = _app_item(_app_verify(ctx, args), "variables")
+        reverified = _app_item(_request(ctx, "integration_app_verify", args), "variables")
 
     manifest_item = _app_item(verify, "manifest")
     protection_item = _app_item(verify, "protection")
@@ -1238,7 +1216,6 @@ def _shlex_join(argv: list[str]) -> str:
     import shlex
 
     return shlex.join(argv)
-
 
 
 def _check_verdict(committed: dict[str, Any]) -> tuple[bool, list[str]]:

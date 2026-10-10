@@ -1259,13 +1259,10 @@ class IntegrationCommandsMixin:
     async def _integration_app_inputs(
         self, args: dict, *, allow_hosted_check_policy: bool = False
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-        """``(refusal, inputs)`` shared by the read-only App-mode commands.
+        """Resolve supplied/bound policy and supplied/designated repository.
 
-        The policy is the caller's ``policy`` when given, so the anchors can be
-        prepared before the policy is bound, else the project's bound policy.
-        The repository is ``repository_id`` when given, else the designated
-        one.  Every identity comes from the daemon: the binding from the
-        authenticated resolver and the credential from the GitHub client.
+        Identities come only from the authenticated resolver and daemon client.
+        Return ``(refusal, inputs)`` for the read-only App-mode commands.
         """
         from pydantic import ValidationError
 
@@ -1358,13 +1355,9 @@ class IntegrationCommandsMixin:
         }
 
     async def _cmd_integration_trust_manifest(self, args: dict) -> dict:
-        """Render the App-mode trust manifest and compare the default-branch copy.
+        """Render from authenticated App inputs; compare the exact default-branch SHA.
 
-        Read-only (App-mode integration train spec §6.1), on the inputs
-        :meth:`_integration_app_inputs` resolves: ``repository_id`` and
-        ``full_name`` from the authenticated binding, ``attestation_app_id``
-        from the App client, and the committed copy read through the App at
-        the default branch's exact SHA.
+        Read-only (App-mode integration train spec §6.1).
         """
         from src.git.github_contracts import GitHubAccessError, GitHubCredentialMode
         from src.integration import trust_manifest
@@ -1390,10 +1383,7 @@ class IntegrationCommandsMixin:
             flow = await read_stored_promotion_flow(self.db, inputs["project_id"])
             if flow is None:
                 flow = getattr(inputs["project"], "promotion_flow", None)
-            builder = (trust_manifest.manifest_for_hosted_check_policy
-                       if inputs["policy_source"] == "hosted_check_policy"
-                       else trust_manifest.manifest_for_policy)
-            manifest = builder(
+            manifest = trust_manifest.manifest_for_policy(
                 inputs["policy"],
                 canonical_repository_id=inputs["repository_id"],
                 repository_id=binding.repository_id,
@@ -1618,10 +1608,6 @@ class IntegrationCommandsMixin:
             )
 
 
-
-
-
-
     async def _cmd_integration_reevaluate_repair(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationReevaluateRepairArgs
 
@@ -1650,9 +1636,6 @@ class IntegrationCommandsMixin:
         return _with_reason(result["outcome"] in {
             "would_reevaluate", "reevaluated", "already_settled",
         }, result)
-
-
-
 
 
     async def _cmd_integration_recover_candidate_member(self, args: dict) -> dict:
@@ -2104,7 +2087,6 @@ class IntegrationCommandsMixin:
             "success": result["outcome"] in {"would_rebind", "rebound", "already_rebound"},
             **result,
         }
-
 
 
     async def _cmd_integration_close_delivered_pr(self, args: dict) -> dict:
