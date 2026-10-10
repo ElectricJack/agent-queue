@@ -79,6 +79,47 @@ requesting a promotion, commit `check_sets.promotion-source-audit` in
 required check. Agent-queue's manifest includes this set for all sixteen checks.
 The manifest renderer preserves committed named sets when writing a fresh copy.
 
+To bootstrap trust before configuring hierarchical routes, write a CI-only
+JSON document, for example `hosted-check-policy.json`:
+
+```json
+{
+  "version": "demo-ci-v1",
+  "names": ["Native Windows build and tests", "Linux foundation"],
+  "producer_id": "15368",
+  "check_sets": {
+    "promotion-source-audit": [
+      "unattested-ci / Native Windows build and tests",
+      "unattested-ci / Linux foundation"
+    ]
+  }
+}
+```
+
+Use the reviewed check names and version exactly, in order. Include every
+required native platform check; a Linux foundation check does not replace
+native Windows validation. `producer_id` is the CI producer's positive numeric
+App ID as a string. Unknown fields, duplicate JSON fields, duplicate checks,
+empty names and coerced values are refused. `check_sets` is optional; supplied
+sets replace matching committed sets and preserve all other valid committed sets.
+
+```bash
+aq integration trust-manifest demo --hosted-check-policy hosted-check-policy.json --repository-id demo-repo --print
+aq integration trust-manifest demo --hosted-check-policy hosted-check-policy.json --repository-id demo-repo --write .github/agent-queue-integration.json
+aq integration trust-manifest demo --hosted-check-policy hosted-check-policy.json --repository-id demo-repo --check
+```
+
+`--write` writes a local file for repository review. `--check` compares the
+default-branch copy: identity differences fail, while check-set differences
+warn. The daemon resolves the repository's numeric ID and full name through
+its authenticated binding, and the attestation App ID through its own client.
+It refuses missing App identity or existing-login credentials; the document
+cannot supply an attestation App ID. This works without a bound hierarchical
+policy and leaves integration mode and release/operator gates unchanged.
+`--policy FILE` still accepts a full hierarchical policy; the two input flags
+are mutually exclusive. `app-verify` and `app-setup` retain their full-policy
+inputs.
+
 Source admission uses this alternative only when all canonical check names are
 missing from a completed push run. The complete configured audit set must pass
 on the exact source commit under the trusted CI App and workflow attempt.

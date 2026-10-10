@@ -95,6 +95,27 @@ class RequiredCheckSet(BaseModel):
     producer_id: str
 
 
+class HostedCheckPolicy(BaseModel):
+    """CI inputs for trust bootstrap, independent of hierarchical routing."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    version: str = Field(min_length=1)
+    names: list[str] = Field(min_length=1)
+    producer_id: str = Field(pattern=r"^[1-9][0-9]*$")
+    check_sets: dict[str, list[str]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def valid_check_sets(self) -> HostedCheckPolicy:
+        if not self.version.strip():
+            raise ValueError("check version must be nonempty")
+        for name, checks in [("required checks", self.names), *self.check_sets.items()]:
+            if (not name.strip() or not checks or any(not check.strip() for check in checks)
+                    or len(set(checks)) != len(checks)):
+                raise ValueError("check sets must have nonempty names and distinct nonempty checks")
+        return self
+
+
 class RepairPolicy(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 

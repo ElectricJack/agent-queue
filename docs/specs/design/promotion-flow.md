@@ -88,3 +88,34 @@ Candidate checks, promotion attestation, private pinned PR CI and release
 approvals continue to require their configured exact names. Enabling the
 alternative requires committing its full named check set to the designated
 default branch and running daemon code that understands source admission.
+
+## Trust-manifest bootstrap without hierarchical routes
+
+`integration_trust_manifest` accepts an optional `hosted_check_policy` object
+instead of a full hierarchical `policy`. The CLI reads it from
+`--hosted-check-policy FILE`; supplying both inputs is refused. With neither,
+the existing bound hierarchical policy remains the default. App verification
+continues to require the full policy.
+
+The hosted document contains only `version`, ordered `names`, `producer_id`
+and optional `check_sets` (a mapping of names to ordered check-name lists).
+Unknown fields, non-string values, empty or whitespace-only strings, empty
+check lists, duplicate checks, and noncanonical numeric producer strings are
+refused. Names and version are preserved exactly, without sorting or trimming.
+The producer is a positive decimal App ID string without leading zeros.
+Explicit named sets replace matching committed sets; other valid committed
+sets are preserved. Duplicate JSON fields in the CLI input are refused.
+
+The repository still belongs to the requested project and its numeric ID and
+full name come from the authenticated binding. The attestation App ID comes
+only from the daemon client's credential identity. Missing identity, login
+credentials, a mismatched binding or identical producer/attestation Apps fail
+closed. The hosted document cannot supply these identities or routing data.
+Stored promotion attestation names and the exact-SHA committed comparison
+remain shared with the full-policy path.
+
+This read-only bootstrap works before binding hierarchical routes, including
+for a development-mode project. It never binds policy, changes integration
+mode, activates a promotion flow, deploys code or bypasses release/operator
+gates. Existing required checks, including native platform checks, must be
+copied into the hosted input without substituting a different check set.
