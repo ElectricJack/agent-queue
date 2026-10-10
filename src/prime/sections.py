@@ -138,6 +138,7 @@ def build_task_section(
     review_deliverables: str = "",
     integration_delivery: str = "",
     subtasks_block: str = "",
+    bounded_worker: bool = False,
 ) -> PrimeSection:
     """Task id/title/status/description (design §5.2 #3).
 
@@ -162,7 +163,11 @@ def build_task_section(
         lines.append(f"Claim epoch: {task.claim_epoch}")
     if task.description:
         lines.append("")
-        lines.append(task.description.strip())
+        from src.prime.budgets import DESCRIPTION_BYTES, text_preview
+
+        description = task.description.strip()
+        lines.append(text_preview(description, DESCRIPTION_BYTES, task.id, "description")
+                     if bounded_worker else description)
     if deliverables is None:
         deliverables = getattr(task, "deliverables", None) or []
     if deliverables:
@@ -344,33 +349,30 @@ def _render_spec_ref(config: Any, row: dict) -> str:
     return f"**{ref_path} § {ref_section}:**\n\n{body}"
 
 
-async def build_task_context_section(
-    db: Any, config: Any, task: Any, *, session_id: str | None = None
-) -> PrimeSection:
-    """``task_context`` rows incl. inlined ``spec_ref`` + attachments (design §5.2 #4).
+async def _build_task_context_body(
+    db: Any, config: Any, task: Any, *, bounded_worker: bool = False,
+) -> str:
+    """Render ordinary task context, history and attachments within the worker budget.
 
-    ``type='handoff'`` rows are excluded here — they render in section 6
-    (messages + handoff) instead.
+    Handoff context rows render separately in the messages section.
     """
     rows = await db.get_task_contexts(task.id)
     blocks: list[str] = []
-    get_repair = getattr(db, "get_parent_repair_prime_context", None)
-    if (
-        getattr(task, "created_by_kind", None) == "integration_repair"
-        and session_id
-        and callable(get_repair)
-    ):
-        repair = await get_repair(task.id, session_id=session_id)
-        if isinstance(repair, dict):
-            blocks.append(
-                "**Current parent conflict repair:**\n"
-                "Live assignment snapshot; refresh `aq prime` if the intent or attachment changes. "
-                "Use this intent_id, operation_id and fence for "
-                "`aq system integration-resolve-conflict`, then the same intent_id and fence for "
-                "`aq system integration-push-conflict-resolution`. These commands revalidate authority; "
-                "this snapshot does not bypass stale-fence checks.\n\n"
-                "```json\n" + json.dumps(repair, indent=2, sort_keys=True) + "\n```"
-            )
+    from src.sessions.worker_recovery import CONTINUATION_KEY
+
+    get_meta = getattr(db, "get_task_meta", None)
+    recovery = await get_meta(task.id, CONTINUATION_KEY) if callable(get_meta) else None
+    if isinstance(recovery, dict):
+        from src.handoffs import display_data
+
+        blocks.append(
+            "**Previous worker recovery note (historical observations):**\n"
+            "Verify the branch and `git status` before repeating work. Reuse the saved "
+            "progress and agent handoff; read source files in targeted ranges.\n\n"
+            + "\n".join("> " + line for line in display_data(
+                json.dumps(recovery, ensure_ascii=False, indent=2)
+            ).splitlines())
+        )
     for row in rows:
         ctype = row.get("type")
         if ctype == "handoff":
@@ -458,6 +460,40 @@ async def build_task_context_section(
         blocks.append("**attachments:**\n" + "\n".join(f"- {p}" for p in attachments))
 
     body = "\n\n".join(b for b in blocks if b).strip()
+    if bounded_worker:
+        from src.prime.budgets import CONTEXT_BYTES, text_preview
+
+        # Page this rendered field, rather than only the legacy context rows:
+        # recovery notes, comments and resolved spec text must remain readable.
+        body = text_preview(body, CONTEXT_BYTES, task.id, "prime_context")
+    return body
+
+
+async def build_task_context_section(
+    db: Any, config: Any, task: Any, *, session_id: str | None = None,
+    bounded_worker: bool = False,
+) -> PrimeSection:
+    """Combine task context with the current fenced parent-conflict assignment."""
+    required_blocks: list[str] = []
+    get_repair = getattr(db, "get_parent_repair_prime_context", None)
+    if (
+        getattr(task, "created_by_kind", None) == "integration_repair"
+        and session_id
+        and callable(get_repair)
+    ):
+        repair = await get_repair(task.id, session_id=session_id)
+        if isinstance(repair, dict):
+            required_blocks.append(
+                "**Current parent conflict repair:**\n"
+                "Live assignment snapshot; refresh `aq prime` if the intent or attachment changes. "
+                "Use this intent_id, operation_id and fence for "
+                "`aq system integration-resolve-conflict`, then the same intent_id and fence for "
+                "`aq system integration-push-conflict-resolution`. These commands revalidate authority; "
+                "this snapshot does not bypass stale-fence checks.\n\n"
+                "```json\n" + json.dumps(repair, indent=2, sort_keys=True) + "\n```"
+            )
+    body = await _build_task_context_body(db, config, task, bounded_worker=bounded_worker)
+    body = "\n\n".join([*required_blocks, body]).strip()
     return PrimeSection(key="task_context", title=SECTION_TITLES["task_context"], body=body)
 
 

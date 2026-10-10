@@ -93,6 +93,10 @@ class SurfaceCommandsMixin:
         info["parent"] = parent
         info["children"] = await self.db.get_children_summary(task_id)
         info["claimed_by"] = await self._claimed_by(task_id)
+        from src.sessions.worker_recovery import CONTINUATION_KEY, STREAK_KEY
+
+        info[STREAK_KEY] = await self.db.get_task_meta(task_id, STREAK_KEY)
+        info[CONTINUATION_KEY] = await self.db.get_task_meta(task_id, CONTINUATION_KEY)
         task = await self.db.get_task(task_id)
         project = await self.db.get_project(task.project_id) if task else None
         checkpoint = await self.db.get_integration_checkpoint(task_id) if task else None
@@ -121,6 +125,21 @@ class SurfaceCommandsMixin:
                 info["integration_delivery"] = await ParentEpisodeRecords(self.db).readiness(
                     task_id
                 )
+        from src.prime.budgets import field_page, task_preview
+
+        if args.get("field") == "prime_context":
+            from src.prime.sections import build_task_context_section
+
+            scope = getattr(self, "_current_scope", None) or {}
+            section = await build_task_context_section(
+                self.db, self.config, task, session_id=scope.get("session_id"),
+            )
+            info["prime_context"] = section.body
+        if args.get("field"):
+            return field_page(info, args["field"], args.get("offset", 0), args.get("limit", 4096))
+        scope = getattr(self, "_current_scope", None) or {}
+        if scope.get("kind") == "session" and not scope.get("elevated"):
+            return task_preview(info)
         return info
 
     async def _root_delivery_receipts(self, checkpoint: dict) -> list[dict]:
@@ -387,6 +406,7 @@ class SurfaceCommandsMixin:
                 session_id=scope.get("session_id") or args.get("session_id"),
                 work_dir=args.get("work_dir"),
                 mark_messages_delivered=mark_messages_delivered,
+                bounded_worker=scope.get("kind") == "session" and not scope.get("elevated"),
             )
         except ValueError as exc:
             return {"error": str(exc)}

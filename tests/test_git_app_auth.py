@@ -1284,6 +1284,97 @@ async def test_authenticated_acquisition_timeout_or_cancellation_reaps_process_g
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["acquisition", "push", "import"])
+@pytest.mark.parametrize("interrupt", ["cancellation", "deadline"])
+async def test_isolated_git_interrupted_spawn_reaps_process_group(
+    tmp_path, monkeypatch, operation, interrupt
+):
+    checkout, target, _, base, tip = _git_push_case(tmp_path)
+    pids = tmp_path / "spawn-pids"
+    hanging_git = tmp_path / "hanging-git"
+    hanging_git.write_text(
+        "#!/bin/sh\n"
+        "sleep 300 &\n"
+        "child=$!\n"
+        f'printf \'%s %s\' "$$" "$child" > {pids}\n'
+        'wait "$child"\n'
+    )
+    hanging_git.chmod(0o700)
+    manager = GitManager()
+    manager._APP_GIT_EXECUTABLE = str(hanging_git)
+    # Exercise one interrupted acquisition; retry policy has separate coverage.
+    monkeypatch.setattr(manager, "_APP_GIT_RETRY_MIN_BUDGET", 30.0)
+    home = tmp_path / "home"
+    home.mkdir()
+    spawned = asyncio.Event()
+    release_spawn = asyncio.Event()
+    processes = []
+    timeouts = []
+    real_spawn = asyncio.create_subprocess_exec
+    real_timeout_at = asyncio.timeout_at
+
+    def record_timeout(deadline):
+        timeout = real_timeout_at(deadline)
+        timeouts.append(timeout)
+        return timeout
+
+    async def delayed_spawn(executable, *args, **kwargs):
+        if executable != str(hanging_git) and operation != "import":
+            return await real_spawn(executable, *args, **kwargs)
+        process = await real_spawn(str(hanging_git), *args, **kwargs)
+        processes.append(process)
+        spawned.set()
+        # The child already runs, but its caller has no process handle yet.
+        await release_spawn.wait()
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed_spawn)
+    monkeypatch.setattr(asyncio, "timeout_at", record_timeout)
+    deadline = asyncio.get_running_loop().time() + 30
+    if operation == "acquisition":
+        invocation = manager._arun_authenticated_git(
+            ["ls-remote", target.as_uri(), "HEAD"],
+            home=home, repository_url=target.as_uri(), token="test-token", deadline=deadline,
+        )
+    elif operation == "push":
+        invocation = manager._apush_oid_with_app_auth_to_url(
+            str(checkout), destination_url=target.as_uri(), token="test-token",
+            tip_oid=tip, branch="main", expected_old_oid=base, _deadline=deadline,
+        )
+    else:
+        invocation = manager._run_isolated_import_git(["--version"], home=home, deadline=deadline)
+    open_fds_before = _fd_baseline()
+    task = asyncio.create_task(invocation)
+    try:
+        await asyncio.wait_for(spawned.wait(), timeout=10)
+        leader, child = map(int, (await _wait_for_file(pids, fields=2)).split())
+        if interrupt == "cancellation":
+            task.cancel()
+            expected_error = asyncio.CancelledError
+        else:
+            # Expire the active operation budget at the startup barrier.
+            timeouts[-1].reschedule(asyncio.get_running_loop().time())
+            expected_error = GitError
+        await asyncio.sleep(0)
+        release_spawn.set()
+        with pytest.raises(expected_error):
+            await task
+        assert not _process_group_exists(leader)
+        assert not Path(f"/proc/{child}").exists()
+        await asyncio.sleep(0)
+        assert _open_fd_count() == open_fds_before
+        _assert_no_broker_tasks()
+    finally:
+        release_spawn.set()
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        for process in processes:
+            await manager._kill_app_git_group(process)
+
+
+@pytest.mark.asyncio
 async def test_authenticated_acquisition_expired_budget_identifies_preflight(tmp_path, monkeypatch):
     manager = GitManager()
     home = tmp_path / "home"

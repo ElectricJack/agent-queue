@@ -10009,7 +10009,12 @@
     "src/workflow_pipeline_view.py::TASK_STATUS_CATEGORY['COMPLETED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/workflow_pipeline_view.py::TASK_STATUS_CATEGORY['FAILED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/workflow_pipeline_view.py::TASK_STATUS_CATEGORY['IN_PROGRESS']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
-    "src/workflow_pipeline_view.py::TASK_STATUS_CATEGORY['WAITING_INPUT']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged."
+    "src/workflow_pipeline_view.py::TASK_STATUS_CATEGORY['WAITING_INPUT']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/commands/contracts/cron.py::register_cron_contracts": "Session-owned recurring prompt contracts use generic command-dispatch dependencies; they do not authorize integration or code delivery.",
+    "src/database/queries/agent_cron_queries.py::AgentCronQueriesMixin.reconcile_agent_cron": "Recurring prompt coalescing and message transport diagnostics; last_delivery_status describes terminal submission, not code integration.",
+    "src/database/tables.py::agent_cron": "Session-owned recurring prompts and message delivery diagnostics introduced by revision 86; no integration state, ref mutations or replay journal.",
+    "src/database/tables.py::agent_cron['last_delivery_status']": "Recurring prompt terminal delivery status, unrelated to code delivery.",
+    "src/prime/sections.py::_build_task_context_body": "Ordinary task context, recovery observations, comments and attachments, including reuse of the shared provider handoff formatter. No integration assignment, lifecycle or authority is read or rendered here; the live fenced parent-conflict snapshot remains in the independently charged build_task_context_section adapter, and the shared handoff formatter remains charged."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",
@@ -10169,5 +10174,116 @@
     "unknown_storage_sites": [],
     "fixed_baseline_and_caps_unchanged": true,
     "reason": "Onboarding command adapter injects integration_app_verify as the repository access verifier before first binding and initial publication. Delegates to the existing onboarding saga; adds no storage, delivery state or publication authority."
+  },
+  "worker_context_recovery_review": {
+    "source_revision": "c8f5e69b62df6d2eea4eadb3b032afbfcfd8a226",
+    "generic_dependencies": {
+      "src/handoffs.py::clip_utf8": "Generic UTF-8 text clipping for task and handoff displays; no integration state, storage or authority.",
+      "src/handoffs.py::display_data": "Generic display escaping for historical task observations; no integration state, storage or authority.",
+      "src/prime/budgets.py::CONTEXT_BYTES": "Generic worker task-context display budget; the fenced repair snapshot remains outside this budget and is charged independently.",
+      "src/prime/budgets.py::DESCRIPTION_BYTES": "Generic worker task-description display budget; no integration state, storage or authority.",
+      "src/prime/budgets.py::field_page": "Generic character pagination of readable task fields; command scope and integration delivery reads remain charged in the task-show adapter.",
+      "src/prime/budgets.py::task_preview": "Generic bounded task JSON projection; command scope and integration delivery reads remain charged in the task-show adapter.",
+      "src/prime/budgets.py::text_preview": "Generic bounded text display with canonical task-field read pointers; no integration state, storage or authority.",
+      "src/sessions/worker_recovery.py::CONTINUATION_KEY": "Generic worker recovery observation metadata key; no integration lifecycle or replay authority.",
+      "src/sessions/worker_recovery.py::STREAK_KEY": "Generic consecutive worker-failure metadata key; no integration lifecycle or replay authority."
+    },
+    "ordinary_context_boundary": {
+      "src/prime/sections.py::_build_task_context_body": "Ordinary task context, recovery observations, comments and attachments, including reuse of the shared provider handoff formatter. No integration assignment, lifecycle or authority is read or rendered here; the live fenced parent-conflict snapshot remains in the independently charged build_task_context_section adapter, and the shared handoff formatter remains charged."
+    },
+    "storage_sinks": {
+      "src/commands/task_commands.py::TaskCommandsMixin._restart_repair_delegate::422567dd28fcecb1a80d03028773f3ba177b912a1b2e264195e8ad9a0e83101f": {
+        "line": 4495,
+        "owner": "TaskCommandsMixin._restart_repair_delegate",
+        "call": "set_task_meta",
+        "owner_fingerprint": "56c3461d62607d7f526db009179e05280f3e2b6c65bca88b9ef03cc697a16441",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary worker failure streak is restored when a fenced repair-delegate restart is refused. Existing reservation guards still decide authority; this metadata is not an integration lifecycle journal."
+      },
+      "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+        "line": 1715,
+        "owner": "TaskQueryMixin._apply_transition",
+        "call": "delete",
+        "owner_fingerprint": "d7ff0ba49541a8247de90657a29c32b7a0dbe0d689187e8e7c403b6d11fbe093",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary task lifecycle metadata cleanup, including clearing the worker failure streak in an intentional READY restart transaction. Integration status, branch reservations and replay authority remain in their existing dedicated records."
+      },
+      "src/sessions/reconciler.py::SessionReconciler._recover_guarded_failure::9092769dc16180050c1d7a01c5d46256c2cd0383b351f15fadc91645e2ec169a": {
+        "line": 1644,
+        "owner": "SessionReconciler._recover_guarded_failure",
+        "call": "set_task_meta",
+        "owner_fingerprint": "a0cca07f395697be7c0ba862af07f9a3c00fade70e738237d814753d1e4aa23e",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Ordinary worker stall-nudge and last-action counters are reset after a claim-fenced worker failure; no integration lifecycle state or replay authority."
+      },
+      "src/sessions/reconciler.py::SessionReconciler._recover_guarded_failure::ac90864190cb937e76dcb9c547f507fd4285011a7f0853249f741e69e6ba8acb": {
+        "line": 1645,
+        "owner": "SessionReconciler._recover_guarded_failure",
+        "call": "set_task_meta",
+        "owner_fingerprint": "a0cca07f395697be7c0ba862af07f9a3c00fade70e738237d814753d1e4aa23e",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Ordinary worker stall-nudge and last-action counters are reset after a claim-fenced worker failure; no integration lifecycle state or replay authority."
+      },
+      "src/sessions/reconciler.py::SessionReconciler._apply_verdict::d0667d61d923ef69bf1ebe2b78426b134485aee6cccd32b75095d7e45a868885": {
+        "line": 1302,
+        "owner": "SessionReconciler._apply_verdict",
+        "call": "set_task_meta",
+        "owner_fingerprint": "0f2e3edeca802af4336461297d3ed2ce068e66d59e0b063cbed64f3b519d8ffb",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Existing ordinary session-exit attention metadata; reviewed the owner change introducing claim-fenced worker recovery, without adding integration lifecycle state or replay authority."
+      },
+      "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::2fc410e5e6cb875696994311109b55067ff1da9123f3889244bb579af7fdf5d0": {
+        "line": 2342,
+        "owner": "SessionReconciler._step_stall_ladder",
+        "call": "set_task_meta",
+        "owner_fingerprint": "00c67a558666ca127ecb760313afbc8b5fce2628de23fd6744f2f66905723634",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority."
+      },
+      "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::6732ef9f714e4fd40a44bc09eb86d98df200c62ed9943329ff0c3deb8ca6103f": {
+        "line": 2306,
+        "owner": "SessionReconciler._step_stall_ladder",
+        "call": "set_task_meta",
+        "owner_fingerprint": "00c67a558666ca127ecb760313afbc8b5fce2628de23fd6744f2f66905723634",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority."
+      },
+      "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::675fd05fe0efd918ede8974d1c8788d12fe7f5b20d28d4ef5e184db913b1f27e": {
+        "line": 2305,
+        "owner": "SessionReconciler._step_stall_ladder",
+        "call": "set_task_meta",
+        "owner_fingerprint": "00c67a558666ca127ecb760313afbc8b5fce2628de23fd6744f2f66905723634",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority."
+      },
+      "src/sessions/reconciler.py::SessionReconciler._step_backstop::213c372048797b24b8404f77b4a725611b628d2c507388c007a182869507e1b5": {
+        "line": 3006,
+        "owner": "SessionReconciler._step_backstop",
+        "call": "set_task_meta",
+        "owner_fingerprint": "47b2242f30f1851a8999956df7a749d52808bf658097484e5625c314f3bd7244",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Existing ordinary stuck-worker attention metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority."
+      },
+      "src/sessions/reconciler.py::SessionReconciler._step_backstop::520a5d4212b5ec30a7dd206187632959436230a62055bda95fec1b7292be78c7": {
+        "line": 2988,
+        "owner": "SessionReconciler._step_backstop",
+        "call": "set_task_meta",
+        "owner_fingerprint": "47b2242f30f1851a8999956df7a749d52808bf658097484e5625c314f3bd7244",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Existing ordinary stuck-worker attention metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority."
+      }
+    },
+    "owned_total": 155468,
+    "reason": "Reviewed generic task display helpers and worker recovery metadata separately from the fenced parent-conflict snapshot. Extracted ordinary context rendering from the charged adapter; immutable baseline, landing measurements, transition allowance and table caps remain unchanged."
   }
 }
