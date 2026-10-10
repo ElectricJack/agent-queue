@@ -1921,23 +1921,15 @@ class Orchestrator(
             return client
 
         async def resolve_github_repository(repository):
-            from urllib.parse import urlparse
+            from src.projects.github import GitHubError, parse_github_repository
 
-            parsed = urlparse(repository.url)
-            if (
-                parsed.scheme != "https"
-                or parsed.hostname != "github.com"
-                or parsed.username is not None
-                or parsed.password is not None
-                or parsed.port is not None
-                or parsed.params
-                or parsed.query
-                or parsed.fragment
-                or not parsed.path.endswith(".git")
-            ):
+            try:
+                parsed = parse_github_repository(repository.url)
+            except GitHubError:
                 return None
-            full_name = parsed.path.removeprefix("/").removesuffix(".git")
-            binding = await self.github_access.bind_repository(full_name)
+            # Share onboarding's identity rules; authentication still goes
+            # through the startup-owned authority, including for SSH inputs.
+            binding = await self.github_access.bind_repository(parsed.full_name)
             if binding not in github_clients:
                 github_clients[binding] = GitHubClient(
                     binding,

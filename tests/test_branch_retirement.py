@@ -11,7 +11,7 @@ from src.database.tables import (
     branch_deletion_audit, branch_retirements, integration_batches,
     integration_branch_owners, projects, tasks,
 )
-from src.git.github_contracts import GitHubRepositoryBinding
+from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 from src.git.manager import GitError, GitManager
 from src.integration.branch_retirement import (
     ATTEMPT_LEASE_SECONDS,
@@ -114,6 +114,61 @@ async def rows(db):
         return [dict(row) for row in (await conn.execute(
             select(branch_retirements).order_by(branch_retirements.c.branch)
         )).mappings()]
+
+
+@pytest.mark.parametrize("failure", [
+    "no_resolver", "no_binding", "no_factory", "no_client", "wrong_repository",
+])
+async def test_unavailable_authenticated_transport_keeps_refs_and_retries(setup, failure):
+    db, git, service, checkout, remote, head = setup
+    client = await service._github_client(BINDING)
+    if failure == "no_resolver":
+        service.github_repository_binding_resolver = None
+    elif failure == "no_binding":
+        service.github_repository_binding_resolver = AsyncMock(return_value=None)
+    elif failure == "no_factory":
+        service.github_client_factory = None
+    elif failure == "no_client":
+        service.github_client_factory = AsyncMock(return_value=None)
+    else:
+        client.repository = GitHubRepositoryBinding(5678, "example/other")
+
+    await request(db)
+    outcomes = await service.drain_due()
+    assert outcomes and all(
+        (state, error) == ("pending", "authenticated retirement transport is unavailable")
+        for state, error in outcomes
+    )
+    for row in await rows(db):
+        assert row["state"] == "pending"
+        assert row["attempts"] == 1
+        assert row["next_attempt_at"] > row["requested_at"]
+        assert row["evidence"] == {}
+    client.exact_head_ref.assert_not_awaited()
+    assert not service.retained_store("repo").exists()
+    assert not service.backup_dir.exists()
+    assert await git.arev_parse(str(remote), BRANCH) == head
+    assert await git.arev_parse(str(checkout), BRANCH) == head
+
+
+@pytest.mark.parametrize("category", ["credentials", "permission", "rate_limited", "transient"])
+async def test_binding_provider_failure_stays_distinct_and_keeps_refs(setup, category):
+    db, git, service, checkout, remote, head = setup
+    client = await service._github_client(BINDING)
+    factory = AsyncMock(return_value=client)
+    service.github_client_factory = factory
+    message = f"GitHub binding failed ({category})"
+    service.github_repository_binding_resolver = AsyncMock(
+        side_effect=GitHubAccessError(category, message),
+    )
+    await request(db)
+    outcomes = await service.drain_due()
+    assert outcomes and all((state, error) == ("pending", message) for state, error in outcomes)
+    factory.assert_not_awaited()
+    client.exact_head_ref.assert_not_awaited()
+    assert all(row["evidence"] == {} for row in await rows(db))
+    assert await git.arev_parse(str(remote), BRANCH) == head
+    assert await git.arev_parse(str(checkout), BRANCH) == head
 
 
 @pytest.mark.parametrize("decision", ["abandoned", "failed", "archived"])

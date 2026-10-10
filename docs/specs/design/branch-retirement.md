@@ -24,6 +24,13 @@ repository and the retained integration and publisher stores. It never detaches
 another writer. It removes audited `origin` tracking refs alongside local heads,
 so deleted remote branches do not remain visible as stale local observations.
 
+Repository binding uses the shared GitHub identity parser, including HTTPS
+without `.git` and SSH forms, then the daemon's configured credential authority.
+It does not rewrite operator remotes. An unavailable binding or missing/mismatched
+client leaves retirement pending before any ref observation or retained-store
+creation. Provider failures preserve their safe diagnostic instead of becoming
+an unavailable-client error; no credential fallback is permitted.
+
 Explicit materialized-origin deletes use the same retirement mechanism. Ordinary
 delete with `branches=keep` remains an explicit preservation choice. Archive's
 existing delivery and live-session admission guards remain required; admitted
