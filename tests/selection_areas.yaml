@@ -379,6 +379,7 @@ areas:
       - tests/test_integration_cli_controls_present.py
       - tests/test_integration_train.py
       - tests/test_integration_train_sources.py
+      - tests/perf/test_train_selection.py
       - tests/test_integration_stacked_branches.py
       - tests/test_integration_candidate_baseline.py
       - tests/test_integration_cutover.py

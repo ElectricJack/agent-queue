@@ -1313,6 +1313,113 @@ async def test_delivered_work_does_not_consume_the_pending_member_limit(world):
     assert [m.task_id for m in members] == ["owed"]
 
 
+@pytest.mark.parametrize("intent", ["open", "paused"])
+@pytest.mark.parametrize("seal_now", [False, True])
+async def test_existing_root_batch_reads_no_prs(world, intent, seal_now):
+    # The frontier still rechecks frozen members, but PR admission belongs to
+    # new batches only: an open root batch makes no GitHub reads per visit.
+    source = await completed(world, "frozen")
+    await completed(world, "unrelated")
+    store = BatchStore(world.db)
+    batch = await store.freeze(Batch("frozen-batch", "p", "r", MAIN.target_ref),
+        (BatchMember("frozen", source, git(world.origin.clone, "rev-parse", f"{source}^")),),
+        trees={"frozen": tree(world, source)})
+    if intent == "paused":
+        batch = await store.set_intent(batch.id, "paused")
+    gate = AsyncMock(side_effect=AssertionError("PR read"))
+    batches = DatabaseBatches(world.db, pr_gate=gate)
+    observed = await snapshot(world)
+    selected = await batches.open_batch(MAIN, observed, SimpleNamespace(store=store),
+                                        seal_now=seal_now)
+    assert selected.existing and selected.batch.id == "frozen-batch"
+    assert selected.batch.intent == intent
+    assert [m.task_id for m in selected.members] == ["frozen"]
+    assert gate.await_count == 0
+
+
+async def test_root_selection_enumerates_once_and_routes_before_git_reads(world, monkeypatch):
+    await completed(world, "root")
+    await world.db.create_task(Task(id="epic", project_id="p", title="epic", description="",
+                                   branch_name="aq/epic", status=TaskStatus.IN_PROGRESS))
+    await completed(world, "unrelated-child", parent="epic")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    batches = train.batches
+    candidates = AsyncMock(wraps=batches._candidate_ids)
+    delivered = AsyncMock(wraps=batches.delivered)
+    monkeypatch.setattr(batches, "_candidate_ids", candidates)
+    monkeypatch.setattr(batches, "delivered", delivered)
+    visit = await train.visit(MAIN)
+    assert visit.batch_id and candidates.await_count == 1
+    assert delivered.await_args.args[2] == ["root"]
+
+
+async def test_cancelled_selection_stops_pr_reads_without_freezing_members(world, monkeypatch):
+    # Reads are cancelled with the visit; only pushed refresh writes are joined.
+    await completed(world, "a")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    batches = train.batches
+    entered, finished = asyncio.Event(), asyncio.Event()
+
+    async def stalled_pr(*args):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(batches, "pr_gate", stalled_pr)
+    lane_service = (await train.lane_for(MAIN)).service
+    freeze = AsyncMock(wraps=lane_service.freeze)
+    monkeypatch.setattr(lane_service, "freeze", freeze)
+    observed = await snapshot(world)
+    selection = asyncio.create_task(batches.open_batch(MAIN, observed, lane_service, seal_now=True))
+    await asyncio.wait_for(entered.wait(), 10)
+    selection.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await selection
+    assert finished.is_set() and freeze.await_count == 0
+    async with world.db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_batches))).first()
+
+
+async def test_pr_admission_is_serial_and_preserves_refusals(world):
+    # Synchronization proves serial reads independently of machine latency.
+    for tid in ("a", "b", "c"):
+        await completed(world, tid)
+    entered, release = asyncio.Event(), asyncio.Event()
+    active, maximum, calls = 0, 0, []
+
+    async def gate(target, member):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        calls.append(member.task_id)
+        entered.set()
+        try:
+            await release.wait()
+            if member.task_id == "a":
+                return {"code": "awaiting_pr", "task_id": "a", "ref": "a"}
+        finally:
+            active -= 1
+
+    blockers = []
+    batches = DatabaseBatches(world.db, pr_gate=gate)
+    observed = await snapshot(world)
+    admission = asyncio.create_task(batches.pending(MAIN, observed, blockers=blockers))
+    try:
+        await asyncio.wait_for(entered.wait(), 10)
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert active == maximum == 1
+    finally:
+        release.set()
+        pending = await admission
+    assert maximum == 1 and active == 0 and sorted(calls) == ["a", "b", "c"]
+    members, _, _ = pending
+    assert sorted(m.task_id for m in members) == ["b", "c"]
+    assert [b["code"] for b in blockers] == ["awaiting_pr"]
+
+
 async def test_visit_timeout_cause_is_visible_in_status_without_a_batch(world):
     import asyncio
 

@@ -1,5 +1,6 @@
 """Stacked source admission and refresh over real Git and disposable PostgreSQL."""
 
+import asyncio
 import json
 import logging
 import subprocess
@@ -22,6 +23,7 @@ from src.database.tables import (
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.integration.batches import SupersedeMemberUnavailable, ejection_instruction
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
+from src.integration.provenance import CompletionIdentity, GitProvenance
 from src.integration.stacked_branches import (
     StackPrerequisitesConflict,
     StackedBranches,
@@ -341,6 +343,57 @@ async def test_changed_prerequisite_merges_preserves_child_and_rotates_completio
     await stack.service.prepare("child")
     assert (await stack_record(stack))["refreshed_head"] == head
     assert await stack.service.refresh("child", stack.gitops) == "unchanged"
+
+
+@pytest.mark.parametrize("cancel_visit", [False, True])
+async def test_selection_finishes_pushed_stack_refresh_and_records_completion(
+    stack, monkeypatch, cancel_visit,
+):
+    from src.integration.batches import BatchStore
+
+    next_head = stack.origin.work("first", "revision")
+    await close(stack.db, "first", [next_head], close_id="first-revised", origin=stack.origin)
+    await checkpoint(stack.db, "first", next_head)
+    entered, release = asyncio.Event(), asyncio.Event()
+    write = GitProvenance.write_completion
+
+    async def paused_completion(self, *args, **kwargs):
+        entered.set()  # The fenced branch push has already completed.
+        await release.wait()
+        return await write(self, *args, **kwargs)
+
+    monkeypatch.setattr(GitProvenance, "write_completion", paused_completion)
+    target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    batches = DatabaseBatches(stack.db)
+    observed = await snapshot(stack.world, target)
+    selecting = asyncio.create_task(batches.open_batch(
+        target, observed, SimpleNamespace(store=BatchStore(stack.db), gitops=stack.gitops),
+    ))
+    try:
+        await asyncio.wait_for(entered.wait(), 20)
+        pushed = git(stack.origin.clone, "ls-remote", "origin", "refs/heads/aq/child").split()[0]
+        assert pushed != stack.child
+        if cancel_visit:
+            selecting.cancel()
+            await asyncio.sleep(0)
+            assert not selecting.done()
+            selecting.cancel()  # A second cancellation must still join the write.
+    finally:
+        release.set()
+        if cancel_visit:
+            with pytest.raises(asyncio.CancelledError):
+                await selecting
+        else:
+            result = await selecting
+            assert result.blockers[0]["code"] == "stack_refreshed"
+    completion = await stack.db.get_task_completion("child")
+    assert completion.id.startswith("stack-") and completion.commits == [pushed]
+    assert (await stack_record(stack))["refreshed_head"] == pushed
+    assert await generation(stack.db, "child") == 1
+    record = await GitProvenance(
+        stack.gitops.git, str(stack.origin.clone), repository_url=stack.origin.url,
+    ).read_completion(CompletionIdentity("p", "r", "child", completion.id))
+    assert record["source_oid"] == pushed
 
 
 @pytest.mark.parametrize("unavailable", [

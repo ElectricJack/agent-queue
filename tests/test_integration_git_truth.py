@@ -795,6 +795,80 @@ async def test_pinned_completion_ref_and_two_targets_share_one_fetch(repository,
     assert fetch.await_count == 1
 
 
+async def test_completion_cache_pins_marker_and_revalidates_new_fetch(repository, monkeypatch):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    identity = CompletionIdentity("p", "r", "task", "close-1")
+    read = GitProvenance.read_completion
+    probe = AsyncMock()
+
+    async def inspect(self, requested, **kwargs):
+        await probe(requested)
+        return await read(self, requested, **kwargs)
+
+    monkeypatch.setattr(GitProvenance, "read_completion", inspect)
+    snapshot = await repo.snapshot()
+    record = await snapshot.read_completion(identity)
+    record["artifact"] = False  # Callers cannot mutate the validated cache.
+    assert (await snapshot.read_completion(identity))["artifact"]
+    assert (await (await repo.snapshot()).read_completion(identity))["artifact"]
+    assert probe.await_count == 1
+    # A changed fetched marker is a new immutable object, not the old answer.
+    provenance = GitProvenance(repo.git, str(repo.path), repository_url=str(repo.remote))
+    record["source_oid"] = head
+    marker = await provenance._stage(record)
+    await repo.run("push", "--force", "origin", f"{marker}:{identity.ref}")
+    assert (await (await repo.snapshot()).is_delivered(request)).state == DeliveryState.NO_ARTIFACT
+    assert probe.await_count == 2
+    await repo.run("push", "origin", "--delete", identity.ref)
+    # The old observation retains its pinned object; the new one sees absence.
+    assert (await snapshot.read_completion(identity))["artifact"]
+    assert await (await repo.snapshot()).read_completion(identity) is None
+    assert probe.await_count == 3  # The shared cache never retains absent provenance.
+
+
+async def test_completion_cache_is_store_scoped_bounded_and_does_not_cache_failures(
+    repository, monkeypatch, tmp_path,
+):
+    repo = repository
+    head = await repo.commit("one")
+    await repo.retain(head)
+    second = await repo.retain(head, completion="close-2")
+    identity = CompletionIdentity("p", "r", "task", "close-1")
+    other = replace(identity, generation="close-2")
+    truth = GitTruth(repo.git, cache_limit=1)
+    snapshot = await repo.snapshot(truth=truth)
+    read = GitProvenance.read_completion
+    probe = AsyncMock()
+
+    async def inspect(self, requested, **kwargs):
+        await probe(requested)
+        return await read(self, requested, **kwargs)
+
+    monkeypatch.setattr(GitProvenance, "read_completion", inspect)
+    await snapshot.read_completion(identity)
+    await snapshot.read_completion(other)
+    await snapshot.read_completion(identity)
+    assert probe.await_count == 3 and len(truth._completions) == 1
+    missing_store = replace(snapshot, observation=replace(
+        snapshot.observation, store=str(tmp_path / "unavailable-store")))
+    # Scope prevents an available store's cache from hiding a missing checkout.
+    assert (await missing_store.is_delivered(replace(second, completion_id="close-1"))).state == (
+        DeliveryState.UNKNOWN)
+    assert probe.await_count == 4
+    assert (await snapshot.read_completion(identity))["source_oid"] == head
+    assert probe.await_count == 4
+    failure = AsyncMock(side_effect=[GitError("unavailable"), await read(
+        GitProvenance(repo.git, str(repo.path), repository_url=str(repo.remote)),
+        other, refs=snapshot.observation.source_heads)])
+    monkeypatch.setattr(GitProvenance, "read_completion", failure)
+    with pytest.raises(GitError):
+        await snapshot.read_completion(other)
+    assert (await snapshot.read_completion(other))["source_oid"] == head
+    assert failure.await_count == 2
+
+
 @pytest.mark.parametrize("change", [{"task_status": "READY"}, {"claim_epoch": 2},
                                     {"task_version": 2}, {"target_ref": "refs/heads/epic"}])
 async def test_use_revalidates_ordinary_identity(repository, change):
