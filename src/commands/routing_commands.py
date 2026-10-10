@@ -488,7 +488,6 @@ class RoutingCommandsMixin:
             needs_task_lifecycle=any(
                 row.kind_id not in POOL_WORKSPACE_KINDS for row in requirements
             ),
-            priority=getattr(task, "priority", None),
             on_train=project is not None and getattr(
                 project, "hierarchical_integration_mode", None
             ) in TRAIN_INTEGRATION_MODES,

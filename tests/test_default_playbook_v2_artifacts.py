@@ -540,6 +540,13 @@ def _routing_policy_block(source: str) -> str:
     return match.group(1)
 
 
+#: The ``## Routing policy`` digest of the shipped default router: the
+#: risk-aware revision approved as rev-azure-flare revision 1, with no
+#: priority gate on any lane, as decided in review rev-wise-impact.
+SHIPPED_ROUTING_POLICY_SHA256 = (
+    "sha256:42b499b0557a71d07b285ef0c4b913299b72fb795a21c490466d4ca3ed367f33"
+)
+
 ROUTING_BUNDLES = (
     FIXTURE_ROOT / "default-assignment-routing",
     DAEMON_REVIEWED_BUNDLES / "default-assignment-routing",
@@ -556,7 +563,6 @@ def test_every_compiled_policy_literal_is_the_source_block(bundle: Path) -> None
     """
     from src.playbooks.definition import CommandStep
     from src.routing.policy import parse_policy
-    from tests.test_routing_planner import SHIPPED_POLICY
 
     definition = load_definition_json((bundle / "artifact.json").read_text(encoding="utf-8"))
     block = _routing_policy_block((bundle / "source.md").read_text(encoding="utf-8"))
@@ -575,8 +581,11 @@ def test_every_compiled_policy_literal_is_the_source_block(bundle: Path) -> None
     for step_id, step in plans.items():
         policy = _inputs(step)["policy"]
         assert policy == {"type": "literal", "value": block}, step_id
-    # The block is a valid policy, and the one the planner's own tests exercise.
-    assert parse_policy(block)[1] == parse_policy(SHIPPED_POLICY)[1]
+    # The block is a valid policy: the approved risk-aware revision
+    # (rev-azure-flare revision 1), pinned so a policy edit is a reviewed change.
+    policy, digest = parse_policy(block)
+    assert digest == SHIPPED_ROUTING_POLICY_SHA256
+    assert set(policy.risk) == {"medium", "high", "very_high"}
 
     diagnostics = validate_definition(
         definition,
@@ -645,7 +654,8 @@ def test_assignment_router_plans_classifies_and_applies() -> None:
     classify = definition.steps["route-task--classify"]
     assert classify.type == "llm"
     assert classify.profile_id == "playbook-compiler"
-    # §6.5: the classifier never sees a profile, a provider or a load.
+    # §6.5: the classifier never sees a profile, a provider, a load or the
+    # task's priority.
     assert set(_inputs(classify)) == {
         "title", "description", "task_type", "class_hint",
         "questions", "allowed_kinds", "allowed_classes",
@@ -657,8 +667,13 @@ def test_assignment_router_plans_classifies_and_applies() -> None:
     assert classify.save_result_as == "classification"
     assert classify.output_schema["required"] == [
         "task_type", "intelligence_class", "narrow", "test_verified",
-        "independent_verifier", "reason",
+        "independent_verifier", "reason", "risk", "risk_reason",
     ]
+    properties = classify.output_schema["properties"]
+    assert properties["risk"] == {
+        "type": "string", "enum": ["low", "medium", "high", "very_high"],
+    }
+    assert properties["risk_reason"]["maxLength"] == 400
     assert classify.output_schema["additionalProperties"] is False
     assert not classify.tool_use.enabled
     assert classify.transitions == {

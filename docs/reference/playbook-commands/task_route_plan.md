@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:aafab91f3dd8b6ccb157cd46c1bb00a6728fb40147b159d5c4a400fca55dcdcf` |
+| Contract fingerprint | `sha256:46340ed52df4e6133ff75031ac315f745efd617c7cbedf4411388c9ffabbec60` |
 
 ## Parameters
 
@@ -49,6 +49,7 @@
 | `reason` | `string \| null` | Reason |
 | `policy_sha256` | `string \| null` | Policy digest |
 | `class_clamped_from` | `string \| null` | Hint clamped from |
+| `class_raised_for_risk` | `object \| null` | Class raised for risk |
 | `classification` | `object \| null` | Classification |
 | `balance` | `object \| null` | Load-score weights |
 | `title` | `string \| null` | — |
@@ -136,20 +137,25 @@ literal `{"failed": true}` when classification failed.
    - **Kind and class.** `task_type`, else the classification's kind, else
      `default_kind`; an origin rule (`created_by_kind`) merges over it. The
      class hint beats the classification, which beats the kind's class, and
-     `max_class` clamps (`class_clamped_from`).
+     `max_class` clamps (`class_clamped_from`). A `risk` rule's `min_class`
+     then raises the class (`class_raised_for_risk`). In a policy that reads
+     risks, a classification that answered no risk, or failed, is treated as
+     `medium` (`class_raised_for_risk.assumed`); before the classifier runs
+     the risk stays unknown.
    - **Candidates.** Worker candidates (`catalog.worker_route` plus a slot)
      for the lane or the class, minus reserved cells, `exclude_providers`
      (`tasks.route.constraints`), providers other than the project's
      `preferred_provider`, pool profiles when the task needs a workspace
      kind other than `project-repo`/`vault`, and self-hosted models (a harness
      whose `provider` is `ollama`, or one `local_models.harnesses` names) for
-     a task the policy's `local_models` gate refuses: priority at or above
-     `below_priority` (default 150), a `train_kinds` kind (default `bugfix`)
-     in a project whose integration mode is `hierarchy`, `train` or
-     `development`, or a task an unfinished task waits on through a blocking
-     edge other than `parent-child` (unless `allow_blocking`). A narrow kind's OpenCode lanes
-     form the preferred tier when the classification satisfies their
-     `requires`; a harness a narrow lane names is never a general candidate.
+     a task the policy's `local_models` gate refuses: a `train_kinds` kind
+     (default `bugfix`) in a project whose integration mode is `hierarchy`,
+     `train` or `development`, or a task an unfinished task waits on through
+     a blocking edge other than `parent-child` (unless `allow_blocking`). A
+     narrow kind's OpenCode lanes form the preferred tier when the
+     classification satisfies their `requires` and `max_risk`; a harness a
+     narrow lane names is never a general candidate. A task's priority is not
+     an input to any step: it orders the claim frontier, never the route.
    - **Availability.** Unlaunchable providers leave the choice but stay in
      `candidates`; nothing launchable is `held`, before any classification.
    - **Classification.** `needs_classification` when the task has neither a

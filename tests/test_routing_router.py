@@ -43,7 +43,7 @@ from src.routing.sources import LEGACY, ROUTER, UNROUTED
 from src.sessions.harness_parser import Harness
 from tests.assignment_routing_helpers import route_source_for
 from tests.db_fixtures import lease_dsn
-from tests.test_routing_planner import SHIPPED_POLICY, routine_policy
+from tests.test_routing_planner import NARROW_NO, SHIPPED_POLICY, routine_policy
 
 ROUTER_ID = "default-assignment-routing"
 CLASSES = {
@@ -540,18 +540,20 @@ async def test_plan_honours_exclude_providers_from_the_route_constraints(handler
 async def test_task_facts_carry_the_local_model_gate_inputs(handler, orch):
     from src.models import DepType
 
+    # A task's priority is not a gate input (rev-wise-impact): it never routes.
     await _create(orch.db, "fix", task_type=TaskType.BUGFIX, priority=290)
     await _create(orch.db, "waiter", task_type=TaskType.RESEARCH)
     await orch.db.add_dependency("waiter", "fix", DepType.BLOCKS.value)
     facts = await handler._routing_task_facts(
         await orch.db.get_task("fix"), await orch.db.get_project("p"),
     )
-    assert (facts.priority, facts.on_train, facts.blocks_work) == (290, False, True)
+    assert (facts.on_train, facts.blocks_work) == (False, True)
+    assert not hasattr(facts, "priority")
 
     # ``train`` needs an integration repository; the builder reads only the mode.
     train = replace(await orch.db.get_project("p"), hierarchical_integration_mode="train")
     facts = await handler._routing_task_facts(await orch.db.get_task("waiter"), train)
-    assert (facts.priority, facts.on_train, facts.blocks_work) == (100, True, False)
+    assert (facts.on_train, facts.blocks_work) == (True, False)
 
 
 # -- task_route_apply: only the bound router ----------------------------------------
@@ -610,6 +612,14 @@ def test_granted_aq_commands_reads_command_steps_and_tool_use() -> None:
 
 
 # -- task_route_apply: the write ------------------------------------------------------
+
+
+#: A routine feature classified medium risk. The shipped policy's ``risk``
+#: table could raise a feature, so its plan needs the risk answer; a medium
+#: floor (``standard-high`` on Claude or Codex) leaves a standard-high feature
+#: where the hosted preference puts it.
+ROUTINE_MEDIUM = {**NARROW_NO, "task_type": "feature", "risk": "medium",
+                  "risk_reason": "touches the scheduler"}
 
 
 async def _route(handler, task_id: str, classification=None) -> dict:
@@ -946,6 +956,7 @@ async def test_hosted_preference_apply_refreshes_capacity_and_ignores_caller_con
     policy, _digest = routine_policy()
     plan = await handler.execute("task_route_plan", {
         "task_id": "routine", "policy": policy.canonical_json(),
+        "classification": ROUTINE_MEDIUM,
     })
     assert plan["profile_id"] == "standard-high-codex"
     assert plan["decision"]["mode"] == "hosted_preference"
@@ -978,6 +989,8 @@ async def test_hosted_preference_apply_refreshes_capacity_and_ignores_caller_con
     assert "bypassed" in route["reason"]
     assert "snapshot age" in route["reason"]
     assert route["decision"]["snapshot_as_of"] == route["live_context"]["as_of"]
+    # The apply-time re-plan keeps the plan's classification.
+    assert route["classification"]["risk"] == "medium"
 
 
 async def test_concurrent_routine_routes_fill_codex_headroom_then_fall_back(handler, orch):
@@ -988,6 +1001,7 @@ async def test_concurrent_routine_routes_fill_codex_headroom_then_fall_back(hand
                       class_hint="standard-high")
     plans = [await handler.execute("task_route_plan", {
         "task_id": f"routine-{i}", "policy": policy.canonical_json(),
+        "classification": ROUTINE_MEDIUM,
     }) for i in range(3)]
     assert {p["profile_id"] for p in plans} == {"standard-high-codex"}
     with _as_playbook():

@@ -16,12 +16,12 @@ The steps, as the spec numbers them:
 2. **Candidates** — worker candidates for the lane (or the class), minus
    reserved cells, excluded providers, providers other than the project's
    ``preferred_provider``, for a task needing a non-pool workspace every
-   pool profile and, for work the ``local_models`` gate refuses (priority at
-   or above its threshold, a train bugfix, work others wait on), every
-   self-hosted model, and every harness a classified risk's rule does not
-   list.  A narrow lane's candidates form the preferred tier when the
-   classification meets its ``requires``, its ``max_risk`` (an unknown risk
-   does not) and its ``below_priority``.
+   pool profile and, for work the ``local_models`` gate refuses (a train
+   bugfix; work others wait on), every self-hosted model, and every harness
+   a classified risk's rule does not list.  A narrow lane's candidates form
+   the preferred tier when the classification meets its ``requires`` and its
+   ``max_risk`` (an unknown risk does not).  A task's priority is not an
+   input: it orders the claim frontier, never the route.
 2b. **Preference** — the filer's ``prefer_target``, a harness or a profile:
    ``strict`` leaves only the candidates that serve it and refuses to fall
    back, ``soft`` flags them so :func:`reselect` prefers them while they have
@@ -185,8 +185,6 @@ class TaskFacts:
     needs_task_lifecycle: bool = False
     #: ``benchmark:<arm>`` task labels; multiple selectors are an error.
     benchmark_arms: tuple[str, ...] = ()
-    #: The task's priority; ``None`` (unknown) leaves the priority gate open.
-    priority: int | None = None
     #: The task delivers through its project's integration train.
     on_train: bool = False
     #: An unfinished task waits on this one through a blocking edge.
@@ -437,14 +435,38 @@ class _Rule:
     #: The class before a ``risk`` rule's floor raised it, and that risk.
     raised_from: str | None = None
     raised_for_risk: str | None = None
+    #: The risk was not answered, and :data:`ASSUMED_RISK` stood in for it.
+    risk_assumed: bool = False
 
 
-def _rule(task: TaskFacts, policy: RoutingPolicy, classified: Classification | None) -> _Rule:
+#: The risk a policy that reads risks applies when the classifier answered
+#: without one, or failed: not knowing is not evidence the change is safe.
+ASSUMED_RISK = "medium"
+
+
+def _effective_risk(
+    policy: RoutingPolicy, classification: Any, classified: Classification | None,
+) -> tuple[str | None, bool]:
+    """The risk the plan applies, and whether it was assumed.
+
+    Only an answer, failed or not, assumes one: before the classifier runs an
+    unknown risk stays unknown, so the planner still asks for it.
+    """
+    risk = classified.risk if classified else None
+    if risk is None and classification is not None and policy.uses_risk:
+        return ASSUMED_RISK, True
+    return risk, False
+
+
+def _rule(
+    task: TaskFacts, policy: RoutingPolicy, classified: Classification | None,
+    risk: str | None = None, *, risk_assumed: bool = False,
+) -> _Rule:
     """Step 1: the kind, the merged rule and the class.
 
-    The classified risk's floor comes last, so it beats a hint and
-    ``max_class``: it is a safety floor, and an operator who wants a task
-    below it overrides the route.
+    The *risk*'s floor comes last, so it beats a hint and ``max_class``: it
+    is a safety floor, and an operator who wants a task below it overrides
+    the route.
     """
     notes: list[str] = []
     kind = task.task_type or (classified.task_type if classified else None) or policy.default_kind
@@ -477,7 +499,8 @@ def _rule(task: TaskFacts, policy: RoutingPolicy, classified: Classification | N
     if max_class is not None and policy.rank(chosen) > policy.rank(max_class):
         clamped_from, chosen = chosen, max_class
     raised_from = raised_for_risk = None
-    risk = classified.risk if classified else None
+    if risk_assumed:
+        notes.append(f"no risk answer, treated as {risk}")
     risk_rule = policy.risk.get(risk) if risk is not None else None
     if risk_rule is not None:
         floor = risk_rule.floor(classified.flags if classified else ())
@@ -488,7 +511,7 @@ def _rule(task: TaskFacts, policy: RoutingPolicy, classified: Classification | N
         kind=kind, rule=rule_name, origin=origin_name, class_id=chosen, hint=hint,
         clamped_from=clamped_from, lane=lane, narrow=narrow,
         prefer_harnesses=prefer_harnesses, notes=tuple(notes),
-        raised_from=raised_from, raised_for_risk=raised_for_risk,
+        raised_from=raised_from, raised_for_risk=raised_for_risk, risk_assumed=risk_assumed,
     )
 
 
@@ -503,15 +526,6 @@ def _lane_admits_risk(lane: Lane, risk: str | None) -> bool:
     if lane.max_risk is None:
         return True
     return risk is not None and risk_rank(risk) <= risk_rank(lane.max_risk)
-
-
-def _lane_admits_priority(lane: Lane, task: TaskFacts) -> bool:
-    """A narrow lane's ``below_priority`` is met; an unknown priority meets it."""
-    return (
-        lane.below_priority is None
-        or task.priority is None
-        or task.priority < lane.below_priority
-    )
 
 
 def _cells(
@@ -562,8 +576,6 @@ def local_refusal(
     supplied; without it the task's own kind is used.
     """
     gate = policy.local_models
-    if task.priority is not None and task.priority >= gate.below_priority:
-        return f"priority {task.priority} is not below {gate.below_priority}"
     kind = kind or task.task_type
     if task.on_train and kind in gate.train_kinds:
         return f"a {kind} delivered through the integration train"
@@ -686,9 +698,7 @@ def _candidates(
     if rule.narrow:
         for name, lane in policy.narrow_lanes():
             mapped = (lane.classes or {}).get(rule.class_id)
-            if mapped is None or not _lane_admits_priority(lane, task):
-                # The priority ceiling is known before any classification, so
-                # a lane it refuses is not even a potential one.
+            if mapped is None:
                 continue
             lane_cells = [
                 _candidate(profile, mapped, tier=PREFERRED, lane=name)
@@ -1140,8 +1150,8 @@ def plan_route(
     classified, failed, error = read_classification(classification, policy)
     known = classification is not None
     flags = (classified.flags if classified else frozenset()) if known else None
-    risk = classified.risk if classified else None
-    rule = _rule(task, policy, classified)
+    risk, risk_assumed = _effective_risk(policy, classification, classified)
+    rule = _rule(task, policy, classified, risk, risk_assumed=risk_assumed)
     unmatched = policy.unmatched_selectors(snapshot.harnesses) if snapshot.harnesses else []
     if unmatched:
         # Reported, never refused: OpenCode harnesses are operator-installed, so
@@ -1262,6 +1272,7 @@ def plan_route(
         # one is the plan it was before risks existed.
         **({"class_raised_for_risk": {
             "from": rule.raised_from, "to": rule.class_id, "risk": rule.raised_for_risk,
+            **({"assumed": True} if rule.risk_assumed else {}),
         }} if rule.raised_from is not None else {}),
         "classification": classification_record,
         "balance": policy.balance.model_dump(mode="json"),

@@ -357,46 +357,6 @@ async def _provider_findings(ctx: DoctorContext, tasks: list) -> list[dict]:
     return findings
 
 
-async def _local_model_findings(ctx: DoctorContext, tasks: list) -> list[dict]:
-    """Unfinished work at or above the local-model priority threshold on a local profile.
-
-    The router keeps such work off a self-hosted model (``local_models``); a
-    hit is an override or a route that predates the gate.  The threshold is
-    the policy default, since the project's policy lives in its playbook.
-    """
-    from src.commands.routing_commands import profile_provider
-    from src.routing.planner import LOCAL_MODEL_PROVIDERS
-    from src.routing.policy import LocalModels
-
-    threshold = LocalModels().below_priority
-    flagged = [
-        task for task in tasks
-        if task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED}
-        and task.profile_id and (task.priority or 0) >= threshold
-    ]
-    if not flagged:
-        return []
-    registry = getattr(getattr(ctx.handler, "orchestrator", None), "harness_registry", None)
-    profiles = {profile.id: profile for profile in await ctx.db.list_profiles()}
-    findings = []
-    for task in flagged:
-        profile = profiles.get(task.profile_id)
-        if profile is None or (
-            profile_provider(profile, registry, task.project_id) not in LOCAL_MODEL_PROVIDERS
-        ):
-            continue
-        # ``task route`` refuses claimed and running work: stop it first.
-        queued = task.status in {TaskStatus.READY, TaskStatus.DEFINED}
-        findings.append(_finding(
-            "high_priority_local_model", task.project_id,
-            f"{task.id} [{task.status.value}] priority {task.priority} sits on local "
-            f"{task.profile_id} (local models take priority < {threshold}); "
-            + ("" if queued else "stop it, then ") + f"aq task route --task-id {task.id}",
-            task_id=task.id, profile_id=task.profile_id, priority=task.priority,
-        ))
-    return findings
-
-
 async def _unmaterialized_pr_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
     checkpoint = task_integration_checkpoints
     origin = task_branch_origins
@@ -502,7 +462,6 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _session_findings(ctx, active, tasks, now),
         _delivery_findings(ctx, active, tasks, now),
         _provider_findings(ctx, tasks),
-        _local_model_findings(ctx, tasks),
         _unmaterialized_pr_findings(ctx, active),
         _unadmitted_parent_findings(ctx, active),
         _stranded_child_findings(ctx, now),
