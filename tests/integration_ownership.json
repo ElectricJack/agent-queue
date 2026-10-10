@@ -13972,14 +13972,14 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
-    "src/integration/pr_delivery.py::DeliveredPullRequestClosure.run::e1582aeaf8344830940d9e85199fbb68c8907bbfee252a00a1018db38ae57c18": {
-      "line": 95,
+    "src/integration/pr_delivery.py::DeliveredPullRequestClosure.run::4115e00148ee733c5c57eb5a2bd2132388dffb1b9ee2dbbeaf53748f9578f64f": {
+      "line": 103,
       "owner": "DeliveredPullRequestClosure.run",
       "call": "log_event",
-      "owner_fingerprint": "93513be43198678fbaff3c281471f793137aee262efb71c08aca32b3fcfe00db",
+      "owner_fingerprint": "5102e4c798e992f108484ef8812b1d555806366d0def9a1d87cd265806e03e69",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Diagnostic audit of a Git-proven PR closure, written after project/task locks reject unfinished tasks and attached writers. Records the existing proof and operator reason only; never replays refs, mutates tasks or authorizes delivery."
     },
     "src/integration/provenance_migration.py::ProvenanceMigration.run::64443d2733a34364a022df8a43dbdbdb329257a2711770520733855dc6d77226": {
       "line": 173,

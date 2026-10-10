@@ -298,6 +298,23 @@ bounded, with excess endpoints aggregated under `other endpoints` and excess
 CLI operations under `gh other commands`. A non-API `gh` invocation may
 make several HTTP requests; its counter measures invocations only.
 
+Ordinary task PR creation reuses an exact existing request. If the sole matching
+request was closed without merging, reopen that same request after validating
+its repository, base, head branch and published head SHA. The worker command's
+existing held-task branch authorization still applies. Retaining the request
+preserves its closure discussion and history. Attempt the reopen once and
+reconcile its state before reporting success or retrying on a later invocation;
+an uncertain reopen never triggers a second write in the same invocation.
+Conflicting identities or multiple matching requests remain refusals.
+
+Delivery-proof PR cleanup must leave unfinished tasks' requests open, even when
+their current head is already content-equivalent to the default branch. Match
+tasks by PR URL and by canonical branch in the designated repository, including
+tasks that have not yet saved their PR URL. Completed or failed tasks with an
+attached session, assigned agent or locked workspace also retain their PR.
+Check this during preview and again under the project and task locks before any
+cleanup comment or close, so reopening a task invalidates an earlier preview.
+
 ## 7. Shared `gh` execution contract
 
 `GhRunner` owns the following behavior for both credential modes:

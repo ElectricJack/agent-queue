@@ -1388,7 +1388,9 @@ class GitHubClient:
             )
         existing = await self._ordinary_pr_for_head(head, base, head_oid)
         if existing is not None:
-            return PullRequestCreation(existing, created=False)
+            if existing["state"] == "closed" and not existing.get("merged_at"):
+                return await self._reopen_ordinary_pr(existing, head, base, head_oid)
+            return PullRequestCreation(existing["html_url"], created=False)
         try:
             result = await self.access.run_write(
                 ["pr", "create", "--title", title, "--body-file", "-", "--base", base,
@@ -1409,11 +1411,40 @@ class GitHubClient:
             # Read with a fresh credential when appropriate; never replay the
             # write inside this invocation.
             existing = await self._ordinary_pr_for_head(head, base, head_oid)
-            if existing is not None:
-                return PullRequestCreation(existing, created=False)
+            if existing is not None and (
+                existing["state"] == "open" or existing.get("merged_at")
+            ):
+                return PullRequestCreation(existing["html_url"], created=False)
             raise
 
-    async def _ordinary_pr_for_head(self, head: str, base: str, head_oid: str) -> str | None:
+    async def _reopen_ordinary_pr(
+        self, pull: dict[str, Any], head: str, base: str, head_oid: str
+    ) -> PullRequestCreation:
+        write_error = None
+        try:
+            await self.request_json(
+                "PATCH",
+                f"/repositories/{self.repository.repository_id}/pulls/{pull['number']}",
+                json_body={"state": "open"},
+            )
+        except GitHubAccessError as exc:
+            if isinstance(exc, GitHubWriteNotStarted) or exc.category == "cli_missing":
+                raise
+            write_error = exc
+        # A failed write may have reopened the PR. Validate the same request's
+        # identity and state with a read, never another write in this invocation.
+        current = await self._ordinary_pr_for_head(head, base, head_oid)
+        if current is not None and current["html_url"] == pull["html_url"] and (
+            current["state"] == "open" or current.get("merged_at")
+        ):
+            return PullRequestCreation(current["html_url"], created=False)
+        if write_error is not None:
+            raise write_error
+        raise GitHubAccessError("conflict_or_invalid", "PR reopen was not confirmed")
+
+    async def _ordinary_pr_for_head(
+        self, head: str, base: str, head_oid: str
+    ) -> dict[str, Any] | None:
         owner = self.repository.full_name.split("/", 1)[0]
         pulls = await self.paged_list(
             f"/repositories/{self.repository.repository_id}/pulls?state=all&per_page=100"
@@ -1448,12 +1479,11 @@ class GitHubClient:
             or pr_base.get("ref") != base
             or pr_head.get("sha") != head_oid
             or pull.get("state") not in {"open", "closed"}
-            or (pull.get("state") == "closed" and not pull.get("merged_at"))
         ):
             raise GitHubAccessError(
                 "conflict_or_invalid", "existing PR head did not match the requested delivery"
             )
-        return url
+        return pull
 
     async def list_pull_requests(
         self, *, state: str = "open", base: str | None = None,
