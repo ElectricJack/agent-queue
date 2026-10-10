@@ -9,6 +9,7 @@ a timer and acts on what it prints.
 """
 import datetime
 import json
+import math
 import re
 import subprocess
 import sys
@@ -55,17 +56,30 @@ findings = []
 
 
 def aq(*args, timeout=60, missing_ok=False):
-    out = subprocess.run(
-        ["aq", "--json", *args], capture_output=True, text=True, timeout=timeout
-    ).stdout
-    try:
-        body = json.loads(out)
-    except json.JSONDecodeError:
-        # A failed read hides stalls; say so instead of treating it as healthy.
-        print(f"SWEEP-ERROR aq {' '.join(args)}: no JSON response -> this check is incomplete")
+    def failed(reason):
+        findings.append(
+            f"SWEEP-ERROR aq {' '.join(args)}: {reason} -> this check is incomplete"
+        )
         return None
-    err = body.get("error") if isinstance(body, dict) else None
-    if err and err.get("code") == "out_of_scope":
+
+    try:
+        proc = subprocess.run(
+            ["aq", "--json", *args], capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        return failed(f"read timed out after {timeout}s")
+    except (subprocess.SubprocessError, OSError) as exc:
+        return failed(f"read unavailable ({type(exc).__name__})")
+    try:
+        body = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return failed(f"no JSON response (exit {proc.returncode})")
+    if not isinstance(body, dict):
+        return failed("malformed response envelope")
+    err = body.get("error")
+    if err is not None and not isinstance(err, dict):
+        return failed("malformed error envelope")
+    if err is not None and err.get("code") == "out_of_scope":
         # An expired session token makes every call fail; never report "OK" then.
         hint = (
             "project-scoped supervisor token: re-run with `--project <pid>`"
@@ -74,12 +88,59 @@ def aq(*args, timeout=60, missing_ok=False):
         )
         print(f"SWEEP-AUTH aq {' '.join(args)}: {err.get('message')} -> {hint}")
         sys.exit(2)
-    if err and missing_ok and "not found" in str(err.get("message", "")).lower():
+    if err is not None and missing_ok and "not found" in str(err.get("message", "")).lower():
         # A referenced task that was deleted is a finding, not an incomplete sweep.
         return {"_missing": True}
-    if err:
-        print(f"SWEEP-ERROR aq {' '.join(args)}: {err.get('code')}: {str(err.get('message'))[:120]} -> this check is incomplete")
-    return body.get("data") if isinstance(body, dict) else None
+    if err is not None:
+        return failed(f"{err.get('code')}: {str(err.get('message'))[:120]}")
+    if proc.returncode:
+        return failed(f"command failed (exit {proc.returncode})")
+    if (
+        type(body.get("schema_version")) is not int
+        or body["schema_version"] != 1 or "data" not in body
+    ):
+        return failed("malformed response envelope")
+    data = body["data"]
+    list_read = args[:2] in {("project", "list"), ("task", "list"), ("session", "list")}
+    if list_read and not isinstance(data, list):
+        return failed("malformed list data")
+    if args[:2] in {("task", "get"), ("task", "explain")} and not isinstance(data, dict):
+        return failed("malformed object data")
+    if not isinstance(data, (list, dict)):
+        return failed("malformed data")
+    if isinstance(data, list):
+        if any(not isinstance(row, dict) for row in data):
+            return failed("malformed list row")
+        page = body.get("pagination")
+        if not isinstance(page, dict):
+            return failed("missing or malformed pagination")
+        returned, total, truncated = (page.get(key) for key in ("returned", "total", "truncated"))
+        if (
+            type(returned) is not int or type(total) is not int
+            or returned != len(data) or total < returned or type(truncated) is not bool
+        ):
+            return failed("malformed pagination")
+        if truncated or total > returned:
+            return failed(f"incomplete list: returned {returned} of {total} rows")
+        if args[:2] == ("project", "list") and any(
+            not isinstance(row.get(key), str) for row in data for key in ("id", "status")
+        ):
+            return failed("malformed project row")
+        if args[:2] == ("task", "list"):
+            for row in data:
+                if any(not isinstance(row.get(key), str) for key in ("id", "status", "title")):
+                    return failed("malformed task row")
+                try:
+                    timestamp = float(row["updated_at"])
+                except (KeyError, TypeError, ValueError):
+                    return failed("malformed task timestamp")
+                if not math.isfinite(timestamp):
+                    return failed("malformed task timestamp")
+    if args[:2] == ("pool", "status") and isinstance(data, dict):
+        rows = data.get("pools")
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            return failed("malformed pool data")
+    return data
 
 
 def sh(cmd, timeout=30):
@@ -180,18 +241,16 @@ active = [
 DEV_CHECKS = DEV_PROJECT in active
 ready_by_profile = Counter()
 candidates: list[tuple[str, dict]] = []
-empty_projects: list[str] = []
 tasks_by_project: dict[str, list[dict]] = {}
 
 for pid in active:
-    project_tasks = tasks_by_project[pid] = aq("task", "list", "-p", pid) or []
-    # 2026-10-04: a sweep that ran while the daemon restarted got an empty
-    # (successful) task list and printed "OK: nothing stalled". Projects like
-    # rom-downloader legitimately have no tasks, though, so an empty list is only
-    # a failed read when every active project comes back empty (checked below).
-    if not project_tasks:
-        empty_projects.append(pid)
+    project_tasks = aq("task", "list", "-p", pid)
+    if project_tasks is None:
         continue
+    # The CLI's successful, complete empty list means there is no open work.
+    # Transport, envelope and pagination failures are recorded by aq(), never
+    # inferred from queue size or a separate health endpoint.
+    tasks_by_project[pid] = project_tasks
     for t in project_tasks:
         tid, status, prof = t["id"], t["status"], t.get("profile_id") or "-"
         stale = NOW - float(t["updated_at"])
@@ -209,25 +268,6 @@ for pid in active:
             or status in ("BLOCKED", "FAILED", "PAUSED")
         ):
             candidates.append((pid, t))
-
-if active and len(empty_projects) == len(active):
-    # 2026-10-05: a `--project` sweep of one idle project (every task COMPLETED,
-    # which the default list hides) tripped this. With one project, ask the
-    # daemon directly instead of inferring an outage from an empty list.
-    daemon_ok = False
-    if ONLY:
-        try:
-            import os
-            import urllib.request
-            api = os.environ.get("AQ_API_URL", "http://127.0.0.1:8081").rstrip("/")
-            with urllib.request.urlopen(f"{api}/health", timeout=10) as resp:
-                daemon_ok = resp.status == 200
-        except Exception:
-            daemon_ok = False
-    if daemon_ok:
-        print(f"note: {ONLY} has no open tasks (daemon healthy)")
-    else:
-        findings.append("SWEEP-ERROR every active project returned an empty task list (daemon restarting or unreachable?) -> this sweep is incomplete; re-run it")
 
 # `aq task explain` is one HTTP round trip each against a daemon that is often
 # busy; doing them serially took the sweep past 5 minutes on 2026-09-22 (it had

@@ -12,9 +12,7 @@ import json
 import os
 import subprocess
 import sys
-import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -33,9 +31,17 @@ responses = json.load(open(os.environ["FAKE_RESPONSES"])).get(name, {})
 if name == "aq":
     key = " ".join(args)
     if key in responses:
-        print(json.dumps({"data": responses[key]}))
+        data = responses[key]
+        if isinstance(data, dict) and "_stdout" in data:
+            sys.stdout.write(data["_stdout"])
+            sys.exit(data.get("_exit", 0))
+        body = {"schema_version": 1, "data": data}
+        if isinstance(data, list):
+            body["pagination"] = {"returned": len(data), "total": len(data), "truncated": False}
+        print(json.dumps(body))
     else:
-        print(json.dumps({"error": {"code": "fake_missing", "message": key}}))
+        print(json.dumps({"schema_version": 1, "data": None,
+                          "error": {"code": "fake_missing", "message": key}}))
 elif name == "git" and len(args) > 2:
     sys.stdout.write(responses.get(args[2], ""))
 """
@@ -56,12 +62,14 @@ def _session(name, project_id, task_id):
     }
 
 
-def _run(tmp_path, responses, *args, api_url="http://127.0.0.1:9"):
+def _run(tmp_path, responses, *args, missing_commands=()):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake = tmp_path / "fake.py"
     fake.write_text(FAKE)
     for name in COMMANDS:
+        if name in missing_commands:
+            continue
         shim = bin_dir / name
         shim.write_text(f"#!/bin/sh\nexec {sys.executable} -I {fake} \"$0\" \"$@\"\n")
         shim.chmod(0o755)
@@ -69,7 +77,7 @@ def _run(tmp_path, responses, *args, api_url="http://127.0.0.1:9"):
     log = tmp_path / "calls.jsonl"
     log.touch()
     env = {
-        "PATH": str(bin_dir), "HOME": str(tmp_path), "AQ_API_URL": api_url,
+        "PATH": str(bin_dir), "HOME": str(tmp_path), "AQ_API_URL": "http://127.0.0.1:9",
         "FAKE_LOG": str(log), "FAKE_RESPONSES": str(tmp_path / "responses.json"),
     }
     proc = subprocess.run(
@@ -92,22 +100,24 @@ def _project_args(calls):
     return named
 
 
-@pytest.fixture
-def health_server():
-    class Health(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200 if self.path == "/health" else 404)
-            self.end_headers()
+def _reply(body, *, exit_code=0):
+    return {"_stdout": json.dumps(body), "_exit": exit_code}
 
-        def log_message(self, *_args):
-            pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Health)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    yield f"http://127.0.0.1:{server.server_address[1]}"
-    server.shutdown()
-    server.server_close()
+def _page(data, **pagination):
+    return {
+        "schema_version": 1, "data": data,
+        "pagination": {"returned": len(data), "total": len(data), "truncated": False,
+                       **pagination},
+    }
+
+
+def _scoped_responses(task_response):
+    return {"aq": {
+        "task list -p rom": task_response,
+        "pool status --project-id rom": [],
+        "session list": [],
+    }}
 
 
 def test_scoped_sweep_never_reads_or_reports_another_project(tmp_path):
@@ -172,29 +182,204 @@ def test_scoped_sweep_never_reads_or_reports_another_project(tmp_path):
     assert "m-ready" in proc.stdout.split("POOL-STARVED", 1)[1]
 
 
-@pytest.mark.parametrize("healthy", [True, False])
-def test_empty_project_sweep_stays_in_scope(tmp_path, health_server, healthy):
+def test_empty_project_sweep_stays_in_scope_without_health_probe(tmp_path):
     responses = {"aq": {
         "task list -p rom": [],
         "pool status --project-id rom": [],
         "session list": [_session("s-other-1", "other", "o-busy")],
     }}
-    proc, calls = _run(
-        tmp_path, responses, "--project", "rom",
-        api_url=health_server if healthy else "http://127.0.0.1:9",
-    )
+    proc, calls = _run(tmp_path, responses, "--project", "rom")
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert set(_project_args(calls)) == {"rom"}
     assert not any("agent-queue" in " ".join(call) for call in calls), calls
     assert [c for c in calls if c[0] in ("git", "docker", "bash", "tail", "tmux")] == []
     assert "s-other-1" not in proc.stdout
-    if healthy:
-        assert "note: rom has no open tasks (daemon healthy)" in proc.stdout
-        assert "OK: nothing stalled" in proc.stdout
-        assert "SWEEP-ERROR" not in proc.stdout
+    assert proc.stdout.strip() == "OK: nothing stalled"
+
+
+@pytest.mark.parametrize("tasks", [[], [_task("rom-new", "DEFINED", age_s=60)]])
+def test_successful_task_reads_are_healthy(tmp_path, tasks):
+    proc, calls = _run(tmp_path, _scoped_responses(tasks), "--project", "rom")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout.strip() == "OK: nothing stalled"
+    assert calls == [
+        ["aq", "task", "list", "-p", "rom"],
+        ["aq", "pool", "status", "--project-id", "rom"],
+        ["aq", "session", "list"],
+    ]
+
+
+@pytest.mark.parametrize("failed_project", [None, "rom"])
+def test_global_empty_queues_distinguish_a_failed_project_read(tmp_path, failed_project):
+    responses = {"aq": {
+        "project list": [{"id": pid, "status": "ACTIVE"} for pid in ("rom", "matter")],
+        "task list -p rom": [],
+        "task list -p matter": [],
+        "pool status": [],
+        "session list": [],
+    }}
+    if failed_project:
+        responses["aq"][f"task list -p {failed_project}"] = _reply({
+            "schema_version": 1, "data": None,
+            "error": {"code": "daemon_unreachable", "message": "daemon restarting"},
+        }, exit_code=3)
+    proc, calls = _run(tmp_path, responses)
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert set(_project_args(calls)) == {"rom", "matter"}
+    assert all(c[0] == "aq" for c in calls)
+    if failed_project:
+        assert "SWEEP-ERROR aq task list -p rom: daemon_unreachable" in proc.stdout
+        assert "OK: nothing stalled" not in proc.stdout
     else:
-        assert "SWEEP-ERROR every active project returned an empty task list" in proc.stdout
+        assert proc.stdout.strip() == "OK: nothing stalled"
+
+
+@pytest.mark.parametrize(("response", "reason"), [
+    pytest.param({"_stdout": "", "_exit": 3}, "no JSON response (exit 3)", id="unreachable"),
+    pytest.param({"_stdout": "not json"}, "no JSON response", id="non-json"),
+    pytest.param(_reply([]), "malformed response envelope", id="bare-list"),
+    pytest.param(_reply(None), "malformed response envelope", id="null-envelope"),
+    pytest.param(_reply({"schema_version": 1}), "malformed response envelope", id="no-data"),
+    pytest.param(_reply({"schema_version": 2, "data": []}),
+                 "malformed response envelope", id="unknown-version"),
+    pytest.param(_reply({"schema_version": 1, "data": None}),
+                 "malformed list data", id="null-data"),
+    pytest.param(_reply({"schema_version": 1, "data": {}}),
+                 "malformed list data", id="object-data"),
+    pytest.param(_reply({"schema_version": 1, "data": [], "error": "denied"}),
+                 "malformed error envelope", id="malformed-error"),
+    pytest.param(_reply({"schema_version": 1, "data": [],
+                         "error": {"code": "forbidden", "message": "read denied"}}),
+                 "forbidden: read denied", id="denied-with-empty-data"),
+    pytest.param(_reply(_page([]), exit_code=3), "command failed (exit 3)", id="failed-exit"),
+    pytest.param(_reply({"schema_version": 1, "data": []}),
+                 "missing or malformed pagination", id="missing-pagination"),
+    pytest.param(_reply(_page([], total=1, truncated=True)),
+                 "incomplete list", id="empty-incomplete"),
+    pytest.param(_reply(_page([_task("rom-new", "DEFINED", age_s=60)], total=2)),
+                 "incomplete list", id="populated-incomplete"),
+    pytest.param(_reply(_page([], truncated=True)), "incomplete list", id="truncated-flag"),
+    pytest.param(_reply(_page([], returned=1)), "malformed pagination", id="wrong-returned"),
+    pytest.param(_reply(_page([], total=-1)), "malformed pagination", id="negative-total"),
+    pytest.param(_reply(_page([], total="0")), "malformed pagination", id="invalid-total"),
+    pytest.param(_reply(_page([], truncated="false")),
+                 "malformed pagination", id="invalid-truncated"),
+    pytest.param(_reply(_page([None])), "malformed list row", id="invalid-row"),
+    pytest.param(_reply(_page([{}])), "malformed task row", id="missing-task-fields"),
+    pytest.param(_reply(_page([_task("rom-new", "DEFINED", updated_at="broken")])),
+                 "malformed task timestamp", id="invalid-timestamp"),
+    pytest.param(_reply(_page([_task("rom-new", "DEFINED", updated_at="nan")])),
+                 "malformed task timestamp", id="non-finite-timestamp"),
+])
+def test_failed_task_reads_are_incomplete_and_stay_scoped(tmp_path, response, reason):
+    proc, calls = _run(tmp_path, _scoped_responses(response), "--project", "rom")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"SWEEP-ERROR aq task list -p rom: {reason}" in proc.stdout
+    assert "this check is incomplete" in proc.stdout
+    assert "OK: nothing stalled" not in proc.stdout
+    assert set(_project_args(calls)) == {"rom"}
+    assert all(c[0] == "aq" for c in calls)
+    assert not any("task-id" in arg for call in calls for arg in call)
+
+
+def test_out_of_scope_read_preserves_auth_exit(tmp_path):
+    response = _reply({
+        "schema_version": 1, "data": [],
+        "error": {"code": "out_of_scope", "message": "task_list denied"},
+    }, exit_code=2)
+    proc, calls = _run(tmp_path, _scoped_responses(response), "--project", "rom")
+
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "SWEEP-AUTH aq task list -p rom: task_list denied" in proc.stdout
+    assert "OK: nothing stalled" not in proc.stdout
+    assert calls == [["aq", "task", "list", "-p", "rom"]]
+
+
+def test_unavailable_cli_is_incomplete(tmp_path):
+    proc, calls = _run(tmp_path, {}, "--project", "rom", missing_commands=("aq",))
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "SWEEP-ERROR aq task list -p rom: read unavailable (FileNotFoundError)" in proc.stdout
+    assert "OK: nothing stalled" not in proc.stdout
+    assert calls == []
+
+
+def test_read_timeout_is_incomplete(tmp_path):
+    launcher = """\
+import runpy, subprocess, sys
+from unittest.mock import patch
+sys.argv = sys.argv[1:]
+with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("aq", 60)):
+    runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+    proc = subprocess.run(
+        [sys.executable, "-I", "-c", launcher, str(SCRIPT), "--project", "rom"],
+        capture_output=True, text=True, timeout=10, cwd=tmp_path, check=False,
+        env={"PATH": str(tmp_path), "HOME": str(tmp_path)},
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "SWEEP-ERROR aq task list -p rom: read timed out after 60s" in proc.stdout
+    assert "OK: nothing stalled" not in proc.stdout
+
+
+@pytest.mark.parametrize("command", ["pool status --project-id rom", "session list"])
+def test_failed_auxiliary_reads_do_not_print_ok(tmp_path, command):
+    responses = _scoped_responses([])
+    responses["aq"][command] = {"_stdout": "", "_exit": 3}
+    proc, _calls = _run(tmp_path, responses, "--project", "rom")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"SWEEP-ERROR aq {command}: no JSON response (exit 3)" in proc.stdout
+    assert "OK: nothing stalled" not in proc.stdout
+
+
+@pytest.mark.parametrize(("command", "response", "reason"), [
+    ("pool status --project-id rom", {}, "malformed pool data"),
+    ("session list", _reply({"schema_version": 1, "data": {}}), "malformed list data"),
+])
+def test_malformed_auxiliary_reads_do_not_print_ok(tmp_path, command, response, reason):
+    responses = _scoped_responses([])
+    responses["aq"][command] = response
+    proc, _calls = _run(tmp_path, responses, "--project", "rom")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"SWEEP-ERROR aq {command}: {reason}" in proc.stdout
+    assert "OK: nothing stalled" not in proc.stdout
+
+
+def test_malformed_project_read_does_not_hide_active_queues(tmp_path):
+    responses = {"aq": {"project list": [{}], "pool status": [], "session list": []}}
+    proc, calls = _run(tmp_path, responses)
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "SWEEP-ERROR aq project list: malformed project row" in proc.stdout
+    assert "OK: nothing stalled" not in proc.stdout
+    assert not any(c[:3] == ["aq", "task", "list"] for c in calls)
+
+
+def test_missing_verifier_parent_is_a_finding_not_a_failed_read(tmp_path):
+    responses = _scoped_responses([
+        _task("verify-g1", "BLOCKED", title="Verify aggregate for gone"),
+    ])
+    responses["aq"].update({
+        "task explain --task-id verify-g1": {"reasons": []},
+        "task get --task-id verify-g1": {"children": {}},
+        "task get --task-id gone": _reply({
+            "schema_version": 1, "data": None,
+            "error": {"code": "not_found", "message": "task not found"},
+        }, exit_code=1),
+    })
+    proc, _calls = _run(tmp_path, responses, "--project", "rom")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "ORPHAN-VERIFIER rom verify-g1" in proc.stdout
+    assert "SWEEP-ERROR" not in proc.stdout
+    assert "OK: nothing stalled" not in proc.stdout
 
 
 @pytest.mark.parametrize("agent_queue_status", ["ACTIVE", "PAUSED"])
