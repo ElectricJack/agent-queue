@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, exists, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.database.tables import (
@@ -23,9 +24,12 @@ from src.database.tables import (
     integration_subjects,
     projects,
     repos,
+    task_branch_origins,
     task_integration_checkpoints,
     tasks,
 )
+from src.git.manager import GitError
+from src.integration.delivery_branches import observe_completed_branches
 from src.integration.delivery_truth import DeliveryState
 from src.integration.models import RepairPolicy, integration_ci_sources
 from src.integration.promotion_steps import flow_status
@@ -55,6 +59,10 @@ TRAIN_VISIT_BLOCKERS = {
     "source_moved": ("source_moved", "a member's source moved since the batch froze"),
     "unknown": ("unobserved", "the last visit could not observe Git or checks"),
 }
+
+
+#: How long one task's explain waits for its completed-branch read.
+_COMPLETED_BRANCH_BUDGET_SECONDS = 5.0
 
 
 def _blocker(
@@ -664,9 +672,8 @@ class IntegrationStatusService:
             blockers.extend(self._train_batch_blockers(batch, visits))
         blockers.extend(self._train_source_blockers(visits))
         from src.integration.stacked_branches import EpicRefresh
-        from src.git.manager import GitError
-        from src.integration.train_sources import project_snapshot
         from src.integration.train import TrainTarget
+        from src.integration.train_sources import project_snapshot
 
         epics = []
         repository = await self.db.get_repo(project["integration_repository_id"]) if project[
@@ -715,7 +722,8 @@ class IntegrationStatusService:
         async with self._consistent_snapshot() as conn:
             row = await self._one(
                 conn,
-                select(tasks.c.id, tasks.c.project_id, projects.c.hierarchical_integration_mode,
+                select(tasks.c.id, tasks.c.project_id, tasks.c.status,
+                       projects.c.hierarchical_integration_mode,
                        projects.c.hierarchical_integration_desired_mode)
                 .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
                 .where(tasks.c.id == task_id),
@@ -728,11 +736,31 @@ class IntegrationStatusService:
             batches = await self._train_batches_on(
                 conn, integration_batches.c.id.in_(carrying)
             )
+            ahead = []
+            if not batches and row["status"] == "COMPLETED":
+                ahead = await self._open_batches_ahead_on(conn, row["project_id"], task_id)
         visits = self._train_visits(row["project_id"])
+        own = self._train_source_blockers(visits, task_id=task_id)
         blockers: list[dict[str, Any]] = []
         for batch in batches:
             blockers.extend(self._train_batch_blockers(batch, visits))
-        blockers.extend(self._train_source_blockers(visits, task_id=task_id))
+        for batch in [] if own else ahead:
+            # One batch at a time per target: an admissible source the open batch
+            # does not carry waits for it to settle, whatever holds that batch. A
+            # source the train refused is blocked by its own reason, not the queue.
+            blockers.append(_blocker(
+                "queued_behind_open_batch",
+                f"{batch['target_ref']} is held by open batch {batch['id']} "
+                f"({batch['lifecycle']}); {task_id} is not a member and waits for it "
+                "to settle",
+                batch["id"], task_id=task_id, batch_id=batch["id"],
+                lifecycle=batch["lifecycle"],
+            ))
+            blockers.extend(self._train_batch_blockers(batch, visits))
+        blockers.extend(own)
+        # Likewise a refused source already says why its branch waits.
+        if row["status"] == "COMPLETED" and not (batches or ahead or own):
+            blockers.extend(await self._completed_branch_blockers(row["project_id"], task_id))
         return {
             "task_id": task_id,
             "project_id": row["project_id"],
@@ -744,6 +772,56 @@ class IntegrationStatusService:
             "batches": batches,
             "blockers": _sorted_blockers(blockers),
         }
+
+    async def _completed_branch_blockers(
+        self, project_id: str, task_id: str
+    ) -> list[dict[str, Any]]:
+        """A COMPLETED task branch holding work nothing will deliver or retire.
+
+        The read ``aq doctor --check integration.completed_undelivered`` makes,
+        for one task under a short budget; an unreadable snapshot says nothing.
+        """
+        if self.delivery is None or getattr(self.delivery, "git", None) is None:
+            return []
+        try:
+            inventory = await asyncio.wait_for(observe_completed_branches(
+                self.db, self.delivery, project_ids={project_id}, task_ids={task_id},
+                now=self.clock(), cached_only=self.cached_only,
+            ), _COMPLETED_BRANCH_BUDGET_SECONDS)
+        except (TimeoutError, GitError, OSError):
+            return []
+        return [
+            _blocker(
+                "completed_undelivered",
+                f"{entry['branch']} holds work the default branch cannot reach: "
+                f"{entry['reason']}; {entry['remedy']}",
+                entry["branch"], task_id=task_id, rule=entry["rule"], head=entry["head"],
+                remedy=entry["remedy"],
+            )
+            for entry in inventory["entries"]
+            if not entry["accounted"] and entry["rule"] != "unknown"
+        ]
+
+    async def _open_batches_ahead_on(
+        self, conn: AsyncConnection, project_id: str, task_id: str
+    ) -> list[dict[str, Any]]:
+        """Live batches on *task*'s routed target, when the task's branch is live."""
+        from src.integration.delivery_observer import delivery_targets
+        from src.integration.stale_schedule import LIVE_LIFECYCLES
+
+        live = (await conn.execute(select(exists(select(task_branch_origins.c.task_id).where(
+            task_branch_origins.c.task_id == task_id,
+            task_branch_origins.c.retired_at.is_(None),
+        ))))).scalar_one()
+        routed = (await delivery_targets(conn, [task_id], reduced=True)).get(task_id)
+        if not live or routed is None:
+            return []
+        return await self._train_batches_on(conn, and_(
+            integration_batches.c.project_id == project_id,
+            integration_batches.c.repository_id == routed.repository_id,
+            integration_batches.c.target_ref == routed.target_ref,
+            integration_batches.c.lifecycle.in_(LIVE_LIFECYCLES),
+        ))
 
     async def _train_batches_on(self, conn: AsyncConnection, where) -> list[dict[str, Any]]:
         """Open git batches with their members, intent and open repair tasks."""

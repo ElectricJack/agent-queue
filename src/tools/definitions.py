@@ -2641,12 +2641,25 @@ _ALL_TOOL_DEFINITIONS = [
                     "default": False,
                     "description": (
                         "Single-task archive only: explicitly abandon completed work that has "
-                        "not reached the default branch. Requires reason and an elevated/operator caller."
+                        "not reached the default branch. Requires disposition, reason and an "
+                        "elevated/operator caller."
+                    ),
+                },
+                "disposition": {
+                    "type": "string",
+                    "enum": ["deliver", "obsolete", "retire"],
+                    "description": (
+                        "Single-task only: what happens to completed work that has not reached "
+                        "the default branch. deliver keeps the task for the train and reports "
+                        "what its delivery waits on; obsolete (reason is the note) and retire "
+                        "archive it, retiring its branches after a backup bundle."
                     ),
                 },
                 "reason": {
                     "type": "string",
-                    "description": "Required to archive PAUSED/DEFINED/READY or abandon undelivered work.",
+                    "description": (
+                        "Required to archive PAUSED/DEFINED/READY or abandon undelivered work."
+                    ),
                 },
             },
         },

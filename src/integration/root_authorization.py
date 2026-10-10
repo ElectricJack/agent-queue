@@ -24,6 +24,7 @@ from src.database.tables import (
     integration_review_evidence,
     integration_root_authorizations,
     projects,
+    task_branch_origins,
     task_gates,
     task_labels,
     tasks,
@@ -61,9 +62,13 @@ async def exact_root_authorization_on(
 class RootAuthorization:
     """Dry-run first, head-fenced, idempotent recording of one exact grant."""
 
-    def __init__(self, db, *, clock=time.time) -> None:
+    def __init__(self, db, *, clock=time.time, train_blockers=None) -> None:
         self.db = db
         self.clock = clock
+        # Set only while the integration train runs (``git_first: active``):
+        # ``train_blockers(task_id)`` answers why the train has not delivered
+        # a task (``IntegrationStatusService.train_task_blockers``).
+        self.train_blockers = train_blockers
 
     async def run(
         self,
@@ -178,14 +183,7 @@ class RootAuthorization:
             conn, task_id
         )
         if source is None:
-            return {
-                **base,
-                "outcome": "not_eligible",
-                "reason": (
-                    "requires a completed train root with a PR, the designated "
-                    "repository and a verified exact source"
-                ),
-            }
+            return await self._train_root_state(conn, task_id, base)
         project = (
             await conn.execute(
                 select(
@@ -279,3 +277,95 @@ class RootAuthorization:
                 "authorization_id": existing["id"],
             }
         return {**result, "outcome": "candidate"}
+
+    async def _train_root_state(self, conn, task_id: str, base: dict[str, Any]) -> dict[str, Any]:
+        """A root without a verified checkpoint: name the failing condition.
+
+        The integration train collects an epic itself (``EpicCompletions``)
+        and never verifies the hierarchy checkpoint this grant is keyed on, so
+        a train root has no exact source here. It needs no grant either: the
+        train admits any completed root once its PR passes the root gate
+        (``RootPullRequestGate``). Say so, with what the train is waiting on,
+        instead of ``not_eligible``.
+        """
+        row = (
+            await conn.execute(
+                select(
+                    tasks.c.parent_task_id, tasks.c.status, tasks.c.task_type,
+                    tasks.c.branch_name, tasks.c.pr_url, tasks.c.repo_id,
+                    projects.c.hierarchical_integration_mode,
+                    projects.c.integration_repository_id,
+                    projects.c.hierarchical_integration_policy,
+                    projects.c.hierarchical_integration_generation,
+                )
+                .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
+                .where(tasks.c.id == task_id)
+            )
+        ).mappings().one()
+        live_origin = (
+            await conn.execute(
+                select(
+                    exists(
+                        select(task_branch_origins.c.task_id).where(
+                            task_branch_origins.c.task_id == task_id,
+                            task_branch_origins.c.repository_id == row["repo_id"],
+                            task_branch_origins.c.retired_at.is_(None),
+                        )
+                    )
+                )
+            )
+        ).scalar_one()
+        mode = row["hierarchical_integration_mode"]
+        conditions = (
+            (row["parent_task_id"] is None,
+             f"not a root: its parent {row['parent_task_id']} carries it"),
+            (row["status"] == "COMPLETED", f"the root is {row['status']}, not COMPLETED"),
+            (mode == "train", f"project integration mode is '{mode}', not 'train'"),
+            (row["repo_id"] == row["integration_repository_id"],
+             "the root's repository is not the project's integration repository"),
+            (bool((row["branch_name"] or "").strip()), "the root has no recorded branch"),
+            (bool((row["pr_url"] or "").strip()),
+             "the root has no PR; `aq integration redrive-root` opens it"),
+            (live_origin, "the root has no live branch origin"),
+        )
+        failed = next((reason for held, reason in conditions if not held), None)
+        if failed is None and self.train_blockers is None:
+            failed = (
+                "the root's integration checkpoint is not verified at its head, and "
+                "without the integration train only a verified exact source is admitted"
+            )
+        if failed:
+            return {**base, "outcome": "not_eligible", "task_type": row["task_type"],
+                    "reason": failed}
+        result = {
+            **base,
+            "task_type": row["task_type"],
+            "repository_id": row["repo_id"],
+            "pr_url": row["pr_url"],
+            "policy_generation": int(row["hierarchical_integration_generation"]),
+        }
+        policy_data = row["hierarchical_integration_policy"]
+        policy = HierarchicalIntegrationPolicy.model_validate(policy_data) if policy_data else None
+        blockers = (await self.train_blockers(task_id) or {}).get("blockers", [])
+        waiting = "; ".join(
+            f"{item['code']}: {item['detail']}" for item in blockers
+        ) or "no train blocker is recorded for it"
+        if policy is None or policy.root.admission != "authorized":
+            return {
+                **result,
+                "outcome": "blocked",
+                "reason": (
+                    "root admission is not 'authorized': the train admits this root "
+                    f"after an approved review of its PR head; train: {waiting}"
+                ),
+            }
+        # ``authorized_by`` stays unset: the train admits every completed root
+        # whatever its kind, so neither the kind nor the allowlist is the cause.
+        return {
+            **result,
+            "outcome": "already_authorized",
+            "reason": (
+                "the integration train admits this completed root without a "
+                f"per-source grant once its PR passes the root gate; train: {waiting}"
+            ),
+        }

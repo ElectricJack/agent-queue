@@ -67,3 +67,67 @@ Each project's supervisor receives its own inbox report through `CommandHandler`
 with local/remote deletion and hold counts, retirement and migration outcomes,
 unique refs, stash/registration counts and failures. Cleanup failures in one project
 do not suppress another project's report.
+
+## Re-landed content
+
+Salvage, repair and squash re-landings put a task's content on the default
+branch under different SHAs, so neither ancestry nor patch-id proves the source
+branch merged. `scripts/backfill-legacy-deliveries.py PROJECT --relanded
+TASK_ID=SHA --reason REASON --apply` (`record_relanding` in
+`src/integration/legacy_backfill.py`) records that landing commit against the
+source task. The task must be COMPLETED and of the project, the SHA must be a
+full, fetched object id the default branch tip reaches, and a task whose own
+source is already there is refused (the ordinary backfill records that proof).
+It writes a `superseded` row in `integration_legacy_deliveries`, which the
+delivery truth honours as landed, and in the same transaction queues the task's
+branches for retirement with that proof as the reason, so each unmerged tip is
+bundled before it is deleted. The default is a dry run.
+
+## Archive dispositions
+
+Archiving or abandoning COMPLETED work the default branch has not received names
+what happens to it: `aq task archive TASK --disposition deliver|obsolete|retire
+--reason REASON`. A bare `--abandon-undelivered` is refused with
+`hierarchy.disposition_required`, and the `integration_undelivered` refusal names
+the three choices.
+
+* `deliver` keeps the task, records the decision as a comment and a
+  `task.delivery_disposition` event, and returns the undelivered holders plus,
+  for a train root, the authorize-root dry run, so the operator sees exactly what
+  its delivery waits on.
+* `obsolete` archives with the reason as the note; `retire` archives. Both imply
+  `--abandon-undelivered`.
+
+The decision is written on the abandon comment and on every retirement the archive
+queues (`task archived (<disposition>): <note>`), so the audited bundle-then-delete
+path carries it. Remove records `obsolete`.
+
+## Completed but undelivered
+
+COMPLETED means the worker finished, not that the code reached the default branch.
+`aq doctor --check integration.completed_undelivered` reconciles the two for every
+project in a delivering mode (`hierarchy`, `train`, `development`) with a
+repository: for each COMPLETED task, live or archived, whose origin branch (or
+`-wip` sibling) the default branch cannot reach, it names the rule that accounts
+for it (`completed_branch_dispositions` in `src/integration/delivery_branches.py`):
+
+| Rule | Meaning | Finding |
+|---|---|---|
+| `retiring` | a branch retirement is pending | no |
+| `retirement_conflict` | the retirement stopped on a moved head | yes |
+| `carried` | a live batch has the task as a member | no |
+| `recorded` | a legacy-delivery row records its delivery, re-landing or abandonment | no |
+| `delivered` | the delivery truth proves the work landed | no |
+| `integrated` | an ancestor task's origin branch contains the tip | no |
+| `awaiting_delivery` | a root with a pull request, completed under 24 hours ago | no |
+| `stranded_root` | the same root, older than that | yes |
+| `awaiting_backstop` | archived under 48 hours ago; the daily sweep queues its retirement | no |
+| `unreconciled` | nothing on record explains it | yes |
+
+Findings make the check WARN and carry the remedy: the archive disposition, the
+`--relanded` proof, or, for an archived task, the backstop failure in the daemon
+log. A tip whose reachability cannot be read is reported as unknown, never as a
+finding. The supervisor sees the same read in three places: the doctor check, the
+`stall.sweep` patrol (a `completed_undelivered` finding per entry, under a 30-second
+budget) and `aq task explain` / the dashboard task view (a `completed_undelivered`
+blocker on a COMPLETED task no batch carries, from the cached snapshot).

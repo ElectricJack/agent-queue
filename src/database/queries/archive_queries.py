@@ -168,6 +168,7 @@ class ArchiveQueryMixin:
         delivery=None,
         obsolete_integration_delegate: bool = False,
         archive_reason: str | None = None,
+        disposition: str | None = None,
     ) -> bool:
         """Archive *task_id* and its whole subtree atomically (spec §7).
 
@@ -182,7 +183,9 @@ class ArchiveQueryMixin:
         held rather than archived on an old answer.
 
         Refuses live sessions; DEFINED/READY/PAUSED tasks require ``archive_reason``.
-        Deepest first, root last, so the subtree moves together.
+        Deepest first, root last, so the subtree moves together. *disposition*
+        (``obsolete`` or ``retire``) is the operator's recorded decision for the
+        abandoned work; it is written on the task and on each branch retirement.
         """
         if abandon_undelivered and not (abandon_reason or "").strip():
             raise ValueError("abandon_undelivered requires a reason")
@@ -193,7 +196,7 @@ class ArchiveQueryMixin:
                 task_id, conn=conn, abandon_undelivered=abandon_undelivered,
                 abandon_reason=abandon_reason, abandoned_by=abandoned_by,
                 delivery=delivery, obsolete_integration_delegate=obsolete_integration_delegate,
-                archive_reason=archive_reason,
+                archive_reason=archive_reason, disposition=disposition,
             )
         if outcome is None:
             return False
@@ -203,10 +206,36 @@ class ArchiveQueryMixin:
         await self._notify_ready(ready + list(settle_result.ready))
         return True
 
+    async def undelivered_holders(self, task_id, *, delivery=None, conn=None):
+        """The subtree's completed work that has not reached the default branch.
+
+        Returns ``(default_branch, holders)``: the rows the archive guard refuses
+        with ``integration_undelivered``, each ``{"task_id", "holder", "detail"}``.
+        """
+        if delivery is None and conn is None:
+            delivery = await self.observe_removal_delivery([task_id])
+        if conn is None:
+            async with self._engine.connect() as read:
+                return await self.undelivered_holders(task_id, delivery=delivery, conn=read)
+        from src.integration.removal_guard import undelivered_removal_holders
+
+        row = (await conn.execute(
+            select(projects.c.id, projects.c.hierarchical_integration_mode)
+            .select_from(projects.join(tasks, tasks.c.project_id == projects.c.id))
+            .where(tasks.c.id == task_id)
+        )).first()
+        if row is None:
+            return "default branch", []
+        project_id, mode = row
+        return await undelivered_removal_holders(
+            conn, root_id=task_id, ids=await self.subtree_ids(task_id, conn=conn),
+            project_id=project_id, mode=mode, delivery=delivery,
+        )
+
     async def _archive_task_on(
         self, task_id, *, conn, abandon_undelivered=False, abandon_reason=None,
         abandoned_by="operator", delivery=None, obsolete_integration_delegate=False,
-        archive_reason=None, defer_projection=False,
+        archive_reason=None, defer_projection=False, disposition=None,
     ):
         from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES, HierarchyError
 
@@ -254,27 +283,21 @@ class ArchiveQueryMixin:
         project_id = (
             await conn.execute(select(tasks.c.project_id).where(tasks.c.id == task_id))
         ).scalar_one_or_none()
+        retirement_reason = "task archived"
         if abandon_undelivered:
-            from src.integration.removal_guard import undelivered_removal_holders
-
-            mode = (
-                await conn.execute(
-                    select(projects.c.hierarchical_integration_mode).where(
-                        projects.c.id == project_id
-                    )
-                )
-            ).scalar_one_or_none()
-            _branch, abandoned = await undelivered_removal_holders(
-                conn,
-                root_id=task_id,
-                ids=ids,
-                project_id=project_id,
-                mode=mode,
-                delivery=delivery,
+            _branch, abandoned = await self.undelivered_holders(
+                task_id, delivery=delivery, conn=conn,
             )
             named_holders = ", ".join(
                 f"{row['task_id']} ({row['holder']})" for row in abandoned
             ) or "none pending at archive time"
+            decided = ""
+            if disposition:
+                retirement_reason = f"task archived ({disposition}): {abandon_reason.strip()}"
+                decided = (
+                    f"Disposition: {disposition}; its branches are retired after a backup "
+                    "bundle.\n"
+                )
             await conn.execute(
                 pg_insert(task_comments).values(
                     id="comment-" + uuid.uuid4().hex,
@@ -283,6 +306,7 @@ class ArchiveQueryMixin:
                     body=(
                         "Delivery abandoned before archive by "
                         f"{abandoned_by}: {abandon_reason.strip()}\n"
+                        f"{decided}"
                         f"Affected delivery holders: {named_holders}\n"
                         f"Affected subtree: {', '.join(sorted(ids))}"
                     ),
@@ -352,7 +376,7 @@ class ArchiveQueryMixin:
         for tid in reversed(ids):
             task = await self._get_task_conn(tid, conn=conn)
             if task is not None:
-                await self._archive_one(task, conn=conn)
+                await self._archive_one(task, conn=conn, retirement_reason=retirement_reason)
         if defer_projection:
             # The change-set caller retains the old dependents/parent and
             # performs their projection and stale-claim release as one pass.
@@ -453,7 +477,7 @@ class ArchiveQueryMixin:
             }
         )
 
-    async def _archive_one(self, task, *, conn) -> None:
+    async def _archive_one(self, task, *, conn, retirement_reason="task archived") -> None:
         """Move a single task row from ``tasks`` into ``archived_tasks``."""
         task_id = task.id
         # Serialize archive with accepted description/comment writes, then
@@ -472,7 +496,7 @@ class ArchiveQueryMixin:
         from src.integration.branch_retirement import request_task_retirement_on
 
         await request_task_retirement_on(
-            conn, task_id, request_id=f"archive:{task_id}:{now}", reason="task archived", now=now,
+            conn, task_id, request_id=f"archive:{task_id}:{now}", reason=retirement_reason, now=now,
         )
         # Insert into archive (skip if already archived).
         # on_conflict_do_nothing requires dialect-specific insert.

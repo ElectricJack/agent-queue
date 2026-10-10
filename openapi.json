@@ -22340,8 +22340,20 @@
           "abandon_undelivered": {
             "type": "boolean",
             "title": "Abandon Undelivered",
-            "description": "Single-task archive only: explicitly abandon completed work that has not reached the default branch. Requires reason and an elevated/operator caller.",
+            "description": "Single-task archive only: explicitly abandon completed work that has not reached the default branch. Requires disposition, reason and an elevated/operator caller.",
             "default": false
+          },
+          "disposition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disposition",
+            "description": "Single-task only: what happens to completed work that has not reached the default branch. deliver keeps the task for the train and reports what its delivery waits on; obsolete (reason is the note) and retire archive it, retiring its branches after a backup bundle."
           },
           "reason": {
             "anyOf": [
@@ -22373,6 +22385,37 @@
             "type": "string",
             "title": "Status",
             "default": ""
+          },
+          "disposition": {
+            "type": "string",
+            "title": "Disposition",
+            "default": ""
+          },
+          "kept": {
+            "type": "string",
+            "title": "Kept",
+            "default": ""
+          },
+          "undelivered": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Undelivered",
+            "default": []
+          },
+          "delivery": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery"
           }
         },
         "type": "object",

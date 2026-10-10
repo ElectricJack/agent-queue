@@ -51,6 +51,8 @@ from .archive_settings_response_422 import ArchiveSettingsResponse422
 from .archive_settings_response_blocked_item import ArchiveSettingsResponseBlockedItem
 from .archive_task_request import ArchiveTaskRequest
 from .archive_task_response import ArchiveTaskResponse
+from .archive_task_response_delivery_type_0 import ArchiveTaskResponseDeliveryType0
+from .archive_task_response_undelivered_item import ArchiveTaskResponseUndeliveredItem
 from .artifact_ref_dto import ArtifactRefDTO
 from .artifact_verify_request import ArtifactVerifyRequest
 from .artifact_verify_response import ArtifactVerifyResponse
@@ -1872,6 +1874,8 @@ __all__ = (
     "ArchiveSettingsResponseBlockedItem",
     "ArchiveTaskRequest",
     "ArchiveTaskResponse",
+    "ArchiveTaskResponseDeliveryType0",
+    "ArchiveTaskResponseUndeliveredItem",
     "ArtifactRefDTO",
     "ArtifactVerifyRequest",
     "ArtifactVerifyResponse",

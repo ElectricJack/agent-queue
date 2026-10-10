@@ -558,6 +558,13 @@ class ArchiveTaskResponse(BaseModel):
     archived: str
     title: str
     status: str = ""
+    # Undelivered work's disposition: ``deliver`` keeps the task (``archived``
+    # is empty, ``kept`` names it, ``delivery`` is the root's authorize-root
+    # dry run); ``obsolete`` and ``retire`` archive it.
+    disposition: str = ""
+    kept: str = ""
+    undelivered: list[dict[str, Any]] = []
+    delivery: dict[str, Any] | None = None
 
 
 class ArchiveTasksResponse(BaseModel):

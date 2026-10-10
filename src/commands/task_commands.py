@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -4890,13 +4891,28 @@ class TaskCommandsMixin:
             ``task_id`` – archive a single task by ID.
             ``project_id`` – bulk-archive completed tasks in this project.
             ``include_failed`` – (bulk only) also archive FAILED/BLOCKED.
+            ``disposition`` – (single only) ``deliver``, ``obsolete`` or
+            ``retire``: the decision for completed work that has not reached
+            the default branch. ``obsolete`` and ``retire`` abandon it and
+            archive; ``deliver`` keeps the task and reports its delivery.
         """
+        from src.integration.removal_guard import DELIVERY_DISPOSITIONS
+
         task_id = args.get("task_id")
         project_id = args.get("project_id")
         abandon_undelivered = bool(args.get("abandon_undelivered"))
         abandon_reason = args.get("reason")
+        disposition = args.get("disposition") or None
+        if disposition is not None and disposition not in DELIVERY_DISPOSITIONS:
+            return {
+                "error": f"--disposition must be one of {', '.join(DELIVERY_DISPOSITIONS)}.",
+            }
+        if disposition == "deliver" and abandon_undelivered:
+            return {"error": "--disposition deliver keeps the work; drop --abandon-undelivered."}
+        if disposition in {"obsolete", "retire"}:
+            abandon_undelivered = True
 
-        if abandon_undelivered:
+        if abandon_undelivered or disposition:
             scope = self._current_scope or {}
             if scope.get("kind") == "session" and not scope.get("elevated"):
                 return {
@@ -4906,8 +4922,23 @@ class TaskCommandsMixin:
                 }
             if not task_id:
                 return {"error": "--abandon-undelivered is available only with task_id."}
+        if abandon_undelivered:
             if not isinstance(abandon_reason, str) or not abandon_reason.strip():
                 return {"error": "--abandon-undelivered requires --reason."}
+            if disposition is None:
+                return {
+                    "success": False,
+                    "code": "hierarchy.disposition_required",
+                    "error": (
+                        "Abandoning undelivered work needs a disposition: "
+                        "`--disposition deliver` keeps it for the train, "
+                        "`--disposition obsolete` archives it with --reason as the note, "
+                        "`--disposition retire` archives it; both retire its branches "
+                        "after a backup bundle."
+                    ),
+                }
+        if disposition == "deliver":
+            return await self._keep_for_delivery(task_id, reason=abandon_reason)
 
         if task_id:
             # --- Single-task mode ---
@@ -4938,6 +4969,7 @@ class TaskCommandsMixin:
                     abandon_reason=abandon_reason,
                     abandoned_by=(self._current_scope or {}).get("session_id") or "operator",
                     archive_reason=abandon_reason,
+                    disposition=disposition,
                 )
             except HierarchyError as exc:
                 # Same renderer as delete: an ``integration_owned`` refusal
@@ -4957,12 +4989,14 @@ class TaskCommandsMixin:
                     "task.delivery_abandoned",
                     project_id=task.project_id,
                     task_id=task_id,
+                    payload=json.dumps({"disposition": disposition}),
                 )
             await self._emit_task_graph_change("task.archived", task)
             return {
                 "archived": task_id,
                 "title": task.title,
                 "status": task.status.value,
+                "disposition": disposition or "",
             }
 
         if not project_id and not task_id:
@@ -5203,6 +5237,60 @@ class TaskCommandsMixin:
             "skipped": args["task_id"],
             "unblocked_count": len(unblocked),
             "unblocked": [{"id": t.id, "title": t.title} for t in unblocked],
+        }
+
+    async def _keep_for_delivery(self, task_id: str, *, reason: str | None) -> dict:
+        """Record the ``deliver`` disposition: keep the task and say what delivers it.
+
+        Nothing is archived or retired. The decision is written on the task as a
+        comment and a ``task.delivery_disposition`` event; a root also gets its
+        authorize-root dry run, which names what its delivery waits on.
+        """
+        task = await self.db.get_task(task_id)
+        if not task:
+            return {"error": f"Task '{task_id}' not found"}
+        if task.status != TaskStatus.COMPLETED:
+            return {
+                "error": (
+                    f"--disposition deliver applies to completed work; {task_id} is "
+                    f"{task.status.value}."
+                ),
+            }
+        _branch, undelivered = await self.db.undelivered_holders(task_id)
+        delivery = None
+        if task.parent_task_id is None:
+            delivery = await self._cmd_integration_authorize_root(
+                {"task_id": task_id, "dry_run": True}
+            )
+        actor = (self._current_scope or {}).get("session_id") or "operator"
+        holders = ", ".join(
+            f"{row['task_id']} ({row['holder']})" for row in undelivered
+        ) or "none"
+        note = f": {reason.strip()}" if isinstance(reason, str) and reason.strip() else ""
+        waits = ""
+        if delivery is not None:
+            waits = f"\nRoot delivery: {delivery.get('outcome')}: {delivery.get('reason', '')}"
+        await self.db.add_task_comment(
+            task_id,
+            f"Delivery disposition by {actor}: deliver{note}\n"
+            f"Kept for the train; undelivered holders: {holders}{waits}",
+            author_kind="supervisor",
+            author_id=actor,
+        )
+        await self.db.log_event(
+            "task.delivery_disposition",
+            project_id=task.project_id,
+            task_id=task_id,
+            payload=json.dumps({"disposition": "deliver", "undelivered": len(undelivered)}),
+        )
+        return {
+            "archived": "",
+            "kept": task_id,
+            "title": task.title,
+            "status": task.status.value,
+            "disposition": "deliver",
+            "undelivered": undelivered,
+            "delivery": delivery,
         }
 
     async def _write_archive_note(

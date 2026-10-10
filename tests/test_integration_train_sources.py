@@ -1340,6 +1340,36 @@ async def test_visit_timeout_cause_is_visible_in_status_without_a_batch(world):
     assert blocker["evidence"]["timeout_seconds"] == 0.01
 
 
+async def test_completed_root_queued_behind_a_live_batch_names_that_batch(world):
+    """fleet-ridge-45 waited behind the dev lane's open batch with no word.
+
+    A completed root the live batch does not carry waits for that batch to
+    settle; its blockers name the batch instead of answering nothing.
+    """
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)))
+    await completed(world, "a")
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing", testing
+    # Not "b": the fixture matches remote names by substring and aq/batch... exists now.
+    await completed(world, "later")
+    status = IntegrationStatusService(world.db, git_first="active", train=train)
+
+    async def queued(task_id):
+        return [b for b in (await status.task_blockers(task_id))["blockers"]
+                if b["code"] == "queued_behind_open_batch"]
+
+    [ahead] = await queued("later")
+    assert ahead["batch_id"] == testing.batch_id
+    assert ahead["detail"] == (
+        f"refs/heads/main is held by open batch {testing.batch_id} ({ahead['lifecycle']}); "
+        "later is not a member and waits for it to settle")
+    # A member is never queued behind its own batch.
+    assert await queued("a") == []
+    checks.green.add(testing.candidate_sha)
+    assert (await train.visit(MAIN)).state == "delivered"
+    assert await queued("later") == []
+
+
 async def test_unavailable_root_probe_keeps_epic_work_owed(world):
     import asyncio
 

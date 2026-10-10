@@ -224,9 +224,10 @@ async def remove_subtree(db, task_id, *, expected_ids, reason, actor, legacy_eng
         for column in history_columns:
             history |= bool(await conn.scalar(select(column).where(column.in_(ids)).limit(1)))
         if history:
+            # Remove is the operator's decision that the work is not wanted.
             outcome = await db._archive_task_on(
                 task_id, conn=conn, abandon_undelivered=True, abandon_reason=reason,
-                abandoned_by=actor, archive_reason=reason,
+                abandoned_by=actor, archive_reason=reason, disposition="obsolete",
             )
             flipped, ready, settled = outcome
             flipped |= settled.flipped

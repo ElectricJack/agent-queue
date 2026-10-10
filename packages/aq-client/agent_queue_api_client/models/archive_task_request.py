@@ -20,7 +20,10 @@ class ArchiveTaskRequest:
         include_failed (bool | None | Unset): When bulk-archiving by project_id, also archive FAILED and BLOCKED tasks.
             Default false.
         abandon_undelivered (bool | Unset): Single-task archive only: explicitly abandon completed work that has not
-            reached the default branch. Requires reason and an elevated/operator caller. Default: False.
+            reached the default branch. Requires disposition, reason and an elevated/operator caller. Default: False.
+        disposition (None | str | Unset): Single-task only: what happens to completed work that has not reached the
+            default branch. deliver keeps the task for the train and reports what its delivery waits on; obsolete (reason is
+            the note) and retire archive it, retiring its branches after a backup bundle.
         reason (None | str | Unset): Required to archive PAUSED/DEFINED/READY or abandon undelivered work.
     """
 
@@ -28,6 +31,7 @@ class ArchiveTaskRequest:
     project_id: None | str | Unset = UNSET
     include_failed: bool | None | Unset = UNSET
     abandon_undelivered: bool | Unset = False
+    disposition: None | str | Unset = UNSET
     reason: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -52,6 +56,12 @@ class ArchiveTaskRequest:
 
         abandon_undelivered = self.abandon_undelivered
 
+        disposition: None | str | Unset
+        if isinstance(self.disposition, Unset):
+            disposition = UNSET
+        else:
+            disposition = self.disposition
+
         reason: None | str | Unset
         if isinstance(self.reason, Unset):
             reason = UNSET
@@ -69,6 +79,8 @@ class ArchiveTaskRequest:
             field_dict["include_failed"] = include_failed
         if abandon_undelivered is not UNSET:
             field_dict["abandon_undelivered"] = abandon_undelivered
+        if disposition is not UNSET:
+            field_dict["disposition"] = disposition
         if reason is not UNSET:
             field_dict["reason"] = reason
 
@@ -107,6 +119,15 @@ class ArchiveTaskRequest:
 
         abandon_undelivered = d.pop("abandon_undelivered", UNSET)
 
+        def _parse_disposition(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        disposition = _parse_disposition(d.pop("disposition", UNSET))
+
         def _parse_reason(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -121,6 +142,7 @@ class ArchiveTaskRequest:
             project_id=project_id,
             include_failed=include_failed,
             abandon_undelivered=abandon_undelivered,
+            disposition=disposition,
             reason=reason,
         )
 

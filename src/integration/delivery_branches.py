@@ -42,14 +42,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, null, or_, select
 
 from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
 from src.database.tables import (
     archived_tasks,
+    branch_retirements,
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
+    integration_legacy_deliveries,
     integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
@@ -828,6 +830,378 @@ async def expired_task_branches(
     return expired
 
 
+# -- completed work the default branch cannot reach -----------------------
+
+#: How long a COMPLETED root's pull request may wait for delivery before it is
+#: called stranded rather than queued.  A train lane can hold a root for hours
+#: (fleet-ridge-45 waited 67 minutes behind one dev batch); a day is not a queue.
+ROOT_DELIVERY_WAIT_SECONDS = 24 * 3600.0
+#: Integration modes in which aq delivers a project's work; elsewhere an
+#: unmerged task branch is expected.
+DELIVERING_MODES = ("hierarchy", "train", "development")
+#: Parent links followed when asking whether an ancestor's branch carries work.
+_ANCESTOR_DEPTH = 8
+
+
+def _day(stamp: float | None) -> str:
+    return datetime.fromtimestamp(float(stamp or 0), UTC).strftime("%Y-%m-%d %H:%M UTC")
+
+
+async def completed_branch_dispositions(
+    conn: Any,
+    *,
+    heads: dict[str, str],
+    reachable: Any,
+    contains: Any,
+    delivered: Any = None,
+    now: float,
+    project_id: str | None = None,
+    repository_id: str | None = None,
+    task_ids: Any = None,
+    wait_seconds: float = ROOT_DELIVERY_WAIT_SECONDS,
+) -> list[dict[str, Any]]:
+    """Why each COMPLETED task's branch the default branch cannot reach is still there.
+
+    *heads* is ``branch -> head`` on origin.  Three probes answer the git
+    questions, so only branches a COMPLETED task names are ever probed:
+    ``await reachable(head)`` — whether the default branch reaches the tip
+    (``None`` when that cannot be read); ``await contains(head, branch)`` —
+    whether another origin branch reaches it; and, optionally,
+    ``await delivered(task_ids)`` — the tasks the delivery truth proves are on
+    the default branch some other way (a train collection, a recorded proof).
+
+    Every branch named by a COMPLETED task (live or archived, its ``-wip``
+    sibling too; of *project_id*, on *repository_id* or no repository, and
+    among *task_ids*, when given) whose tip the default branch does not reach
+    gets one entry,
+    ``accounted`` when something on record explains it or will move it, a
+    finding when nothing will:
+
+    * ``retiring`` — a branch retirement is pending (archive and every recorded
+      disposition queue one); ``retirement_conflict`` — it stopped and needs a
+      person (a finding);
+    * ``carried`` — a live batch has the task as a member;
+    * ``recorded`` — an ``integration_legacy_deliveries`` row records its
+      delivery, re-landing or abandonment;
+    * ``delivered`` — the delivery truth proves the work landed;
+    * ``integrated`` — an ancestor task's branch on origin contains the tip, so
+      the work travels with that ancestor (which is judged on its own);
+    * ``awaiting_delivery`` — a root with a pull request, completed less than
+      *wait_seconds* ago; past that it is ``stranded_root`` (a finding);
+    * ``awaiting_backstop`` — archived less than twice *wait_seconds* ago with
+      no retirement yet: the daily Git sweep queues one for every archived
+      task; past that it is ``unreconciled``;
+    * ``unreconciled`` — none of the above (a finding);
+    * ``unknown`` — reachability could not be read (neither accounted nor a
+      finding).
+    """
+    names = {branch.removesuffix("-wip") for branch in heads}
+    stored = names | {"refs/heads/" + name for name in names}
+    candidates: dict[str, tuple[dict, bool, bool]] = {}
+    for table, archived in ((tasks, False), (archived_tasks, True)):
+        scope = [
+            table.c.status == TaskStatus.COMPLETED.value,
+            table.c.branch_name.in_(sorted(stored)),
+        ]
+        if project_id is not None:
+            scope.append(table.c.project_id == project_id)
+        if repository_id is not None:
+            scope.append(table.c.repo_id.is_(None) | (table.c.repo_id == repository_id))
+        if task_ids is not None:
+            scope.append(table.c.id.in_(sorted(task_ids)))
+        rows = await conn.execute(
+            select(
+                table.c.id, table.c.project_id, table.c.branch_name,
+                table.c.parent_task_id, table.c.pr_url, table.c.updated_at,
+                (table.c.archived_at if archived else null()).label("archived_at"),
+            ).where(*scope)
+        )
+        for row in rows.mappings():
+            name = branch_of(row["branch_name"])
+            for branch, wip in ((name, False), (f"{name}-wip", True)):
+                if branch in heads:
+                    candidates.setdefault(branch, (dict(row), archived, wip))
+    owners: dict[str, tuple[dict, bool, bool]] = {}
+    entries: list[dict[str, Any]] = []
+    for branch, (row, archived, wip) in sorted(candidates.items()):
+        answer = await reachable(heads[branch])
+        if answer is None:
+            entries.append(_disposition(
+                row, archived, branch, heads[branch], wip, "unknown",
+                "the default branch's reachability of this tip cannot be read",
+            ))
+        elif not answer:
+            owners[branch] = (row, archived, wip)
+    if not owners:
+        return entries
+    ids = sorted({row["id"] for row, _, _ in owners.values()})
+
+    retirements: dict[str, dict] = {}
+    for row in (
+        await conn.execute(
+            select(
+                branch_retirements.c.task_id, branch_retirements.c.branch,
+                branch_retirements.c.state, branch_retirements.c.reason,
+                branch_retirements.c.last_error, branch_retirements.c.requested_at,
+            )
+            .where(
+                branch_retirements.c.task_id.in_(ids)
+                | branch_retirements.c.branch.in_(sorted(owners))
+            )
+            .order_by(branch_retirements.c.requested_at)
+        )
+    ).mappings():
+        retirements[row["branch"]] = dict(row)  # the latest request wins
+        if row["task_id"]:
+            retirements[f"task:{row['task_id']}"] = dict(row)
+    batches = {
+        task_id: (batch_id, lifecycle, target)
+        for task_id, batch_id, lifecycle, target in (
+            await conn.execute(
+                select(
+                    integration_batch_members.c.task_id, integration_batches.c.id,
+                    integration_batches.c.lifecycle, integration_batches.c.target_ref,
+                )
+                .select_from(
+                    integration_batch_members.join(
+                        integration_batches,
+                        integration_batches.c.id == integration_batch_members.c.batch_id,
+                    )
+                )
+                .where(
+                    integration_batch_members.c.task_id.in_(ids),
+                    integration_batches.c.lifecycle.in_(ACTIVE_BATCH_LIFECYCLES),
+                )
+                .order_by(integration_batches.c.created_at)
+            )
+        ).all()
+    }
+    proofs = {
+        row["task_id"]: row
+        for row in (
+            await conn.execute(
+                select(
+                    integration_legacy_deliveries.c.task_id,
+                    integration_legacy_deliveries.c.proof,
+                    integration_legacy_deliveries.c.delivered_sha,
+                ).where(integration_legacy_deliveries.c.task_id.in_(ids))
+            )
+        ).mappings()
+    }
+    completed_at = dict(
+        (
+            await conn.execute(
+                select(
+                    task_completion_records.c.task_id,
+                    func.max(task_completion_records.c.completed_at),
+                )
+                .where(task_completion_records.c.task_id.in_(ids))
+                .group_by(task_completion_records.c.task_id)
+            )
+        ).all()
+    )
+    parents: dict[str, tuple[str | None, str | None]] = {}
+    frontier = {row["parent_task_id"] for row, _, _ in owners.values()} - {None}
+    for _ in range(_ANCESTOR_DEPTH):
+        frontier -= set(parents)
+        if not frontier:
+            break
+        for table in (tasks, archived_tasks):
+            for task_id, parent_id, branch in (
+                await conn.execute(
+                    select(table.c.id, table.c.parent_task_id, table.c.branch_name).where(
+                        table.c.id.in_(sorted(frontier))
+                    )
+                )
+            ).all():
+                parents.setdefault(task_id, (parent_id, branch_of(branch)))
+        frontier = {parent for parent, _ in parents.values()} - {None}
+    proven = set(await delivered(ids)) if delivered is not None else set()
+
+    for branch, (row, archived, wip) in sorted(owners.items()):
+        task_id, head = row["id"], heads[branch]
+        retirement = retirements.get(branch) or retirements.get(f"task:{task_id}")
+        rule = reason = None
+        if retirement is not None and retirement["state"] == "pending":
+            rule, reason = "retiring", (
+                f"retirement pending since {_day(retirement['requested_at'])}: "
+                f"{retirement['reason']}"
+            )
+        elif retirement is not None and retirement["state"] == "conflict":
+            rule, reason = "retirement_conflict", (
+                f"its retirement stopped: {retirement['last_error'] or 'conflict'}"
+            )
+        elif task_id in batches:
+            batch_id, lifecycle, target = batches[task_id]
+            rule, reason = "carried", f"batch {batch_id} ({lifecycle}) carries it to {target}"
+        elif task_id in proofs:
+            proof = proofs[task_id]
+            sha = (proof["delivered_sha"] or "")[:12]
+            rule, reason = "recorded", (
+                f"its delivery is recorded as {proof['proof']}" + (f" at {sha}" if sha else "")
+            )
+        elif task_id in proven:
+            rule, reason = "delivered", "the delivery truth proves its work is on the default branch"
+        else:
+            ancestor, seen = row["parent_task_id"], set()
+            while ancestor and ancestor not in seen and rule is None:
+                seen.add(ancestor)
+                parent_id, parent_branch = parents.get(ancestor, (None, None))
+                if parent_branch in heads and await contains(head, parent_branch):
+                    rule, reason = "integrated", (
+                        f"{parent_branch} (task {ancestor}) carries its work"
+                    )
+                ancestor = parent_id
+        if rule is None and row["parent_task_id"] is None and row["pr_url"] and not archived:
+            since = completed_at.get(task_id) or row["updated_at"]
+            if now - float(since or 0) < wait_seconds:
+                rule, reason = "awaiting_delivery", (
+                    f"root pull request {row['pr_url']} waits for delivery "
+                    f"(completed {_day(since)})"
+                )
+            else:
+                rule, reason = "stranded_root", (
+                    f"root pull request {row['pr_url']} has waited since {_day(since)} and "
+                    f"no batch carries it; `aq integration authorize-root {task_id}` says why"
+                )
+        if rule is None and archived:
+            since = row["archived_at"] or row["updated_at"]
+            if now - float(since or 0) < 2 * wait_seconds:
+                rule, reason = "awaiting_backstop", (
+                    f"archived {_day(since)}; the daily Git sweep queues its retirement"
+                )
+            else:
+                rule, reason = "unreconciled", (
+                    f"archived {_day(since)} and no retirement was ever queued"
+                )
+        if rule is None:
+            rule, reason = "unreconciled", (
+                "no batch carries it, no delivery or disposition is recorded and no "
+                "retirement is queued"
+            )
+        entries.append(_disposition(row, archived, branch, head, wip, rule, reason))
+    return entries
+
+
+async def observe_completed_branches(
+    db: Any,
+    observer: Any,
+    *,
+    project_ids: Any = None,
+    task_ids: Any = None,
+    now: float | None = None,
+    cached_only: bool = False,
+) -> dict[str, Any]:
+    """:func:`completed_branch_dispositions` over each delivering project's repository.
+
+    One snapshot of each project's integration repository answers the git
+    questions, reused when *observer* fetched it within ``READ_MAX_AGE``;
+    *cached_only* never fetches (interactive diagnostics), so an expired
+    snapshot is ``unavailable``.  A project whose default branch cannot be
+    observed is ``unavailable``, never clean.
+    """
+    from functools import partial
+
+    from src.integration.delivery_observer import DeliveryTarget
+    from src.integration.git_truth import GitTruth, GitTruthSnapshot
+    from src.integration.train_sources import project_delivered
+
+    now = time.time() if now is None else now
+    query = (
+        select(projects.c.id, repos.c.id.label("repository_id"), repos.c.url,
+               repos.c.default_branch)
+        .select_from(projects.join(repos, repos.c.id == projects.c.integration_repository_id))
+        .where(projects.c.hierarchical_integration_mode.in_(DELIVERING_MODES))
+        .order_by(projects.c.id)
+    )
+    if project_ids is not None:
+        query = query.where(projects.c.id.in_(sorted(project_ids)))
+    async with db._engine.connect() as conn:
+        targets = (await conn.execute(query)).mappings().all()
+    entries: list[dict[str, Any]] = []
+    unavailable: list[dict[str, Any]] = []
+    for target in targets:
+        project_id, repository_id = target["id"], target["repository_id"]
+        target_ref = "refs/heads/" + (target["default_branch"] or "").removeprefix("refs/heads/")
+        try:
+            if not target["url"] or not target["default_branch"]:
+                raise ValueError("integration repository has no URL or default branch")
+            snapshot = await observer.snapshot(
+                DeliveryTarget(project_id, repository_id, target["url"], target_ref),
+                max_age=observer.READ_MAX_AGE, cached_only=cached_only,
+            )
+            observation = getattr(snapshot, "observation", snapshot)
+            if observation.error or not observation.target_oid:
+                raise ValueError(observation.error or "default branch unavailable")
+            truth = (snapshot if isinstance(snapshot, GitTruthSnapshot)
+                     else GitTruthSnapshot(GitTruth(observer.git), snapshot,
+                                           cached_only=cached_only))
+            heads = {
+                ref.removeprefix("refs/remotes/origin/"): oid
+                for ref, oid in observation.source_heads.items()
+                if ref.startswith("refs/remotes/origin/")
+            }
+            store, tip, git = observation.store, observation.target_oid, observer.git
+
+            async def reachable(head, store=store, tip=tip, git=git):
+                return await git.ais_ancestor(store, head, tip, strict=True)
+
+            async def contains(head, branch, store=store, heads=heads, git=git):
+                return bool(await git.ais_ancestor(store, head, heads[branch], strict=True))
+
+            async with db._engine.connect() as conn:
+                entries.extend(await completed_branch_dispositions(
+                    conn, heads=heads, reachable=reachable, contains=contains,
+                    delivered=partial(project_delivered, db, project_id=project_id,
+                                      repository_id=repository_id, target_ref=target_ref,
+                                      snapshot=truth),
+                    now=now, project_id=project_id, repository_id=repository_id,
+                    task_ids=task_ids,
+                ))
+        except (GitError, OSError, ValueError) as exc:
+            unavailable.append({"project_id": project_id, "repository_id": repository_id,
+                                "reason": str(exc)})
+    return {"entries": entries, "unavailable": unavailable, "projects": len(targets)}
+
+
+#: Rules under which something on record explains the branch or will move it.
+_ACCOUNTED_RULES = frozenset(
+    {"retiring", "carried", "recorded", "delivered", "integrated", "awaiting_delivery",
+     "awaiting_backstop"}
+)
+
+
+def _remedy(task_id: str, project_id: str, archived: bool, rule: str) -> str | None:
+    """The operator action that settles a finding; ``None`` for anything else."""
+    if rule == "retirement_conflict":
+        return ("the branch moved after its retirement was requested; a person decides "
+                "whether the new commits are wanted before deleting it by hand")
+    if rule not in {"stranded_root", "unreconciled"}:
+        return None
+    if archived:
+        return ("the daily Git sweep queues an archived task's retirement; the daemon log "
+                "names the failure (`retirement recovery failed`)")
+    return (f"aq task archive {task_id} --disposition deliver|obsolete|retire "
+            f"--reason \"...\", or, when its work landed under another commit, "
+            f"scripts/backfill-legacy-deliveries.py {project_id} "
+            f"--relanded {task_id}=<landing-sha> --reason \"...\" --apply")
+
+
+def _disposition(row, archived, branch, head, wip, rule, reason) -> dict[str, Any]:
+    return {
+        "task_id": row["id"],
+        "project_id": row["project_id"],
+        "archived": archived,
+        "branch": branch,
+        "head": head,
+        "wip": wip,
+        "rule": rule,
+        "accounted": rule in _ACCOUNTED_RULES,
+        "reason": reason,
+        "remedy": _remedy(row["id"], row["project_id"], archived, rule),
+    }
+
+
 # -- the backlog ---------------------------------------------------------
 
 
@@ -970,17 +1344,21 @@ async def _merges_are_clean(run_git, store, main_head: str, head: str) -> bool:
 
 __all__ = [
     "ASSEMBLY_PREFIX",
+    "DELIVERING_MODES",
     "FAILED_BRANCH_KEEP_SECONDS",
     "INTEGRATION_PREFIX",
     "PROTECTED_BRANCHES",
+    "ROOT_DELIVERY_WAIT_SECONDS",
     "TASK_BRANCH_PREFIX",
     "branch_of",
+    "completed_branch_dispositions",
     "completed_branch_tasks",
     "deletable",
     "delete_branches",
     "expired_task_branches",
     "find_stale_branches",
     "live_branch_references",
+    "observe_completed_branches",
     "protected_branches",
     "released_integration_refs",
     "remote_heads",

@@ -5,14 +5,24 @@ from __future__ import annotations
 import time
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import delete, insert, select
 
-from src.database.tables import branch_retirements, integration_legacy_deliveries, task_branch_origins
+from src.config import AppConfig
+from src.database.tables import (
+    branch_retirements,
+    integration_legacy_deliveries,
+    task_branch_origins,
+)
+from src.doctor.integration_checks import _BY_ID, completed_undelivered
+from src.doctor.models import DoctorContext, Severity
+from src.integration.branch_retirement import request_branch_retirement_on
+from src.integration.delivery_branches import ROOT_DELIVERY_WAIT_SECONDS
 from src.integration.legacy_backfill import (
     CONTAINED_PROOF,
     EQUIVALENT_PROOF,
     backfill_legacy_deliveries,
 )
+from src.integration.status import IntegrationStatusService
 from src.integration.train_sources import DatabaseBatches
 from src.models import Task, TaskCompletion, TaskStatus
 from tests import test_integration_train_sources as _sources
@@ -401,3 +411,164 @@ async def test_backfill_proves_an_epic_whose_collected_branch_is_on_main(world):
     preview = await backfill_legacy_deliveries(db, "p")
     proven = {r["task_id"]: r["via"] for r in preview["results"]}
     assert proven["landed"] == "branch_tip" and "part" in proven
+
+
+def reland(origin, tid: str) -> str:
+    """Re-land *tid*'s work on main under a new, non-equivalent commit (a repair)."""
+    git(origin.clone, "fetch", "-q", "origin")
+    git(origin.clone, "checkout", "-q", "-B", "main", "origin/main")
+    (origin.clone / f"{tid}-work.txt").write_text("work, repaired on salvage\n")
+    git(origin.clone, "add", ".")
+    git(origin.clone, "commit", "-q", "-m", f"salvage {tid}")
+    git(origin.clone, "push", "-q", "origin", "main")
+    return git(origin.clone, "rev-parse", "HEAD")
+
+
+async def test_relanding_records_the_landing_commit_and_retires_the_source_branch(world):
+    from src.integration.delivery_branches import live_branch_references
+    from src.integration.legacy_backfill import RELANDED_PROOF, record_relanding
+
+    db = world.db
+    await legacy(world, "salvaged")
+    landing = reland(world.origin, "salvaged")
+    # Git cannot prove a repaired re-landing: the source is neither contained
+    # nor a no-op merge, so the task stays an unknown blocker forever.
+    report = await backfill_legacy_deliveries(db, "p")
+    assert [v["task_id"] for v in report["unproven"]] == ["salvaged"]
+    assert "salvaged" in await blocker_codes(world)
+    with pytest.raises(ValueError, match="nonblank reason"):
+        await record_relanding(db, "p", "salvaged", landed_sha=landing, dry_run=False)
+    preview = await record_relanding(db, "p", "salvaged", landed_sha=landing)
+    assert [(r["task_id"], r["proof"], r["via"], r["delivered_sha"])
+            for r in preview["results"]] == [
+        ("salvaged", RELANDED_PROOF, "operator_relanding", landing)]
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_legacy_deliveries))).all() == []
+        assert (await conn.execute(select(branch_retirements))).all() == []
+
+    applied = await record_relanding(db, "p", "salvaged", landed_sha=landing, dry_run=False,
+                                     operator_id="op", reason="salvage of the 10-07 takeover")
+    assert [(r["task_id"], r["outcome"]) for r in applied["results"]] == [
+        ("salvaged", "recorded")]
+    async with db._engine.connect() as conn:
+        row = (await conn.execute(select(integration_legacy_deliveries))).one()
+        retired = (await conn.execute(select(
+            branch_retirements.c.branch, branch_retirements.c.request_id,
+            branch_retirements.c.task_id, branch_retirements.c.reason,
+        ))).all()
+        held = await live_branch_references(conn, retiring_task_id="salvaged")
+    assert (row.task_id, row.proof, row.delivered_sha, row.operator_id) == (
+        "salvaged", "superseded", landing, "op")
+    assert f"relanded salvaged as {landing}" in row.reason
+    assert "salvage of the 10-07 takeover" in row.reason
+    # The source branch goes through the retirement path, and the decision
+    # names the landing commit that proves it.
+    assert {(r.branch, r.request_id, r.task_id) for r in retired} == {
+        ("aq/salvaged", "legacy-relanded:salvaged", "salvaged"),
+        ("aq/salvaged-wip", "legacy-relanded:salvaged", "salvaged"),
+    }
+    assert all(landing in r.reason for r in retired)
+    assert "aq/salvaged" not in held
+    assert "salvaged" not in await blocker_codes(world)
+    with pytest.raises(ValueError, match="already has a recorded superseded delivery"):
+        await record_relanding(db, "p", "salvaged", landed_sha=landing, dry_run=False,
+                               operator_id="op", reason="again")
+
+
+async def test_relanding_refuses_a_commit_off_the_default_branch_and_proven_work(world):
+    from src.integration.legacy_backfill import record_relanding
+
+    db = world.db
+    await legacy(world, "salvaged")
+    elsewhere = world.origin.work("elsewhere")
+    with pytest.raises(ValueError, match="full git object id"):
+        await record_relanding(db, "p", "salvaged", landed_sha="abc123")
+    with pytest.raises(ValueError, match="is not on refs/heads/main"):
+        await record_relanding(db, "p", "salvaged", landed_sha=elsewhere)
+    with pytest.raises(ValueError, match="is not a fetched commit"):
+        await record_relanding(db, "p", "salvaged", landed_sha="f" * 40)
+    landing = git(world.origin.clone, "rev-parse", "origin/main")
+    await legacy(world, "landed", land=True)
+    with pytest.raises(ValueError, match="already proves landed"):
+        await record_relanding(db, "p", "landed", landed_sha=landing)
+    await db.create_task(Task(id="open", project_id="p", repo_id="r", title="open", description="",
+                              branch_name="aq/open", status=TaskStatus.IN_PROGRESS))
+    with pytest.raises(ValueError, match="only a completed task"):
+        await record_relanding(db, "p", "open", landed_sha=landing)
+    with pytest.raises(ValueError, match="not a task of this project"):
+        await record_relanding(db, "p", "no-such-task", landed_sha=landing)
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_legacy_deliveries))).all() == []
+        assert (await conn.execute(select(branch_retirements))).all() == []
+
+
+async def test_completed_undelivered_names_only_work_nothing_will_deliver(world, tmp_path):
+    """fleet-ridge-45's tail: a COMPLETED branch off main is explained or is a finding."""
+    db, origin = world.db, world.origin
+    await legacy(world, "landed", land=True)
+    stray = await legacy(world, "stray")
+    git(origin.clone, "push", "-q", "origin", "aq/stray:aq/stray-wip")
+    await completed(world, "queued")  # a root whose pull request waits, completed now
+    await legacy(world, "doomed")
+    async with db._engine.begin() as conn:
+        await request_branch_retirement_on(
+            conn, request_id="test:doomed", project_id="p", repository_id="r",
+            branch="aq/doomed", task_id="doomed", reason="operator abandon",
+        )
+    await db.create_task(Task(id="box", project_id="p", repo_id="r", title="box",
+                              description="", branch_name="aq/box",
+                              status=TaskStatus.IN_PROGRESS))
+    await legacy(world, "kid", parent="box")
+    git(origin.clone, "push", "-q", "origin", "aq/kid:aq/box")
+    ctx = DoctorContext(config=AppConfig(data_dir=str(tmp_path)), db=db)
+
+    result = await _BY_ID["integration.completed_undelivered"].run(ctx)
+
+    assert result.severity == Severity.WARN, result.detail
+    assert {(e["task_id"], e["branch"], e["wip"], e["head"])
+            for e in result.data["stranded"]} == {
+        ("stray", "aq/stray", False, stray), ("stray", "aq/stray-wip", True, stray)}
+    assert {e["task_id"]: e["rule"] for e in result.data["accounted"]} == {
+        "queued": "awaiting_delivery", "doomed": "retiring", "kid": "integrated"}
+    assert "aq task archive stray --disposition deliver|obsolete|retire" in result.detail
+    assert "--relanded stray=<landing-sha>" in result.detail
+
+    # A root's pull request is a queue for a day, then a stranded root.
+    later = await completed_undelivered(ctx, now=time.time() + 2 * ROOT_DELIVERY_WAIT_SECONDS)
+    assert {e["task_id"]: e["rule"] for e in later["entries"] if not e["accounted"]} == {
+        "stray": "unreconciled", "queued": "stranded_root"}
+
+    # Explain (the dashboard's task panel) says the same for one task.
+    service = IntegrationStatusService(db, git_first="active")
+    blockers = (await service.task_blockers("stray"))["blockers"]
+    assert sorted(b["ref"] for b in blockers if b["code"] == "completed_undelivered") == [
+        "aq/stray", "aq/stray-wip"]
+    assert "completed_undelivered" not in {
+        b["code"] for b in (await service.task_blockers("queued"))["blockers"]}
+
+    # Landing the work clears the finding (read past the observer's 30s reuse).
+    origin.land("stray")
+    db._delivery_observer.READ_MAX_AGE = 0.0
+    settled = await _BY_ID["integration.completed_undelivered"].run(ctx)
+    assert settled.severity == Severity.OK, settled.detail
+    assert "3 not yet on the default branch are accounted for" in settled.detail
+
+
+async def test_an_archived_branch_waits_for_the_backstop_then_is_a_finding(world, tmp_path):
+    """Archived before retirement existed (2026-10-08): the daily sweep owns it, for a while."""
+    db = world.db
+    await legacy(world, "gone")
+    assert await db.archive_task("gone", abandon_undelivered=True, abandon_reason="obsolete",
+                                 disposition="obsolete")
+    async with db._engine.begin() as conn:
+        assert (await conn.execute(delete(branch_retirements))).rowcount
+    ctx = DoctorContext(config=AppConfig(data_dir=str(tmp_path)), db=db)
+
+    fresh = await completed_undelivered(ctx)
+    assert [(e["task_id"], e["archived"], e["rule"]) for e in fresh["entries"]] == [
+        ("gone", True, "awaiting_backstop")]
+
+    [entry] = (await completed_undelivered(
+        ctx, now=time.time() + 3 * ROOT_DELIVERY_WAIT_SECONDS))["entries"]
+    assert (entry["rule"], entry["accounted"]) == ("unreconciled", False)
+    assert "daily Git sweep" in entry["remedy"]
