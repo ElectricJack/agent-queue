@@ -3462,12 +3462,13 @@
         "cli-framework"
       ],
       "default_arm": true,
-      "digest": "sha256:da22ca6139e6744c92963623a914e1a3c7c1af8eb4376e7d71af35e4afd20794",
+      "digest": "sha256:05d657268981c59fe5a96afd0d33dea92b7b97b068f4bdc715ba77af092fc43c",
       "imports": [
         "src.cli.client"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "CLIClient ↔ generated-client integration (plan 11-12, API-3 status)."
     },

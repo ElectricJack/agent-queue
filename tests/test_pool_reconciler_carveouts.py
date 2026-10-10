@@ -113,20 +113,22 @@ async def held_pool_session(
     # ``tasks.assigned_agent_id`` and ``agents.current_task_id`` form a
     # cycle -- insert both with the cross-reference unset, then backfill.
     await db.create_task(Task(id=task_id, project_id=PROJECT_ID, title=task_id, description=task_id,
-                              status=TaskStatus.IN_PROGRESS, claim_epoch=1, profile_id="worker",
+                              status=TaskStatus.IN_PROGRESS, profile_id="worker",
                               route_source="legacy"))
     await db.create_agent(Agent(id=agent_id, name=agent_id, profile_id="worker",
                                 state=AgentState.BUSY))
-    await db.update_task(task_id, assigned_agent_id=agent_id)
+    await db.update_task(task_id, assigned_agent_id=agent_id, claim_epoch=1)
     await db.update_agent(agent_id, current_task_id=task_id)
     await db.create_workspace(Workspace(id=f"ws-{agent_id}", project_id=PROJECT_ID,
                                         workspace_path=f"/wd/{agent_id}",
                                         source_type=RepoSourceType.LINK, kind_id="project-repo",
                                         locked_by_agent_id=agent_id, locked_by_task_id=task_id))
+    task = await db.get_task(task_id)
     await db.create_session(SessionRecord(
         id=sid, project_id=PROJECT_ID, profile_id="worker", harness="claude", provider="fake",
         name=sid, lifecycle="pool", work_dir=f"/wd/{agent_id}", epoch="e", instance_token="t",
         started_at=time.time() - 600, state="running", agent_id=agent_id, task_id=task_id,
+        last_claim_epoch=task.claim_epoch,
         claim_phase=phase, claim_phase_at=phase_at if phase_at is not None else time.time()))
     return sid
 
@@ -197,6 +199,25 @@ class TestPrepareTimeout:
 
 
 class TestExits:
+    @pytest.mark.parametrize("epoch_delta", [None, -1, 1])
+    async def test_pool_exit_with_inconsistent_claim_epoch_preserves_task(
+        self, db, reconciler, provider, orch, epoch_delta
+    ):
+        sid = await held_pool_session(db)
+        task = await db.get_task("t1")
+        claim_epoch = None if epoch_delta is None else task.claim_epoch + epoch_delta
+        await db.update_session(sid, last_claim_epoch=claim_epoch)
+        provider.peek = AsyncMock(return_value="rate limit exceeded, please retry later")
+        live, now = await observe(reconciler)
+
+        await reconciler._step_exits(live, now)
+
+        task = await db.get_task("t1")
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, "agent-1")
+        assert (await db.get_session(sid)).state == "running"
+        assert await db.get_task_meta("t1", "worker_failure_streak") is None
+        assert orch._pool_quarantine == {}
+
     async def test_pool_exit_holding_task_returns_task_and_releases_worker(self, db, reconciler,
                                                                          provider):
         sid = await held_pool_session(db)
