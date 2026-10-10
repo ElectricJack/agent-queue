@@ -153,6 +153,33 @@ def test_an_app_that_is_its_own_producer_is_refused():
     assert refused.value.code == "trust_manifest_invalid"
 
 
+@pytest.mark.parametrize("identity", [
+    {"canonical_repository_id": ""},
+    {"repository_id": None},
+    {"repository_id": True},
+    {"repository_id": "1160639300"},
+    {"repository_id": 0},
+    {"full_name": "not-a-repository"},
+    {"attestation_app_id": None},
+    {"attestation_app_id": True},
+    {"attestation_app_id": "5075923"},
+    {"attestation_app_id": 0},
+])
+def test_manifest_generation_refuses_missing_or_invalid_identities(identity):
+    inputs = {
+        "canonical_repository_id": "agent-queue2",
+        "repository_id": BINDING.repository_id,
+        "full_name": BINDING.full_name,
+        "attestation_app_id": 5075923,
+        **identity,
+    }
+
+    with pytest.raises(trust_manifest.TrustManifestRefusal) as refused:
+        trust_manifest.manifest_for_policy(_policy(), **inputs)
+
+    assert refused.value.code == "trust_manifest_invalid"
+
+
 # ---------------------------------------------------------------------------
 # compare
 # ---------------------------------------------------------------------------
@@ -407,6 +434,143 @@ async def test_command_defaults_to_the_bound_policy_and_the_designated_repositor
     assert result["policy_source"] == "bound" and result["repository_id"] == "agent-queue2"
     assert result["committed"]["code"] == "trust_manifest_mismatch"
     assert result["committed"]["diff"][0]["field"] == "repository_id"
+
+
+@pytest.mark.parametrize("command", [
+    "_cmd_integration_trust_manifest", "_cmd_integration_app_verify",
+], ids=["manifest", "app-verify"])
+@pytest.mark.parametrize("supplied", [False, True], ids=["bound", "argument"])
+@pytest.mark.parametrize("development", [
+    {
+        "validation": "focused",
+        "commands": ["aq test tests/test_integration_trust_manifest.py"],
+        "timeout_seconds": 300,
+        "slot_wait_seconds": 600,
+        "interval_seconds": 300,
+        "max_batch_size": 50,
+        "regenerate": "scripts/regenerate-generated.sh",
+        "regenerate_timeout_seconds": 600,
+    },
+    {"validation": "advisory", "commands": ["ruff check src"]},
+    {"validation": "none"},
+], ids=["focused", "advisory", "none"])
+async def test_development_policy_reports_missing_hosted_check_evidence(development, supplied, command):
+    client = _Client()
+    handler = _handler(client, bound_policy=_policy() if supplied else development)
+    args = {"project_id": "agent-queue"}
+    if supplied:
+        args["policy"] = development
+
+    result = await getattr(handler, command)(args)
+
+    assert result["success"] is False and result["outcome"] == "policy_missing"
+    assert "development policy" in result["error"]
+    assert "required check names" in result["error"]
+    assert "check-set version" in result["error"]
+    assert "CI producer App id" in result["error"]
+    assert "--policy FILE" in result["error"]
+    assert "parent.required_checks" in result["error"]
+    assert "root.required_checks" in result["error"]
+    assert "Native Windows build and tests" not in result["error"]  # No invented check names.
+    handler.db.get_repo.assert_not_awaited()
+    handler.orchestrator.github_repository_binding_resolver.assert_not_awaited()
+    assert client.paths == []
+
+
+async def test_explicit_hosted_policy_overrides_development_and_preserves_exact_checks():
+    policy = _policy()
+    required = {
+        "version": "native-windows-v1",
+        "producer_id": "15368",
+        "names": ["Native Windows build and tests", "Linux foundation"],
+    }
+    for boundary in ("parent", "root"):
+        policy[boundary]["required_checks"] = required.copy()
+    expected = trust_manifest.manifest_for_policy(
+        policy, canonical_repository_id="agent-queue2", repository_id=BINDING.repository_id,
+        full_name=BINDING.full_name, attestation_app_id=5075923, promotion_flow=FLOW,
+        check_sets={"release": ["Native Windows build and tests"]},
+    )
+    client = _Client(committed=trust_manifest.canonical_text(expected))
+    development = {"validation": "focused", "commands": ["ruff check src"]}
+    handler = _handler(client, bound_policy=development)
+
+    result = await handler._cmd_integration_trust_manifest(
+        {"project_id": "agent-queue", "policy": policy}
+    )
+
+    assert result["success"] and result["outcome"] == "manifest"
+    assert result["policy_source"] == "argument"
+    assert result["manifest"] == expected
+    assert result["manifest"]["required_checks"] == {
+        "version": required["version"], "names": required["names"],
+    }
+    assert result["committed"]["identity_equal"] and result["committed"]["check_set_equal"]
+    assert handler.db.get_project.return_value.hierarchical_integration_policy == development
+    assert client.paths == [
+        f"/repositories/{BINDING.repository_id}/contents/{trust_manifest.TRUST_MANIFEST_PATH}"
+        f"?ref={SHA}"
+    ]
+
+
+@pytest.mark.parametrize("policy", [
+    {"validation": "focused", "commands": []},
+    {"validation": "unknown", "commands": ["ruff check src"]},
+    {"validation": "none", "timeout_seconds": 0},
+    {"validation": "none", "required_checks": {"names": ["Native Windows build and tests"]}},
+    {"version": 1},
+], ids=["missing-commands", "bad-validation", "bad-budget", "mixed-shapes", "incomplete-train"])
+async def test_invalid_supplied_policy_never_falls_back_to_the_bound_policy(policy):
+    client = _Client()
+    handler = _handler(client, bound_policy=_policy())
+
+    result = await handler._cmd_integration_trust_manifest(
+        {"project_id": "agent-queue", "policy": policy}
+    )
+
+    assert result["success"] is False and result["outcome"] == "policy_invalid"
+    handler.db.get_repo.assert_not_awaited()
+    assert client.paths == []
+
+
+@pytest.mark.parametrize(("field", "value", "outcome"), [
+    ("names", [], "policy_invalid"),
+    ("names", [""], "trust_manifest_invalid"),
+    ("version", "", "trust_manifest_invalid"),
+    ("producer_id", "", "ci_producer_not_numeric"),
+    ("producer_id", "github-actions", "ci_producer_not_numeric"),
+])
+async def test_explicit_policy_for_development_cannot_omit_hosted_check_evidence(field, value, outcome):
+    policy = _policy()
+    for boundary in ("parent", "root"):
+        policy[boundary]["required_checks"][field] = value
+    handler = _handler(_Client(), bound_policy={"validation": "none"})
+
+    result = await handler._cmd_integration_trust_manifest(
+        {"project_id": "agent-queue", "policy": policy}
+    )
+
+    assert result["success"] is False and result["outcome"] == outcome
+
+
+@pytest.mark.parametrize("missing", ["binding", "credential", "client-binding"])
+async def test_explicit_policy_for_development_still_requires_authenticated_identities(missing):
+    client = _Client()
+    handler = _handler(client, bound_policy={"validation": "none"})
+    if missing == "binding":
+        handler.orchestrator.github_repository_binding_resolver.return_value = None
+    elif missing == "credential":
+        client.credential_identity = None
+    else:
+        client.repository = GitHubRepositoryBinding(1, "someone/else")
+
+    result = await handler._cmd_integration_trust_manifest(
+        {"project_id": "agent-queue", "policy": _policy()}
+    )
+
+    expected = "repository_binding_failed" if missing == "binding" else "provider_binding_failed"
+    assert result["success"] is False and result["outcome"] == expected
+    assert client.paths == []
 
 
 async def test_command_reports_an_absent_committed_copy():
