@@ -4983,7 +4983,7 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "task_show",
         "description": (
-            "Full detail for one task in a single round trip: the task's "
+            "Detail for one task (bounded preview for workers): the task's "
             "fields, its dependency view and subtasks, its attached context "
             "rows, and its labels. Backs `aq task show|details`."
         ),
@@ -4991,6 +4991,11 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "Task id to show."},
+                "field": {"type": "string", "description": "Read one complete field in bounded pages; structured fields are serialized JSON."},
+                "offset": {"type": "integer", "minimum": 0, "default": 0,
+                           "description": "Character offset for a field page."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 4096, "default": 4096,
+                          "description": "Maximum characters in a field page."},
             },
             "required": ["task_id"],
         },

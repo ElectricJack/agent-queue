@@ -46,6 +46,23 @@ class Handler:
         return {"success": True, "reasons": self.reasons.get(args["task_id"], [])}
 
 
+async def test_worker_relaunch_streak_is_visible_to_stall_sweep():
+    from unittest.mock import AsyncMock
+
+    db = SimpleNamespace(get_task_meta_bulk=AsyncMock(return_value={
+        "loop": {"cause": "context_thrash", "count": 2, "session_id": "old-worker"},
+        "retry": {"cause": "context_thrash", "count": 1},
+        "done": {"cause": "context_thrash", "count": 9},
+    }))
+    findings = await module._worker_relaunch_findings(DoctorContext(db=db, config=AppConfig()), [
+        task("loop", status=TaskStatus.BLOCKED), task("retry"),
+        task("done", status=TaskStatus.COMPLETED),
+    ])
+    assert len(findings) == 1
+    assert findings[0]["kind"] == "worker_relaunch_loop"
+    assert findings[0]["count"] == 2 and findings[0]["cause"] == "context_thrash"
+
+
 class _Rows:
     """The one read a statement-backed probe needs from the fake engine."""
 

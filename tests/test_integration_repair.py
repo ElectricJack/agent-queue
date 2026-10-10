@@ -2637,6 +2637,7 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db)
     await _dead_writer_with_released_fence(db, delegate)
     stage_before = await _repair_stage(db, "operation", 0)
     assert await db.is_hierarchy_task_runnable(delegate) is False
+    await db.set_task_meta(delegate, "worker_failure_streak", {"cause": "context_thrash", "count": 2})
 
     result = await TaskCommandsMixin._cmd_restart_task(
         _restart_command(db, service), {"task_id": delegate}
@@ -2645,6 +2646,7 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db)
     assert result["restarted"] == delegate
     assert (result["previous_status"], result["reservation"]) == ("BLOCKED", "acquired")
     assert (await db.get_task(delegate)).status is TaskStatus.READY
+    assert await db.get_task_meta(delegate, "worker_failure_streak") is None
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )
@@ -2675,6 +2677,8 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db)
 async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db, fence_state):
     """A fence no handoff can prove free is refused, naming the control to run."""
     service, delegate = await _continuous_parent_stage(db)
+    streak = {"cause": "context_thrash", "count": 2}
+    await db.set_task_meta(delegate, "worker_failure_streak", streak)
     await _claimed_writer(db, delegate, epoch=1, live=False, sid="dead")
     async with db.immediate() as conn:
         await conn.execute(update(integration_branch_owners).values(
@@ -2688,6 +2692,7 @@ async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db
     assert "aq integration reserve-owner --task-id" in result["error"]
     assert "aq integration release-owner --task-id" in result["error"]
     assert (await db.get_task(delegate)).status is TaskStatus.BLOCKED
+    assert await db.get_task_meta(delegate, "worker_failure_streak") == streak
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )

@@ -1788,6 +1788,16 @@ class TaskQueryMixin:
                     result.flipped |= settle_result.flipped
                     result.ready.extend(settle_result.ready)
 
+        if new_status == TaskStatus.READY and context in {
+            "restart_task", "reopen_with_feedback", "supervisor_recovery", "operator_handoff",
+        }:
+            # An intentional new attempt clears the automatic failure streak
+            # in the READY transaction, before claim waiters can wake. Ordinary
+            # pool releases preserve it across replacement session rows.
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "worker_failure_streak",
+            ))
         return result
 
     def set_settlement_listener(self, cb) -> None:

@@ -142,6 +142,44 @@ class TestGetSchema:
 
 
 class TestTaskShow:
+    async def test_worker_preview_and_lossless_field_pages(self, handler, db, task):
+        from src.prime.budgets import TASK_SHOW_BYTES
+
+        description = "Task requirements αβ.\n" * 3000 + "FINAL ACCEPTANCE"
+        await db.update_task(task.id, description=description)
+        for i in range(20):
+            await db.add_task_context(task.id, type="note", label=str(i), content="note " * 5000)
+        scope = {"kind": "session", "task_id": task.id, "project_id": task.project_id,
+                 "session_id": "worker"}
+        preview = await handler.execute("task_show", {"task_id": task.id, "_scope": scope})
+        assert len(json.dumps(preview, ensure_ascii=False).encode()) <= TASK_SHOW_BYTES
+        assert "description" in preview["preview"]["omitted_fields"]
+        assert "context" in preview["preview"]["omitted_fields"]
+        rebuilt = ""
+        offset = 0
+        while True:
+            page = await handler.execute("task_show", {"task_id": task.id, "_scope": scope,
+                "field": "description", "offset": offset, "limit": 4096})
+            assert "error" not in page
+            assert len(page["content"]) <= 4096
+            rebuilt += page["content"]
+            offset = page["next_offset"]
+            if offset is None:
+                break
+        assert rebuilt == description
+        full = await handler.execute("task_show", {"task_id": task.id})
+        assert full["description"] == description and len(full["context"]) == 20
+        context_page = await handler.execute("task_show", {"task_id": task.id, "_scope": scope,
+            "field": "prime_context", "offset": 0, "limit": 4096})
+        assert context_page["content"].startswith("**0:**")
+        assert context_page["next_offset"] == 4096
+
+    async def test_field_pages_validate_bounds_and_field(self, handler, task):
+        for extra in ({"field": "missing"}, {"field": "description", "offset": -1},
+                      {"field": "description", "limit": 5000}):
+            result = await handler.execute("task_show", {"task_id": task.id, **extra})
+            assert "error" in result
+
     async def test_preparation_input_is_readable_only_on_own_task(self, handler, db, task):
         from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
         from src.profiles.capabilities import CapabilityPolicy

@@ -791,10 +791,13 @@ def task_list(
 
 @task.command("show")
 @click.argument("task_id")
+@click.option("--field", default=None, help="Read one canonical field in bounded pages.")
+@click.option("--offset", type=click.IntRange(min=0), default=0, help="Character offset.")
+@click.option("--limit", type=click.IntRange(1, 4096), default=4096, help="Page characters.")
 @click.pass_context
 @_handle_errors
-def task_show(ctx: click.Context, task_id: str) -> None:
-    """Show full task detail: fields, dependencies, context, labels."""
+def task_show(ctx: click.Context, task_id: str, field: str | None, offset: int, limit: int) -> None:
+    """Show task detail, with bounded previews for workers."""
     from .adapters import task_proxy
     from .formatters import format_task_detail
 
@@ -802,11 +805,22 @@ def task_show(ctx: click.Context, task_id: str) -> None:
 
     async def _show():
         async with _get_client(api_url) as client:
-            return await client.execute("task_show", {"task_id": task_id})
+            args = {"task_id": task_id}
+            if field is not None:
+                args.update(field=field, offset=offset, limit=limit)
+            return await client.execute("task_show", args)
 
     result = _run(_show())
 
     def _render(data: dict) -> None:
+        if "field" in data and "content" in data:
+            console.print(data["content"], markup=False)
+            if data.get("next_offset") is not None:
+                console.print(
+                    f"Next page: aq task show {task_id} --field {data['field']} "
+                    f"--offset {data['next_offset']} --limit {limit}", markup=False,
+                )
+            return
         t = task_proxy(data)
         deps_raw = _getval(data, "depends_on", [])
         blocks_raw = _getval(data, "blocks", [])
@@ -847,6 +861,11 @@ def task_show(ctx: click.Context, task_id: str) -> None:
         context = _getval(data, "context", [])
         if context:
             console.print(f"[dim]Context entries:[/] {len(context)}")
+        if data.get("preview"):
+            console.print(data["preview"]["instruction"], markup=False)
+            console.print(data["preview"]["read"], markup=False)
+            console.print("Omitted fields: " + ", ".join(data["preview"]["omitted_fields"]),
+                          markup=False)
 
     emit(ctx, result, entity="task", render=_render)
 

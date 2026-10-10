@@ -4474,6 +4474,7 @@ class TaskCommandsMixin:
         it; nothing claims a READY delegate whose fence was never restored.
         """
         previous = (task.status, task.retry_count, task.assigned_agent_id)
+        previous_streak = await self.db.get_task_meta(task.id, "worker_failure_streak")
         await self.db.transition_task(
             task.id,
             TaskStatus.READY,
@@ -4490,6 +4491,8 @@ class TaskCommandsMixin:
                 "reservation": reservation["outcome"],
             }
         await self._undo_refused_restart(task, previous)
+        if previous_streak is not None:
+            await self.db.set_task_meta(task.id, "worker_failure_streak", previous_streak)
         detail = reservation.get("dispatch", {}).get("reason") or reservation.get("reason")
         return {
             "error": (

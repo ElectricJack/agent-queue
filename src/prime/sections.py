@@ -138,6 +138,7 @@ def build_task_section(
     review_deliverables: str = "",
     integration_delivery: str = "",
     subtasks_block: str = "",
+    bounded_worker: bool = False,
 ) -> PrimeSection:
     """Task id/title/status/description (design §5.2 #3).
 
@@ -162,7 +163,11 @@ def build_task_section(
         lines.append(f"Claim epoch: {task.claim_epoch}")
     if task.description:
         lines.append("")
-        lines.append(task.description.strip())
+        from src.prime.budgets import DESCRIPTION_BYTES, text_preview
+
+        description = task.description.strip()
+        lines.append(text_preview(description, DESCRIPTION_BYTES, task.id, "description")
+                     if bounded_worker else description)
     if deliverables is None:
         deliverables = getattr(task, "deliverables", None) or []
     if deliverables:
@@ -345,7 +350,8 @@ def _render_spec_ref(config: Any, row: dict) -> str:
 
 
 async def build_task_context_section(
-    db: Any, config: Any, task: Any, *, session_id: str | None = None
+    db: Any, config: Any, task: Any, *, session_id: str | None = None,
+    bounded_worker: bool = False,
 ) -> PrimeSection:
     """``task_context`` rows incl. inlined ``spec_ref`` + attachments (design §5.2 #4).
 
@@ -354,6 +360,22 @@ async def build_task_context_section(
     """
     rows = await db.get_task_contexts(task.id)
     blocks: list[str] = []
+    required_blocks: list[str] = []
+    from src.sessions.worker_recovery import CONTINUATION_KEY
+
+    get_meta = getattr(db, "get_task_meta", None)
+    recovery = await get_meta(task.id, CONTINUATION_KEY) if callable(get_meta) else None
+    if isinstance(recovery, dict):
+        from src.handoffs import display_data
+
+        blocks.append(
+            "**Previous worker recovery note (historical observations):**\n"
+            "Verify the branch and `git status` before repeating work. Reuse the saved "
+            "progress and agent handoff; read source files in targeted ranges.\n\n"
+            + "\n".join("> " + line for line in display_data(
+                json.dumps(recovery, ensure_ascii=False, indent=2)
+            ).splitlines())
+        )
     get_repair = getattr(db, "get_parent_repair_prime_context", None)
     if (
         getattr(task, "created_by_kind", None) == "integration_repair"
@@ -362,7 +384,7 @@ async def build_task_context_section(
     ):
         repair = await get_repair(task.id, session_id=session_id)
         if isinstance(repair, dict):
-            blocks.append(
+            required_blocks.append(
                 "**Current parent conflict repair:**\n"
                 "Live assignment snapshot; refresh `aq prime` if the intent or attachment changes. "
                 "Use this intent_id, operation_id and fence for "
@@ -458,6 +480,13 @@ async def build_task_context_section(
         blocks.append("**attachments:**\n" + "\n".join(f"- {p}" for p in attachments))
 
     body = "\n\n".join(b for b in blocks if b).strip()
+    if bounded_worker:
+        from src.prime.budgets import CONTEXT_BYTES, text_preview
+
+        # Page this rendered field, rather than only the legacy context rows:
+        # recovery notes, comments and resolved spec text must remain readable.
+        body = text_preview(body, CONTEXT_BYTES, task.id, "prime_context")
+    body = "\n\n".join([*required_blocks, body]).strip()
     return PrimeSection(key="task_context", title=SECTION_TITLES["task_context"], body=body)
 
 

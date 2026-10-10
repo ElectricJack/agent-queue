@@ -1058,6 +1058,11 @@ class SessionReconciler:
                 rapid_crash_window=float(self.sessions_config.restart_window_seconds),
                 opencode=self._runs_opencode(row),
             )
+            if verdict.verdict is not Verdict.DRAINED:
+                from src.sessions.worker_recovery import context_thrashed
+
+                if await context_thrashed(row, base_dir=self.transcript_base_dir):
+                    verdict = ExitVerdict(Verdict.CONTEXT_THRASH, "Autocompact is thrashing")
             # ``peek`` holds the whole pane plus scrollback: the hand-off
             # note's screen tail when the provider explains this death.
             await self._apply_verdict(provider, row, task, verdict, now, screen=peek)
@@ -1159,6 +1164,13 @@ class SessionReconciler:
             verdict=str(verdict.verdict),
             reason=verdict.reason,
         )
+        if task is not None and verdict.verdict is not Verdict.DRAINED:
+            record = await self._record_worker_failure(row, task, verdict.verdict.value, now)
+            if record is None:
+                return  # A newer claim, manual stop, or close owns this task.
+            if verdict.verdict is Verdict.CONTEXT_THRASH:
+                await self._recover_guarded_failure(provider, row, task, record, now)
+                return
         availability = self._provider_availability()
         if verdict.verdict is Verdict.RATE_LIMIT and availability is not None:
             # Broad pane text needs two sessions (D2/D3). The strict retry
@@ -1607,6 +1619,76 @@ class SessionReconciler:
         except Exception:
             logger.debug(
                 "could not record exit incident for %s", task.id, exc_info=True
+            )
+
+    async def _record_worker_failure(self, row, task, cause: str, now: float):
+        from src.sessions.worker_recovery import record_failure, save_continuation
+
+        record = await record_failure(self.db, row, task, cause, now=now)
+        if record is not None:
+            try:
+                await save_continuation(self.db, row, task, record)
+            except Exception:
+                logger.warning("could not save recovery note for %s", task.id, exc_info=True)
+        return record
+
+    async def _recover_guarded_failure(self, provider, row, task, record, now: float) -> None:
+        """One retry, then explicit attention, across replacement sessions."""
+        from src.sessions.worker_recovery import MAX_SAME_CAUSE, THRASH_CAUSE
+
+        cause = record["cause"]
+        blocked = record["count"] >= MAX_SAME_CAUSE
+        if cause == THRASH_CAUSE:
+            # A fresh retry must not resume the context that just thrashed.
+            await self.db.delete_task_meta(task.id, "session_resume_key")
+        await self.db.set_task_meta(task.id, META_STALL_NUDGES, "0")
+        await self.db.set_task_meta(task.id, META_STALL_LAST_ACTION, "0")
+        if cause == "stalled":
+            try:
+                await provider.interrupt(self._handle(row))
+            except Exception:
+                logger.debug("interrupt failed for %s", row.id, exc_info=True)
+        if row.lifecycle == "pool":
+            if self.orchestrator is None:
+                return
+            await self.orchestrator._terminate_pool_session(
+                row, reason=cause,
+                task_status=TaskStatus.BLOCKED if blocked else TaskStatus.READY,
+            )
+        else:
+            await self._stop_session(provider, row, reason=cause)
+            if not blocked:
+                await self.db.transition_task(
+                    task.id, TaskStatus.PAUSED, context=f"session_{cause}_retry",
+                    resume_after=now + self.sessions_config.restart_backoff_seconds,
+                    assigned_agent_id=None,
+                )
+            if cause != THRASH_CAUSE:
+                await self._carry_resume_key(row, task)
+            await self._release_task(task, row, reason=cause)
+        await self.db.add_task_comment(
+            task.id,
+            f"Worker {row.id}: {cause}, consecutive incident {record['count']}. "
+            + ("BLOCKED; automatic relaunch stopped. Supervisor investigation required. "
+               if blocked else "Retrying with a bounded continuation note. ")
+            + "Check the branch and recovery note in aq prime before repeating reads.",
+            author_kind="supervisor", author_id="session-reconciler",
+        )
+        if blocked:
+            await self.db.notify_task_recovery(task.id, project_id=task.project_id)
+            await self._emit(
+                "task.needs_attention", task_id=task.id, project_id=task.project_id,
+                title=task.title, session_id=row.id, reason=f"session_{cause}",
+            )
+            await self._emit(
+                "task.failed", task_id=task.id, project_id=task.project_id,
+                title=task.title, status=TaskStatus.BLOCKED.value, context=f"session_{cause}",
+                error=f"{record['count']} consecutive {cause} incidents; automatic retries stopped",
+            )
+        else:
+            await self._emit(
+                "task.restarted", task_id=task.id, project_id=task.project_id,
+                title=task.title, session_id=row.id, attempt=record["count"], reason=cause,
             )
 
     async def _apply_rate_limit_cooldown(self, row: SessionRecord) -> None:
@@ -2093,6 +2175,19 @@ class SessionReconciler:
             waiting, resumed = await self._wait_lease(row, now)
             if waiting:
                 continue
+            # The synthetic compaction error can leave an interactive CLI
+            # alive at its prompt. Its exact-session transcript is positive
+            # evidence even while the pane repaints and reports activity.
+            from src.sessions.worker_recovery import context_thrashed
+
+            if await context_thrashed(row, base_dir=self.transcript_base_dir):
+                provider = self._provider_for(row)
+                task = await self.db.get_task(row.task_id)
+                if provider is not None and task is not None:
+                    record = await self._record_worker_failure(row, task, "context_thrash", now)
+                    if record is not None:
+                        await self._recover_guarded_failure(provider, row, task, record, now)
+                continue
             # OpenCode's retry countdown continuously repaints its pane. A
             # blocking retry footer is positive evidence even when that
             # activity clock is fresh and the remote backend has no probe.
@@ -2222,22 +2317,14 @@ class SessionReconciler:
 
             # Rungs exhausted: interrupt, kill, and let the scheduler
             # relaunch with the harness resume key so context survives.
+            record = await self._record_worker_failure(row, task, "stalled", now)
+            if record is None:
+                continue
             if row.lifecycle == "pool":
-                # No in-place restart for a pool session -- the pool step
-                # starts a fresh one next tick; this one's claim (and the
-                # task it holds) goes back through the normal termination
-                # path.
-                if self.orchestrator is None:
-                    logger.warning(
-                        "Pool session %s stalled but no orchestrator is wired "
-                        "— skipping", row.id,
-                    )
-                    continue
-                try:
-                    await provider.interrupt(self._handle(row))
-                except Exception:
-                    logger.debug("interrupt failed for %s", row.id, exc_info=True)
-                await self.orchestrator._terminate_pool_session(row, reason="stalled")
+                await self._recover_guarded_failure(provider, row, task, record, now)
+                continue
+            if record["count"] >= 2:
+                await self._quarantine(row, task, reason="stall", now=now)
                 continue
             count = await self.db.bump_session_restarts(row.id)
             # ``>=``, matching the rapid-crash branch.  ``>`` here allowed
@@ -2890,15 +2977,25 @@ class SessionReconciler:
                     limit,
                 )
                 if task is not None:
-                    await self.db.set_task_meta(
-                        task.id, "needs_attention", "exited_holding_task"
-                    )
+                    record = await self._record_worker_failure(row, task, "stuck_timeout", now)
+                    if record is None:
+                        continue
+                    if record["count"] >= 2:
+                        await self._recover_guarded_failure(
+                            self._provider_for(row), row, task, record, now
+                        )
+                        continue
+                    await self.db.set_task_meta(task.id, "needs_attention", "exited_holding_task")
                 await self.orchestrator._terminate_pool_session(row, reason="stuck_timeout")
                 continue
             provider = self._provider_for(row)
             if provider is None:
                 continue
             task = await self.db.get_task(row.task_id)
+            if task is not None and task.status is TaskStatus.IN_PROGRESS:
+                record = await self._record_worker_failure(row, task, "stuck_timeout", now)
+                if record is None:
+                    continue
             logger.warning(
                 "Session %s exceeded stuck_timeout_seconds (%ss) — force-killing",
                 row.id,

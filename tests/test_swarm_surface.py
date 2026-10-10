@@ -23,6 +23,35 @@ def defs():
     return {d["name"]: d for d in _ALL_TOOL_DEFINITIONS}
 
 
+def test_task_show_field_page_survives_cli_rendering(monkeypatch):
+    from src.cli import tasks
+    from src.cli.app import cli
+
+    sent = {}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def execute(self, command, args=None):
+            sent.update(command=command, args=args)
+            return {"success": True, "id": "t1", "field": "description", "content": "[literal]",
+                    "offset": 20, "next_offset": 29, "total_chars": 100}
+
+    monkeypatch.setattr(tasks, "_get_client", lambda *a, **k: FakeClient())
+    result = CliRunner().invoke(cli, ["task", "show", "t1", "--field", "description",
+                                     "--offset", "20", "--limit", "100"])
+    assert result.exit_code == 0, result.output
+    assert "[literal]" in result.output
+    assert "--offset 29 --limit 100" in result.output
+    assert sent == {"command": "task_show", "args": {
+        "task_id": "t1", "field": "description", "offset": 20, "limit": 100,
+    }}
+
+
 def test_task_claim_definition():
     d = defs()["task_claim"]
     assert set(d["input_schema"]["properties"]) >= {"task_id", "next", "wait"}

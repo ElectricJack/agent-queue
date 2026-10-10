@@ -19296,6 +19296,9 @@
           "task_id"
         ],
         "optional": [
+          "--field",
+          "--offset",
+          "--limit",
           "--json",
           "--brief",
           "--save-output",

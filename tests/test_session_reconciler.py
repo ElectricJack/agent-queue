@@ -318,7 +318,174 @@ async def _claimed_pool_session(
 # ---------------------------------------------------------------------------
 
 
+class TestWorkerContextRecovery:
+    @pytest.mark.parametrize("cause", ["context_thrash", "stalled", "stuck_timeout"])
+    async def test_two_distinct_pool_claims_block_and_notify_across_reconciler_restart(
+        self, db, provider, pool_reconciler, config, registry, bus, tmp_path, cause
+    ):
+        from src.sessions.worker_recovery import CONTINUATION_KEY, STREAK_KEY
+
+        first = await _claimed_pool_session(db, provider, tmp_path, last_activity=NOW - 1000)
+        # The incident query rejects attempts from a prior task incarnation.
+        # Match the fixture task's creation clock to the simulated sessions.
+        await db.update_task("t1", created_at=NOW - 6000)
+        await db.add_task_comment("t1", "Finished parser; next verify loop guard.",
+                                  author_kind="agent", author_id=first.id)
+        async def fail(rec, row, now):
+            if cause == "context_thrash":
+                provider.feed_output(row.name, "Autocompact is thrashing: context refilled",
+                                     activity=False)
+                provider.script_death(row.name)
+                await rec._step_exits([row], now)
+            elif cause == "stalled":
+                await db.set_task_meta("t1", META_STALL_NUDGES,
+                                       str(config.sessions.stall_max_nudges))
+                await db.set_task_meta("t1", META_STALL_LAST_ACTION, "0")
+                await rec._step_stall_ladder([row], now)
+            else:
+                config.agents_config.stuck_timeout_seconds = 300
+                await rec._step_backstop([row], now)
+
+        await fail(pool_reconciler, first, NOW)
+        assert (await db.get_task("t1")).status is TaskStatus.READY
+        assert (await db.get_task_meta("t1", STREAK_KEY))["count"] == 1
+        note = await db.get_task_meta("t1", CONTINUATION_KEY)
+        assert "Finished parser" in note["progress"][0]["body"]
+
+        task = await db.get_task("t1")
+        await db.update_task("t1", claim_epoch=task.claim_epoch + 1)
+        await db.transition_task("t1", TaskStatus.IN_PROGRESS, context="test_reclaim", force=True,
+                                 assigned_agent_id="a1")
+        task = await db.get_task("t1")
+        second = await _session(db, provider, sid="s2", name="p-worker-2", lifecycle="pool",
+                                agent_id="a1", last_claim_epoch=task.claim_epoch,
+                                claim_phase="active", started_at=NOW + 10,
+                                last_activity=NOW - 1000)
+        replacement = SessionReconciler(db, config, registry, bus=bus,
+                                        orchestrator=pool_reconciler.test_orch)
+        await fail(replacement, second, NOW + 20)
+        current = await db.get_task("t1")
+        assert current.status is TaskStatus.BLOCKED
+        assert current.assigned_agent_id is None
+        assert await db.get_task_meta("t1", "needs_attention") == f"session_{cause}"
+        assert (await db.get_task_meta("t1", STREAK_KEY))["count"] == 2
+        incident = await db.get_task_meta("t1", "supervisor_recovery_incident")
+        assert incident and incident["reason"] == f"session_{cause}"
+        assert not pool_reconciler.test_orch._pool_quarantine
+        # Replaying the exit cannot spend another incident or launch a worker.
+        await replacement._step_exits([second], NOW + 30)
+        assert (await db.get_task_meta("t1", STREAK_KEY))["count"] == 2
+
+        # Intentional recovery admits a new streak, retaining historical progress.
+        await db.transition_task("t1", TaskStatus.READY, context="restart_task")
+        assert await db.get_task_meta("t1", STREAK_KEY) is None
+        assert await db.get_task_meta("t1", CONTINUATION_KEY) is not None
+
+    async def test_count_is_idempotent_changes_cause_and_rejects_stale_instance(
+        self, db, provider
+    ):
+        from dataclasses import replace
+        from src.sessions.worker_recovery import STREAK_KEY, record_failure
+
+        task = await _task(db)
+        first = await _session(db, provider)
+        one = await record_failure(db, first, task, "context_thrash", now=NOW)
+        same = await record_failure(db, first, task, "context_thrash", now=NOW + 1)
+        assert one == same and one["count"] == 1
+        stale = replace(first, instance_token="wrong")
+        assert await record_failure(db, stale, task, "stalled", now=NOW + 2) is None
+        await db.update_session(first.id, state="stopped", desired_state="stopped")
+        second = await _session(db, provider, sid="s2", name="s-second")
+        changed = await record_failure(db, second, task, "productive_death", now=NOW + 3)
+        assert changed["count"] == 1 and changed["cause"] == "productive_death"
+        assert await db.get_task_meta(task.id, STREAK_KEY) == changed
+
+    @pytest.mark.parametrize("live", [False, True])
+    async def test_exact_transcript_error_recovers_dead_and_live_claude(
+        self, db, provider, pool_reconciler, tmp_path, live
+    ):
+        import json
+        from datetime import datetime, timezone
+        from src.sessions.transcripts.claude import slug_work_dir
+        from src.sessions.worker_recovery import STREAK_KEY
+
+        row = await _claimed_pool_session(db, provider, tmp_path)
+        await db.update_session(row.id, session_key="native-session")
+        row = await db.get_session(row.id)
+        root = tmp_path / ".claude" / "projects" / slug_work_dir(row.work_dir)
+        root.mkdir(parents=True)
+        (root / "native-session.jsonl").write_text(json.dumps({
+            "type": "assistant", "isApiErrorMessage": True,
+            "timestamp": datetime.fromtimestamp(NOW, timezone.utc).isoformat(),
+            "message": {"content": [{"type": "text", "text":
+                                     "Autocompact is thrashing: the context refilled"}]},
+        }) + "\n")
+        pool_reconciler.transcript_base_dir = tmp_path
+        if live:
+            await pool_reconciler._step_stall_ladder([row], NOW)
+        else:
+            provider.script_death(row.name)
+            await pool_reconciler._step_exits([row], NOW)
+        assert (await db.get_task_meta("t1", STREAK_KEY))["cause"] == "context_thrash"
+        assert (await db.get_task("t1")).status is TaskStatus.READY
+
+    async def test_transcript_quotations_and_old_errors_are_ignored(self, db, provider, tmp_path):
+        import json
+        from datetime import datetime, timezone
+        from src.sessions.transcripts.claude import slug_work_dir
+        from src.sessions.worker_recovery import context_thrashed
+
+        await _task(db)
+        row = await _session(db, provider, session_key="native", started_at=NOW)
+        root = tmp_path / ".claude" / "projects" / slug_work_dir(row.work_dir)
+        root.mkdir(parents=True)
+        path = root / "native.jsonl"
+        for kind, api_error, timestamp in (("user", True, NOW), ("assistant", False, NOW),
+                                           ("assistant", True, NOW - 100)):
+            path.write_text(json.dumps({"type": kind, "isApiErrorMessage": api_error,
+                "timestamp": datetime.fromtimestamp(timestamp, timezone.utc).isoformat(),
+                "message": {"content": "Autocompact is thrashing: context refilled"}}) + "\n")
+            assert not await context_thrashed(row, base_dir=tmp_path)
+
+        # A newer normal assistant response supersedes an earlier real error.
+        error = {"type": "assistant", "isApiErrorMessage": True,
+                 "timestamp": datetime.fromtimestamp(NOW, timezone.utc).isoformat(),
+                 "message": {"content": "Autocompact is thrashing: context refilled"}}
+        recovered = {**error, "isApiErrorMessage": False, "message": {"content": "Continuing"}}
+        path.write_text(json.dumps(error) + "\n" + json.dumps(recovered) + "\n")
+        assert not await context_thrashed(row, base_dir=tmp_path)
+
+    async def test_stale_claim_and_manual_stop_cannot_count_or_block(
+        self, db, provider, tmp_path
+    ):
+        from dataclasses import replace
+        from src.sessions.worker_recovery import STREAK_KEY, record_failure
+
+        row = await _claimed_pool_session(db, provider, tmp_path)
+        task = await db.get_task("t1")
+        stale = replace(task, claim_epoch=task.claim_epoch + 1)
+        assert await record_failure(db, row, stale, "context_thrash", now=NOW) is None
+        await db.update_session(row.id, desired_state="stopped")
+        assert await record_failure(db, row, task, "context_thrash", now=NOW) is None
+        assert await db.get_task_meta("t1", STREAK_KEY) is None
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
+
 class TestExitClassifier:
+    def test_context_thrash_precedes_rate_limit_and_crash(self):
+        verdict = classify_exit(
+            self._row(started_at=NOW - 10), self._task(),
+            "Autocompact is thrashing: context refilled to the limit\nrate limit", now=NOW,
+        )
+        assert verdict.verdict is Verdict.CONTEXT_THRASH
+
+    def test_quoted_context_thrash_is_not_a_diagnostic(self):
+        verdict = classify_exit(
+            self._row(started_at=NOW - 5000), self._task(),
+            'Task: fix "Autocompact is thrashing: context refilled"', now=NOW,
+        )
+        assert verdict.verdict is Verdict.PRODUCTIVE_DEATH
+
     def _row(self, started_at=NOW):
         return SessionRecord(
             id="s",

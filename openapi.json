@@ -19962,8 +19962,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Full detail for one task in a single round trip: the task's fields, its dependency view and subtasks, its attached context rows, and its labels. Backs `aq task show|details`.",
-        "description": "Full detail for one task in a single round trip: the task's fields, its dependency view and subtasks, its attached context rows, and its labels. Backs `aq task show|details`.",
+        "summary": "Detail for one task (bounded preview for workers): the task's fields, its dependency view and subtasks, its attached context rows, and its labels. Backs `aq task show|details`.",
+        "description": "Detail for one task (bounded preview for workers): the task's fields, its dependency view and subtasks, its attached context rows, and its labels. Backs `aq task show|details`.",
         "operationId": "task_show",
         "requestBody": {
           "content": {
@@ -71840,6 +71840,30 @@
             "type": "string",
             "title": "Task Id",
             "description": "Task id to show."
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field",
+            "description": "Read one complete field in bounded pages; structured fields are serialized JSON."
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "description": "Character offset for a field page.",
+            "default": 0
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "Maximum characters in a field page.",
+            "default": 4096
           }
         },
         "type": "object",

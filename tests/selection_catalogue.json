@@ -13227,7 +13227,7 @@
         "prime"
       ],
       "default_arm": true,
-      "digest": "sha256:9ba0a4465df96264341dc6efc4aeb0fd807892b59a16096c037a34cfb4e353a5",
+      "digest": "sha256:69bf6dcae6d02866dafb7b857d9b9be96425d8cfd14104f1a47279b586e17a2c",
       "imports": [
         "src.api.scope",
         "src.config",
@@ -13235,11 +13235,13 @@
         "src.handoffs",
         "src.models",
         "src.prime",
+        "src.prime.budgets",
         "src.prime.models",
         "src.prime.sections",
         "src.profiles.parser",
         "src.sessions.harness_parser",
-        "src.sessions.harness_registry"
+        "src.sessions.harness_registry",
+        "src.sessions.worker_recovery"
       ],
       "markers": [
         "asyncio",
@@ -15875,7 +15877,7 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:cdbc39b69073b50b3718c1c1db4d5e7248efaa2ff2d53d6567ab2c05dd38314b",
+      "digest": "sha256:ae8f18fb1a3001f2b8cd85e06d42ee51cefc0ca240abf7c03c7850abda1f52f8",
       "imports": [
         "src.agent_waits",
         "src.commands",
@@ -15904,7 +15906,9 @@
         "src.sessions.reconciler",
         "src.sessions.tmux",
         "src.sessions.transcripts",
-        "src.sessions.transcripts.codex"
+        "src.sessions.transcripts.claude",
+        "src.sessions.transcripts.codex",
+        "src.sessions.worker_recovery"
       ],
       "markers": [
         "parametrize",
@@ -16419,7 +16423,7 @@
         "command-dispatch"
       ],
       "default_arm": true,
-      "digest": "sha256:0e24e162b24cd6d30beb2c64416557955d94f042db54f55dfbb30c02d9809ef2",
+      "digest": "sha256:89927f1ebff91919ceeabf8e4f73adf02b64032acf9bb48e528dab06cfef0db5",
       "imports": [
         "src",
         "src.api.auth",
@@ -16432,6 +16436,7 @@
         "src.event_bus",
         "src.handoffs",
         "src.models",
+        "src.prime.budgets",
         "src.profiles.capabilities"
       ],
       "markers": [
@@ -16462,13 +16467,14 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:810309116b3b3c2a1b40ccbd86dd1b194f6eee575776e9cbd7905128b420768a",
+      "digest": "sha256:17b2c278548153d26c27e5788edc96110af27e0978a5217b1b6f49a7fabeb0fc",
       "imports": [
         "src.api.scope",
         "src.cli",
         "src.cli.agent_surface",
         "src.cli.app",
         "src.cli.client",
+        "src.cli.tasks",
         "src.commands.handler",
         "src.config",
         "src.database",

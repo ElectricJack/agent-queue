@@ -303,6 +303,52 @@ class TestGoldenAssembly:
 
 
 class TestTaskContextSection:
+    async def test_worker_previews_bound_description_and_context_but_keep_protocol(
+        self, db, config, task
+    ):
+        from src.prime.budgets import CONTEXT_BYTES, DESCRIPTION_BYTES
+        from src.sessions.worker_recovery import CONTINUATION_KEY
+
+        description = "Requested work.\n" + "big brief " * 5000 + "EXACT ACCEPTANCE AT END"
+        await db.update_task(task.id, description=description)
+        await db.add_task_context(task.id, type="note", label="huge", content="context " * 10000)
+        await db.set_task_meta(task.id, CONTINUATION_KEY, {"cause": "context_thrash",
+            "count": 1, "progress": [{"body": "parser implemented; verify next"}]})
+        doc = await PrimeRenderer(db, config).render_for_task(task.id)
+        sections = {s.key: s.body for s in doc.sections}
+        assert len(sections["task_context"].encode()) <= CONTEXT_BYTES
+        assert "parser implemented" in sections["task_context"]
+        assert "--field prime_context" in sections["task_context"]
+        assert "--field description" in sections["task"]
+        assert len(sections["task"].encode()) < DESCRIPTION_BYTES + 500
+        assert "aq task close" in sections["completion_protocol"]
+        assert (await db.get_task(task.id)).description == description
+        full = await PrimeRenderer(db, config).render_for_task(task.id, bounded_worker=False)
+        assert "EXACT ACCEPTANCE AT END" in full.to_markdown()
+
+    async def test_oversized_spec_context_keeps_current_repair_authority(
+        self, db, config, task, monkeypatch
+    ):
+        from dataclasses import replace
+        from unittest.mock import AsyncMock
+        from src.prime.sections import build_task_context_section
+        from src.prime.budgets import CONTEXT_BYTES
+
+        spec_rel = "projects/proj-1/specs/large.md"
+        _write(os.path.join(config.vault_root, spec_rel), "## Contract\n" + "schema " * 10000)
+        await db.add_task_context(task.id, type="spec_ref", label="contract",
+                                  content=json.dumps({"path": spec_rel, "section": "Contract"}))
+        snapshot = {"intent_id": "live-intent", "operation_id": "live-operation", "fence": 7}
+        monkeypatch.setattr(db, "get_parent_repair_prime_context", AsyncMock(return_value=snapshot))
+        section = await build_task_context_section(
+            db, config, replace(task, created_by_kind="integration_repair"),
+            session_id="worker", bounded_worker=True,
+        )
+        assert '"intent_id": "live-intent"' in section.body
+        assert '"fence": 7' in section.body
+        assert "--field prime_context" in section.body
+        assert len(section.body.encode()) < CONTEXT_BYTES + 1000
+
     async def test_note_context_row_is_inlined(self, db, config, task):
         await db.add_task_context("task-1", type="note", label="note", content="hello there")
         doc = await PrimeRenderer(db, config).render_for_task("task-1")

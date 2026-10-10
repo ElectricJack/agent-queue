@@ -515,12 +515,37 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _validation_findings(),
         _subject_unknown_findings(ctx, active, now),
         _object_bootstrap_findings(ctx, active, now),
+        _worker_relaunch_findings(ctx, tasks),
     )
     findings = (
         [item for group in groups for item in group]
         + _route_findings(tasks) + flock_findings + conversation
     )
     return _sweep_result(ctx, findings, len(active))
+
+
+async def _worker_relaunch_findings(ctx: DoctorContext, tasks: list) -> list[dict]:
+    """Persistent cause streaks outlive the discarded pool session rows."""
+    from src.sessions.worker_recovery import STREAK_KEY
+
+    read = getattr(ctx.db, "get_task_meta_bulk", None)
+    records = await read([task.id for task in tasks], STREAK_KEY) if callable(read) else {}
+    findings = []
+    for task in tasks:
+        record = records.get(task.id)
+        if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
+            continue
+        if (not isinstance(record, dict) or type(record.get("count")) is not int
+                or record["count"] < 2):
+            continue
+        findings.append(_finding(
+            "worker_relaunch_loop", task.project_id,
+            f"Task {task.id}: {record['count']} consecutive {record.get('cause')} incidents; "
+            f"status {task.status.value}. Inspect its recovery note before restarting.",
+            task_id=task.id, cause=record.get("cause"), count=record["count"],
+            session_id=record.get("session_id"), observed_at=record.get("observed_at"),
+        ))
+    return findings
 
 
 async def _reviewed_file_guard_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
