@@ -312,6 +312,7 @@ async def test_explain_and_pool_status_only_read_cached_development_delivery(
     from src.commands.handler import CommandHandler
     from src.config import AppConfig, DatabaseConfig, DiscordConfig
     from src.integration.delivery_observer import DeliveryTarget
+    from src.integration.service import IntegrationService
     from src.models import AgentProfile
     from src.orchestrator import Orchestrator
 
@@ -325,6 +326,7 @@ async def test_explain_and_pool_status_only_read_cached_development_delivery(
     config.swarm.enabled = True
     orch = Orchestrator(config)
     orch.db, orch.git, orch.development_integration = db, observer.git, service
+    orch.integration_service = IntegrationService(db, None, development_subject_runtime=object())
     handler = CommandHandler(orch, config)
     await db.create_profile(AgentProfile(
         id="worker", name="Worker", lifecycle="pool", default_class="fast-low", harness="claude",
@@ -372,6 +374,44 @@ async def test_explain_and_pool_status_only_read_cached_development_delivery(
     assert next(row for row in status["pools"] if row["profile_id"] == "worker")["ready"] == 0
     for call in forbidden.values():
         call.assert_not_awaited()
+
+
+@pytest.mark.parametrize("failure", ["paused", "train_missing", "stopped", "service_missing"])
+async def test_explain_names_missing_engine_for_undelivered_prerequisite(
+    world, tmp_path, failure,
+):
+    from src.commands.handler import CommandHandler
+    from src.config import AppConfig, DatabaseConfig
+    from src.integration.service import IntegrationService
+    from src.orchestrator import Orchestrator
+
+    db, origin, observer, primitives = world
+    primitives.git = observer.git
+    primitives._delivery_observer = observer
+    config = AppConfig(database=DatabaseConfig(url=lease_dsn("delivery-consumers.db")),
+                       data_dir=str(tmp_path / "data"))
+    orch = Orchestrator(config)
+    orch.db, orch.git, orch.development_integration = db, observer.git, primitives
+    if failure == "paused":
+        config.integration.reconciler_active = False
+    elif failure == "train_missing":
+        config.integration.git_first = "active"
+    elif failure == "stopped":
+        orch.integration_service = IntegrationService(None, None, train=object())
+        orch.integration_service._stop_event.set()
+    await db.create_task(Task(
+        id="waiting", project_id="p", repo_id="r", title="waiting", description="",
+        status=TaskStatus.READY,
+    ))
+    await db.add_dependency("waiting", "missing")
+    result = await CommandHandler(orch, config)._cmd_explain_task({"task_id": "waiting"})
+    delivery = [reason for reason in result["reasons"]
+                if reason["code"] == "delivery_engine_unavailable"]
+    assert len(delivery) == 1
+    assert delivery[0]["ref"] == "missing"
+    assert "no delivery engine for this project" in delivery[0]["detail"]
+    assert "development_dependency_delivery" not in result["reason_codes"]
+    assert "delivery_evidence_unavailable" not in result["reason_codes"]
 
 
 async def test_cached_display_delivery_never_supplies_fresh_admission(world, monkeypatch):

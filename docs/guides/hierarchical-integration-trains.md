@@ -546,6 +546,16 @@ verification receipts. Reconciler decisions use those facts through the shared
 ports. Historical development operation rows remain audit and recovery inputs;
 they do not restart an autonomous publisher.
 
+`aq doctor --check integration.delivery_engine` identifies projects whose selected
+delivery engine is unavailable or whose designated integration repository is
+missing or belongs to another project. `stall.sweep` reports the same failures
+for active projects, and task explanations say "no delivery engine for this
+project" when a prerequisite cannot be delivered. Restore the selected runtime
+and repository binding with the operator configuration commands, or explicitly
+disable integration. Enabling a mode without an engine is refused. An active
+train supports `development` as well as `train` and `hierarchy`; `observe` and
+`disabled` intentionally perform no delivery.
+
 COMPLETED therefore does not mean delivered. `aq doctor --check
 integration.completed_undelivered` lists every COMPLETED task, archived ones
 included, whose branch tip the default branch cannot reach, with the rule that

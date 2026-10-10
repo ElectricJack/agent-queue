@@ -14,6 +14,24 @@ _DEVELOPMENT_APP_ITEMS = frozenset({"credential", "repository", "protection"})
 _APP_MODE_SEVERITY = {"fail": Severity.ERROR, "warn": Severity.WARN}
 
 
+async def _check_delivery_engine(ctx: DoctorContext) -> CheckResult:
+    from src.integration.delivery_engine import project_delivery_issues
+
+    check_id = "integration.delivery_engine"
+    if ctx.db is None:
+        return CheckResult(check_id, Severity.INFO, "database unavailable")
+    issues = await project_delivery_issues(
+        ctx.db, await ctx.db.list_projects(), ctx.config,
+        orchestrator=getattr(ctx.handler, "orchestrator", None),
+    )
+    return CheckResult(
+        check_id, Severity.ERROR if issues else Severity.OK,
+        "\n".join(issue["detail"] for issue in issues) if issues
+        else "every delivery mode has an engine and designated repository",
+        data={"projects": issues},
+    )
+
+
 async def _subjects(ctx, *, held):
     check_id = "integration.subjects_held" if held else "integration.subjects_overdue"
     if ctx.db is None:
@@ -563,6 +581,8 @@ async def _check_ci_source(ctx: DoctorContext) -> CheckResult:
 
 def integration_checks() -> list[DoctorCheck]:
     return [
+        DoctorCheck(id="integration.delivery_engine", run=_check_delivery_engine,
+                    owner=OWNER, timeout_s=30.0),
         DoctorCheck(id="integration.legacy_deliveries", run=_check_legacy_deliveries,
                     owner=OWNER, timeout_s=300.0),
         DoctorCheck(id="integration.completed_undelivered", run=_check_completed_undelivered,

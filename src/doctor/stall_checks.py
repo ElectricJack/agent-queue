@@ -479,6 +479,17 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
     now = time.time()
     projects = await ctx.db.list_projects(status=ProjectStatus.ACTIVE)
     active = {project.id for project in projects}
+    from src.integration.delivery_engine import project_delivery_issues
+
+    delivery_engines = [
+        _finding("delivery_engine_unavailable", issue["project_id"], issue["detail"],
+                 severity="error", **{key: value for key, value in issue.items()
+                                      if key not in {"project_id", "detail"}})
+        for issue in await project_delivery_issues(
+            ctx.db, projects, ctx.config,
+            orchestrator=getattr(ctx.handler, "orchestrator", None),
+        )
+    ]
     from src.doctor.session_checks import _check_flock
 
     flock = await _check_flock(ctx)
@@ -519,7 +530,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
     )
     findings = (
         [item for group in groups for item in group]
-        + _route_findings(tasks) + flock_findings + conversation
+        + _route_findings(tasks) + flock_findings + conversation + delivery_engines
     )
     return _sweep_result(ctx, findings, len(active))
 

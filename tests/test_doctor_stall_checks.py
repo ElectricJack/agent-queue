@@ -351,6 +351,39 @@ async def test_sweep_is_registered_and_reports_all_active_projects(context, monk
     assert "unclaimed_work two: two-ready" in result.detail
 
 
+async def test_sweep_reports_missing_delivery_engine_without_waiting_for_tasks(context, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from src.doctor.models import CheckResult
+    from src.models import Project
+
+    context.config.integration.reconciler_active = False
+    context.db.list_projects = AsyncMock(return_value=[
+        Project(id="one", name="One", hierarchical_integration_mode="development"),
+        Project(id="two", name="Two", hierarchical_integration_mode="disabled"),
+    ])
+    sessions = import_module("src.doctor.session_checks")
+    monkeypatch.setattr(sessions, "_check_flock", AsyncMock(return_value=CheckResult(
+        "sessions.untracked", Severity.OK, "clean",
+    )))
+    for name in (
+        "_work_findings", "_branch_findings", "_session_findings", "_delivery_findings",
+        "_provider_findings", "_unmaterialized_pr_findings", "_completed_undelivered_findings",
+        "_unadmitted_parent_findings", "_stranded_child_findings", "_reviewed_file_guard_findings",
+        "_orphaned_pr_findings", "_validation_findings", "_subject_unknown_findings",
+        "_object_bootstrap_findings", "_worker_relaunch_findings",
+    ):
+        monkeypatch.setattr(module, name, AsyncMock(return_value=[]))
+    monkeypatch.setattr(module, "_log_findings", lambda *args: [])
+    result = await module._check_sweep(context)
+    assert result.severity is Severity.ERROR
+    assert len(result.data["findings"]) == 1
+    finding = result.data["findings"][0]
+    assert finding["kind"] == "delivery_engine_unavailable"
+    assert finding["project_id"] == "one"
+    assert "no delivery engine for this project" in finding["detail"]
+
+
 async def test_conversation_inputs_with_no_live_supervisor_are_named(context):
     """An input nobody is live to answer must not look like a healthy install."""
     assert await module._conversation_findings(context, NOW) == []

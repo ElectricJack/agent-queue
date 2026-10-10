@@ -479,6 +479,17 @@ class ProjectCommandsMixin:
                 }
             if "expected_integration_generation" not in args:
                 return {"error": "expected_integration_generation is required"}
+            if "hierarchical_integration_mode" in sensitive:
+                from src.integration.delivery_engine import engine_refusal
+
+                refusal = engine_refusal(
+                    sensitive["hierarchical_integration_mode"], self.config,
+                    orchestrator=self.orchestrator,
+                )
+                if refusal:
+                    return {"success": False, "error_code": "delivery_engine_unavailable",
+                            "error": f"no delivery engine for this project: {refusal}. "
+                                     "Restore the selected engine before enabling this mode."}
             if "promotion_flow" in sensitive:
                 return await self._configure_promotion_flow(
                     project, sensitive, args, operator_id=operator_id
