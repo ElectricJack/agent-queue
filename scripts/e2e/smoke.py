@@ -2940,10 +2940,20 @@ def s19_scoped_planner_graph(state: dict) -> str:
     after_dry_run = api("task_children", {"task_id": held_task}, token=planner.token)
     check(after_dry_run.get("count") == 0, f"scoped dry-run wrote children: {after_dry_run}")
 
-    created = planner.aq(*graph_args)
-    check(created.get("created") is True, f"scoped graph creation: {created}")
-    check(created.get("request_id"), f"scoped graph omitted request id: {created}")
-    child_id = created["nodes"][0]["task_id"]
+    # Graph filing dispatches the router immediately. Hold scheduling until
+    # the fixture override is written so a task-lifecycle route cannot launch
+    # the child before its pool worker claims it.
+    api_checked("set_project_constraint", {"project_id": PROJECT, "pause_scheduling": True})
+    try:
+        created = planner.aq(*graph_args)
+        check(created.get("created") is True, f"scoped graph creation: {created}")
+        check(created.get("request_id"), f"scoped graph omitted request id: {created}")
+        child_id = created["nodes"][0]["task_id"]
+        override_route(child_id, POOL_PROFILE, POOL_CLASS)
+    finally:
+        api_checked("release_project_constraint", {
+            "project_id": PROJECT, "fields": ["pause_scheduling"],
+        })
     child = task_show(child_id)
     check(child.get("parent_task_id") == held_task, f"scoped child parent: {child}")
     provenance = [
@@ -2994,10 +3004,6 @@ def s19_scoped_planner_graph(state: dict) -> str:
     )
     after_denials = api("task_children", {"task_id": held_task}, token=planner.token)
     check(after_denials.get("count") == 1, f"denied graphs wrote children: {after_denials}")
-
-    # A worker-filed node waits on its routing gate; the operator's override
-    # resolves it (the router's job once a project's router is ready).
-    override_route(child_id, POOL_PROFILE, POOL_CLASS)
 
     def child_ready() -> dict | None:
         row = task_show(child_id)

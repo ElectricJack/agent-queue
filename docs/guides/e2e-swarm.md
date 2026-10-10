@@ -75,6 +75,12 @@ Every CLI subprocess is
 forced back to this disposable data directory and database even when the
 caller is a worker carrying production-refusal sentinels.
 
+S19 pauses scheduling in its disposable project before filing the checklist
+graph, writes the operator override to the fixture pool, and releases that
+pause in `finally` before claiming the child. Graph filing can dispatch the
+router immediately; its routing gate alone cannot hold the child until the
+override. Production still refuses overrides of claimed or running tasks.
+
 S2, S3, S5, S18, S20, both S19 fixture claims and S16's three recovery claims
 (the `provb` worker, the probation canary and the pinned task) retry
 `no_ready_work` within the convergence deadline: PostgreSQL `SKIP LOCKED` can
