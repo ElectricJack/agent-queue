@@ -542,3 +542,83 @@ async def test_resolve_is_the_owning_supervisors_and_nobody_elses(env):
     assert local["error_code"] == "out_of_scope"
     assert spoofed["error_code"] == "spoofed_identity"
     assert (await db.get_escalation(incident["id"]))["state"] == "reply_received"
+
+
+@pytest.mark.parametrize("profile_id", ["supervisor", "supervisor-global"])
+@pytest.mark.parametrize("action", ["resolve", "cancel"])
+async def test_global_supervisor_resolves_or_cancels_another_projects_escalation(
+    env, tmp_path, profile_id, action
+):
+    handler, db = env
+    if profile_id == "supervisor-global":
+        await db.create_profile(AgentProfile(
+            id=profile_id, name="Global supervisor", harness="codex", lifecycle="named",
+            aq_commands=["escalation_resolve", "escalation_update"],
+            harness_tools=[], plugin_tools=[], needs_workspace=False,
+        ))
+    await db.create_session(SessionRecord(
+        id="global-super", project_id=None, profile_id=profile_id, harness="codex",
+        provider="fake", name="n-supervisor--global", lifecycle="named",
+        work_dir=str(tmp_path), epoch="epoch", instance_token="global-token",
+        started_at=time.time(), state="running",
+    ))
+    incident = (await handler.execute(
+        "escalation_create", create_args(project_id="other")
+    ))["escalation"]
+    revision = incident["revision"]
+    if action == "resolve":
+        accepted = await handler.execute("escalation_reply", {
+            "escalation_id": incident["id"], "text": "Authorization granted",
+            "external_message_id": "global-handled-answer",
+        })
+        revision = accepted["escalation"]["revision"]
+    args = {"escalation_id": incident["id"], "expected_revision": revision}
+    if action == "resolve":
+        command = "escalation_resolve"
+        args["outcome"] = "Applied the verified authorization"
+    else:
+        command = "escalation_update"
+        args.update(state="cancelled", terminal_outcome="Decision no longer needed")
+    denied = await supervisor_execute(handler, command, args)
+    assert denied["error_code"] == "out_of_scope"
+    result = await handler.execute(command, {**args, "_scope": {
+        "kind": "session", "session_id": "global-super",
+        "session_instance_token": "global-token", "project_id": None,
+        "task_id": None, "elevated": True,
+    }})
+    assert result["success"] is True
+    assert result["escalation"]["state"] == ("resolved" if action == "resolve" else "cancelled")
+    assert result["escalation"]["supervisor_owner"] == "supervisor-other"
+    if action == "resolve":
+        assert result["escalation"]["terminal_evidence"]["resolved_by"] == "session:global-super"
+
+
+@pytest.mark.parametrize("elevated,state,project_id", [
+    (False, "running", None), (True, "stopped", None), (True, "running", "p"),
+])
+async def test_global_supervisor_authority_requires_a_live_system_scoped_session(
+    env, tmp_path, elevated, state, project_id
+):
+    handler, db = env
+    await db.create_profile(AgentProfile(
+        id="supervisor-global", name="Global", harness="codex", lifecycle="named",
+        aq_commands=["escalation_resolve"], harness_tools=[], plugin_tools=[],
+        needs_workspace=False,
+    ))
+    await db.create_session(SessionRecord(
+        id="global-super", project_id=project_id, profile_id="supervisor-global",
+        harness="codex", provider="fake", name="n-supervisor--global", lifecycle="named",
+        work_dir=str(tmp_path), epoch="epoch", instance_token="global-token",
+        started_at=time.time(), state=state,
+    ))
+    incident, _ = await answered_incident(handler)
+    result = await handler.execute("escalation_resolve", {
+        "escalation_id": incident["id"], "outcome": "Applied",
+        "_scope": {
+            "kind": "session", "session_id": "global-super",
+            "session_instance_token": "global-token", "project_id": project_id,
+            "task_id": None, "elevated": elevated,
+        },
+    })
+    assert result["error_code"] == "out_of_scope"
+    assert (await db.get_escalation(incident["id"]))["state"] == "reply_received"

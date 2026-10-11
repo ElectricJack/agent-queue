@@ -223,6 +223,17 @@ async def test_replayed_fact_is_late_and_morning_membership_deduplicates_it():
     assert "escalation:e1" in {f["key"] for f in third["brief"]["facts"]}
 
 
+@pytest.mark.parametrize("state", ["reply_received", "resolving"])
+async def test_answered_escalations_do_not_recur_as_unresolved_morning_facts(state):
+    data = snapshot()
+    data["sources"]["escalations"][0]["state"] = state
+    first, _, _ = await build(data)
+    fact = next(f for f in first["brief"]["facts"] if f["key"] == "escalation:e1")
+    assert fact["detail"]["unresolved"] is False
+    again, _, _ = await build(data, reported_keys=frozenset({"escalation:e1"}))
+    assert "escalation:e1" not in {f["key"] for f in again["brief"]["facts"]}
+
+
 async def test_partial_source_never_suppresses_or_advances_its_cursor():
     data = snapshot()
     data["sources"] = {"repos": frozen("repos")}

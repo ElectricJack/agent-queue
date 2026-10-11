@@ -466,7 +466,7 @@ class DigestScheduleService:
         open_escalations = len(
             await self.db.list_escalations(
                 project_ids=list(schedule.project_ids) if schedule.project_ids else None,
-                states=["needs_human", "reply_received"],
+                states=["needs_human"],
                 limit=500,
             )
         )
@@ -603,7 +603,7 @@ class DigestScheduleService:
             generation=schedule.generation,
         )
         open_escalations = len(
-            await self.db.list_escalations(states=["needs_human", "reply_received"], limit=500)
+            await self.db.list_escalations(states=["needs_human"], limit=500)
         )
         inputs = await self.db.collect_digest_activity(
             window,

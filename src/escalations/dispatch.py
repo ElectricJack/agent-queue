@@ -227,7 +227,10 @@ class EscalationDeliveryService:
         Entirely a §7.1 P1 affordance: with the flag off the post carries no
         components at all, exactly as it did before the phase.
         """
-        if not self._stateful or display not in {STATE_OPEN, STATE_STALE}:
+        if (
+            not self._stateful or not facts.needs_human_answer
+            or display not in {STATE_OPEN, STATE_STALE}
+        ):
             return ()
         return choice_buttons(facts.id, tuple(facts.choices))
 
@@ -420,6 +423,10 @@ class EscalationDeliveryService:
         report: TickReport,
     ) -> str | None:
         """Record one new root generation after a deleted post or thread."""
+        current = await self.db.get_escalation(facts.id)
+        if current is None:
+            return None
+        facts = EscalationFacts.from_row(current)
         planned = plan_replacement(facts, deliveries)
         if planned is None:
             return None
@@ -737,6 +744,16 @@ class EscalationDeliveryService:
         base_url, dashboard_notice = await self._dashboard()
         answered_at = await self._answered_at(facts.id)
         await self._before_write(row)
+        current_incident = await self.db.get_escalation(facts.id)
+        if current_incident is not None:
+            facts = EscalationFacts.from_row(current_incident)
+            display = display_state(facts.state, stale=self._stale(facts))
+        if is_collapsed(display):
+            await self._finish(
+                row, report, status="sent", binding=binding,
+                receipt_id=f"absorbed|{binding.root_message_id}|resolution",
+            )
+            return
         try:
             await self.transport.edit_root(
                 channel_id=str(binding.channel_id or self._channel_id),
@@ -874,6 +891,17 @@ class EscalationDeliveryService:
         )
         if root_id is None:
             await self._before_write(row)
+            # A reply may have overtaken a queued/retried initial post. Read
+            # again at the write boundary, independently of the stateful flag.
+            current_incident = await self.db.get_escalation(facts.id)
+            if current_incident is not None:
+                facts = EscalationFacts.from_row(current_incident)
+            if facts.state in {"reply_received", "resolving"}:
+                await self._finish(
+                    row, report, status="sent", binding=current,
+                    receipt_id="superseded|human_answer_received",
+                )
+                return
             try:
                 outcome = await self.transport.post_root(
                     channel_id=channel_id,
@@ -949,6 +977,15 @@ class EscalationDeliveryService:
                 thread_id=thread_id,
             )
 
+        current_incident = await self.db.get_escalation(facts.id)
+        if current_incident is not None:
+            facts = EscalationFacts.from_row(current_incident)
+        if facts.state in {"reply_received", "resolving"}:
+            # Repair an existing binding so its once-per-reply acknowledgement
+            # can arrive, without replaying the old question/options as an opener.
+            await self._finish(row, report, status="sent", binding=current, receipt_id=str(root_id))
+            return
+
         opener_key = f"{dedup_key}:thread"
         base_url, dashboard_notice = await self._dashboard()
         outcome, error = await self._send_thread_text(
@@ -965,7 +1002,7 @@ class EscalationDeliveryService:
             reconcile=opener_may_exist,
         )
         if outcome is None and error is None:
-            return  # unreconcilable ambiguity, already recorded as unknown
+            return  # finished by the sender: ambiguous or superseded opener
         if error is not None:
             if isinstance(error, TransportMissing):
                 # The thread vanished between binding it and writing into it.
@@ -1092,11 +1129,10 @@ class EscalationDeliveryService:
         dedup_key: str,
         reconcile: bool = True,
     ) -> tuple[SendOutcome | None, TransportError | None]:
-        """Reconcile, then send.  Returns ``(outcome, error)``; never finishes.
+        """Reconcile, then send. Returns ``(outcome, error)``.
 
-        The one case it does finish is the honest dead end: a previous attempt
-        was ambiguous and the history does not show it, so the row becomes
-        ``unknown`` and both halves of the tuple come back ``None``.
+        It finishes an ambiguous send with no recoverable receipt, or a root
+        opener overtaken by a human answer. Both return ``(None, None)``.
 
         ``reconcile=False`` is for the one destination that cannot hold an
         earlier copy of this message: a thread the current attempt just
@@ -1123,6 +1159,16 @@ class EscalationDeliveryService:
                 )
                 return None, None
         await self._before_write(row)
+        if row["kind"] == KIND_ROOT:
+            current_incident = await self.db.get_escalation(str(row["escalation_id"]))
+            if current_incident is not None and current_incident["state"] in {
+                "reply_received", "resolving",
+            }:
+                await self._finish(
+                    row, report, status="sent", binding=binding,
+                    receipt_id=str(binding.root_message_id),
+                )
+                return None, None
         try:
             return (
                 await self.transport.post_thread_message(

@@ -14,9 +14,9 @@ _DEFAULT_TIMEOUT_MINUTES = 15
 
 
 class SupervisorDeliveryWatchdog:
-    """Publish one operational incident when supervisor delivery stays unavailable.
+    """Track unavailable delivery and remind owners of unresolved human answers.
 
-    The watchdog reports availability only. Its ``supervisor_delivery`` source
+    The watchdog never approves work. Its ``supervisor_delivery`` source
     kind is intentionally unsupported by ``escalation_apply_reply``, so neither
     the watchdog nor a reply to its notice can approve the underlying work.
     """
@@ -61,6 +61,11 @@ class SupervisorDeliveryWatchdog:
 
     async def tick(self, now: float | None = None) -> int:
         now = time.time() if now is None else float(now)
+        answered = await self.db.list_escalations(states=("reply_received", "resolving"), limit=500)
+        for incident in answered:
+            await self.db.queue_escalation_owner_reminder(
+                incident["id"], now=now, interval_seconds=self._timeout_seconds()
+            )
         # Include younger pending notices when checking recovery: draining
         # just the oldest notice must not close and recreate the same outage.
         rows = await self.db.list_overdue_supervisor_incident_messages(now)

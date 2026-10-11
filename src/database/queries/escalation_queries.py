@@ -618,6 +618,106 @@ class EscalationQueriesMixin:
                 "terminal": terminal,
             }
 
+    async def queue_escalation_owner_reminder(
+        self, escalation_id: str, *, now: float, interval_seconds: float
+    ) -> bool:
+        """Remind an answered incident's owner, never its human correspondent.
+
+        Lock the incident alongside reply/terminal transitions and derive the
+        interval from durable inbox rows. Restarted or concurrent watchdogs
+        cannot duplicate a reminder or queue over a newly resolved incident.
+        An undelivered notice already owes the owner this work; don't stack it.
+        """
+        if interval_seconds <= 0:
+            return False
+        async with self.immediate() as conn:
+            incident = (
+                (
+                    await conn.execute(
+                        select(escalations)
+                        .where(
+                            escalations.c.id == escalation_id,
+                            escalations.c.state.in_(("reply_received", "resolving")),
+                            ~_project_paused(),
+                        )
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if incident is None or incident["source_kind"] == "supervisor_delivery":
+                return False
+            reply = (
+                (
+                    await conn.execute(
+                        select(escalation_messages)
+                        .where(
+                            escalation_messages.c.escalation_id == escalation_id,
+                            escalation_messages.c.direction == "inbound",
+                            escalation_messages.c.supervisor_message_id.is_not(None),
+                        )
+                        .order_by(
+                            escalation_messages.c.received_at.desc(),
+                            escalation_messages.c.created_at.desc(),
+                            escalation_messages.c.id.desc(),
+                        )
+                        .limit(1)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if reply is None or now - reply["received_at"] < interval_seconds:
+                return False
+            notices = select(messages).where(
+                messages.c.thread_id == escalation_id,
+                messages.c.to_kind == "session",
+                messages.c.to_id == incident["supervisor_owner"],
+                messages.c.body_kind.in_(("escalation_reply", "escalation_owner_reminder")),
+            )
+            pending = await conn.scalar(
+                select(
+                    exists(
+                        notices.where(
+                            messages.c.delivered_at.is_(None), messages.c.archived_at.is_(None)
+                        )
+                    )
+                )
+            )
+            if pending:
+                return False
+            last_notice = await conn.scalar(
+                notices.with_only_columns(func.max(messages.c.created_at))
+            )
+            if last_notice is not None and now - last_notice < interval_seconds:
+                return False
+            await conn.execute(
+                pg_insert(messages).values(
+                    id=f"msg-escalation-owner-reminder-{uuid.uuid4()}",
+                    project_id=incident["project_id"],
+                    from_kind="system",
+                    from_id="escalation-owner-watchdog",
+                    to_kind="session",
+                    to_id=incident["supervisor_owner"],
+                    thread_id=escalation_id,
+                    subject=f"Answered escalation awaiting action: {escalation_id}",
+                    body=(
+                        f"A verified human answer is recorded on escalation {escalation_id} "
+                        f"(reply {reply['id']}); it remains {incident['state']} after at least "
+                        f"{interval_seconds / 60:g} minutes. Reload the escalation and its "
+                        "current source, apply the recorded decision through guarded commands, "
+                        "and resolve or cancel with an outcome. This is supervisor follow-up; "
+                        "do not ask or notify the human again merely because it remains open."
+                    ),
+                    priority=10,
+                    created_at=now,
+                    archive_after_inject=1,
+                    body_kind="escalation_owner_reminder",
+                )
+            )
+            return True
+
     async def resolve_legacy_accepted_escalation(
         self,
         escalation_id: str,

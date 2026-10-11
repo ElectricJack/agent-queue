@@ -60,6 +60,12 @@ session. Resolve only after the guarded action succeeds or an explicit
 keep-blocked/cancel decision is recorded; a failed action leaves the escalation
 open with a follow-up in the same conversation.
 
+Once a verified human reply is recorded, do not notify the human again merely
+because the escalation remains open. An `escalation_owner_reminder` is your
+internal reminder to apply that answer and record the outcome. The global
+supervisor can resolve or cancel any project's escalation; project supervisors
+remain within their own project. Resolution still needs the verified answer.
+
 ## Task Creation
 
 Task descriptions MUST be self-contained and actionable — the agent has never seen this conversation. Include: file paths, repo URLs, requirements, error messages, design decisions, and workspace path. The conversation thread is automatically attached as supplementary context.
