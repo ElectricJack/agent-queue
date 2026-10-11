@@ -1,16 +1,26 @@
-"""One-step request → pinned human review → exact FF and annotated release tag."""
+"""Connected promotion policy, exact FF, release tags and continuous lag diagnostics."""
 
 from dataclasses import replace
+import importlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
 from sqlalchemy import select, update
 
+from src.commands.integration_commands import IntegrationCommandsMixin
+from src.config import AppConfig
 from src.database.tables import integration_check_evidence, integration_outbox, projects
+from src.doctor.integration_checks import _BY_ID, continuous_promotion_lag
+from src.doctor.models import DoctorContext, Severity
 from src.integration.ci import TRUST_MANIFEST_PATH
+from src.integration.outbox import IntegrationOutbox
 from src.integration.promotion_steps import FlowSchema
+from src.integration.service import IntegrationService
 from src.integration.train import IntegrationTrain, TrainTarget
 from src.integration.train_sources import DaemonLanes, DatabaseBatches, LeasedPublish
+from src.playbooks.run_state import RunLifecycle
+from src.playbooks.services import resolve_integration_route
 from tests.test_integration_gitops import commit, git, setup as setup
 from tests.test_promotion_policy import policy_engine
 from tests.test_promotion_steps import promotion as promotion
@@ -115,6 +125,22 @@ async def test_continuous_train_reobserves_push_ci_and_promotes_without_new_sett
     # Promotion source trust belongs to the committed default manifest, even
     # when the ordinary integration lane has no hosted root-check policy.
     policy = {}
+    continuous = await policy_engine(e, "continuous")
+    activations[0]["active_artifact_sha256"] = continuous.ref.artifact_sha256
+    e.handler._cmd_integration_promotion_publish = (
+        IntegrationCommandsMixin._cmd_integration_promotion_publish.__get__(e.handler))
+
+    async def accept(event_type, payload, event_id):
+        route = await resolve_integration_route(e.db, event_type, payload)
+        assert route is not None
+        outcome = await continuous.engine.dispatch_event(
+            {**payload, "_event_type": event_type}, continuous.principal,
+            playbook_ids=[route.playbook_id], dispatch_id=event_id,
+        )
+        assert outcome.run_ids or outcome.deduplicated, outcome
+        for run_id in outcome.run_ids:
+            assert (await continuous.runs.load_run(run_id)).lifecycle is RunLifecycle.COMPLETED
+        return True
 
     def make_train():
         lanes = DaemonLanes(orchestrator, batches=batches)
@@ -123,14 +149,16 @@ async def test_continuous_train_reobserves_push_ci_and_promotes_without_new_sett
             return await lanes._promotion_lane(target, replace(e.repo, default_branch="dev"),
                 e.repo.binding, e.ops, policy, e.snapshot)
 
-        return IntegrationTrain(targets=SimpleNamespace(targets=AsyncMock(return_value=[target])),
+        train = IntegrationTrain(targets=SimpleNamespace(targets=AsyncMock(return_value=[target])),
             batches=batches, lane_for=lane_for,
             repair=SimpleNamespace(settle_green=AsyncMock()))
+        e.handler.orchestrator.integration_train = train
+        return train, IntegrationService(e.db, IntegrationOutbox(e.db, accept), train=train)
 
-    train = make_train()
+    train, service = make_train()
 
     async def tick():
-        await train.tick()
+        await service.tick(service._clock())
         await train._lanes[target.key].task
         assert train.status()[0]["errors"] == 0, train.status()
 
@@ -149,24 +177,91 @@ async def test_continuous_train_reobserves_push_ci_and_promotes_without_new_sett
         e.github.runs[e.source] = result
         await tick()
         assert not await notifications()
+        assert git(e.ops.git.remote_path, "rev-parse", "main") == e.base
     e.github.runs[e.source] = "success"
     await tick()
     [event] = await notifications()
     assert event["payload"]["source_sha"] == e.source
     # Restart and repeated visits reuse the durable event identity.
-    train = make_train()
+    await service.stop()
+    train, service = make_train()
     await tick()
-    assert len(await notifications()) == 1
-    e.handler.orchestrator.integration_train = train
-    continuous = await policy_engine(e, "continuous")
-    await continuous.run("advance-source", source_sha=event["payload"]["source_sha"])
+    [event] = await notifications()
+    assert event["delivered_at"] is not None and event["attempts"] == 1
     requested = [result for command, result in continuous.results if command == "promote_request"]
     assert len(requested) == 1 and requested[0]["outcome"] == "requested", continuous.results
     assert requested[0]["promotion"]["source_sha"] == e.source
-    assert git(e.ops.git.remote_path, "rev-parse", "main") == e.base
     await tick()
     assert git(e.ops.git.remote_path, "rev-parse", "main") == e.source
     assert ("main", e.base) in e.exact_pushes
     await tick()
     assert len(await notifications()) == 1
     assert e.github.created == 1
+    assert all(run.lifecycle is RunLifecycle.COMPLETED
+               for run in continuous.runs.snapshots.values()), continuous.runs.snapshots
+    await service.stop()
+
+
+@pytest.mark.parametrize("case", ["stale", "fresh", "caught_up", "request", "disabled", "paused",
+                                  "invalid", "missing_target", "diverged"])
+async def test_continuous_lag_uses_oldest_unpromoted_work_and_exact_git_heads(
+    promote_env, monkeypatch, case,
+):
+    e = promote_env
+    now = 1_800_000_000
+    base = e.source
+    step = FlowSchema.validate([{
+        "id": "staging", "source": "dev", "target": "staging",
+        "type": "request" if case == "request" else "continuous",
+        "gate": {"approval": "operator" if case == "request" else "none"},
+        "after": {"backmerge": False},
+    }], default_branch="dev").flow[0]
+    if case == "invalid":
+        step["source"] = "other"
+    async with e.db.immediate() as conn:
+        await conn.execute(update(projects).values(promotion_flow=[step],
+            status="PAUSED" if case == "paused" else "ACTIVE",
+            hierarchical_integration_mode="disabled" if case == "disabled" else "train"))
+    oldest = now - (3600 if case == "fresh" else 7 * 3600)
+    with monkeypatch.context() as dated:
+        dated.setenv("GIT_COMMITTER_DATE", f"{oldest} +0000")
+        source = commit(e.repo.store, {"first.txt": "unpromoted\n"}, base=base)
+        dated.setenv("GIT_COMMITTER_DATE", f"{now - 300} +0000")
+        source = commit(e.repo.store, {"latest.txt": "new source advancement\n"}, base=source)
+    target = source if case == "caught_up" else base
+    if case == "diverged":
+        target = commit(e.repo.store, {"target-only.txt": "target advanced\n"}, base=base)
+    git(e.repo.store, "push", "origin", f"{source}:dev")
+    if case != "missing_target":
+        git(e.repo.store, "push", "origin", f"{target}:refs/heads/staging")
+    snapshot = await e.snapshot()
+    observer = SimpleNamespace(snapshot=AsyncMock(return_value=snapshot))
+    checks = importlib.import_module("src.doctor.integration_checks")
+    monkeypatch.setattr(checks, "_doctor_observer", lambda *a, **kw: observer)
+    ctx = DoctorContext(db=e.db, config=AppConfig())
+    report = await continuous_promotion_lag(ctx, now=now)
+    if case in {"stale", "diverged"}:
+        assert len(report["findings"]) == 1, report
+        [finding] = report["findings"]
+        assert finding["project_id"] == "p" and finding["step_id"] == "staging"
+        assert finding["source_sha"] == source and finding["target_sha"] == target
+        assert finding["ahead"] == 2
+        assert finding["behind"] == (1 if case == "diverged" else 0)
+        assert finding["oldest_unpromoted_at"] == oldest
+        assert finding["age_seconds"] == 7 * 3600
+        assert not report["unavailable"]
+        # The threshold is part of the diagnostic input and reported evidence.
+        assert not (await continuous_promotion_lag(ctx, now=now, max_age_seconds=8 * 3600))["findings"]
+        assert not (await continuous_promotion_lag(ctx, project_ids={"other"}, now=now))["findings"]
+    elif case == "missing_target":
+        assert not report["findings"]
+        assert report["unavailable"][0]["step_id"] == "staging"
+    else:
+        assert not report["findings"] and not report["unavailable"]
+    monkeypatch.setattr(checks.time, "time", lambda: now)
+    check = _BY_ID["integration.continuous_promotion_lag"]
+    result = await check.run(ctx)
+    assert result.severity == (Severity.WARN if case in {"stale", "diverged", "missing_target"}
+                               else Severity.OK)
+    assert not result.fixable
+    assert git(e.ops.git.remote_path, "rev-parse", "dev") == source

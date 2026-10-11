@@ -8570,6 +8570,12 @@
     },
     "src/doctor/stall_checks.py::_mapping_rows": {
       "reason": "Shared SELECT materialization for the owned delivery and repair diagnostics; all helper lines charged. No writes, lifecycle state or publication authority."
+    },
+    "src/doctor/stall_checks.py::_continuous_promotion_findings": {
+      "reason": "Bounded stall-sweep read of exact continuous promotion branch lag and unavailable evidence. No writes or publication authority."
+    },
+    "src/playbooks/services.py::import from src.integration.outbox import PROMOTION_EVENT_TYPES as PROMOTION_POLICY_EVENTS": {
+      "reason": "Shared promotion policy event vocabulary used to filter active-train outbox dispatch and project-scoped playbook routes. No new storage or writer."
     }
   },
   "exclusions": {
