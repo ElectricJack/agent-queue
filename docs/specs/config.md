@@ -338,9 +338,13 @@ the page separates landed changes, pending/unknown shipment, failures and source
 gaps, and labels prior verification as agent-reported. Project-scoped readers
 receive scoped deterministic evidence rather than global supervisor prose.
 
-The optional reviewed system playbook `morning-report` calls
-`morning_report_tick` on `timer.1m`. It is neither required for readiness nor
-activated by default; the operator imports and activates the reviewed bundle
+The optional reviewed system playbook `morning-report` triggers on
+`report.morning_due`, which the daemon emits once per local day after the zoned
+morning time. The event id names the schedule and local date, so a restart or a
+repeated emission deduplicates to the day's one run; that run calls
+`morning_report_tick` a minute apart on a durable timer until the day's report
+settles. Activating it after the day's morning time starts with the next day.
+It is neither required for readiness nor activated by default; the operator imports and activates the reviewed bundle
 separately. Morning authoring requires `full_fleet_visibility: true`, an empty
 project selection and a configured Discord destination. Restricted destinations
 use the deterministic report without waking the global supervisor. The author
