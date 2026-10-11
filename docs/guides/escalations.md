@@ -260,6 +260,12 @@ aq escalation get --escalation-id escalation-abc123
 aq escalation resolve --escalation-id escalation-abc123 --outcome "Shipped from main."
 ```
 
+Pausing a project holds its escalation and review notifications silently, including
+human gate pings. The dashboard labels open requests **held while paused**. Existing
+workers receive a notice to stop at the next safe point and preserve their progress.
+Resuming the project releases pending notifications; withdrawn reviews stay silent.
+See [the project-pause contract](../specs/messaging/project-pauses.md).
+
 `escalation_resolve` is the supervisor's way to close what a human answered,
 whether the answer arrived as a thread reply, a tap on one of the post's choice
 buttons, or an answer on the escalation page. `--expected-revision` is optional

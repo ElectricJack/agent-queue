@@ -884,6 +884,7 @@ _CANONICAL_PAYLOADS["task.claim_conflict"] = {
     "session_id": "sess-1",
 }
 _CANONICAL_PAYLOADS["snapshot.refreshed"] = {"tick": 1234567890.0}
+_CANONICAL_PAYLOADS["project.paused"] = {"project_id": "proj-1"}
 _CANONICAL_PAYLOADS["project.resumed"] = {"project_id": "proj-1"}
 _CANONICAL_PAYLOADS["project.created"] = {
     "project_id": "proj-1",

@@ -42,6 +42,7 @@ class EscalationRecord:
         terminal_at (float | None | Unset):
         delivery_statuses (list[str] | None | Unset):
         pending_delivery (bool | None | Unset):
+        held_while_paused (bool | Unset):  Default: False.
     """
 
     id: str
@@ -67,6 +68,7 @@ class EscalationRecord:
     terminal_at: float | None | Unset = UNSET
     delivery_statuses: list[str] | None | Unset = UNSET
     pending_delivery: bool | None | Unset = UNSET
+    held_while_paused: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -162,6 +164,8 @@ class EscalationRecord:
         else:
             pending_delivery = self.pending_delivery
 
+        held_while_paused = self.held_while_paused
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -200,6 +204,8 @@ class EscalationRecord:
             field_dict["delivery_statuses"] = delivery_statuses
         if pending_delivery is not UNSET:
             field_dict["pending_delivery"] = pending_delivery
+        if held_while_paused is not UNSET:
+            field_dict["held_while_paused"] = held_while_paused
 
         return field_dict
 
@@ -341,6 +347,8 @@ class EscalationRecord:
 
         pending_delivery = _parse_pending_delivery(d.pop("pending_delivery", UNSET))
 
+        held_while_paused = d.pop("held_while_paused", UNSET)
+
         escalation_record = cls(
             id=id,
             project_id=project_id,
@@ -365,6 +373,7 @@ class EscalationRecord:
             terminal_at=terminal_at,
             delivery_statuses=delivery_statuses,
             pending_delivery=pending_delivery,
+            held_while_paused=held_while_paused,
         )
 
         escalation_record.additional_properties = d

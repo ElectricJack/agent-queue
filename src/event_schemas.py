@@ -1489,6 +1489,10 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
         "required": ["tick"],
         "optional": [],
     },
+    "project.paused": {
+        "required": ["project_id"],
+        "optional": [],
+    },
     "project.resumed": {
         "required": ["project_id"],
         "optional": [],

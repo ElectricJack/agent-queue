@@ -32545,6 +32545,11 @@
               }
             ],
             "title": "Pending Delivery"
+          },
+          "held_while_paused": {
+            "type": "boolean",
+            "title": "Held While Paused",
+            "default": false
           }
         },
         "additionalProperties": true,

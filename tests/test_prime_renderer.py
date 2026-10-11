@@ -18,7 +18,7 @@ import pytest
 from tests.db_fixtures import lease_dsn
 
 from src.config import AppConfig, DatabaseConfig
-from src.models import AgentProfile, Project, SessionRecord, Task, TaskType
+from src.models import AgentProfile, Project, ProjectStatus, SessionRecord, Task, TaskType
 from src.prime import PrimeRenderer
 from src.prime.models import PrimeDocument, PrimeSection
 from src.profiles.parser import parse_profile
@@ -65,6 +65,21 @@ def _write(path, content: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
+
+
+@pytest.mark.parametrize("override", [False, True])
+async def test_paused_project_instruction_survives_local_override(db, config, task, tmp_path, override):
+    await db.update_project(task.project_id, status=ProjectStatus.PAUSED)
+    if override:
+        _write(str(tmp_path / ".aq" / "PRIME.md"), "Local task instructions.")
+    renderer = PrimeRenderer(db, config)
+    markdown = (await renderer.render_for_task(task.id, work_dir=str(tmp_path))).to_markdown()
+    assert "## Project paused" in markdown
+    assert "next safe point" in markdown
+    assert "pending wait completing" in markdown
+    await db.update_project(task.project_id, status=ProjectStatus.ACTIVE)
+    resumed = (await renderer.render_for_task(task.id, work_dir=str(tmp_path))).to_markdown()
+    assert "## Project paused" not in resumed
 
 
 # ---------------------------------------------------------------------------

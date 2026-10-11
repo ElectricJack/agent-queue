@@ -191,6 +191,9 @@ class ProjectCommandsMixin:
         if not project:
             return {"error": f"Project '{pid}' not found"}
         await self.db.update_project(pid, status=ProjectStatus.PAUSED)
+        await self.orchestrator.bus.emit("project.paused", {"project_id": pid})
+        if project.status != ProjectStatus.PAUSED:
+            await self._notify_project_workers(pid, paused=True)
         return {"paused": pid, "name": project.name}
 
     async def _cmd_resume_project(self, args: dict) -> dict:
@@ -203,7 +206,38 @@ class ProjectCommandsMixin:
         # (swarm-work-model §10) — a paused project resuming is exactly the
         # kind of admission change a blocked claimer is waiting for.
         await self.orchestrator.bus.emit("project.resumed", {"project_id": pid})
+        if project.status == ProjectStatus.PAUSED:
+            await self._notify_project_workers(pid, paused=False)
         return {"resumed": pid, "name": project.name}
+
+    async def _notify_project_workers(self, project_id: str, *, paused: bool) -> None:
+        """Durable safe-point notices, including workers with a pending wait."""
+        sessions = await self.db.list_sessions(project_id=project_id, live_only=True)
+        body = (
+            f"Project '{project_id}' is paused. Stop at the next safe point and preserve "
+            "progress with aq task comment. Keep your claim and wait for project resume "
+            "before continuing work, submitting reviews or requesting human decisions. "
+            "A pending wait completing does not authorize continuing while paused."
+            if paused else
+            f"Project '{project_id}' has resumed. Run aq prime to refresh your task context "
+            "and continue from your saved progress. Held human notifications are released."
+        )
+        for session in sessions:
+            if session.task_id is None:
+                continue
+            result = await self._cmd_message_send({
+                "project_id": project_id,
+                "from_kind": "system",
+                "from_id": "project-pause",
+                "to_kind": "session",
+                "to_id": session.id,
+                "subject": "Project paused" if paused else "Project resumed",
+                "body": body,
+                "priority": 0,
+                "archive_after_inject": True,
+            })
+            if result.get("error"):
+                logger.warning("Project notice to %s failed: %s", session.id, result["error"])
 
     async def _cmd_set_project_constraint(self, args: dict) -> dict:
         """Set a scheduling constraint on a project.
