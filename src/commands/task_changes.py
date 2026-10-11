@@ -11,7 +11,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 
-from sqlalchemy import delete, literal_column, select, text, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
@@ -22,7 +22,6 @@ from src.database.tables import (
     sessions,
     task_dependencies,
     task_gates,
-    task_integration_checkpoints,
     task_metadata,
     tasks,
 )
@@ -179,7 +178,58 @@ async def boundary(db, project_id):
         yield conn
 
 
-async def snapshot(conn, project_id, payload, *, previous=None):
+def references(payload):
+    refs = {edit["task_id"] for edit in payload["edits"]}
+    refs.update(c["task_id"] for c in payload["comments"])
+    refs.update(s["parent_id"] for s in payload["tasks"] + payload["edits"] if s.get("parent_id"))
+    for edge in payload["edges"] + payload["remove_edges"]:
+        refs.update((edge["from"], edge["to"]))
+    return refs - {spec["tempId"] for spec in payload["tasks"]}
+
+
+def surviving_operations(payload, rows):
+    """Keep approved operations with surviving targets; never change their content.
+
+    A create whose structural parent disappeared cannot become a root instead.
+    Propagate that omission through new descendants and references to them, while
+    recording the original missing task ids rather than unmaterialised temp ids.
+    """
+    missing = references(payload) - rows.keys()
+    unavailable = {tid: {tid} for tid in missing}
+    parents = {spec["tempId"]: spec.get("parent_id") for spec in payload["tasks"]}
+    for edge in payload["edges"]:
+        if edge.get("dep_type", "blocks") == "parent-child" and edge["from"] in parents:
+            parents[edge["from"]] = edge["to"]
+    while True:
+        skipped = {
+            tid: unavailable[parent]
+            for tid, parent in parents.items()
+            if tid not in unavailable and parent in unavailable
+        }
+        if not skipped:
+            break
+        unavailable.update(skipped)
+    remaining, omissions = {}, []
+    for operation in OPERATIONS:
+        remaining[operation] = []
+        for index, item in enumerate(payload[operation]):
+            if operation == "tasks":
+                targets = [item["tempId"]]
+            elif operation in ("edges", "remove_edges"):
+                targets = [item["from"], item["to"]]
+            else:
+                targets = [item["task_id"], item.get("parent_id")]
+            absent = set().union(*(unavailable.get(tid, set()) for tid in targets))
+            if absent:
+                omissions.append({
+                    "operation": operation, "index": index, "missing_task_ids": sorted(absent),
+                })
+            else:
+                remaining[operation].append(item)
+    return remaining, {"missing_task_ids": sorted(missing), "skipped_operations": omissions}
+
+
+async def snapshot(conn, project_id, payload, *, allow_missing=False):
     project = (
         (await conn.execute(select(projects).where(projects.c.id == project_id)))
         .mappings()
@@ -190,9 +240,7 @@ async def snapshot(conn, project_id, payload, *, previous=None):
     rows = (
         (
             await conn.execute(
-                select(tasks, literal_column("tasks.xmin::text").label("_version")).where(
-                    tasks.c.project_id == project_id
-                )
+                select(tasks).where(tasks.c.project_id == project_id)
             )
         )
         .mappings()
@@ -206,19 +254,13 @@ async def snapshot(conn, project_id, payload, *, previous=None):
     temp_ids = {t["tempId"] for t in payload["tasks"]}
     if temp_ids & by_id.keys():
         raise ChangeSetError("tempId collides with an existing task id")
-    refs = {edit["task_id"] for edit in payload["edits"]}
-    refs.update(c["task_id"] for c in payload["comments"])
-    refs.update(s["parent_id"] for s in payload["tasks"] + payload["edits"] if s.get("parent_id"))
-    for edge in payload["edges"] + payload["remove_edges"]:
-        refs.update((edge["from"], edge["to"]))
-    refs -= temp_ids
-    if missing := refs - by_id.keys():
+    refs = references(payload)
+    if not allow_missing and (missing := refs - by_id.keys()):
         raise ChangeSetError(
             f"unknown existing task ids: {sorted(missing)}",
-            "change_set.conflict" if previous else "change_set.invalid",
         )
     # Ancestors and descendants participate in placement/archive guards and
-    # settlement, so their versions are part of the proposal's read set too.
+    # settlement; read their container metadata for final graph validation.
     scope = set(refs)
     while True:
         expanded = (
@@ -260,54 +302,24 @@ async def snapshot(conn, project_id, payload, *, previous=None):
         .mappings()
         .all()
     )
-    checkpoints = (
-        (
-            await conn.execute(
-                select(task_integration_checkpoints)
-                .where(task_integration_checkpoints.c.task_id.in_(scope))
-                .order_by(task_integration_checkpoints.c.task_id)
-            )
-        )
-        .mappings()
-        .all()
-    )
-    gate_rows = (
-        (
-            await conn.execute(
-                select(gates)
-                .where(
-                    gates.c.id.in_(
-                        select(task_gates.c.gate_id).where(task_gates.c.task_id.in_(scope))
-                    )
-                )
-                .order_by(gates.c.id)
-            )
-        )
-        .mappings()
-        .all()
-    )
     expected = {
-        "versions": {tid: by_id[tid]["_version"] for tid in sorted(scope)},
         "edges": [dict(row) for row in edges],
         "metadata": [dict(row) for row in metadata],
-        "checkpoints": [dict(row) for row in checkpoints],
-        "gates": [dict(row) for row in gate_rows],
-        "integration_mode": project["hierarchical_integration_mode"],
     }
     return expected, by_id, project
 
 
-def final_graph(payload, rows, expected):
+def final_graph(payload, rows, expected, *, approved=False):
     """Validate the resulting graph, including jointly removed/replaced edges."""
     graph = {(e["task_id"], e["depends_on_task_id"], e["dep_type"]) for e in expected["edges"]}
     for e in payload["remove_edges"]:
         edge = (e["from"], e["to"], e.get("dep_type", "blocks"))
-        if edge not in graph:
+        if not approved and edge not in graph:
             raise ChangeSetError(f"No dependency found: {edge}")
-        graph.remove(edge)
+        graph.discard(edge)
     parent = {tid: row["parent_task_id"] for tid, row in rows.items()}
     for e in payload["remove_edges"]:
-        if e.get("dep_type", "blocks") == "parent-child":
+        if e.get("dep_type", "blocks") == "parent-child" and parent.get(e["from"]) == e["to"]:
             parent[e["from"]] = None
     for spec in payload["tasks"]:
         parent[spec["tempId"]] = spec.get("parent_id")
@@ -325,8 +337,9 @@ def final_graph(payload, rows, expected):
             tid, pid, _ = edge
             if tid in explicit and explicit[tid] != pid:
                 raise ChangeSetError("conflicting parent_id and parent-child edge")
-            if parent.get(tid) not in (None, pid):
+            if not approved and parent.get(tid) not in (None, pid):
                 raise ChangeSetError("multiple parents; use an edit with parent_id")
+            graph = {edge for edge in graph if edge[0] != tid or edge[2] != "parent-child"}
             parent[tid] = pid
         graph.add(edge)
     for tid, pid in parent.items():
@@ -355,11 +368,11 @@ def final_graph(payload, rows, expected):
     return parent
 
 
-async def apply(handler, conn, project_id, payload, expected, rows, project, source):
+async def apply(handler, conn, project_id, payload, expected, rows, project, source, *, approved=False):
     """Apply a fully validated set, returning a receipt and deferred notifications."""
     db = handler.db
     transitions = []
-    parents = final_graph(payload, rows, expected)
+    parents = final_graph(payload, rows, expected, approved=approved)
     for spec in payload["tasks"] + payload["edits"]:
         if error := handler._validate_routing_class(spec.get("intelligence_class")):
             raise ChangeSetError(error)
@@ -547,6 +560,8 @@ async def apply(handler, conn, project_id, payload, expected, rows, project, sou
                 transitions.append(result)
         elif action == "resume":
             if rows[tid]["status"] != "PAUSED":
+                if approved:
+                    continue  # Already resumed since approval; the intent is satisfied.
                 raise ChangeSetError("Task is not paused")
             transitions.append(
                 await db._resume_locked(

@@ -1336,9 +1336,8 @@ Written by spec ingest and supervisors via `task_batch_propose`. Propose/update
 validate the same connection-scoped implementation as commit in a rolled-back
 savepoint; no task or comment becomes visible until an approved commit.
 
-`task_batch_commit` locks the proposal row, revalidates the PostgreSQL `xmin`
-versions of referenced tasks and their hierarchy, graph edges, metadata, gates
-and integration checkpoints, and applies all changes, the receipt and one
+`task_batch_commit` locks the proposal row and applies the approved operations,
+the receipt and one
 `task.change_set_committed` audit event in a single transaction. It takes the
 fleet routing lock, project hierarchy lock and task/graph table write locks, so
 scheduler, routing and claim writes serialize with commit. The final graph's
@@ -1346,9 +1345,21 @@ blocked projection and container settlement are computed before publishing;
 listeners run after commit. A stale scheduler promotion repeats its observed
 status, timestamp and unblocked predicate in the guarded write.
 
-An approved proposal is immutable once a human gate awaits it. A version
-conflict leaves it ready and requires a fresh proposal and decision. A committed
-proposal replays its stored receipt, even after its tasks have been archived.
+An approved proposal is immutable once a human gate awaits it and cannot be
+discarded. Task versions, status/claim churn, metadata, gates and later edits do
+not invalidate its approval. Approved fields overwrite later values; fields
+outside the proposal retain their current values. Subsequent changes belong in
+a subsequent batch, without rebasing or requesting approval again.
+
+If a referenced task has disappeared, commit the remaining operations and
+report `missing_task_ids` and `skipped_operations` in the response, stored receipt
+and audit. Each skipped entry identifies the operation list, its zero-based
+index in the approved payload, and the missing task ids. Creates whose parent
+is missing (including descendants of a skipped create) are skipped rather than
+silently becoming roots. Operations involving those skipped creates are skipped
+too. Even an entirely skipped batch becomes committed with an empty receipt.
+A committed proposal replays its stored receipt, including omissions, even
+after its tasks have been archived.
 Live-holder controls, integration-owned placement/disposition and invalid state
 transitions are refused rather than bypassing existing lifecycle guards.
 
@@ -1361,7 +1372,7 @@ its tasks do not have real ids until the commit creates them.
 | `id` | TEXT | PRIMARY KEY | `"prop-"` + uuid4[:12] |
 | `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
 | `source` | TEXT | NOT NULL | Provenance, e.g. `spec:projects/foo/specs/2026-08-21-thing.md`; stamped onto every task the commit creates |
-| `payload` | TEXT | NOT NULL | JSON: `tasks`, `edits`, `edges`, `remove_edges`, `comments`, validated `diff`, optimistic `expected` read set, and committed `receipt`; see [task change sets](../guides/task-change-sets.md) |
+| `payload` | TEXT | NOT NULL | JSON: `tasks`, `edits`, `edges`, `remove_edges`, `comments`, validated `diff`, and committed `receipt`; legacy `expected` snapshots are ignored at commit; see [task change sets](../guides/task-change-sets.md) |
 | `status` | TEXT | NOT NULL DEFAULT 'draft' | CHECK `ck_task_proposals_status`: draft, ready, committed, discarded |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |

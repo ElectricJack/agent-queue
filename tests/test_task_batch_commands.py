@@ -218,7 +218,7 @@ async def test_commit_is_atomic_and_idempotent(handler):
     c2 = await handler.execute(
         "task_batch_commit", {"proposal_id": prop_id, "gate_id": gate_id, "project_id": "p1"}
     )
-    assert c2 == {"success": True, "already_committed": True, "task_ids": c1["task_ids"]}
+    assert c2 == {**c1, "already_committed": True}
     assert len(await handler._db.list_tasks(project_id="p1")) == 2
 
 
@@ -577,7 +577,7 @@ async def test_commit_with_the_exact_approving_gate_materialises_once(handler):
     replay = await handler.execute("task_batch_commit", args)
 
     assert first["success"] is True and not first.get("already_committed"), first
-    assert replay == {"success": True, "already_committed": True, "task_ids": first["task_ids"]}
+    assert replay == {**first, "already_committed": True}
     assert {t.id for t in await handler._db.list_tasks(project_id="p1")} == set(first["task_ids"])
 
 
@@ -688,28 +688,48 @@ async def test_change_set_commits_edits_edges_comments_and_audit_once(handler):
     assert json.loads(audits[0])["receipt"]["edited_task_ids"] == [tid]
 
 
-@pytest.mark.parametrize("mutation", ["row", "edge", "metadata", "claim"])
-async def test_change_set_detects_optimistic_conflicts(handler, mutation):
+@pytest.mark.parametrize("mutation", ["row", "same_field", "edge", "metadata", "claim", "pause", "resume"])
+async def test_change_set_approval_survives_later_changes(handler, mutation):
     from sqlalchemy import update
     from src.database.tables import tasks
     tid = await _existing(handler)
     await _existing(handler, "other")
     proposal = await _changes(handler, edits=[{"task_id": tid, "title": "Proposal"}])
-    await _approve(handler, proposal["proposal_id"])
+    gate_id = await _approve(handler, proposal["proposal_id"])
+    stored = (await get_proposal(handler._db, proposal["proposal_id"]))["payload"]
     if mutation == "row":
         await handler._db.update_task(tid, description="Concurrent edit")
+    elif mutation == "same_field":
+        await handler._db.update_task(tid, title="Concurrent edit")
     elif mutation == "edge":
         await handler._db.add_dependency(tid, "other")
     elif mutation == "metadata":
         await handler._db.set_task_meta(tid, "manual_decision", "concurrent")
+    elif mutation in ("pause", "resume"):
+        await handler._db.pause_task(tid)
+        if mutation == "resume":
+            await handler._db.resume_task(tid)
     else:
-        # A raw task-row write without an updated_at bump must also conflict.
+        # Claims change row versions even without an updated_at bump.
         async with handler._db.immediate() as conn:
             await conn.execute(update(tasks).where(tasks.c.id == tid).values(claim_epoch=1))
     result = await handler.execute("task_batch_commit", {"proposal_id": proposal["proposal_id"]})
-    assert result["code"] == "change_set.conflict", result
-    assert (await handler._db.get_task(tid)).title == tid
-    assert (await get_proposal(handler._db, proposal["proposal_id"]))["status"] == "ready"
+    assert result["success"], result
+    task = await handler._db.get_task(tid)
+    assert task.title == "Proposal"
+    assert task.description == ("Concurrent edit" if mutation == "row" else "Original")
+    if mutation == "pause":
+        assert task.status == TaskStatus.PAUSED
+    if mutation == "claim":
+        async with handler._db.immediate() as conn:
+            from sqlalchemy import select
+            assert (await conn.execute(select(tasks.c.claim_epoch).where(tasks.c.id == tid))).scalar() == 1
+    if mutation == "edge":
+        assert await handler._db.get_dependencies(tid) == {"other"}
+    committed = await get_proposal(handler._db, proposal["proposal_id"])
+    assert committed["status"] == "committed"
+    assert {k: v for k, v in committed["payload"].items() if k != "receipt"} == stored
+    assert (await handler._db.get_gate(gate_id))["resolution"] == "approved"
 
 
 async def test_change_set_late_failure_rolls_back_every_operation(handler, monkeypatch):
@@ -944,16 +964,151 @@ async def test_change_set_resume_notifies_frontier_only_after_commit(handler):
     assert notices == [(tid, "unblocked")]
 
 
-async def test_change_set_missing_target_is_an_optimistic_conflict(handler):
+async def test_change_set_missing_target_commits_empty_receipt(handler):
     from src.models import TaskStatus
     tid = await _existing(handler, status=TaskStatus.FAILED)
     proposal = await _changes(handler, edits=[{"task_id": tid, "title": "Stale edit"}])
     await _approve(handler, proposal["proposal_id"])
     await handler._db.archive_task(tid)
     result = await handler.execute("task_batch_commit", {"proposal_id": proposal["proposal_id"]})
-    assert result["code"] == "change_set.conflict", result
+    assert result["success"] and result["task_ids"] == [], result
+    assert result["missing_task_ids"] == [tid]
+    assert result["skipped_operations"] == [
+        {"operation": "edits", "index": 0, "missing_task_ids": [tid]},
+    ]
     assert await handler._db.get_task(tid) is None
-    assert (await get_proposal(handler._db, proposal["proposal_id"]))["status"] == "ready"
+    assert (await get_proposal(handler._db, proposal["proposal_id"]))["status"] == "committed"
+    replay = await handler.execute("task_batch_commit", {"proposal_id": proposal["proposal_id"]})
+    assert replay == {**result, "already_committed": True}
+
+
+@pytest.mark.parametrize("parent_style", ["parent_id", "edge"])
+async def test_missing_references_skip_only_affected_operations(handler, parent_style):
+    import json
+    from sqlalchemy import select
+    from src.database.tables import events
+
+    gone = await _existing(handler, "gone", TaskStatus.FAILED)
+    kept = await _existing(handler, "kept")
+    child = {"tempId": "child", "title": "Child", "description": ""}
+    edges = [{"from": kept, "to": gone, "dep_type": "related"}, {"from": kept, "to": "new"}]
+    if parent_style == "parent_id":
+        child["parent_id"] = gone
+    else:
+        edges.append({"from": "child", "to": gone, "dep_type": "parent-child"})
+    # A failed parent cannot take children; stage while it is still open.
+    await handler._db.update_task(gone, status=TaskStatus.DEFINED)
+    await handler._db.add_dependency(kept, gone, dep_type="related")
+    proposal = await _changes(handler,
+        tasks=[child,
+               {"tempId": "grandchild", "title": "Grandchild", "description": "", "parent_id": "child"},
+               {"tempId": "new", "title": "Survivor", "description": ""}],
+        edits=[{"task_id": gone, "title": "Missing"}, {"task_id": kept, "title": "Approved"}],
+        edges=edges, remove_edges=[{"from": kept, "to": gone, "dep_type": "related"}],
+        comments=[{"task_id": gone, "body": "Missing"}, {"task_id": "grandchild", "body": "Skipped"},
+                  {"task_id": kept, "body": "Survives"}],
+    )
+    await _approve(handler, proposal["proposal_id"])
+    await handler._db.update_task(gone, status=TaskStatus.FAILED)
+    await handler._db.archive_task(gone)
+    result = await handler.execute("task_batch_commit", {"proposal_id": proposal["proposal_id"]})
+    assert result["success"] and len(result["task_ids"]) == 1, result
+    assert result["missing_task_ids"] == [gone]
+    omitted = {(item["operation"], item["index"]) for item in result["skipped_operations"]}
+    assert omitted == {
+        ("tasks", 0), ("tasks", 1), ("edits", 0), ("edges", 0),
+        ("remove_edges", 0), ("comments", 0), ("comments", 1),
+    } | ({("edges", 2)} if parent_style == "edge" else set())
+    assert all(item["missing_task_ids"] == [gone] for item in result["skipped_operations"])
+    assert (await handler._db.get_task(kept)).title == "Approved"
+    assert await handler._db.get_dependencies(kept) == set(result["task_ids"])
+    assert [c["body"] for c in (await handler._db.list_task_comments(kept))["comments"]] == ["Survives"]
+    assert {t.title for t in await handler._db.list_tasks(project_id="p1")} == {"Survivor", "Approved"}
+    async with handler._db.immediate() as conn:
+        audit = (await conn.execute(select(events.c.payload).where(
+            events.c.event_type == "task.change_set_committed"
+        ))).scalar_one()
+    assert json.loads(audit)["receipt"]["skipped_operations"] == result["skipped_operations"]
+    stored = await get_proposal(handler._db, proposal["proposal_id"])
+    assert stored["payload"]["diff"] == proposal["diff"]
+    assert stored["payload"]["receipt"]["missing_task_ids"] == [gone]
+    replay = await handler.execute("task_batch_commit", {"proposal_id": proposal["proposal_id"]})
+    assert replay == {**result, "already_committed": True}
+
+
+async def test_legacy_expected_snapshot_is_ignored(handler):
+    import json
+    from sqlalchemy import update
+    from src.database.tables import task_proposals
+
+    tid = await _existing(handler)
+    proposal = await _changes(handler, edits=[{"task_id": tid, "title": "Approved"}])
+    stored = (await get_proposal(handler._db, proposal["proposal_id"]))["payload"]
+    stored["expected"] = {"versions": {tid: "obsolete"}, "edges": [], "metadata": []}
+    async with handler._db.immediate() as conn:
+        await conn.execute(update(task_proposals).where(
+            task_proposals.c.id == proposal["proposal_id"]
+        ).values(payload=json.dumps(stored)))
+    await _approve(handler, proposal["proposal_id"])
+    result = await handler.execute("task_batch_commit", {"proposal_id": proposal["proposal_id"]})
+    assert result["success"], result
+    assert (await handler._db.get_task(tid)).title == "Approved"
+
+
+@pytest.mark.parametrize("resolution", [None, "approved", "rejected"])
+async def test_gated_proposal_cannot_be_discarded(handler, resolution):
+    proposal_id = await _propose(handler)
+    gate, _ = await handler._db.create_gate("p1", "human", "Approve?", await_id=proposal_id)
+    if resolution:
+        await handler._db.resolve_gate(gate, resolved_by="test", resolution=resolution)
+    before = await get_proposal(handler._db, proposal_id)
+    result = await handler.execute("task_batch_discard", {"proposal_id": proposal_id})
+    assert not result["success"] and "approval gate" in result["error"]
+    assert await get_proposal(handler._db, proposal_id) == before
+    assert not [event for event in _emitted(handler) if event[0] == "proposal.status_changed"]
+
+
+@pytest.mark.parametrize("operation", ["remove_edge", "resume"])
+async def test_approved_operation_already_done_is_idempotent(handler, operation):
+    tid = await _existing(handler)
+    other = await _existing(handler, "other")
+    if operation == "remove_edge":
+        await handler._db.add_dependency(tid, other)
+        proposal = await _changes(handler, remove_edges=[{"from": tid, "to": other}])
+        await handler._db.remove_dependency(tid, other)
+    else:
+        await handler._db.pause_task(tid)
+        proposal = await _changes(handler, edits=[{"task_id": tid, "action": "resume"}])
+        await handler._db.resume_task(tid)
+    await _approve(handler, proposal["proposal_id"])
+    result = await handler.execute("task_batch_commit", {"proposal_id": proposal["proposal_id"]})
+    assert result["success"], result
+    assert await handler._db.get_dependencies(tid) == set()
+    assert (await handler._db.get_task(tid)).status != TaskStatus.PAUSED
+
+
+@pytest.mark.parametrize("operation", ["add", "remove"])
+async def test_approved_parent_edge_only_applies_its_own_intent(handler, operation):
+    tid = await _existing(handler)
+    parent = await _existing(handler, "approved-parent")
+    later = await _existing(handler, "later-parent")
+    edge = {"from": tid, "to": parent, "dep_type": "parent-child"}
+    if operation == "remove":
+        async with handler._db.immediate() as conn:
+            await handler._db.set_parent(tid, parent, conn=conn)
+    proposal = await _changes(handler, **{
+        "edges" if operation == "add" else "remove_edges": [edge],
+    })
+    await _approve(handler, proposal["proposal_id"])
+    async with handler._db.immediate() as conn:
+        await handler._db.set_parent(tid, later, conn=conn)
+    result = await handler.execute("task_batch_commit", {"proposal_id": proposal["proposal_id"]})
+    assert result["success"], result
+    # Add chooses the approved parent. Removal of one typed edge leaves later
+    # membership alone; it is not approval to detach every possible parent.
+    expected = parent if operation == "add" else later
+    assert (await handler._db.get_task(tid)).parent_task_id == expected
+    assert await handler._db.get_typed_dependencies(tid) == [(expected, "parent-child")]
 
 
 async def test_change_set_does_not_settle_an_unrelated_container(handler):
