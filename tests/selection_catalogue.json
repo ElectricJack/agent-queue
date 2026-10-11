@@ -12162,7 +12162,7 @@
         "orchestrator"
       ],
       "default_arm": true,
-      "digest": "sha256:163e3be8b7eb76d9e1a0840c366084fdcdc491b8eb22023ea9b7c4ea89924340",
+      "digest": "sha256:3edadaf353247da6187d03ac7d646b012d51b895e99df9fb518e5c7752576f35",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -12179,6 +12179,7 @@
         "src.orchestrator",
         "src.playbooks.artifact_store",
         "src.playbooks.definition",
+        "src.playbooks.required",
         "src.playbooks.run_state",
         "src.playbooks.runtime",
         "src.playbooks.services",

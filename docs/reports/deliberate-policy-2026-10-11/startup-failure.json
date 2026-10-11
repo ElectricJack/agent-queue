@@ -1,0 +1,187 @@
+{
+  "tested_head": "f8e295c342fb2647ede05b65eddbf2244c26e9fa",
+  "passed": false,
+  "failure": "Traceback (most recent call last):\n  File \"/home/jkern/dev/agent-queue2/.aq/worktrees/slot-19/scripts/e2e/policy_acceptance.py\", line 460, in main\n    first_start(kits[0])\n  File \"/home/jkern/dev/agent-queue2/.aq/worktrees/slot-19/scripts/e2e/policy_acceptance.py\", line 223, in first_start\n    check({row[\"playbook_id\"] for row in snapshot[\"activations\"]} == ACTIVE,\n  File \"/home/jkern/dev/agent-queue2/.aq/worktrees/slot-19/scripts/e2e/policy_acceptance.py\", line 46, in check\n    raise AssertionError(message)\nAssertionError: required/default activation inventory differs\n",
+  "raw_evidence": {
+    "path": "/tmp/calm-vault-68.3-fresh-start-failure.json",
+    "sha256": "5f2540de59c44d87855b2c76d00452359bf735a545e6e70fa9e25566bb2f22b9"
+  },
+  "snapshots": [
+    {
+      "case": "absent",
+      "event": "snapshot",
+      "label": "builder-first-install",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_absent",
+      "url": "http://127.0.0.1:57877",
+      "receipt": {
+        "version": 1,
+        "activation_pending": true
+      },
+      "sources": {
+        "default-assignment-routing.md": "041f05e80a00349321a115e415c70ed76ded029c785de305078058b48bfb2b6e",
+        "default-pipeline.md": "7800ba6feea9960b7b0bb7322155e033b3ca6bc3a8c2ed9fa83d26699ac9af8f",
+        "morning-report.md": "47b3b5102ce5fa7e547671eb2ca8396f70e24572c0b5e71705c9d76ed73a9f9f",
+        "provider-failover.md": "42667d84239f92d17e3713b114c72a36706423ffb02b61c6e385fef9e4a5f0e0",
+        "provider-usage-probe.md": "7c48f9f0fe5e42763b8a4e57ea96135b193d4854324258e5262337d196ba1a60",
+        "supervisor-failure-triage.md": "8cb0684991e1f9cb760abcde9e4ce7d150541a0c58d5ea0038f94db3e2e0de5e"
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "morning-report",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "bundle_files": {
+        "default-assignment-routing/artifact.json": "69141ea8e7f9bf887025f052b25871b73146acd51749b0f1c888488822b067e3",
+        "default-assignment-routing/artifact.sha256": "8559b48a377ea22c055bf681e6d5f8fadd7b1c530d4074677cd8ed1092b1919a",
+        "default-assignment-routing/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+        "default-assignment-routing/manifest.md": "5fbe0c0ee668ccbbf902a092694f3101e4471d55f30f566e53b85a002f8e86c1",
+        "default-assignment-routing/source.md": "041f05e80a00349321a115e415c70ed76ded029c785de305078058b48bfb2b6e",
+        "default-pipeline/artifact.json": "d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+        "default-pipeline/artifact.sha256": "f045aeecb9a6880c0459610a8eb8e4ef25436449614d6c36da3bba821c862d01",
+        "default-pipeline/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+        "default-pipeline/manifest.md": "c300080ee21f3976cdd8c1ddd3733c6dbc7cde324b2f3a67d3221c53e4c21af1",
+        "default-pipeline/source.md": "7800ba6feea9960b7b0bb7322155e033b3ca6bc3a8c2ed9fa83d26699ac9af8f",
+        "morning-report/artifact.json": "16fde92cca3982a44fa37dc7638fb535066e62200f55bc67bda6e46b0af8c0a2",
+        "morning-report/artifact.sha256": "e595c784328321b064fda72afa8c5b3016c2994e0e22474a7340e6d7b9551fe6",
+        "morning-report/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+        "morning-report/manifest.md": "91c6bd8fa3a9dbafe3772800c8a07945be0196c38b1dd1ea44dc24696d1e1045",
+        "morning-report/source.md": "47b3b5102ce5fa7e547671eb2ca8396f70e24572c0b5e71705c9d76ed73a9f9f",
+        "provider-failover/artifact.json": "b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1",
+        "provider-failover/artifact.sha256": "ef2d0bcb3c5cee32347651281b67da114846dca3cf846cd2baf98e914dd20105",
+        "provider-failover/diagnostics.json": "85f9c1da2e55a4105e11eb56b18bdf822978628e6f36952ceb9d866ea1df0add",
+        "provider-failover/manifest.md": "709aa78ee4be6fe445295dbe010af117563b6f846fd8e9f26bb67702a7f241f2",
+        "provider-failover/source.md": "42667d84239f92d17e3713b114c72a36706423ffb02b61c6e385fef9e4a5f0e0",
+        "provider-usage-probe/artifact.json": "9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+        "provider-usage-probe/artifact.sha256": "16301a0362376c683b1ab285daa6e1413ad1f0078f754bb494403c08715d75a2",
+        "provider-usage-probe/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+        "provider-usage-probe/manifest.md": "7537f67734e6466ac01cc98cb28c87290c2bce529f7ec4a3df6c610d68b2195d",
+        "provider-usage-probe/source.md": "7c48f9f0fe5e42763b8a4e57ea96135b193d4854324258e5262337d196ba1a60",
+        "supervisor-failure-triage/artifact.json": "0c89644f6894a9949a3113ad6654f3d8f7d4b1c822b093b84b0d513278593cc8",
+        "supervisor-failure-triage/artifact.sha256": "3020338cda62bae83752cb2b80bbbda11fa49d76a00fb79f61c1c83709c6f9fe",
+        "supervisor-failure-triage/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+        "supervisor-failure-triage/manifest.md": "6be90ed9e07d35be6a6c1a217f209f524fe16da412b8f36310438512523d5d6b",
+        "supervisor-failure-triage/source.md": "8cb0684991e1f9cb760abcde9e4ce7d150541a0c58d5ea0038f94db3e2e0de5e"
+      },
+      "activations": []
+    },
+    {
+      "case": "absent",
+      "event": "snapshot",
+      "label": "first-start-complete",
+      "home": "/tmp/aq-e2e-calm-vault-68-3/policy-cases/absent",
+      "database": "agent_queue_e2e_calm_vault_68_3_policy_absent",
+      "url": "http://127.0.0.1:57877",
+      "receipt": {
+        "version": 1,
+        "activation_pending": false
+      },
+      "sources": {
+        "default-assignment-routing.md": "041f05e80a00349321a115e415c70ed76ded029c785de305078058b48bfb2b6e",
+        "default-pipeline.md": "7800ba6feea9960b7b0bb7322155e033b3ca6bc3a8c2ed9fa83d26699ac9af8f",
+        "morning-report.md": "47b3b5102ce5fa7e547671eb2ca8396f70e24572c0b5e71705c9d76ed73a9f9f",
+        "provider-failover.md": "42667d84239f92d17e3713b114c72a36706423ffb02b61c6e385fef9e4a5f0e0",
+        "provider-usage-probe.md": "7c48f9f0fe5e42763b8a4e57ea96135b193d4854324258e5262337d196ba1a60",
+        "supervisor-failure-triage.md": "8cb0684991e1f9cb760abcde9e4ce7d150541a0c58d5ea0038f94db3e2e0de5e"
+      },
+      "bundles": [
+        "default-assignment-routing",
+        "default-pipeline",
+        "morning-report",
+        "provider-failover",
+        "provider-usage-probe",
+        "supervisor-failure-triage"
+      ],
+      "bundle_files": {
+        "default-assignment-routing/artifact.json": "69141ea8e7f9bf887025f052b25871b73146acd51749b0f1c888488822b067e3",
+        "default-assignment-routing/artifact.sha256": "8559b48a377ea22c055bf681e6d5f8fadd7b1c530d4074677cd8ed1092b1919a",
+        "default-assignment-routing/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+        "default-assignment-routing/manifest.md": "5fbe0c0ee668ccbbf902a092694f3101e4471d55f30f566e53b85a002f8e86c1",
+        "default-assignment-routing/source.md": "041f05e80a00349321a115e415c70ed76ded029c785de305078058b48bfb2b6e",
+        "default-pipeline/artifact.json": "d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+        "default-pipeline/artifact.sha256": "f045aeecb9a6880c0459610a8eb8e4ef25436449614d6c36da3bba821c862d01",
+        "default-pipeline/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+        "default-pipeline/manifest.md": "c300080ee21f3976cdd8c1ddd3733c6dbc7cde324b2f3a67d3221c53e4c21af1",
+        "default-pipeline/source.md": "7800ba6feea9960b7b0bb7322155e033b3ca6bc3a8c2ed9fa83d26699ac9af8f",
+        "morning-report/artifact.json": "16fde92cca3982a44fa37dc7638fb535066e62200f55bc67bda6e46b0af8c0a2",
+        "morning-report/artifact.sha256": "e595c784328321b064fda72afa8c5b3016c2994e0e22474a7340e6d7b9551fe6",
+        "morning-report/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+        "morning-report/manifest.md": "91c6bd8fa3a9dbafe3772800c8a07945be0196c38b1dd1ea44dc24696d1e1045",
+        "morning-report/source.md": "47b3b5102ce5fa7e547671eb2ca8396f70e24572c0b5e71705c9d76ed73a9f9f",
+        "provider-failover/artifact.json": "b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1",
+        "provider-failover/artifact.sha256": "ef2d0bcb3c5cee32347651281b67da114846dca3cf846cd2baf98e914dd20105",
+        "provider-failover/diagnostics.json": "85f9c1da2e55a4105e11eb56b18bdf822978628e6f36952ceb9d866ea1df0add",
+        "provider-failover/manifest.md": "709aa78ee4be6fe445295dbe010af117563b6f846fd8e9f26bb67702a7f241f2",
+        "provider-failover/source.md": "42667d84239f92d17e3713b114c72a36706423ffb02b61c6e385fef9e4a5f0e0",
+        "provider-usage-probe/artifact.json": "9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+        "provider-usage-probe/artifact.sha256": "16301a0362376c683b1ab285daa6e1413ad1f0078f754bb494403c08715d75a2",
+        "provider-usage-probe/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+        "provider-usage-probe/manifest.md": "7537f67734e6466ac01cc98cb28c87290c2bce529f7ec4a3df6c610d68b2195d",
+        "provider-usage-probe/source.md": "7c48f9f0fe5e42763b8a4e57ea96135b193d4854324258e5262337d196ba1a60",
+        "reviewed-playbooks.md": "90d4f8db650ada30ca1fa3730ac43c2ef3263cc2c0727825e7871893975f570a",
+        "supervisor-failure-triage/artifact.json": "0c89644f6894a9949a3113ad6654f3d8f7d4b1c822b093b84b0d513278593cc8",
+        "supervisor-failure-triage/artifact.sha256": "3020338cda62bae83752cb2b80bbbda11fa49d76a00fb79f61c1c83709c6f9fe",
+        "supervisor-failure-triage/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+        "supervisor-failure-triage/manifest.md": "6be90ed9e07d35be6a6c1a217f209f524fe16da412b8f36310438512523d5d6b",
+        "supervisor-failure-triage/source.md": "8cb0684991e1f9cb760abcde9e4ce7d150541a0c58d5ea0038f94db3e2e0de5e"
+      },
+      "activations": [
+        {
+          "activation_id": "1b199531-ec9d-4187-b02a-f1b7d866a103",
+          "playbook_id": "supervisor-failure-triage",
+          "scope": "system",
+          "scope_identifier": "",
+          "active_artifact_sha256": "sha256:0c89644f6894a9949a3113ad6654f3d8f7d4b1c822b093b84b0d513278593cc8",
+          "enabled": true,
+          "health": "ready",
+          "reasons": "[]",
+          "activated_at": 1791739076.6006343,
+          "activated_by": "service:required-playbook-reconciler",
+          "updated_at": 1791739076.6006343
+        },
+        {
+          "activation_id": "4e0ca2be-4a83-4b46-a974-398393a9f3af",
+          "playbook_id": "provider-failover",
+          "scope": "system",
+          "scope_identifier": "",
+          "active_artifact_sha256": "sha256:b130c149b5cd6a89dc23c0fe1610f131699fe31e1c1137095c0fd111918452c1",
+          "enabled": true,
+          "health": "ready",
+          "reasons": "[]",
+          "activated_at": 1791739076.5232534,
+          "activated_by": "service:required-playbook-reconciler",
+          "updated_at": 1791739076.5232534
+        },
+        {
+          "activation_id": "d1cab131-4d7d-48d2-a38b-17f13b091bd6",
+          "playbook_id": "default-pipeline",
+          "scope": "system",
+          "scope_identifier": "",
+          "active_artifact_sha256": "sha256:d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce",
+          "enabled": true,
+          "health": "ready",
+          "reasons": "[]",
+          "activated_at": 1791739076.6998684,
+          "activated_by": "service:required-playbook-reconciler",
+          "updated_at": 1791739076.6998684
+        },
+        {
+          "activation_id": "e2b33991-b0dc-48bb-9abe-9d691440bc1b",
+          "playbook_id": "provider-usage-probe",
+          "scope": "system",
+          "scope_identifier": "",
+          "active_artifact_sha256": "sha256:9b3dd865baa880819f5a650e1224a1e4792a4bd4232f03adbf8a71274b1a6485",
+          "enabled": true,
+          "health": "ready",
+          "reasons": "[]",
+          "activated_at": 1791739076.4492273,
+          "activated_by": "service:required-playbook-reconciler",
+          "updated_at": 1791739076.4492273
+        }
+      ]
+    }
+  ]
+}
