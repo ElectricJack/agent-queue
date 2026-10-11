@@ -52,6 +52,8 @@ from src.commands.system_commands import SystemCommandsMixin
 from src.commands.git_identity_commands import GitIdentityCommandsMixin
 from src.commands.project_commands import ProjectCommandsMixin
 from src.commands.policy_commands import PolicyCommandsMixin
+from src.commands.operator_commands import OperatorCommandsMixin
+from src.commands.operator_authority import bind_operator_dispatch, operator_grant_var
 from src.commands.project_onboarding_commands import ProjectOnboardingCommandsMixin
 from src.commands.task_commands import TaskCommandsMixin
 from src.commands.routing_commands import RoutingCommandsMixin
@@ -350,6 +352,7 @@ def _is_memory_command(name: str) -> bool:
 
 
 class CommandHandler(
+    OperatorCommandsMixin,
     JobCommandsMixin,
     ObjectLoopCommandsMixin,
     ClaimCommandsMixin,
@@ -692,7 +695,9 @@ class CommandHandler(
 
     @staticmethod
     def _is_mutating(name: str) -> bool:
-        return any(name.startswith(p) for p in CommandHandler._MUTATING_CMD_PREFIXES)
+        return name.startswith("operator_") or any(
+            name.startswith(p) for p in CommandHandler._MUTATING_CMD_PREFIXES
+        )
 
     @staticmethod
     def _preview(obj: object, limit: int = 600) -> str:
@@ -952,6 +957,8 @@ class CommandHandler(
             if principal is None:
                 principal = await self._principal_from_scope(scope)
             _principal_token = _principal_var.set(principal)
+            operator_session, _operator_token, operator_refusal = bind_operator_dispatch(
+                principal, name, args)
             mutating = self._is_mutating(name)
             # Terminal keystrokes may be secrets. They belong only to the
             # terminal, never to general command logs or the activity feed.
@@ -980,6 +987,8 @@ class CommandHandler(
                     else value
                     for key, value in args.items()
                 }
+            if name.startswith("operator_"):
+                log_args = {"command": args.get("command"), "arguments": "<operator inputs>"}
             if mutating:
                 logger.info("cmd %s args=%s", name, self._preview(log_args))
             else:
@@ -995,6 +1004,8 @@ class CommandHandler(
             _emit_ok: bool = False
             _emit_error: str | None = None
             try:
+                if operator_refusal:
+                    return {"success": False, "error": operator_refusal}
                 # Normalise project_id in args before dispatching.
                 # LLMs frequently guess wrong (channel names, underscores,
                 # prefixes).  This resolves to the correct ID centrally.
@@ -1023,7 +1034,8 @@ class CommandHandler(
                     name,
                     principal,
                     resolver=self._command_resolver,
-                    mode=getattr(self.config.security, "capability_enforcement", "audit"),
+                    mode=("enforce" if operator_session else
+                          getattr(self.config.security, "capability_enforcement", "audit")),
                 )
                 if decision.shadow:
                     logger.warning(
@@ -1164,6 +1176,7 @@ class CommandHandler(
                 # Ensure scope does not leak across commands.
                 _current_scope_var.reset(_scope_token)
                 _principal_var.reset(_principal_token)
+                operator_grant_var.reset(_operator_token)
                 # Emit ``command.invoked`` for dashboard live-activity chips
                 # and future observability surfaces. Gated on the config flag;
                 # any failure is swallowed so a broken bus never breaks

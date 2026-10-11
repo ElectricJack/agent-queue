@@ -11,6 +11,7 @@ from src.models import (
     TaskStatus,
 )
 from src.commands.helpers import _count_by
+from src.commands.operator_authority import local_or_operator
 
 logger = logging.getLogger(__name__)
 
@@ -485,7 +486,7 @@ class ProjectCommandsMixin:
             from src.commands.supervisor_authority import integration_operator
 
             principal = current_principal() or TRUSTED_LOCAL
-            if "promotion_flow" in sensitive and principal.kind is not PrincipalKind.LOCAL:
+            if "promotion_flow" in sensitive and not local_or_operator("edit_project"):
                 return {
                     "success": False,
                     "error": "local_operator_only",

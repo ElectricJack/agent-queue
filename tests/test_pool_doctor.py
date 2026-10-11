@@ -1223,3 +1223,16 @@ async def test_container_held_skips_an_assigned_task_awaiting_its_session(db):
 def test_container_held_is_fixable():
     check = next(c for c in pool_checks.CHECKS if c.id == "claims.container_held")
     assert check.fix is not None
+
+
+async def test_operator_and_ordinary_workers_are_separate_doctor_routes(db):
+    await db.update_profile("worker", harness="codex", default_class="deep-high")
+    for identifier, lifecycle, commands in (
+        ("operator-push", "task", ["operator_execute"]),
+        ("operator-pool", "pool", ["operator_execute"]),
+    ):
+        await db.create_profile(AgentProfile(id=identifier, name=identifier, harness="codex",
+            default_class="deep-high", lifecycle=lifecycle, aq_commands=commands))
+    finding = await pool_checks.run_check(db, "pools.task_lifecycle_shadow", config=None)
+    assert finding.data["profiles"] == [{"profile_id": "operator-push", "harness": "codex",
+        "default_class": "deep-high", "pool_profile_ids": ["operator-pool"]}]

@@ -63,6 +63,7 @@ def _category_modules() -> tuple[object, ...]:
         memory,
         message,
         object_loop,
+        operator,
         playbook,
         graph,
         playbook_v2,
@@ -119,6 +120,7 @@ def _category_modules() -> tuple[object, ...]:
         job,
         knowledge,
         records,
+        operator,
     )
 
 

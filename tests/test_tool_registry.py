@@ -147,6 +147,7 @@ def test_registry_has_categories(registry):
         "job",
         "artifact",
         "policy",
+        "operator",
     }
 
     for cat in categories:

@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 from src.integration.reconciler_repair_close import reconciler_batch_subject
+from src.commands.operator_authority import local_or_operator
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 from src.commands.supervisor_authority import integration_operator
 from src.git.manager import GitError
@@ -135,7 +136,7 @@ class IntegrationCommandsMixin:
         from src.integration.protection import LocalRulesetReader
 
         request = IntegrationCutoverArgs.model_validate(args)
-        if not read_only and (current_principal() or TRUSTED_LOCAL).kind is not PrincipalKind.LOCAL:
+        if not read_only and not local_or_operator("integration_cutover"):
             return _failure("unauthorized", "cutover and reverse require a local operator")
         operator, refusal = await integration_operator(self.db, request.project_id)
         if refusal:

@@ -525,42 +525,6 @@ class DevelopmentPrimitiveAdapters:
             detail={"repair_task_id": identity, "sources": [m["task_id"] for m in manifest]},
         )
 
-    async def _owed_manifest(self, subject: Subject) -> list[dict[str, str]]:
-        """The frozen revisions this subject still owes a repair for.
-
-        A revision a verified repair already carries is replaced by that
-        repair, so a later failing rebuild files the next generation rather than
-        replaying a closed repair. The frozen manifest is never rewritten; this
-        is the subset the existing frontier still shows as owed.
-        """
-        manifest = await self._manifest(subject)
-        if self.frontier_for is None or subject.kind is not SubjectKind.SOURCE:
-            return manifest
-        frontier = await self.frontier_for(subject)
-        carried = {
-            task_id
-            for member in frontier.members
-            for task_id, source in member.carries
-            if (task_id, source) in {(m["task_id"], m["source_sha"]) for m in manifest}
-        }
-        replacements = {
-            member.facts.task_id: member.facts.head_sha
-            for member in frontier.members
-            if any(task_id in carried for task_id, _ in member.carries)
-        }
-        owed = [
-            entry
-            for entry in manifest
-            if entry["task_id"] not in replacements
-            or replacements[entry["task_id"]] != entry["source_sha"]
-        ]
-        if len(owed) == len(manifest):
-            return owed
-        # The repair itself is the work this rebuild still owes.
-        return [
-            {"task_id": task_id, "source_sha": sha} for task_id, sha in sorted(replacements.items())
-        ]
-
     async def _manifest(self, subject: Subject) -> list[dict[str, str]]:
         """The exact revisions this subject owns, from its frozen manifest.
 

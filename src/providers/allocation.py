@@ -80,10 +80,11 @@ def classify_profile(profile: Any, *, provider_known: bool) -> str | None:
 
     Reasons, first match wins: ``retired_project_scoped`` (a ``project:`` id
     that resolves nowhere), ``template``, ``named`` (a resident session),
-    ``role`` (a stage or control profile, or a read-only one), ``malformed``
+    ``role`` (a stage, control or operator profile, or a read-only one), ``malformed``
     (no harness, no class, or an unknown lifecycle -- no worker route at
     all), ``unknown_provider`` (its harness is not registered).
     """
+    from src.commands.operator_authority import is_operator_profile
     from src.profiles.catalog import worker_route
 
     profile_id = str(getattr(profile, "id", "") or "")
@@ -96,6 +97,7 @@ def classify_profile(profile: Any, *, provider_known: bool) -> str | None:
         return "named"
     if (
         profile_id in _role_profile_ids()
+        or is_operator_profile(profile)
         or getattr(profile, "read_only", False)
         or getattr(profile, "runtime", "") == "supervisor"
     ):

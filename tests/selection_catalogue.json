@@ -870,6 +870,12 @@
         "tests/test_object_loop_playbook.py"
       ]
     },
+    "operator-workers": {
+      "description": "Scoped operator worker authority, human decisions, auditing and setup preflight.",
+      "modules": [
+        "tests/test_operator_workers.py"
+      ]
+    },
     "orchestrator": {
       "description": "The orchestrator cycle and daemon lifecycle: run_one_cycle, promotion and assignment, pre-assignment constraints, failure events, daemon entry-point lifecycle and the workflow pipeline view.",
       "modules": [
@@ -12114,6 +12120,36 @@
       "markers": [],
       "summary": "SQLite/PostgreSQL parity tests for durable onboarding request storage."
     },
+    "tests/test_operator_workers.py": {
+      "areas": [
+        "operator-workers"
+      ],
+      "default_arm": true,
+      "digest": "sha256:2f81e2ac5ae3c0e812872af3020b6e31df1b28312e97a737fb431db17a13507e",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.cli",
+        "src.cli.app",
+        "src.cli.styles",
+        "src.commands.operator_authority",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.models",
+        "src.operator_decisions",
+        "src.playbooks.definition",
+        "src.policy_profiles.models",
+        "src.policy_profiles.service",
+        "src.profiles.capabilities",
+        "src.reviews.service",
+        "src.tools.definitions"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Operator authority keeps a real worker claim, audit and human decision fences."
+    },
     "tests/test_orchestrator.py": {
       "areas": [
         "orchestrator"
@@ -14192,7 +14228,7 @@
         "provider-failover"
       ],
       "default_arm": true,
-      "digest": "sha256:b49da3e982e626d1df83ed9c783d350a2edf68cad4f0f2069c7f3e63d4b0213a",
+      "digest": "sha256:40f636e2ed72df558f2db8786bf6995ffa7022bc8d50faf2eb3c0438a3041aaa",
       "imports": [
         "src.api.models.provider",
         "src.commands.handler",
@@ -14212,6 +14248,7 @@
         "src.providers.availability_service",
         "src.providers.intent",
         "src.providers.reroute",
+        "src.providers.spill",
         "src.scheduler",
         "src.sessions.harness_parser"
       ],
@@ -16076,9 +16113,10 @@
         "profiles"
       ],
       "default_arm": true,
-      "digest": "sha256:072a640bab07526cd7407fe081ef5fb56ce961c692592c75d45e42e93fcd0e53",
+      "digest": "sha256:6c0b571682674f59a1f7fc5408fec25a5be1e5821c34c7b307e8fce4c6e710b3",
       "imports": [
         "src.api.scope",
+        "src.commands.operator_authority",
         "src.prime.sections",
         "src.profiles.capabilities",
         "src.profiles.parser",

@@ -270,7 +270,8 @@ class TestLegacyAdapter:
             AgentProfile(id="h", name="h", allowed_tools=["Bash", "Read"])
         )
         assert p.harness_tools == frozenset({"Bash", "Read"})
-        assert p.aq_commands == AGENT_COMMAND_SET
+        assert p.aq_commands == AGENT_COMMAND_SET - {"operator_execute", "operator_preflight"}
+        assert "operator_execute" not in p.aq_commands
         assert p.derived_from_legacy is True
 
     def test_explicit_namespaces_are_not_legacy(self):

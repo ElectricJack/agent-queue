@@ -9317,6 +9317,100 @@
         }
       }
     },
+    "/api/operator/execute": {
+      "post": {
+        "tags": [
+          "operator"
+        ],
+        "summary": "Run an audited project setup action from a live operator claim, retaining session identity.",
+        "description": "Run an audited project setup action from a live operator claim, retaining session identity.",
+        "operationId": "operator_execute",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperatorExecuteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorExecuteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/operator/preflight": {
+      "post": {
+        "tags": [
+          "operator"
+        ],
+        "summary": "Check all planned operator inputs and report every blocker together before mutations.",
+        "description": "Check all planned operator inputs and report every blocker together before mutations.",
+        "operationId": "operator_preflight",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperatorPreflightRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorPreflightResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playbook/cancel-run": {
       "post": {
         "tags": [
@@ -27303,7 +27397,7 @@
               }
             ],
             "title": "Task Type",
-            "description": "The kind of work, a hint to the router (optional): design is code or system design, art is art-heavy design"
+            "description": "The kind of work, a hint to the router (optional): design is code or system design, art is art-heavy design, operator is scoped project setup"
           },
           "intelligence_class": {
             "anyOf": [
@@ -49454,6 +49548,351 @@
         ],
         "title": "OperatorDecisionRecord",
         "description": "One ``operator_decisions`` row; ``active`` is present on history reads."
+      },
+      "OperatorExecuteRequest": {
+        "properties": {
+          "command": {
+            "type": "string",
+            "title": "Command",
+            "description": ""
+          },
+          "arguments": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Arguments",
+            "description": ""
+          },
+          "decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Id",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": ""
+          },
+          "preflight_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preflight Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "command"
+        ],
+        "title": "OperatorExecuteRequest"
+      },
+      "OperatorExecuteResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "operator_audit_id": {
+            "type": "integer",
+            "title": "Operator Audit Id"
+          },
+          "operator_task_id": {
+            "type": "string",
+            "title": "Operator Task Id"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "operator_audit_id",
+          "operator_task_id"
+        ],
+        "title": "OperatorExecuteResponse"
+      },
+      "OperatorPreflightAction": {
+        "properties": {
+          "command": {
+            "type": "string",
+            "title": "Command"
+          },
+          "args_sha256": {
+            "type": "string",
+            "title": "Args Sha256"
+          },
+          "decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "command",
+          "args_sha256"
+        ],
+        "title": "OperatorPreflightAction"
+      },
+      "OperatorPreflightInputs": {
+        "properties": {
+          "branches": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Branches",
+            "default": []
+          },
+          "runner_labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Runner Labels",
+            "default": []
+          },
+          "app_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "App Ids",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "OperatorPreflightInputs"
+      },
+      "OperatorPreflightRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": ""
+          },
+          "actions": {
+            "items": {},
+            "type": "array",
+            "title": "Actions",
+            "description": ""
+          },
+          "branches": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branches",
+            "description": ""
+          },
+          "runner_labels": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runner Labels",
+            "description": ""
+          },
+          "app_ids": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Ids",
+            "description": ""
+          },
+          "policy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy",
+            "description": ""
+          },
+          "repository_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repository Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "actions"
+        ],
+        "title": "OperatorPreflightRequest"
+      },
+      "OperatorPreflightResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "preflight_id": {
+            "type": "integer",
+            "title": "Preflight Id"
+          },
+          "ready": {
+            "type": "boolean",
+            "title": "Ready"
+          },
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/OperatorPreflightAction"
+            },
+            "type": "array",
+            "title": "Actions",
+            "default": []
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blockers",
+            "default": []
+          },
+          "inputs": {
+            "$ref": "#/components/schemas/OperatorPreflightInputs"
+          },
+          "probes": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Probes",
+            "default": {}
+          },
+          "notification_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notification Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "preflight_id",
+          "ready",
+          "inputs"
+        ],
+        "title": "OperatorPreflightResponse"
       },
       "OrchestratorControlRequest": {
         "properties": {
