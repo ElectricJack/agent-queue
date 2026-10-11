@@ -67,8 +67,6 @@ from src.playbooks.validation import (  # noqa: E402
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 SHIPPED = {
     "object-loop": "src/prompts/project_playbooks/matter-engine-cpp/object-loop.md",
-    "supervisor-digest": "src/prompts/default_playbooks/supervisor-digest.md",
-    "supervisor-hourly-report": "src/prompts/default_playbooks/supervisor-hourly-report.md",
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
@@ -78,7 +76,6 @@ SHIPPED = {
     "agent-queue-parent-integration": (
         "src/prompts/project_playbooks/agent-queue/agent-queue-parent-integration.md"
     ),
-    "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
     "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
     "morning-report": "src/prompts/default_playbooks/morning-report.md",

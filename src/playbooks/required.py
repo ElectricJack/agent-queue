@@ -49,8 +49,10 @@ REQUIRED_SYSTEM_PLAYBOOK_IDS = (
 # existed a fresh install activated only the two required policies above, and
 # Settings -> Playbooks showed nothing else even though these ship with AQ.
 DEFAULT_SYSTEM_PLAYBOOK_IDS = ("supervisor-failure-triage", "default-pipeline")
-# The legacy bundle remains importable for audit, but it cannot stay enabled:
-# it subscribes to the same ``task.failed`` event as the reviewed successor.
+# The legacy reviewed bundle remains importable for audit, but its source is
+# absent from ``default_playbooks`` so startup cannot recreate a deleted catalog
+# entry. It cannot stay enabled: it subscribes to the same ``task.failed`` event
+# as the reviewed successor.
 RETIRED_DEFAULT_SYSTEM_PLAYBOOK_IDS = ("blocked-task-escalation",)
 # The AQ command a required playbook's active artifact must grant, or its
 # system activation is re-pointed at the shipped artifact even while healthy.

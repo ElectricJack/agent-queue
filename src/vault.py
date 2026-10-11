@@ -1504,10 +1504,9 @@ def ensure_default_playbooks(data_dir: str) -> dict:
     into the vault's system playbook directory.  These playbooks are compiled at
     first use by the :class:`~src.playbooks.compiler.PlaybookCompiler`.
 
-    The bundled set includes the default review and assignment policies, the
-    blocked-task escalation (a ``task.failed`` with ``status: BLOCKED``
-    messages the project supervisor to read the session log tail), and the
-    provider-usage probe. Retired playbooks are deliberately absent, so a
+    The bundled set includes the default pipeline and assignment policies,
+    supervisor failure triage, provider failover, and the provider-usage probe.
+    Retired playbooks are deliberately absent, so a
     restart cannot reseed them after their catalog entry is deleted. The
     directory is discovered mechanically so adding a reviewed source does not
     require a second production inventory.
