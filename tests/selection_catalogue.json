@@ -310,11 +310,13 @@
       "modules": [
         "tests/test_ask_decisions.py",
         "tests/test_ask_migration.py",
+        "tests/test_ask_operations.py",
         "tests/test_ask_sources.py",
         "tests/test_proposal_api.py",
         "tests/test_review_commands.py",
         "tests/test_review_diff.py",
         "tests/test_review_doctor.py",
+        "tests/test_review_feedback.py",
         "tests/test_review_gating.py",
         "tests/test_review_keys.py",
         "tests/test_review_notifier.py",
@@ -2894,6 +2896,21 @@
       ],
       "markers": [],
       "summary": "A02: canonical identity/aliases and replayable quarantine without title merging."
+    },
+    "tests/test_ask_operations.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:aaf02ba026331269b5d27f646e02a9c1b2be079a42c8b448cf4a0df0d98f5480",
+      "imports": [
+        "src.asks.operations",
+        "src.database.tables"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Application crash recovery: verify source receipts before releasing review gates."
     },
     "tests/test_ask_sources.py": {
       "areas": [
@@ -15071,6 +15088,23 @@
       "markers": [],
       "summary": "Tests for the reviews.consistency doctor check (Task 9)."
     },
+    "tests/test_review_feedback.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:0b1dc1e0a7330f3154a5cf94806542886a6e7432d4bc768b96e2a5cce672c2fa",
+      "imports": [
+        "src.asks.models",
+        "src.asks.review",
+        "src.database.tables",
+        "src.reviews.service"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Frozen review packets and the common PostgreSQL mutation boundary."
+    },
     "tests/test_review_gating.py": {
       "areas": [
         "document-reviews"
@@ -15194,8 +15228,9 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:d873d6290710eb1d1655863ee4159a1e3e174f56566ef2dc1bd02e53e9af2a24",
+      "digest": "sha256:ed2d6ed71a47a1fb23b281d2421294eb0b14f31566c602c9ea854fe7cf97e811",
       "imports": [
+        "src.asks.operations",
         "src.database",
         "src.models",
         "src.reviews.diff",

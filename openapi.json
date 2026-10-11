@@ -14241,6 +14241,141 @@
         }
       }
     },
+    "/api/review/ask-decide": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Accept the exact prepared review packet and report durable application state.",
+        "description": "Accept the exact prepared review packet and report durable application state.",
+        "operationId": "ask_decide",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskDecideRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/ask-prepare-decision": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Prepare a ten-minute review packet preview without applying its decision.",
+        "description": "Prepare a ten-minute review packet preview without applying its decision.",
+        "operationId": "ask_prepare_decision",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskPrepareDecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/ask-retry-operation": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Operator reconciliation of an already accepted decision; never creates approval.",
+        "description": "Operator reconciliation of an already accepted decision; never creates approval.",
+        "operationId": "ask_retry_operation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRetryOperationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/review/attachment-add": {
       "post": {
         "tags": [
@@ -14387,8 +14522,8 @@
         "tags": [
           "review"
         ],
-        "summary": "Approve, request changes, or reject a current review revision.",
-        "description": "Approve, request changes, or reject a current review revision.",
+        "summary": "Decide on a current review using its feedback preview. Reject retains legacy reject-and-revise behavior; decline holds work without creating a revision task.",
+        "description": "Decide on a current review using its feedback preview. Reject retains legacy reject-and-revise behavior; decline holds work without creating a revision task.",
         "operationId": "review_decide",
         "requestBody": {
           "content": {
@@ -14502,6 +14637,51 @@
                 "schema": {
                   "$ref": "#/components/schemas/ReviewDispatchResponse"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/feedback-complete": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Record per-comment evidence on the held feedback task; does not approve a review.",
+        "description": "Record per-comment evidence on the held feedback task; does not approve a review.",
+        "operationId": "review_feedback_complete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewFeedbackCompleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -22992,6 +23172,160 @@
           "path"
         ],
         "title": "ArtifactVerifyResponse"
+      },
+      "AskDecideRequest": {
+        "properties": {
+          "ask_id": {
+            "type": "string",
+            "title": "Ask Id",
+            "description": ""
+          },
+          "expected": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Expected",
+            "description": ""
+          },
+          "option_key": {
+            "type": "string",
+            "title": "Option Key",
+            "description": ""
+          },
+          "overall_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overall Note",
+            "description": ""
+          },
+          "dispositions": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dispositions",
+            "description": ""
+          },
+          "responder_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Responder Class",
+            "description": ""
+          },
+          "preview_id": {
+            "type": "string",
+            "title": "Preview Id",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "ask_id",
+          "expected",
+          "option_key",
+          "preview_id",
+          "idempotency_key"
+        ],
+        "title": "AskDecideRequest"
+      },
+      "AskPrepareDecisionRequest": {
+        "properties": {
+          "ask_id": {
+            "type": "string",
+            "title": "Ask Id",
+            "description": ""
+          },
+          "expected": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Expected",
+            "description": ""
+          },
+          "option_key": {
+            "type": "string",
+            "title": "Option Key",
+            "description": ""
+          },
+          "overall_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overall Note",
+            "description": ""
+          },
+          "dispositions": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dispositions",
+            "description": ""
+          },
+          "responder_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Responder Class",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "ask_id",
+          "expected",
+          "option_key"
+        ],
+        "title": "AskPrepareDecisionRequest"
+      },
+      "AskRetryOperationRequest": {
+        "properties": {
+          "decision_id": {
+            "type": "string",
+            "title": "Decision Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "decision_id"
+        ],
+        "title": "AskRetryOperationRequest"
       },
       "AssignmentRouteDetail": {
         "properties": {
@@ -63552,6 +63886,56 @@
             "title": "Note",
             "description": ""
           },
+          "preview_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Id",
+            "description": ""
+          },
+          "expected": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected",
+            "description": ""
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "dispositions": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dispositions",
+            "description": ""
+          },
           "responder_class": {
             "anyOf": [
               {
@@ -63575,6 +63959,22 @@
       },
       "ReviewDecideResponse": {
         "properties": {
+          "application_state": {
+            "type": "string",
+            "title": "Application State",
+            "default": "not_started"
+          },
+          "decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Id"
+          },
           "success": {
             "type": "boolean",
             "title": "Success",
@@ -63609,6 +64009,7 @@
             "title": "Playbook"
           }
         },
+        "additionalProperties": true,
         "type": "object",
         "required": [
           "review_id",
@@ -63771,6 +64172,32 @@
           "dispatches"
         ],
         "title": "ReviewDispatchResponse"
+      },
+      "ReviewFeedbackCompleteRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": ""
+          },
+          "obligation_id": {
+            "type": "string",
+            "title": "Obligation Id",
+            "description": ""
+          },
+          "evidence": {
+            "type": "string",
+            "title": "Evidence",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "obligation_id",
+          "evidence"
+        ],
+        "title": "ReviewFeedbackCompleteRequest"
       },
       "ReviewImportEditsRequest": {
         "properties": {

@@ -271,6 +271,8 @@ start code work, tests or QA from a digest author turn.
     "review_attachment_list",
     "review_dispatch",
     "review_decide",
+    "ask_prepare_decision",
+    "ask_decide",
     "review_delegate",
     "review_import_edits",
     "review_list",

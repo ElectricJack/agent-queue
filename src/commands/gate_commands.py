@@ -182,6 +182,10 @@ class GateCommandsMixin:
         if gate is None:
             return {"success": False, "error": f"gate '{gate_id}' not found"}
 
+        if (gate.get("await_id") or "").startswith("ask-application:"):
+            return {"success": False, "error_code": "ask.application_pending",
+                    "error": "Reconcile the accepted decision before releasing its feedback task"}
+
         if gate["gate_type"] == "review":
             return {
                 "success": False,
