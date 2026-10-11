@@ -14,6 +14,7 @@ from src.database.legacy_sqlite_import import (
     _DEFERRED_COLS,
     _EXCLUDED_TABLES,
     _ORDERED_TABLES,
+    _POSTGRES_DEFAULT_COLUMNS,
     _POSTGRES_ONLY_COLUMNS,
 )
 from src.database.tables import metadata
@@ -101,6 +102,19 @@ _DURABLE_ROWS = {
         "external_receipt_id": "receipt", "receipt_confirmed_at": 151.0,
         "created_at": 150.0, "updated_at": 151.0,
     },
+    "supervisor_conversations": {
+        "id": "conversation", "transport": "discord", "guild_id": "guild",
+        "channel_id": "channel", "external_root_message_id": "root",
+        "thread_id": "conversation:conversation", "created_by": "human:discord:user",
+        "audience": {"principals": ["human:discord:user"]}, "state": "open",
+        "created_at": 0.0, "updated_at": 0.0,
+    },
+    "conversation_inputs": {
+        "id": "input", "conversation_id": "conversation", "transport": "discord",
+        "external_message_id": "input-message", "verified_actor": "human:discord:user",
+        "author_id": "user", "channel_id": "channel", "text": "Preserve this reply",
+        "text_sha256": "reply-hash", "char_count": 19, "received_at": 1.0, "created_at": 1.0,
+    },
 }
 
 # The legacy import still ships, but creating and copying a source schema is
@@ -109,7 +123,7 @@ pytestmark = pytest.mark.migration
 
 
 def _legacy_source_metadata():
-    """Copy the importable schema without revision 91's PostgreSQL additions."""
+    """Copy the importable schema without the human ask revisions' additions."""
     from sqlalchemy import MetaData
 
     from migrations.versions.a00000000091_human_ask_decisions import ADDITIONS
@@ -121,10 +135,17 @@ def _legacy_source_metadata():
         "ck_doc_reviews_feedback_version", "ck_doc_reviews_decision_generation",
         "ck_escalation_messages_entry_kind", "ck_escalation_actions_ask_operation",
         "ck_escalation_actions_lease_generation", "ck_escalation_actions_lease",
+        "ck_conversation_inputs_routing_state",
     }
-    for name, additions in ADDITIONS.items():
+    absent_columns = {
+        name: {column.name for column in additions} for name, additions in ADDITIONS.items()
+    }
+    absent_columns["conversation_inputs"] = (
+        _POSTGRES_ONLY_COLUMNS["conversation_inputs"]
+        | _POSTGRES_DEFAULT_COLUMNS["conversation_inputs"]
+    )
+    for name, absent in absent_columns.items():
         table = source_metadata.tables[name]
-        absent = {column.name for column in additions}
         for constraint in list(table.constraints):
             if constraint.name in new_checks or absent.intersection(constraint.columns.keys()):
                 table.constraints.remove(constraint)
@@ -458,6 +479,13 @@ async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
                     "operation_kind": None, "operation_key": None, "dependency_keys": [],
                     "lease_owner": None, "lease_expires_at": None, "lease_generation": 0,
                     "retry_at": None, "receipt": None,
+                },
+                "conversation_inputs": {
+                    "conversation_id": "conversation", "text": "Preserve this reply",
+                    "ask_id": None, "project_id": None, "routing_state": "conversation",
+                    "routing_evidence": {}, "receipt": {}, "guild_id": None,
+                    "reference_message_id": None, "external_thread_id": None,
+                    "source_version": None, "retention_entry_id": None,
                 },
             }.items():
                 assert counts[table_name] == 1

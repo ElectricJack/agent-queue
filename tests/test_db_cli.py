@@ -497,16 +497,23 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         await conn.execute(text("INSERT INTO integration_batches VALUES ('original')"))
         # Migration a00000000085 adds promotion_flow to this restored table.
         await conn.execute(text("CREATE TABLE projects (id text PRIMARY KEY)"))
-        # Revision 91 requires the review and escalation ledgers that existed
-        # before this backup. Recreate those dependencies without its additions.
+        # Human ask revisions require the existing review, escalation and input
+        # ledgers. Recreate those dependencies without their later additions.
         restored_metadata = MetaData()
         Table("projects", restored_metadata, Column("id", Text, primary_key=True))
         Table("messages", restored_metadata, Column("id", Text, primary_key=True))
         for name in (
             "doc_reviews", "doc_review_revisions", "doc_review_comments",
             "escalations", "escalation_messages", "escalation_actions",
+            "supervisor_conversations", "conversation_inputs",
         ):
             absent = {column.name for column in ADDITIONS.get(name, ())}
+            if name == "conversation_inputs":
+                absent |= {
+                    "ask_id", "project_id", "routing_state", "routing_evidence", "receipt",
+                    "guild_id", "reference_message_id", "external_thread_id", "source_version",
+                    "retention_entry_id",
+                }
             Table(name, restored_metadata, *(
                 column._copy() for column in metadata.tables[name].c if column.name not in absent
             ))

@@ -274,6 +274,10 @@ _POSTGRES_ONLY_COLUMNS = {
         "ask_id", "decision_id", "operation_kind", "operation_key", "lease_owner",
         "lease_expires_at", "retry_at", "receipt",
     }),
+    "conversation_inputs": frozenset({
+        "ask_id", "project_id", "guild_id", "reference_message_id", "external_thread_id",
+        "source_version", "retention_entry_id",
+    }),
 }
 
 # Non-null PostgreSQL-era columns whose target default supplies missing values.
@@ -285,6 +289,7 @@ _POSTGRES_DEFAULT_COLUMNS = {
     "doc_reviews": frozenset({"feedback_version", "decision_generation"}),
     "escalation_messages": frozenset({"entry_kind"}),
     "escalation_actions": frozenset({"dependency_keys", "lease_generation"}),
+    "conversation_inputs": frozenset({"routing_state", "routing_evidence", "receipt"}),
 }
 
 
