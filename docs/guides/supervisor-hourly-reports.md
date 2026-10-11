@@ -4,9 +4,12 @@ The deterministic digest remains the default. Narrative authoring requires both
 `reports.hourly.enabled: true` and a healthy system activation of the reviewed
 `supervisor-hourly-report` playbook. It is neither a required policy nor a default
 activation. The reviewed source has `enabled: false` and is no longer copied into
-`vault/system/playbooks/` at startup. The reviewed bundle is seeded
-into `vault/reviewed-playbooks/supervisor-hourly-report/`; explicitly import and
-activate that bundle through the playbook operator surfaces when enabling it.
+`vault/system/playbooks/` at startup. The reviewed bundle is available in
+`src/prompts/reviewed_playbooks/supervisor-hourly-report/` in the installed
+checkout. If absent from the vault, copy that directory to
+`vault/reviewed-playbooks/supervisor-hourly-report/`, then explicitly import and
+activate it through the playbook operator surfaces when enabling it. Restart
+does not install the bundle or change an existing activation.
 Review sample narratives before enabling it for general use.
 
 ```bash
