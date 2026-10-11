@@ -2112,11 +2112,9 @@ class TaskCommandsMixin:
             }
 
     async def _create_task(self, args: dict) -> dict:
-        # Internal command composition can add durable rows that must commit
-        # with the task itself (phases are the current user).  This hook is
-        # never part of a public command schema: only an in-process command
-        # can supply a callable, and a non-callable value is refused rather
-        # than silently changing a task creation's atomicity.
+        # Internal hooks commit source-owned rows with the task (phases and
+        # review feedback). Public schemas cannot supply callables; refuse
+        # non-callables rather than silently changing creation's atomicity.
         before_create_on = args.pop("_before_create_on", None)
         if before_create_on is not None and not callable(before_create_on):
             return {"success": False, "error": "_before_create_on is internal-only"}
@@ -2806,9 +2804,7 @@ class TaskCommandsMixin:
                     service = self._hierarchy_integration_service()
                     if parent_id:
                         created = await service.file_prepared_child_on(
-                            conn,
-                            parent_id,
-                            task,
+                            conn, parent_id, task,
                             requirements=normalized_requirements,
                             edges=edges,
                             labels=labels,
@@ -2817,19 +2813,16 @@ class TaskCommandsMixin:
                         task.parent_task_id = parent_id
                     else:
                         created = await service.file_root_on(
-                            conn,
-                            task,
+                            conn, task,
                             requirements=normalized_requirements,
                             edges=edges,
                             labels=labels,
                             routing_policy=routing_policy,
                             target_ref=args.get("_integration_root_ref"),
                         )
-                    # Every other creation path runs the internal post-create
-                    # writer in its own transaction; a hierarchy/train filing
-                    # must too, or its row commits without the metadata the
-                    # writer owns (a review revision task's
-                    # ``review_response``, a review dispatch record).
+                    # Like other paths, hierarchy/train filing must commit the
+                    # post-create metadata (review_response or dispatch record)
+                    # in the same transaction as the task.
                     if after_create_on is not None:
                         await after_create_on(conn, created["task_id"], task.parent_task_id)
                 task_id = created["task_id"]
@@ -2903,17 +2896,14 @@ class TaskCommandsMixin:
             try:
                 if after_create_on is None:
                     task_id, depth_cap_fallback = await self.db.create_task_under(
-                        task,
-                        parent_id,
+                        task, parent_id,
                         description=spawn_reason,
                         **({"routing_policy": routing_policy} if routing_policy is not None else {}),
                     )
                 else:
-                    # Keep an internal post-create writer in the same
-                    # transaction as the task, its parent edge and any
-                    # routing gate.  ``create_task_under`` otherwise owns
-                    # that transaction, which is ideal for ordinary calls
-                    # but would expose a phase between its filing and gates.
+                    # Keep the post-create writer, task, parent edge and routing
+                    # gate atomic. create_task_under owns its transaction, which
+                    # would expose a phase between filing and gate creation.
                     async with self.db.immediate() as conn:
                         if before_create_on is not None:
                             await before_create_on(conn)
@@ -3016,18 +3006,14 @@ class TaskCommandsMixin:
                         "task_created": task_id,
                     }
             await self.db.log_event(
-                "dependency.added",
-                project_id=project_id,
-                task_id=task_id,
+                "dependency.added", project_id=project_id, task_id=task_id,
                 payload=f"{dep_type} -> {dep_id}",
             )
         for label in labels:
             if not hierarchy_created:
                 await self.db.add_task_label(task_id, label)
             await self.db.log_event(
-                "label.added",
-                project_id=project_id,
-                task_id=task_id,
+                "label.added", project_id=project_id, task_id=task_id,
                 payload=label,
             )
 
