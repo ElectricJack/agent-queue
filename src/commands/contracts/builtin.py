@@ -2026,3 +2026,6 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
     from src.commands.contracts.inventory import register_inventory_contracts
 
     register_inventory_contracts(registry)
+
+    from src.commands.contracts.ask import register_ask_contracts
+    register_ask_contracts(registry)

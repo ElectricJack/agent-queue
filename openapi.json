@@ -14241,6 +14241,90 @@
         }
       }
     },
+    "/api/review/ask-apply-input": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Scoped human request communication and decision evidence.",
+        "description": "Scoped human request communication and decision evidence.",
+        "operationId": "ask_apply_input",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskApplyInputRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskDecisionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/ask-cutover": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Scoped human request communication and decision evidence.",
+        "description": "Scoped human request communication and decision evidence.",
+        "operationId": "ask_cutover",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskCutoverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskControlResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/review/ask-decide": {
       "post": {
         "tags": [
@@ -14275,12 +14359,133 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
+                  "$ref": "#/components/schemas/AskErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/ask-discussion-reply": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Scoped human request communication and decision evidence.",
+        "description": "Scoped human request communication and decision evidence.",
+        "operationId": "ask_discussion_reply",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskDiscussionReplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskDiscussionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/ask-history": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Scoped human request communication and decision evidence.",
+        "description": "Scoped human request communication and decision evidence.",
+        "operationId": "ask_history",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskHistoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskHistoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/ask-list": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Scoped human request communication and decision evidence.",
+        "description": "Scoped human request communication and decision evidence.",
+        "operationId": "ask_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskErrorResponse"
                 }
               }
             }
@@ -14322,12 +14527,133 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
+                  "$ref": "#/components/schemas/AskErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/ask-reconcile": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Scoped human request communication and decision evidence.",
+        "description": "Scoped human request communication and decision evidence.",
+        "operationId": "ask_reconcile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskReconcileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskControlResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/ask-repair-delivery": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Scoped human request communication and decision evidence.",
+        "description": "Scoped human request communication and decision evidence.",
+        "operationId": "ask_repair_delivery",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRepairDeliveryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskControlResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/ask-reply": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Scoped human request communication and decision evidence.",
+        "description": "Scoped human request communication and decision evidence.",
+        "operationId": "ask_reply",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskReplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskInputResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskErrorResponse"
                 }
               }
             }
@@ -14369,12 +14695,91 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
+                  "$ref": "#/components/schemas/AskErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/ask-show": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Scoped human request communication and decision evidence.",
+        "description": "Scoped human request communication and decision evidence.",
+        "operationId": "ask_show",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskShowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskShowResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/ask-update-context": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Scoped human request communication and decision evidence.",
+        "description": "Scoped human request communication and decision evidence.",
+        "operationId": "ask_update_context",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskUpdateContextRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskControlResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskErrorResponse"
                 }
               }
             }
@@ -23541,6 +23946,96 @@
         ],
         "title": "ArtifactVerifyResponse"
       },
+      "AskApplyInputRequest": {
+        "properties": {
+          "ask_id": {
+            "type": "string",
+            "title": "Ask Id",
+            "description": ""
+          },
+          "input_id": {
+            "type": "string",
+            "title": "Input Id",
+            "description": ""
+          },
+          "expected": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Expected",
+            "description": ""
+          },
+          "option_key": {
+            "type": "string",
+            "title": "Option Key",
+            "description": ""
+          },
+          "interpretation": {
+            "type": "string",
+            "title": "Interpretation",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "ask_id",
+          "input_id",
+          "expected",
+          "option_key",
+          "interpretation",
+          "idempotency_key"
+        ],
+        "title": "AskApplyInputRequest"
+      },
+      "AskControlResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "result": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Result"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "result"
+        ],
+        "title": "AskControlResponse"
+      },
+      "AskCutoverRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode",
+            "description": ""
+          },
+          "expected_generation": {
+            "type": "integer",
+            "title": "Expected Generation",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "mode",
+          "expected_generation"
+        ],
+        "title": "AskCutoverRequest"
+      },
       "AskDecideRequest": {
         "properties": {
           "ask_id": {
@@ -23560,16 +24055,10 @@
             "description": ""
           },
           "overall_note": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
             "title": "Overall Note",
-            "description": ""
+            "description": "",
+            "default": ""
           },
           "dispositions": {
             "anyOf": [
@@ -23664,6 +24153,300 @@
         ],
         "title": "AskDecisionResponse"
       },
+      "AskDiscussionReplyRequest": {
+        "properties": {
+          "ask_id": {
+            "type": "string",
+            "title": "Ask Id",
+            "description": ""
+          },
+          "input_id": {
+            "type": "string",
+            "title": "Input Id",
+            "description": ""
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "ask_id",
+          "input_id",
+          "text",
+          "idempotency_key"
+        ],
+        "title": "AskDiscussionReplyRequest"
+      },
+      "AskDiscussionResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          },
+          "ask_id": {
+            "type": "string",
+            "title": "Ask Id"
+          },
+          "input_id": {
+            "type": "string",
+            "title": "Input Id"
+          },
+          "entry_id": {
+            "type": "string",
+            "title": "Entry Id"
+          },
+          "version": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Version"
+          },
+          "delivery_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "created",
+          "ask_id",
+          "input_id",
+          "entry_id",
+          "version"
+        ],
+        "title": "AskDiscussionResponse"
+      },
+      "AskErrorResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": false
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          },
+          "error_code": {
+            "type": "string",
+            "title": "Error Code"
+          },
+          "fields": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Fields"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "error",
+          "error_code"
+        ],
+        "title": "AskErrorResponse"
+      },
+      "AskHistoryRequest": {
+        "properties": {
+          "ask_id": {
+            "type": "string",
+            "title": "Ask Id",
+            "description": ""
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "",
+            "default": 50
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cursor",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "ask_id"
+        ],
+        "title": "AskHistoryRequest"
+      },
+      "AskHistoryResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "items": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "AskHistoryResponse"
+      },
+      "AskInputResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          },
+          "input_id": {
+            "type": "string",
+            "title": "Input Id"
+          },
+          "receipt": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Receipt"
+          }
+        },
+        "type": "object",
+        "required": [
+          "created",
+          "input_id",
+          "receipt"
+        ],
+        "title": "AskInputResponse"
+      },
+      "AskListRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "view": {
+            "type": "string",
+            "title": "View",
+            "description": "",
+            "default": "needs_you"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "",
+            "default": 50
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cursor",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "AskListRequest"
+      },
+      "AskListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AskSourceRecord"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "snapshot_at": {
+            "type": "number",
+            "title": "Snapshot At"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "source_health": {
+            "type": "string",
+            "title": "Source Health"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "count",
+          "snapshot_at",
+          "source_health"
+        ],
+        "title": "AskListResponse"
+      },
       "AskPrepareDecisionRequest": {
         "properties": {
           "ask_id": {
@@ -23683,16 +24466,10 @@
             "description": ""
           },
           "overall_note": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
             "title": "Overall Note",
-            "description": ""
+            "description": "",
+            "default": ""
           },
           "dispositions": {
             "anyOf": [
@@ -23779,6 +24556,101 @@
         ],
         "title": "AskPreview"
       },
+      "AskReconcileRequest": {
+        "properties": {
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "description": "",
+            "default": false
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "",
+            "default": 100
+          }
+        },
+        "type": "object",
+        "title": "AskReconcileRequest"
+      },
+      "AskRepairDeliveryRequest": {
+        "properties": {
+          "delivery_id": {
+            "type": "string",
+            "title": "Delivery Id",
+            "description": ""
+          },
+          "expected_generation": {
+            "type": "integer",
+            "title": "Expected Generation",
+            "description": ""
+          },
+          "disposition": {
+            "type": "string",
+            "title": "Disposition",
+            "description": ""
+          },
+          "evidence": {
+            "type": "string",
+            "title": "Evidence",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "delivery_id",
+          "expected_generation",
+          "disposition",
+          "evidence"
+        ],
+        "title": "AskRepairDeliveryRequest"
+      },
+      "AskReplyRequest": {
+        "properties": {
+          "ask_id": {
+            "type": "string",
+            "title": "Ask Id",
+            "description": ""
+          },
+          "intent": {
+            "type": "string",
+            "title": "Intent",
+            "description": "",
+            "default": "discuss"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "expected": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Expected",
+            "description": ""
+          },
+          "post_decision": {
+            "type": "boolean",
+            "title": "Post Decision",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "ask_id",
+          "text",
+          "idempotency_key",
+          "expected"
+        ],
+        "title": "AskReplyRequest"
+      },
       "AskRetryOperationRequest": {
         "properties": {
           "decision_id": {
@@ -23792,6 +24664,83 @@
           "decision_id"
         ],
         "title": "AskRetryOperationRequest"
+      },
+      "AskShowRequest": {
+        "properties": {
+          "ask_id": {
+            "type": "string",
+            "title": "Ask Id",
+            "description": ""
+          },
+          "input_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "ask_id"
+        ],
+        "title": "AskShowRequest"
+      },
+      "AskShowResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "ask": {
+            "$ref": "#/components/schemas/AskSourceRecord"
+          },
+          "expected": {
+            "$ref": "#/components/schemas/AskVersion"
+          },
+          "document": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document"
+          },
+          "inputs": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Inputs"
+          },
+          "actions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Actions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ask",
+          "expected",
+          "inputs",
+          "actions"
+        ],
+        "title": "AskShowResponse"
       },
       "AskSourceRecord": {
         "properties": {
@@ -23843,6 +24792,27 @@
         ],
         "title": "AskSourceRecord"
       },
+      "AskUpdateContextRequest": {
+        "properties": {
+          "ask_id": {
+            "type": "string",
+            "title": "Ask Id",
+            "description": ""
+          },
+          "expected": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Expected",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "ask_id",
+          "expected"
+        ],
+        "title": "AskUpdateContextRequest"
+      },
       "AskVersion": {
         "properties": {
           "decision_generation": {
@@ -23858,6 +24828,7 @@
             "title": "Feedback Version"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "decision_generation",
@@ -64714,6 +65685,18 @@
           "review_id": {
             "type": "string",
             "title": "Review Id",
+            "description": ""
+          },
+          "source_discussion_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Discussion Id",
             "description": ""
           },
           "revision": {

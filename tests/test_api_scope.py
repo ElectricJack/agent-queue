@@ -483,15 +483,17 @@ def test_supervisor_inbox_post_is_internal_for_every_nonlocal_scope():
     assert check_command_scope("supervisor_inbox_post", {}, LOCAL_SCOPE) is None
 
 
-def test_supervisor_inbox_reply_requires_local_or_global_elevated_scope():
+def test_supervisor_inbox_reply_allows_supervisors_subject_to_stored_recipient_check():
     assert check_command_scope("supervisor_inbox_reply", {}, LOCAL_SCOPE) is None
     assert check_command_scope("supervisor_inbox_reply", {}, RequestScope(
         kind="session", session_id="sup", elevated=True
     )) is None
-    for scope in (SESSION, RequestScope(kind="session", elevated=True, project_id="p1"),
-                  RequestScope(kind="session", project_id=None)):
+    assert check_command_scope("supervisor_inbox_reply", {}, RequestScope(
+        kind="session", session_id="sup", elevated=True, project_id="p1"
+    )) is None
+    for scope in (SESSION, RequestScope(kind="session", project_id=None)):
         assert check_command_scope("supervisor_inbox_reply", {}, scope) == (
-            "out of scope: conversation replies require local operator or global supervisor"
+            "out of scope: conversation replies require local operator or supervisor"
         )
 
 

@@ -12,7 +12,10 @@ from src.asks.standalone import StandaloneSpecAdapter
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 
 
-class AskCommandsMixin:
+from src.commands.ask_communication_commands import AskCommunicationCommandsMixin
+
+
+class AskCommandsMixin(AskCommunicationCommandsMixin):
     def _ask_service(self):
         from src.asks.sources import source_adapters
         return AskService(self.db, AdapterRegistry([
@@ -97,7 +100,8 @@ class AskCommandsMixin:
     async def _ask_source_for_caller(self, ask_id, *, conn):
         ask = await self.db.get_ask(str(ask_id), conn=conn)
         principal = current_principal() or TRUSTED_LOCAL
-        if not ask or (principal.project_id and principal.project_id != ask["project_id"]):
+        from src.asks.authority import visible
+        if not ask or not visible(ask):
             raise AskError("ask.not_found", "Request was not found")
         if principal.kind is PrincipalKind.SESSION and not principal.elevated:
             raise AskError("ask.not_decider", "Workers cannot decide human requests")
