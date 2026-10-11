@@ -35,6 +35,7 @@ def _row_to_gate(row) -> dict:
         "gate_type": row["gate_type"],
         "title": row["title"],
         "question": row["question"],
+        "human_request": row["human_request"],
         "await_id": row["await_id"],
         "timeout_at": row["timeout_at"],
         "status": row["status"],
@@ -64,6 +65,7 @@ class GateQueriesMixin:
         waiter_task_ids: Iterable[str] = (),
         conn=None,
         unrouted_only: bool = False,
+        human_request: dict | None = None,
     ) -> tuple[str | None, bool]:
         """Insert a gate + its ``task_gates`` rows and recompute waiters.
 
@@ -108,6 +110,7 @@ class GateQueriesMixin:
                 timeout_at=timeout_at,
                 waiter_task_ids=waiter_task_ids,
                 caller_owns_conn=True,
+                human_request=human_request,
             )
             return gate_id, was_created
 
@@ -122,6 +125,7 @@ class GateQueriesMixin:
                 timeout_at=timeout_at,
                 waiter_task_ids=waiter_task_ids,
                 caller_owns_conn=False,
+                human_request=human_request,
             )
         await self.log_blocked_flips(flipped)
         return gate_id, was_created
@@ -178,6 +182,7 @@ class GateQueriesMixin:
         timeout_at: float | None,
         waiter_task_ids: Iterable[str],
         caller_owns_conn: bool,
+        human_request: dict | None = None,
     ) -> tuple[str, bool, set[str]]:
         """Do the actual insert + dedup + recompute on *conn*.
 
@@ -224,6 +229,7 @@ class GateQueriesMixin:
                     gate_type=gate_type,
                     title=title,
                     question=question,
+                    human_request=human_request,
                     await_id=await_id,
                     timeout_at=timeout_at,
                     status="open",
@@ -387,6 +393,7 @@ class GateQueriesMixin:
         gate_type: str | None = None,
         await_id: str | None = None,
         task_id: str | None = None,
+        *, conn=None, lock=False,
     ) -> list[dict]:
         """List gates with optional filters, newest first."""
         stmt = select(gates)
@@ -405,16 +412,23 @@ class GateQueriesMixin:
         if conditions:
             stmt = stmt.where(and_(*conditions))
         stmt = stmt.order_by(gates.c.created_at.desc())
-        async with self._engine.begin() as conn:
-            rows = (await conn.execute(stmt)).mappings().fetchall()
+        if lock:
+            stmt = stmt.with_for_update()
+        if conn is not None:
+            return [_row_to_gate(r) for r in (await conn.execute(stmt)).mappings()]
+        async with self._engine.begin() as owned:
+            rows = (await owned.execute(stmt)).mappings().fetchall()
         return [_row_to_gate(r) for r in rows]
 
-    async def get_gate(self, gate_id: str) -> dict | None:
-        """Return the gate row as a dict, or ``None``."""
-        async with self._engine.begin() as conn:
-            row = (
-                await conn.execute(select(gates).where(gates.c.id == gate_id))
-            ).mappings().fetchone()
+    async def get_gate(self, gate_id: str, *, conn=None, lock=False) -> dict | None:
+        """Read on the domain transaction when supplied; lock before approval checks."""
+        stmt = select(gates).where(gates.c.id == gate_id)
+        if lock:
+            stmt = stmt.with_for_update()
+        if conn is None:
+            async with self._engine.begin() as owned:
+                return await self.get_gate(gate_id, conn=owned, lock=lock)
+        row = (await conn.execute(stmt)).mappings().first()
         return _row_to_gate(row) if row else None
 
     async def get_gates_for_task(self, task_id: str) -> list[dict]:

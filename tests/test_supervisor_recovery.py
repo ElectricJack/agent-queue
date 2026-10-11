@@ -161,7 +161,7 @@ async def apply_human_recovery_reply(env, current, decision):
         "escalation_reply",
         {
             "escalation_id": escalation["id"],
-            "text": f"Decision: {decision}",
+            "text": decision,
             "external_message_id": "human-recovery-" + decision,
         },
     )
@@ -182,9 +182,7 @@ async def apply_human_recovery_reply(env, current, decision):
             started_at=300,
         )
     )
-    return await env.handler.execute(
-        "escalation_apply_reply",
-        {
+    args = {
             "escalation_id": escalation["id"],
             "reply_id": accepted["reply"]["id"],
             "expected_revision": accepted["escalation"]["revision"],
@@ -199,8 +197,14 @@ async def apply_human_recovery_reply(env, current, decision):
                 "project_id": "p",
                 "elevated": True,
             },
-        },
-    )
+        }
+    legacy = await env.handler.execute("escalation_apply_reply", args)
+    assert legacy["error_code"] == "ask.context_missing", legacy
+    args["expected"] = legacy["expected"]
+    preview = await env.handler.execute("escalation_apply_reply", {**args, "prepare": True})
+    assert preview["success"], preview
+    return await env.handler.execute("escalation_apply_reply", {**args, "preview_id": preview["preview"]["id"]})
+
 
 
 async def test_notification_survives_restart_without_duplicates_and_has_diagnostics(env):
@@ -417,9 +421,9 @@ async def test_hold_decision_is_durable_and_does_not_restart(env):
 async def test_human_evidence_drives_guarded_recovery_or_keep_blocked(env, decision, expected_status):
     current = await incident(env)
     result = await apply_human_recovery_reply(env, current, decision)
-    assert result["success"] is True
+    assert result["success"] is True, result
     assert result["escalation"]["state"] == "resolved"
-    assert result["action_result"]["status"] == expected_status
+    assert result["receipt"]["decision"] == decision
     assert (await env.db.get_task("t")).status.value == expected_status
 
 
@@ -1236,3 +1240,27 @@ async def test_user_message_nudge_leaves_the_reply_protocol_to_the_supervisor_pr
     text = " ".join(profile.read_text().split())
     assert 'Answer user messages with `aq reply <msg-id> "…"`' in text
     assert "Internal recovery notices need a recovery decision, not an `aq reply`" in text
+
+
+async def test_ask_recovery_crash_after_action_reconciles_without_second_retry(env, monkeypatch):
+    from src.asks.models import SourceIdentity
+    current = await incident(env)
+    ask = await env.handler._publish_source_ask(SourceIdentity("p", "recovery", current["id"], {"task_id": "t"}))
+    args = {"ask_id": ask["id"], "expected": {k: ask[k] for k in (
+        "decision_generation", "source_fingerprint", "feedback_version")},
+        "option_key": "retry", "overall_note": "Preserve evidence and retry", "idempotency_key": "recovery-crash"}
+    preview = await env.handler._cmd_ask_prepare_decision(args)
+    assert preview["success"], preview
+    recover = env.handler._cmd_task_recover
+    async def lost_ack(*args, **kwargs):
+        await recover(*args, **kwargs)
+        raise RuntimeError("Lost application acknowledgement")
+    monkeypatch.setattr(env.handler, "_cmd_task_recover", lost_ack)
+    result = await env.handler._cmd_ask_decide({**args, "preview_id": preview["preview"]["id"]})
+    assert result["application_state"] == "unknown", result
+    retry_count = (await env.db.get_task("t")).retry_count
+    assert retry_count == 1
+    replay = await env.handler._cmd_ask_retry_operation({"decision_id": result["decision_id"]})
+    assert replay["success"], replay
+    assert (await env.db.get_task("t")).retry_count == retry_count
+    assert (await env.db.get_task_meta("t", "supervisor_recovery_incident"))["ask_decision_id"] == result["decision_id"]

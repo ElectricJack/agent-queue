@@ -9,31 +9,30 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.ask_decision_preview import AskDecisionPreview
-    from ..models.ask_source_version import AskSourceVersion
+    from ..models.ask_source_record import AskSourceRecord
 
 
-T = TypeVar("T", bound="AskPrepareDecisionResponse")
+T = TypeVar("T", bound="GateReopenResponse")
 
 
 @_attrs_define
-class AskPrepareDecisionResponse:
+class GateReopenResponse:
     """
     Attributes:
-        preview (AskDecisionPreview):
-        expected (AskSourceVersion):
+        gate_id (str):
+        ask (AskSourceRecord):
         success (bool | Unset):  Default: True.
     """
 
-    preview: AskDecisionPreview
-    expected: AskSourceVersion
+    gate_id: str
+    ask: AskSourceRecord
     success: bool | Unset = True
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        preview = self.preview.to_dict()
+        gate_id = self.gate_id
 
-        expected = self.expected.to_dict()
+        ask = self.ask.to_dict()
 
         success = self.success
 
@@ -41,8 +40,8 @@ class AskPrepareDecisionResponse:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "preview": preview,
-                "expected": expected,
+                "gate_id": gate_id,
+                "ask": ask,
             }
         )
         if success is not UNSET:
@@ -52,24 +51,23 @@ class AskPrepareDecisionResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.ask_decision_preview import AskDecisionPreview
-        from ..models.ask_source_version import AskSourceVersion
+        from ..models.ask_source_record import AskSourceRecord
 
         d = dict(src_dict)
-        preview = AskDecisionPreview.from_dict(d.pop("preview"))
+        gate_id = d.pop("gate_id")
 
-        expected = AskSourceVersion.from_dict(d.pop("expected"))
+        ask = AskSourceRecord.from_dict(d.pop("ask"))
 
         success = d.pop("success", UNSET)
 
-        ask_prepare_decision_response = cls(
-            preview=preview,
-            expected=expected,
+        gate_reopen_response = cls(
+            gate_id=gate_id,
+            ask=ask,
             success=success,
         )
 
-        ask_prepare_decision_response.additional_properties = d
-        return ask_prepare_decision_response
+        gate_reopen_response.additional_properties = d
+        return gate_reopen_response
 
     @property
     def additional_keys(self) -> list[str]:

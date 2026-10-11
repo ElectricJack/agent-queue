@@ -6,11 +6,11 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="AskDecisionPreviewPacket")
+T = TypeVar("T", bound="AskDecisionResponseReceiptType0")
 
 
 @_attrs_define
-class AskDecisionPreviewPacket:
+class AskDecisionResponseReceiptType0:
     """ """
 
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -25,10 +25,10 @@ class AskDecisionPreviewPacket:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        ask_decision_preview_packet = cls()
+        ask_decision_response_receipt_type_0 = cls()
 
-        ask_decision_preview_packet.additional_properties = d
-        return ask_decision_preview_packet
+        ask_decision_response_receipt_type_0.additional_properties = d
+        return ask_decision_response_receipt_type_0
 
     @property
     def additional_keys(self) -> list[str]:

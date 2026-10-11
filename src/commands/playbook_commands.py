@@ -273,21 +273,23 @@ class PlaybookCommandsMixin:
         )
 
     async def _cmd_resume_playbook(self, args: dict) -> dict:
-        from src.commands.principal import ExecutionPrincipal, current_principal
-        from src.playbooks.engine import HumanDecision
+        from src.asks.models import AskError, SourceIdentity
         from src.playbooks.services import load_v2_snapshot
 
         run_id = str(args.get("run_id") or "").strip()
-        if not run_id:
-            return {"error": "run_id is required"}
-        if await load_v2_snapshot(self.db, run_id) is None:
-            return {"error": f"Playbooks V2 run '{run_id}' not found"}
-        decision = str(args.get("human_input") or args.get("decision") or "continue")
-        principal = current_principal() or ExecutionPrincipal.service("playbook-command")
-        outcome = await self._v2_engine().resume(
-            run_id, HumanDecision(decision=decision, payload=dict(args)), principal
-        )
-        return {"run_id": run_id, "status": outcome.lifecycle.value, "outcome": outcome.outcome}
+        snap = await load_v2_snapshot(self.db, run_id) if run_id else None
+        if snap is None:
+            return {"success": False, "error": f"Playbooks V2 run '{run_id}' not found"}
+        if not snap.wait or snap.wait.kind != "human":
+            return {"success": False, "error": "Only human waits accept a decision; technical waits consume their registered event or timer"}
+
+        try:
+            source = SourceIdentity(str(snap.event.get("project_id") or ""), "wait",
+                snap.wait.wait_id, {"run_id": run_id, "step_id": snap.current_step_id})
+            return await self._legacy_ask_decision(source, args,
+                option_key=str(args.get("human_input") or args.get("decision") or "continue"))
+        except AskError as exc:
+            return {"success": False, "error_code": exc.code, "error": str(exc)}
 
     async def _cmd_cancel_playbook_run(self, args: dict) -> dict:
         from src.commands.principal import ExecutionPrincipal, current_principal

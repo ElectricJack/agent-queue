@@ -3264,6 +3264,18 @@
       "input_schema": {
         "type": "object",
         "properties": {
+          "expected": {
+            "type": "object"
+          },
+          "preview_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "overall_note": {
+            "type": "string"
+          },
           "run_id": {
             "type": "string",
             "description": "The playbook run ID to resume"
@@ -6517,8 +6529,28 @@
       }
     },
     {
+      "name": "gate_reopen",
+      "description": "Operator reopens a declined approval as a new generation.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "gate_id": {
+            "type": "string"
+          },
+          "expected": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "gate_id",
+          "expected"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "ask_prepare_decision",
-      "description": "Prepare a ten-minute review packet preview without applying its decision.",
+      "description": "Prepare a ten-minute source decision packet preview without applying its decision.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -6573,7 +6605,7 @@
     },
     {
       "name": "ask_decide",
-      "description": "Accept the exact prepared review packet and report durable application state.",
+      "description": "Accept the exact prepared source packet and report durable application state.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -7283,6 +7315,19 @@
       "input_schema": {
         "type": "object",
         "properties": {
+          "expected": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "preview_id": {
+            "type": "string"
+          },
+          "option_key": {
+            "type": "string"
+          },
+          "prepare": {
+            "type": "boolean"
+          },
           "escalation_id": {
             "type": "string"
           },
@@ -11130,6 +11175,19 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "human_request": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Human Request"
+          },
           "project_id": {
             "title": "Project Id",
             "type": "string"
@@ -11250,13 +11308,82 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "expected": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected"
+          },
+          "preview_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preview Id"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
+          },
+          "option_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Option Key"
+          },
+          "overall_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Overall Note"
+          },
           "gate_id": {
             "title": "Gate Id",
             "type": "string"
           },
           "resolved_by": {
-            "title": "Resolved By",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resolved By"
           },
           "resolution": {
             "anyOf": [
@@ -11272,8 +11399,7 @@
           }
         },
         "required": [
-          "gate_id",
-          "resolved_by"
+          "gate_id"
         ],
         "title": "GateResolveArgs",
         "type": "object"
@@ -17469,6 +17595,7 @@
     "gate_create": "task",
     "gate_list": "task",
     "gate_show": "task",
+    "gate_reopen": "task",
     "gate_resolve": "task",
     "explain_task": "task",
     "project_ready": "project",
