@@ -772,6 +772,8 @@ class TestMigration:
         async with db._engine.connect() as conn:
             trans = await conn.begin()
             try:
+                # Revision 93's input binding depends on the revision 91 ask table.
+                await conn.execute(text("ALTER TABLE conversation_inputs DROP COLUMN ask_id"))
                 await conn.run_sync(_run(_load_migration("a00000000091_human_ask_decisions"), "downgrade"))
                 # Rewind to a00000000013: no review tables, no delegation
                 # column, and a gate-type CHECK without 'review'.
@@ -831,6 +833,8 @@ class TestMigration:
         async with db._engine.connect() as conn:
             trans = await conn.begin()
             try:
+                # Revision 93's input binding depends on the revision 91 ask table.
+                await conn.execute(text("ALTER TABLE conversation_inputs DROP COLUMN ask_id"))
                 await conn.run_sync(_run(_load_migration("a00000000091_human_ask_decisions"), "downgrade"))
                 # Alembic downgrades the later attachment revision before
                 # revision 14; its foreign key must be removed in that order.

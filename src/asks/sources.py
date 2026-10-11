@@ -69,8 +69,9 @@ async def authorize_source(handler, source, actor, *, conn, application=False):
     if actor.provenance.get("kind") == "verified_input":
         from src.asks.authority import authorize_input_actor
 
-        await authorize_input_actor(handler.db, handler.config, source, actor,
-                                    conn=conn, application=application)
+        await authorize_input_actor(
+            handler.db, handler.config, source, actor, conn=conn, application=application
+        )
         return
     principal = current_principal() or TRUSTED_LOCAL
     if principal.project_id and principal.project_id != source.project_id:
@@ -80,27 +81,17 @@ async def authorize_source(handler, source, actor, *, conn, application=False):
         from src.database.tables import escalations, escalation_messages
 
         evidence = (
-            (
-                await conn.execute(
-                    select(escalation_messages).where(
-                        escalation_messages.c.id == actor.input_id,
-                    )
-                )
+            await conn.execute(
+                select(escalation_messages).where(escalation_messages.c.id == actor.input_id)
             )
-            .mappings()
-            .first()
-        )
+        ).mappings().first()
         incident = (
-            (
-                await conn.execute(
-                    select(escalations).where(
-                        escalations.c.id == actor.provenance.get("escalation_id"),
-                    )
+            await conn.execute(
+                select(escalations).where(
+                    escalations.c.id == actor.provenance.get("escalation_id")
                 )
             )
-            .mappings()
-            .first()
-        )
+        ).mappings().first()
         if (
             not evidence
             or not incident

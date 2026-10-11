@@ -16041,7 +16041,11 @@
     "src/asks/review.py::authenticated_actor": "Generic authenticated principal construction shared by reviews and all ask sources; no integration state or authority decision. Integration authorization remains independently charged.",
     "src/asks/operations.py::get_operation": "Generic decision-operation lookup in escalation_actions, shared by all ask sources; no integration subject, branch or lifecycle state.",
     "src/asks/operations.py::succeed": "Generic ask operation completion on the caller connection; source adapters own and independently charge every integration effect and receipt.",
-    "src/asks/sources.py::finish_on": "Generic ask operation/projection completion for every source kind; no integration state or ref authority. IntegrationAdapter remains independently charged."
+    "src/asks/sources.py::finish_on": "Generic ask operation/projection completion for every source kind; no integration state or ref authority. IntegrationAdapter remains independently charged.",
+    "src/asks/authority.py::authorize_input_actor": "Generic stored human-input identity, source binding, audience and live supervisor checks shared by every ask source. No integration subject, branch, gate or publication state is interpreted; authorize_source and IntegrationAdapter remain independently charged.",
+    "src/commands/contracts/ask.py::GATEWAY_COMMANDS": "Generic gateway capability names for human request transport; no integration lifecycle or publication authority. Integration handlers remain independently charged.",
+    "src/commands/contracts/ask.py::OPERATOR_COMMANDS": "Generic operator capability names for human request maintenance; no integration lifecycle or publication authority. Integration handlers remain independently charged.",
+    "src/commands/contracts/ask.py::register_ask_contracts": "Generic command registration and result/effect schemas shared by every ask source. Delegates to CommandHandler without interpreting integration state; integration source handlers and the builtin registry remain independently charged."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

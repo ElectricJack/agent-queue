@@ -72,6 +72,16 @@ def _register_typed_schemas(monkeypatch):
 
 # Maps event_type -> minimal valid payload (all required fields present)
 _CANONICAL_PAYLOADS: dict[str, dict] = {
+    "ask.input_received": {
+        "ask_id": "ask-1",
+        "project_id": "proj-1",
+        "input_id": "cinput-1",
+    },
+    "ask.discussion_replied": {
+        "ask_id": "ask-1",
+        "project_id": "proj-1",
+        "input_id": "cinput-1",
+    },
     "conversation.reply_queued.v1": {
         "conversation_id": "conv-1",
         "input_id": "cinput-1",
