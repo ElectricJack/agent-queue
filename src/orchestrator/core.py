@@ -408,6 +408,12 @@ class Orchestrator(
         # and delivery both live in the service, so nothing about the cycle
         # depends on whether Discord is reachable.
         self.digest_schedule = None
+        # The morning-report playbook's once-per-local-day trigger.  A pure
+        # clock check with no Discord dependency; its event id is the day's
+        # dispatch dedup key, so a restart cannot start a second run.
+        from src.reports.morning_due import MorningDueEmitter
+
+        self.morning_due = MorningDueEmitter(lambda: self.config, self.bus)
         # The one dashboard origin every externally posted link names
         # (escalations, digest, reviews, digest_preview).  Reads config per
         # call, so a hot-reloaded ``dashboard.server`` bites at once.
@@ -3201,6 +3207,11 @@ class Orchestrator(
                     await self.digest_schedule.tick()
                 except Exception:
                     logger.warning("Digest schedule tick failed", exc_info=True)
+
+            # 7d-quater. Morning report trigger: one ``report.morning_due`` per
+            # local day once the zoned planned instant has passed.  ``tick``
+            # never raises.
+            await self.morning_due.tick()
 
             # 7e. Periodic orphan workflow check (Roadmap 7.5.6).
             # Detects workflows whose coordination playbook died and emits

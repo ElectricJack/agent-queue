@@ -1355,23 +1355,67 @@ def _supervisor_failure_triage_body(source: PlaybookSource) -> dict[str, Any]:
 
 
 def _morning_report_body(source: PlaybookSource) -> dict[str, Any]:
-    """One optional minute reconciliation command, with no model or worker step."""
+    """One run per local day that ticks a minute apart until the report settles.
+
+    No model or worker step.  ``report.morning_due`` carries a per-day event
+    id, so the dispatch dedup is the once-per-local-day key; the timer waits
+    keep the reconciliation inside that one run instead of a run per minute.
+    """
     index = ProseIndex(source, source.vault_path)
     rule = "reconcile-morning"
-    tick, done, failed = (f"{rule}--{suffix}" for suffix in ("tick", "done", "failed"))
+    tick, settle, pause, backoff, retry, recheck, done, failed = (
+        f"{rule}--{suffix}"
+        for suffix in (
+            "tick", "settle", "pause", "backoff", "retry", "recheck", "done", "failed"
+        )
+    )
+
+    def command(title: str, ordinal: int, binding: str, then: str, error: str) -> dict:
+        return {
+            "type": "command", "rule": rule, "title": title,
+            "source": index.step_ref(rule, ordinal), "command": "morning_report_tick",
+            "inputs": {}, "save_result_as": binding,
+            "transitions": {"completed": then, "rejected": error, "runtime_error": error},
+        }
+
+    def settled(title: str, ordinal: int, binding: str) -> dict[str, Any]:
+        """Wait while the event's own report is pending; anything else ends."""
+        pending = {"type": "bool", "op": "and", "operands": [
+            {"type": "comparison", "op": "eq",
+             "left": {"type": "binding_ref", "binding": binding, "path": "report_id"},
+             "right": {"type": "event_ref", "path": "report_id"}},
+            {"type": "comparison", "op": "in",
+             "left": {"type": "binding_ref", "binding": binding, "path": "state"},
+             "right": {"type": "literal",
+                       "value": ["building", "failed", "ready", "authoring"]}},
+        ]}
+        return {
+            "type": "decision", "rule": rule, "title": title,
+            "source": index.step_ref(rule, ordinal),
+            "cases": [{"when": pending, "goto": pause}], "default": done,
+        }
+
+    def timer(title: str, ordinal: int, fired: str) -> dict[str, Any]:
+        return {
+            "type": "wait", "rule": rule, "title": title,
+            "source": index.step_ref(rule, ordinal), "wait_kind": "timer",
+            "timeout_seconds": 60,
+            "transitions": {"fired": fired, "runtime_error": failed},
+        }
+
     return {
         "rules": [{
-            "id": rule, "name": rule, "trigger": {"event_type": "timer.1m"},
+            "id": rule, "name": rule, "trigger": {"event_type": "report.morning_due"},
             "entry_step": tick, "source": index.rule_ref(rule),
         }],
         "steps": {
-            tick: {
-                "type": "command", "rule": rule, "title": "tick",
-                "source": index.step_ref(rule, 1), "command": "morning_report_tick",
-                "inputs": {}, "save_result_as": "report",
-                "transitions": {"completed": done, "rejected": failed, "runtime_error": failed},
-            },
-            done: _terminal(rule, "completed", index.step_ref(rule, None)),
+            tick: command("tick", 1, "report", settle, backoff),
+            settle: settled("settle", 2, "report"),
+            pause: timer("pause", 3, tick),
+            backoff: timer("backoff", 4, retry),
+            retry: command("retry", 5, "retried", recheck, failed),
+            recheck: settled("recheck", 6, "retried"),
+            done: _terminal(rule, "completed", index.step_ref(rule, 2)),
             failed: _terminal(rule, "failed", index.step_ref(rule, None)),
         },
     }

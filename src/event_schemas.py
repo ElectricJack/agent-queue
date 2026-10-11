@@ -344,7 +344,14 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
 _ASSIGNMENT_SCHEMAS: dict[str, EventSchema] = {}
 
 CONTRACTED_EVENT_TYPES: frozenset[str] = frozenset(
-    {"task.completed", "spec.approved", "proposal.ready", "gate.resolved", "digest.window_ready"}
+    {
+        "task.completed",
+        "spec.approved",
+        "proposal.ready",
+        "gate.resolved",
+        "digest.window_ready",
+        "report.morning_due",
+    }
 )
 
 _REPORT_SCHEMAS: dict[str, EventSchema] = {
@@ -356,7 +363,22 @@ _REPORT_SCHEMAS: dict[str, EventSchema] = {
             "window_id": {"type": "string", "description": "reserved digest window"},
             "request_id": {"type": "string", "description": "durable report request"},
         },
-    }
+    },
+    # Emitted by MorningDueEmitter once per local day at or after the
+    # configured morning time; event_id is keyed by schedule and local date,
+    # so the playbook dispatch dedup makes it one run per day across restarts.
+    "report.morning_due": {
+        "required": ["local_date", "report_id"],
+        "optional": [],
+        "types": {"local_date": str, "report_id": str},
+        "fields": {
+            "local_date": {
+                "type": "string",
+                "description": "report-timezone calendar day (YYYY-MM-DD)",
+            },
+            "report_id": {"type": "string", "description": "durable morning report id"},
+        },
+    },
 }
 
 # ---------------------------------------------------------------------------

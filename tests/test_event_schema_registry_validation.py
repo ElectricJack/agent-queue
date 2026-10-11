@@ -91,6 +91,10 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "window_id": "digest-window-1",
         "request_id": "report-hourly-digest-window-1",
     },
+    "report.morning_due": {
+        "local_date": "2026-10-10",
+        "report_id": "morning-2026-10-10",
+    },
     "assignment.route.requested": {
         "project_id": "proj-1",
         "tasks": [],
