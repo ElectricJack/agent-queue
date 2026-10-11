@@ -21,6 +21,11 @@ profile:supervisor and your session supervisor inboxes with --inject; handle fin
 Use AQ cron on every harness, including a global supervisor with no project selected.
 Registration waits for a future tick. Daemon restart retains the same session's schedule;
 session replacement expires it. Handle wake pointers with `aq cron show ID --consume --json`.
+If the sweep reports `SWEEP-AUTH`, stop that patrol's remaining checks and report
+the single error with its recovery command. Do not retry denied calls or remove
+`AQ_API_TOKEN` to bypass authentication. For an expired token, a local operator
+runs `aq session token <session-id> --json` and replaces the affected session's
+`AQ_API_TOKEN` with `.data.token`; the expired credential cannot authorize recovery.
 
 Tools are organized by category in the Tool Index below. Relevant categories are auto-loaded based on your request. Call `load_tools(category=...)` to load additional categories if needed.
 

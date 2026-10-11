@@ -959,6 +959,60 @@ class TestSessionToken:
         assert await store.validate(first) is not None
         assert await store.validate(second) is not None
 
+    @pytest.mark.parametrize("project_id", [None, "p1"])
+    async def test_supervisor_remint_preserves_launch_scope(
+        self, handler, db, provider, store, project_id,
+    ):
+        from src.api.auth import SessionTokenStore
+        from src.api.scope import check_command_scope
+
+        await _make_session(db, provider, task_id=None, lifecycle="named")
+        await db.update_session("sess-1", profile_id="supervisor", project_id=project_id)
+        result = await handler.execute("session_token", {"session_id": "sess-1"})
+        assert result["success"] is True
+        # Reload from durable storage rather than relying on the minter's cache.
+        scope = await SessionTokenStore(db).validate(result["token"])
+        assert scope.elevated is True
+        assert scope.project_id == project_id
+        assert scope.task_id is None
+        assert scope.session_instance_token == "tok-1"
+        args = {}
+        assert check_command_scope("session_list", args, scope) is None
+        assert args.get("project_id") == project_id
+        if project_id is not None:
+            assert check_command_scope("session_list", {"project_id": "other"}, scope)
+
+    async def test_project_supervisor_cannot_remint_global_supervisor(
+        self, handler, db, provider, store,
+    ):
+        await _make_session(db, provider, task_id=None, lifecycle="named")
+        await db.update_session("sess-1", profile_id="supervisor", project_id=None)
+        handler._current_scope = {
+            "kind": "session", "session_id": "project-sup", "task_id": None,
+            "project_id": "p1", "elevated": True,
+        }
+        try:
+            result = await handler._cmd_session_token({"session_id": "sess-1"})
+        finally:
+            handler._current_scope = None
+        assert result["success"] is False
+        assert "another project" in result["error"]
+        assert "token" not in result
+
+    @pytest.mark.parametrize("changes", [
+        {"state": "stopped"}, {"state": "draining"}, {"desired_state": "sleeping"},
+        {"ended_at": 1}, {"instance_token": ""},
+    ])
+    async def test_cannot_remint_inactive_supervisor(
+        self, handler, db, provider, store, changes,
+    ):
+        await _make_session(db, provider, task_id=None, lifecycle="named")
+        await db.update_session("sess-1", profile_id="supervisor", **changes)
+        result = await handler.execute("session_token", {"session_id": "sess-1"})
+        assert result["success"] is False
+        assert "live named supervisor" in result["error"]
+        assert "token" not in result
+
     async def test_unknown_session(self, handler, store):
         assert "error" in await handler.execute("session_token", {"session_id": "nope"})
 

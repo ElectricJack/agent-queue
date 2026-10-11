@@ -263,6 +263,133 @@ class TestSessionTokenStore:
         assert n == 1
         await db.close()
 
+    @pytest.mark.parametrize("project_id", [None, "p1"])
+    async def test_supervisor_token_survives_launch_ttl_and_store_restart(
+        self, tmp_path, monkeypatch, project_id,
+    ):
+        """Housekeeping renews an idle supervisor; the same bearer still works."""
+        from types import SimpleNamespace
+
+        import httpx
+
+        db, store = await self._store(tmp_path, ttl_hours=1)
+        try:
+            await _seed_session_identity(
+                db, session_ids=[("sup", None, project_id)], profile_id="supervisor",
+            )
+            await db.update_session("sup", lifecycle="named")
+            now = time.time()
+            clock = SimpleNamespace(time=lambda: now)
+            monkeypatch.setattr("src.api.auth.time", clock)
+            token = await store.mint(
+                session_id="sup", session_instance_token="tok-sup", task_id=None,
+                project_id=project_id, elevated=True,
+            )
+            digest = hashlib.sha256(token.encode()).hexdigest()
+            original = await db.get_api_token(digest)
+            now += 1700
+            assert await store.revoke_expired() == 0
+            assert (await db.get_api_token(digest))["expires_at"] == original["expires_at"]
+            now += 200
+            assert await store.revoke_expired() == 0
+            renewed = await db.get_api_token(digest)
+            assert renewed["expires_at"] == now + 3600
+            assert renewed["created_at"] == original["created_at"]
+            assert digest not in store._cache
+            now = original["expires_at"] + 1
+
+            app = FastAPI()
+            app.add_middleware(TokenAuthMiddleware)
+
+            @app.get("/probe")
+            async def probe(request: Request):
+                scope = request.state.scope
+                return {"elevated": scope.elevated, "project_id": scope.project_id,
+                        "instance": scope.session_instance_token}
+
+            monkeypatch.setattr(deps, "_orchestrator", None)
+            monkeypatch.setattr(deps, "_command_handler", None)
+            headers = {"Authorization": f"Bearer {token}"}
+            # Both the original cache and a newly constructed store must observe renewal.
+            for active_store in (store, SessionTokenStore(db, ttl_hours=1)):
+                monkeypatch.setattr(deps, "_token_store", active_store)
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1)),
+                    base_url="http://test",
+                ) as client:
+                    response = await client.get("/probe", headers=headers)
+                    assert response.status_code == 200, response.text
+                    assert response.json() == {
+                        "elevated": True, "project_id": project_id, "instance": "tok-sup",
+                    }
+            if project_id is None:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app, client=("203.0.113.1", 1)),
+                    base_url="http://test",
+                ) as client:
+                    assert (await client.get("/probe", headers=headers)).status_code == 403
+            # Revocation still wins over the extended expiry.
+            await active_store.revoke_session("sup")
+            await active_store.revoke_expired()
+            assert await active_store.validate(token) is None
+        finally:
+            await db.close()
+
+    @pytest.mark.parametrize("case", [
+        "expired", "revoked", "worker", "other-named", "draining", "stopped",
+        "sleeping", "quarantined", "desired-sleeping", "ended", "replacement",
+        "missing-instance", "wrong-project", "unelevated", "missing-session", "task-bound",
+    ])
+    async def test_supervisor_renewal_does_not_extend_ineligible_tokens(
+        self, tmp_path, monkeypatch, case,
+    ):
+        from types import SimpleNamespace
+
+        db, store = await self._store(tmp_path, ttl_hours=1)
+        try:
+            await _seed_session_identity(
+                db, session_ids=[("sup", None, None)], profile_id="supervisor",
+            )
+            changes = {"lifecycle": "named"}
+            if case == "worker":
+                changes.update(lifecycle="pool", profile_id="worker")
+            elif case == "other-named":
+                changes["profile_id"] = "interactive"
+            elif case in {"draining", "stopped", "sleeping", "quarantined"}:
+                changes["state"] = case
+            elif case == "desired-sleeping":
+                changes["desired_state"] = "sleeping"
+            elif case == "ended":
+                changes["ended_at"] = time.time()
+            await db.update_session("sup", **changes)
+            now = time.time()
+            monkeypatch.setattr("src.api.auth.time", SimpleNamespace(time=lambda: now))
+            token = await store.mint(
+                session_id="absent" if case == "missing-session" else "sup",
+                session_instance_token=None if case == "missing-instance" else "tok-sup",
+                task_id="task" if case == "task-bound" else None,
+                project_id="other" if case == "wrong-project" else None,
+                elevated=case != "unelevated",
+            )
+            digest = hashlib.sha256(token.encode()).hexdigest()
+            expires_at = (await db.get_api_token(digest))["expires_at"]
+            if case == "replacement":
+                await db.update_session("sup", instance_token="replacement")
+            now += 3601 if case == "expired" else 1900
+            if case == "revoked":
+                await store.revoke_session("sup")
+            await store.revoke_expired()
+            row = await db.get_api_token(digest)
+            if case == "expired":
+                assert row is None
+            else:
+                assert row["expires_at"] == expires_at
+            # A missed renewal window must not turn into expired-token recovery.
+            now = expires_at + 1
+            assert await store.validate(token) is None
+        finally:
+            await db.close()
+
     def test_local_scope_singleton(self):
         assert LOCAL_SCOPE.kind == "local"
         assert LOCAL_SCOPE.session_id is None
@@ -274,7 +401,7 @@ class TestSessionTokenStore:
 
 from unittest.mock import MagicMock  # noqa: E402
 
-from fastapi import FastAPI  # noqa: E402
+from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from src.api import dependencies as deps  # noqa: E402

@@ -340,6 +340,14 @@ start code work, tests or QA from a digest author turn.
   again in the new session. `aq cron show ID --consume --json` reads a scheduled
   wake and consumes only its notification. Cancel with `aq cron cancel ID`.
   Do not also register a native harness patrol. See `docs/guides/agent-cron.md`.
+- **Authentication failure stops the patrol.** On `SWEEP-AUTH`, stop the remaining
+  checks for that tick and report the single error and its recovery command.
+  Do not retry denied calls or remove `AQ_API_TOKEN` to bypass authentication.
+  Expired credentials require a local operator to run `aq session token
+  <session-id> --json`, then replace the affected session's `AQ_API_TOKEN` with
+  `.data.token`. This is an exception to routine self-repair: the expired token
+  cannot authorize its own recovery. Scope/grant refusals need their stated fix,
+  not repeated token minting.
 - **Fix it yourself; never hand the human a command to run.** Use your allowed
   tools to resolve operational stalls, then report what you did. Do not end a
   turn with a command for the human or a request to do routine supervisor work.

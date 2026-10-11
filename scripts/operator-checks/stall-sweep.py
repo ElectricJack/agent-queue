@@ -10,12 +10,15 @@ a timer and acts on what it prints.
 import datetime
 import json
 import math
+import os
 import re
+import shlex
 import subprocess
 import sys
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 
 NOW = time.time()
 READY_STALE_S = 20 * 60
@@ -53,9 +56,16 @@ HOLDS = {
 }
 
 findings = []
+_auth_lock = Lock()
+_auth_failed = False
 
 
 def aq(*args, timeout=60, missing_ok=False):
+    global _auth_failed
+    with _auth_lock:
+        if _auth_failed:
+            raise SystemExit(2)
+
     def failed(reason):
         findings.append(
             f"SWEEP-ERROR aq {' '.join(args)}: {reason} -> this check is incomplete"
@@ -81,12 +91,22 @@ def aq(*args, timeout=60, missing_ok=False):
         return failed("malformed error envelope")
     if err is not None and err.get("code") == "out_of_scope":
         # An expired session token makes every call fail; never report "OK" then.
-        hint = (
-            "project-scoped supervisor token: re-run with `--project <pid>`"
-            if args[:2] == ("project", "list") and not ONLY
-            else "re-run with a fresh token"
-        )
-        print(f"SWEEP-AUTH aq {' '.join(args)}: {err.get('message')} -> {hint}")
+        message = str(err.get("message", ""))
+        if "invalid or expired token" in message.lower() or "session token required" in message.lower():
+            session = shlex.quote(os.environ.get("AQ_SESSION_ID") or "<session-id>")
+            hint = (
+                f"local operator: run `aq session token {session} --json`, then replace "
+                "this session's AQ_API_TOKEN with .data.token; stop this patrol until restored"
+            )
+        elif args[:2] == ("project", "list") and not ONLY:
+            hint = "project-scoped supervisor token: re-run with `--project <pid>`"
+        else:
+            hint = "check this supervisor's project scope and capability grants"
+        # Explain reads run concurrently: only the first auth failure is useful.
+        with _auth_lock:
+            if not _auth_failed:
+                _auth_failed = True
+                print(f"SWEEP-AUTH aq {' '.join(args)}: {message} -> {hint}")
         sys.exit(2)
     if err is not None and missing_ok and "not found" in str(err.get("message", "")).lower():
         # A referenced task that was deleted is a finding, not an incomplete sweep.

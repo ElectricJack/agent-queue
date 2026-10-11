@@ -47,7 +47,7 @@ class RequestScope:
     session_instance_token: str | None = None
     task_id: str | None = None
     project_id: str | None = None
-    #: Trusted-scope flag. When True (currently only per-project
+    #: Trusted-scope flag. When True (global and per-project
     #: supervisor sessions), :func:`check_command_scope` allows any
     #: command instead of restricting to :data:`AGENT_COMMAND_SET`.
     #: ``project_id`` is still enforced when set.
@@ -240,6 +240,16 @@ class SessionTokenStore:
 
     async def revoke_expired(self) -> int:
         now = time.time()
+        # A supervisor can outlive the launch TTL without making any requests.
+        # Renew from daemon-owned live-session evidence before pruning; never
+        # accept an expired bearer as authority to mint or renew credentials.
+        renewed = await self._db.renew_supervisor_api_tokens(
+            now=now,
+            renew_before=now + min(3600, self._ttl_seconds / 2),
+            expires_at=now + self._ttl_seconds,
+        )
+        for h in renewed:
+            self._cache.pop(h, None)
         n = await self._db.delete_expired_api_tokens(now=now)
         # Drop cache entries whose expiry has passed.
         for h in [k for k, (_, exp) in self._cache.items() if exp <= now]:
