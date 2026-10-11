@@ -14264,7 +14264,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AskDecideResponse"
+                }
               }
             }
           },
@@ -14309,7 +14311,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AskPrepareDecisionResponse"
+                }
               }
             }
           },
@@ -14354,7 +14358,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDecideResponse"
+                }
               }
             }
           },
@@ -14681,7 +14687,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewFeedbackCompleteResponse"
+                }
               }
             }
           },
@@ -23249,6 +23257,142 @@
         ],
         "title": "AskDecideRequest"
       },
+      "AskDecideResponse": {
+        "properties": {
+          "application_state": {
+            "type": "string",
+            "title": "Application State",
+            "default": "not_started"
+          },
+          "decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Id"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "review_id": {
+            "type": "string",
+            "title": "Review Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "unblocked_task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unblocked Task Ids",
+            "default": []
+          },
+          "playbook": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook"
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "review_id",
+          "state",
+          "created"
+        ],
+        "title": "AskDecideResponse"
+      },
+      "AskDecisionPreview": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "ask_id": {
+            "type": "string",
+            "title": "Ask Id"
+          },
+          "decision_generation": {
+            "type": "integer",
+            "title": "Decision Generation"
+          },
+          "actor_id": {
+            "type": "string",
+            "title": "Actor Id"
+          },
+          "input_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Id"
+          },
+          "source_fingerprint": {
+            "type": "string",
+            "title": "Source Fingerprint"
+          },
+          "feedback_version": {
+            "type": "integer",
+            "title": "Feedback Version"
+          },
+          "packet": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Packet"
+          },
+          "packet_sha256": {
+            "type": "string",
+            "title": "Packet Sha256"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "expires_at": {
+            "type": "number",
+            "title": "Expires At"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id",
+          "ask_id",
+          "decision_generation",
+          "actor_id",
+          "source_fingerprint",
+          "feedback_version",
+          "packet",
+          "packet_sha256",
+          "created_at",
+          "expires_at"
+        ],
+        "title": "AskDecisionPreview"
+      },
       "AskPrepareDecisionRequest": {
         "properties": {
           "ask_id": {
@@ -23313,6 +23457,27 @@
         ],
         "title": "AskPrepareDecisionRequest"
       },
+      "AskPrepareDecisionResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "preview": {
+            "$ref": "#/components/schemas/AskDecisionPreview"
+          },
+          "expected": {
+            "$ref": "#/components/schemas/AskSourceVersion"
+          }
+        },
+        "type": "object",
+        "required": [
+          "preview",
+          "expected"
+        ],
+        "title": "AskPrepareDecisionResponse"
+      },
       "AskRetryOperationRequest": {
         "properties": {
           "decision_id": {
@@ -23326,6 +23491,29 @@
           "decision_id"
         ],
         "title": "AskRetryOperationRequest"
+      },
+      "AskSourceVersion": {
+        "properties": {
+          "decision_generation": {
+            "type": "integer",
+            "title": "Decision Generation"
+          },
+          "source_fingerprint": {
+            "type": "string",
+            "title": "Source Fingerprint"
+          },
+          "feedback_version": {
+            "type": "integer",
+            "title": "Feedback Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "decision_generation",
+          "source_fingerprint",
+          "feedback_version"
+        ],
+        "title": "AskSourceVersion"
       },
       "AssignmentRouteDetail": {
         "properties": {
@@ -64198,6 +64386,29 @@
           "evidence"
         ],
         "title": "ReviewFeedbackCompleteRequest"
+      },
+      "ReviewFeedbackCompleteResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "obligation_id": {
+            "type": "string",
+            "title": "Obligation Id"
+          },
+          "recorded": {
+            "type": "boolean",
+            "title": "Recorded"
+          }
+        },
+        "type": "object",
+        "required": [
+          "obligation_id",
+          "recorded"
+        ],
+        "title": "ReviewFeedbackCompleteResponse"
       },
       "ReviewImportEditsRequest": {
         "properties": {

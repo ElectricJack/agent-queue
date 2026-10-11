@@ -224,6 +224,7 @@ async def test_a_refused_ensure_task_ends_the_spec_ingest_run_failed(handler, pi
 @pytest.mark.parametrize("kind", ["spec", "plan"])
 async def test_review_approval_ingests_once_at_deep_high(handler, pipeline, kind):
     from src.vault import ensure_default_intelligence_classes
+    from tests.test_review_service import decided
 
     ensure_default_intelligence_classes(handler.config.data_dir)
     handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
@@ -249,10 +250,13 @@ async def test_review_approval_ingests_once_at_deep_high(handler, pipeline, kind
         content="---\nspec_kind: implementation\n---\n# Specification\n",
         submitted_by="human:local-operator",
     )
-    await svc.decide(
+    approved = await decided(svc,
         review_id=submitted["review_id"], revision=1, decision="approve",
         note="Approved", decided_by="human:local-operator",
+        dispositions=[{"feedback_key": "overall_note", "disposition": "no_change",
+                       "reason": "Approval acknowledgment; no implementation change requested."}],
     )
+    assert approved["application_state"] == "applied", approved
     payload = next(call.args[1] for call in handler.orchestrator.bus.emit.call_args_list
                    if call.args[0] == "spec.approved")
     path = Path(payload["spec_path"])

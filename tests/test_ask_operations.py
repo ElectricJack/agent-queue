@@ -6,6 +6,7 @@ import pytest
 
 from sqlalchemy import select, update
 
+from src.api.models import get_all_response_models
 from src.asks.operations import ReviewOperations, get_operation
 from src.database.tables import review_feedback_obligations, task_criteria, task_gates, tasks
 from tests.test_review_commands import _scoped
@@ -22,7 +23,13 @@ async def test_filing_failure_retains_review_hold_and_retries_once(env, monkeypa
     handler, db = env
     rid = await submitted(handler)
     await comment(handler, rid, "Keep this human follow-up")
-    args, preview = await prepared(handler, rid, note="Preserve my note too")
+    args, _ = await prepared(handler, rid, note="Preserve my note too")
+    prepared_response = await handler.execute("ask_prepare_decision", args)
+    preview = prepared_response["preview"]
+    models = get_all_response_models()
+    serialized = models["ask_prepare_decision"].model_validate(prepared_response).model_dump()
+    assert serialized["preview"]["packet"] == preview["packet"]
+    assert serialized["expected"] == prepared_response["expected"]
     original = handler._file_review_feedback
 
     async def unavailable(*args):
@@ -31,11 +38,17 @@ async def test_filing_failure_retains_review_hold_and_retries_once(env, monkeypa
     monkeypatch.setattr(handler, "_file_review_feedback", unavailable)
     result = await accept(handler, args, preview)
     assert result["application_state"] == "failed", result
+    serialized = models["ask_decide"].model_validate(result).model_dump()
+    assert serialized["decision_id"] == result["decision_id"]
+    assert serialized["application_state"] == "failed" and serialized["success"] is False
     review = await db.get_review(rid)
     assert review["pending_decision_id"] == result["decision_id"]
     assert review["state"] == "in_review"
     assert (await db.get_gate(review["gate_id"]))["status"] == "open"
     monkeypatch.setattr(handler, "_file_review_feedback", original)
+    repaired = await handler.execute("ask_retry_operation", {"decision_id": result["decision_id"]})
+    serialized = models["ask_retry_operation"].model_validate(repaired).model_dump()
+    assert serialized["decision_id"] == result["decision_id"] and serialized["success"] is True
     retry = await accept(handler, args, preview)
     assert retry["success"], retry
     again = await accept(handler, args, preview)
@@ -74,6 +87,7 @@ async def test_filing_failure_retains_review_hold_and_retries_once(env, monkeypa
             },
         )
         assert completed["success"], completed
+        assert models["review_feedback_complete"].model_validate(completed).model_dump() == completed
     assert await handler._review_feedback_close_error(items[0]["task_id"]) is None
 
 

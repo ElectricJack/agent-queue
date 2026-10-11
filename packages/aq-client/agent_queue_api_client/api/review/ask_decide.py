@@ -6,6 +6,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.ask_decide_request import AskDecideRequest
+from ...models.ask_decide_response import AskDecideResponse
 from ...models.ask_decide_response_422 import AskDecideResponse422
 from ...types import Response
 
@@ -31,9 +32,10 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | AskDecideResponse422 | None:
+) -> AskDecideResponse | AskDecideResponse422 | None:
     if response.status_code == 200:
-        response_200 = response.json()
+        response_200 = AskDecideResponse.from_dict(response.json())
+
         return response_200
 
     if response.status_code == 422:
@@ -49,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | AskDecideResponse422]:
+) -> Response[AskDecideResponse | AskDecideResponse422]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,7 +64,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: AskDecideRequest,
-) -> Response[Any | AskDecideResponse422]:
+) -> Response[AskDecideResponse | AskDecideResponse422]:
     """Accept the exact prepared review packet and report durable application state.
 
      Accept the exact prepared review packet and report durable application state.
@@ -75,7 +77,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | AskDecideResponse422]
+        Response[AskDecideResponse | AskDecideResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -93,7 +95,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: AskDecideRequest,
-) -> Any | AskDecideResponse422 | None:
+) -> AskDecideResponse | AskDecideResponse422 | None:
     """Accept the exact prepared review packet and report durable application state.
 
      Accept the exact prepared review packet and report durable application state.
@@ -106,7 +108,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | AskDecideResponse422
+        AskDecideResponse | AskDecideResponse422
     """
 
     return sync_detailed(
@@ -119,7 +121,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: AskDecideRequest,
-) -> Response[Any | AskDecideResponse422]:
+) -> Response[AskDecideResponse | AskDecideResponse422]:
     """Accept the exact prepared review packet and report durable application state.
 
      Accept the exact prepared review packet and report durable application state.
@@ -132,7 +134,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | AskDecideResponse422]
+        Response[AskDecideResponse | AskDecideResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -148,7 +150,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: AskDecideRequest,
-) -> Any | AskDecideResponse422 | None:
+) -> AskDecideResponse | AskDecideResponse422 | None:
     """Accept the exact prepared review packet and report durable application state.
 
      Accept the exact prepared review packet and report durable application state.
@@ -161,7 +163,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | AskDecideResponse422
+        AskDecideResponse | AskDecideResponse422
     """
 
     return (
