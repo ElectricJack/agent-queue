@@ -1195,6 +1195,11 @@ _CANONICAL_PAYLOADS.update(
 _CANONICAL_PAYLOADS.update(
     {
         "spec.approved": {
+            "decision_id": "decision-1",
+            "packet_sha256": "a" * 64,
+            "review_id": "review-1",
+            "revision": 1,
+            "spec_kind": "implementation",
             "project_id": "my-app",
             "spec_path": "/vault/projects/my-app/specs/feature-x.md",
         },

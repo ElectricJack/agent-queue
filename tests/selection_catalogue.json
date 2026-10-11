@@ -2902,11 +2902,13 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:35b7e49660d622a11effd1a54b561092360b5d61337cbe67b898007eae1e1bab",
+      "digest": "sha256:a1f57067bd626e419ced8eb175d3bb4006911bce6aedb27fc20b33d1b0e8f665",
       "imports": [
         "src.api.models",
         "src.asks.operations",
-        "src.database.tables"
+        "src.database.queries.proposal_queries",
+        "src.database.tables",
+        "src.models"
       ],
       "markers": [
         "parametrize"
@@ -5226,12 +5228,14 @@
         "shipped-playbooks"
       ],
       "default_arm": true,
-      "digest": "sha256:fa456e37e074865fdbc6223af619e859b712e2c438bb43671397b6a51f9b7e25",
+      "digest": "sha256:21203ec6d0e8937d284eae76d5bfe5d5b523a4e2392fa392fa2e510c49da08f7",
       "imports": [
+        "src.asks.operations",
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.database.queries.proposal_queries",
+        "src.database.tables",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
@@ -16287,8 +16291,10 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:20e40921e26f72dd6045cc9a63e134af7558b5f795a67c8b1c536434ead7fee3",
-      "imports": [],
+      "digest": "sha256:81e115e082cf60fd0198f5e337d621cccbb5d2d0da5f30bcb7922b5ad14fff47",
+      "imports": [
+        "src.database.tables"
+      ],
       "markers": [],
       "summary": "spec_approve — frontmatter flip + spec.approved event (Phase 6 Task 5)."
     },

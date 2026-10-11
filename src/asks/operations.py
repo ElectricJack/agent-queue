@@ -36,7 +36,7 @@ async def operation(db, decision, kind, *, conn, dependencies=(), parameters=Non
                 "reply_id": decision["evidence_entry_id"],
                 "idempotency_key": key,
                 "action_kind": "ask_operation",
-                "target_id": decision["review_id"],
+                "target_id": decision["review_id"] or decision["snapshot_id"],
                 "operation_kind": kind,
                 "operation_key": key,
                 "dependency_keys": list(dependencies),
@@ -339,16 +339,19 @@ class ReviewOperations:
                         select(escalation_actions.c.id).where(
                             escalation_actions.c.decision_id == decision["id"],
                             escalation_actions.c.status != "succeeded",
+                            escalation_actions.c.operation_kind != "ingestion",
                         )
                     )
                 ).first()
                 if remaining:
                     raise AskError("ask.application_unknown", "Decision has unfinished operations")
+                ingestion = await get_operation(conn, decision["id"], "ingestion")
+                dispatch_pending = ingestion and ingestion["status"] != "succeeded"
                 await self.project(
                     decision,
                     {
-                        "application_state": "applied",
-                        "next_actor": "none",
+                        "application_state": "applying" if dispatch_pending else "applied",
+                        "next_actor": "agent" if dispatch_pending else "none",
                         "updated_at": time.time(),
                     },
                     conn=conn,
@@ -358,6 +361,7 @@ class ReviewOperations:
             return {
                 **result,
                 "application_state": "applied",
+                "ingestion_state": "pending" if dispatch_pending else "acknowledged",
                 **({"playbook": playbook["receipt"]} if playbook else {}),
             }
         except Exception as exc:
@@ -487,10 +491,10 @@ class ReviewOperations:
                         raise AskError(
                             "ask.application_unknown", "Feedback lacks a verified acceptance row"
                         )
-                    if item["required_before_release"] and domain["effective_option"] == "approve":
-                        raise AskError(
-                            "ask.application_unknown", "Prerequisite requires a returned revision"
-                        )
+                if domain["effective_option"] == "approve":
+                    from src.asks.coverage import cover_review_waiters
+
+                    await cover_review_waiters(self.db, decision, obligations, conn=conn)
                 task_gate = receipt["application_gate_id"]
             if domain["playbook"] and domain["effective_option"] == "approve":
                 pin = await get_operation(conn, decision["id"], "playbook", lock=True)
@@ -674,6 +678,11 @@ class ReviewOperations:
         at-least-once. Pinned artifact, mirror and notification writes reconcile
         their source receipts. Unknown stages are never generically reset.
         """
+        if kind == "ingestion":
+            from src.asks.ingestion import dispatch
+
+            return await dispatch(self.db, decision, self.service.hooks.emit,
+                                  self.service.vault_root)
         async with self.db.immediate() as conn:
             review = await self.locked(decision, conn)
             await authorize_application(review, decision, conn=conn)
@@ -689,7 +698,6 @@ class ReviewOperations:
                 if kind not in {
                     "mirror",
                     "review_event",
-                    "ingestion",
                     "notification",
                     "playbook",
                 } and not kind.startswith(("gate_event:", "task_event:")):
@@ -836,7 +844,7 @@ class ReviewOperations:
             "packet_sha256": decision["packet_sha256"],
             "operation_key": op["operation_key"],
         }
-        event = "spec.approved" if kind == "ingestion" else "review.decided"
+        event = "review.decided"
         if kind.startswith("gate_event:"):
             event = "gate.resolved"
             payload.update(
@@ -859,9 +867,6 @@ class ReviewOperations:
         async with self.db._engine.connect() as conn:
             applied = await get_operation(conn, decision["id"], "apply")
         payload["unblocked_task_ids"] = applied["receipt"]["unblocked_task_ids"]
-        if kind == "ingestion":
-            payload["spec_kind"] = domain["spec_kind"]
-            payload["spec_path"] = str(self.service._path(domain["review"]).resolve())
         async with self.db.immediate() as conn:
             await self.locked(decision, conn)
             stored = await get_operation(conn, decision["id"], kind, lock=True)

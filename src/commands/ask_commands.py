@@ -7,12 +7,24 @@ from src.asks.models import AskError, DecisionIntent, SourceIdentity, SourceVers
 from src.asks.operations import ReviewOperations
 from src.asks.review import ReviewAdapter, authenticated_actor
 from src.asks.service import AskService
+from src.asks.standalone import StandaloneSpecAdapter
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 
 
 class AskCommandsMixin:
     def _ask_service(self):
-        return AskService(self.db, AdapterRegistry([ReviewAdapter(self._review_service())]))
+        return AskService(self.db, AdapterRegistry([
+            ReviewAdapter(self._review_service()), StandaloneSpecAdapter(self.db),
+        ]))
+
+    async def _apply_ask_decision(self, decision):
+        if not decision["snapshot_id"]:
+            return await ReviewOperations(self._review_service()).apply(decision["id"])
+        from src.asks.ingestion import dispatch
+        receipt = await dispatch(self.db, decision, self.orchestrator.bus.emit,
+                                 self.config.vault_root)
+        return {"decision_id": decision["id"], "application_state": "applied",
+                "ingestion_state": "acknowledged" if (receipt or {}).get("task_id") else "pending"}
 
     async def _ask_source_for_caller(self, ask_id, *, conn):
         ask = await self.db.get_ask(str(ask_id), conn=conn)
@@ -164,7 +176,7 @@ class AskCommandsMixin:
                     idempotency_key=key,
                     evidence_entry_id=evidence_id,
                 )
-            result = await ReviewOperations(self._review_service()).apply(decision["id"])
+            result = await self._apply_ask_decision(decision)
             return {
                 "success": result["application_state"] == "applied",
                 "created": created,
@@ -190,7 +202,7 @@ class AskCommandsMixin:
             decision = await self.db.get_ask_decision(str(args.get("decision_id")), conn=conn)
         if not decision:
             return {"success": False, "error_code": "ask.not_found", "error": "Decision not found"}
-        result = await ReviewOperations(self._review_service()).apply(decision["id"])
+        result = await self._apply_ask_decision(decision)
         return {"success": result["application_state"] == "applied", **result}
 
     async def _cmd_review_feedback_complete(self, args):

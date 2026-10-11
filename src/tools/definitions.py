@@ -9012,3 +9012,28 @@ _ALL_TOOL_DEFINITIONS.extend([
      "description": "Check all planned operator inputs and report every blocker together before mutations.",
      "input_schema": _OperatorPreflightArgs.model_json_schema()},
 ])
+
+
+from src.commands.contracts.builtin import EnsureSpecIngestArgs as _EnsureSpecIngestArgs  # noqa: E402
+
+_TOOL_CATEGORIES.update({
+    "ensure_spec_ingest": "task", "approved_spec_packet": "task",
+    "spec_ingest_reconcile": "task", "spec_ingest_legacy_inventory": "task",
+})
+_ALL_TOOL_DEFINITIONS.extend([
+    {"name": "ensure_spec_ingest",
+     "description": "Ensure one role task per applied approval decision, including archived receipts.",
+     "input_schema": _EnsureSpecIngestArgs.model_json_schema()},
+    {"name": "approved_spec_packet",
+     "description": "Read the immutable document and feedback of the live held ingestion role.",
+     "input_schema": _EnsureSpecIngestArgs.model_json_schema()},
+    {"name": "spec_ingest_reconcile",
+     "description": "Replay at most twenty pending approved-spec dispatches; operator/service only.",
+     "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "spec_ingest_legacy_inventory",
+     "description": "Inventory path-only ingestion assignments for explicit operator reconciliation.",
+     "input_schema": {"type": "object", "additionalProperties": False,
+                      "properties": {"project_id": {"type": "string"},
+                                     "after_id": {"type": "string"}},
+                      "required": ["project_id"]}},
+])
