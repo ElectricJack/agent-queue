@@ -250,6 +250,7 @@
       "description": "Discord bot: escalation-only inbound routing, the legacy-conversation cutover, housekeeping, retired slash commands, the invalid-request rate guard and the simplified lifecycle.",
       "modules": [
         "tests/test_discord_adapter.py",
+        "tests/test_discord_ask_buttons.py",
         "tests/test_discord_bot_routing.py",
         "tests/test_discord_cutover.py",
         "tests/test_discord_docs.py",
@@ -308,7 +309,12 @@
     "document-reviews": {
       "description": "Document reviews: the review service, schema and queries, revision block diffs, vault review files, review gates on downstream tasks, the reopen cascade, dedup keys, the review notifier, commands, doctor checks and spec approval.",
       "modules": [
+        "tests/test_ask_api.py",
+        "tests/test_ask_commands.py",
         "tests/test_ask_decisions.py",
+        "tests/test_ask_delivery.py",
+        "tests/test_ask_discussion.py",
+        "tests/test_ask_intake.py",
         "tests/test_ask_migration.py",
         "tests/test_ask_operations.py",
         "tests/test_ask_sources.py",
@@ -2870,6 +2876,44 @@
       ],
       "summary": "Tests for the task archiving feature."
     },
+    "tests/test_ask_api.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:4d1e9756224c3f9652bdd90a3a71ceb86b3f1c2bdbd144fca45aec0a350db65f",
+      "imports": [
+        "src.api",
+        "src.api.auth",
+        "src.api.codegen",
+        "src.api.dependencies",
+        "src.api.execute",
+        "src.api.middleware",
+        "src.api.models.ask",
+        "src.api.scope",
+        "src.api.websocket",
+        "src.commands.contracts",
+        "src.commands.contracts.ask",
+        "src.mcp_registration",
+        "src.tools.definitions"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Human ask schemas and every public gateway exclusion boundary agree."
+    },
+    "tests/test_ask_commands.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:603e0a1736ba4ee982f276332e2b9437300e5d6f9b84d43af470091cfe2ff937",
+      "imports": [
+        "src.database.tables"
+      ],
+      "markers": [],
+      "summary": "Public ask reads preserve project/audience and human decision boundaries."
+    },
     "tests/test_ask_decisions.py": {
       "areas": [
         "document-reviews"
@@ -2886,6 +2930,63 @@
         "parametrize"
       ],
       "summary": "Foundational packet/idempotency, durable audit and operation lease invariants."
+    },
+    "tests/test_ask_delivery.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:cc8d836a9ae91e7ebe596411c1910040d20f7463a14f75cb89b32b21d1dc2b62",
+      "imports": [
+        "src.asks.delivery",
+        "src.asks.intake",
+        "src.asks.models",
+        "src.asks.render",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.delivery.dispatch",
+        "src.delivery.scheduler",
+        "src.digest.dispatch",
+        "src.escalations.transport",
+        "src.remote_links"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Canonical root writes survive late HTTP completion, restart, pause and repair."
+    },
+    "tests/test_ask_discussion.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:8c92ff20f5d32913310d678dcb23c281acf1797d556a4035cb20d638f0ceb883",
+      "imports": [
+        "src.api.models.ask",
+        "src.asks.discussion",
+        "src.database.tables",
+        "src.sessions.spec"
+      ],
+      "markers": [],
+      "summary": "Discussion persists before acknowledgement and never exercises decision authority."
+    },
+    "tests/test_ask_intake.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:5570e296503b26a88446a0d07604f651d5dafe07d033a496b2fe0a8e6ed4163a",
+      "imports": [
+        "src.asks",
+        "src.asks.intake",
+        "src.commands.principal",
+        "src.conversations.delivery",
+        "src.database.tables"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "One verified input across gateway, backfill and legacy thread replay."
     },
     "tests/test_ask_migration.py": {
       "areas": [
@@ -5595,6 +5696,22 @@
         "asyncio"
       ],
       "summary": "Tests for the DiscordMessagingAdapter and messaging adapter integration."
+    },
+    "tests/test_discord_ask_buttons.py": {
+      "areas": [
+        "discord"
+      ],
+      "default_arm": true,
+      "digest": "sha256:2dc6e4ada3be607a022ba0dfc1dd9d342194ab750b60ede676c0c8b4500b3372",
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.discord.ask_buttons"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Opaque gateway controls carry authenticated, generation-bound human evidence."
     },
     "tests/test_discord_bot_routing.py": {
       "areas": [

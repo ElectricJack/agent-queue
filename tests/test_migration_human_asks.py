@@ -54,6 +54,11 @@ async def upgrade_from_90(db):
     async with db._engine.connect() as conn:
         trans = await conn.begin()
         try:
+            await conn.execute(sa.text("ALTER TABLE conversation_inputs DROP COLUMN ask_id"))
+            await conn.execute(sa.text("ALTER TABLE outbound_deliveries DROP COLUMN ask_id CASCADE"))
+            await conn.execute(sa.text("ALTER TABLE outbound_deliveries DROP COLUMN binding_id CASCADE"))
+            await conn.execute(sa.text("DROP TABLE ask_action_tokens"))
+            await conn.execute(sa.text("DROP TABLE ask_external_bindings"))
             await conn.run_sync(run("downgrade"))
             assert not await conn.run_sync(lambda c: sa.inspect(c).has_table("human_asks"))
             assert "feedback_version" not in await conn.run_sync(
@@ -204,7 +209,8 @@ async def test_standalone_bytes_and_approval_provenance_are_immutable(db):
 
 def test_revision_is_single_head_with_named_checks_jsonb_and_bare_defaults():
     script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    assert script.get_heads() == ["a00000000092"]
+    assert script.get_heads() == ["a00000000093"]
+    assert script.get_revision("a00000000093").down_revision == "a00000000092"
     assert script.get_revision("a00000000092").down_revision == "a00000000091"
     assert script.get_revision("a00000000091").down_revision == "a00000000090"
     revision = migration()
@@ -328,3 +334,57 @@ async def test_source_fences_refuse_downgrade_without_discarding_evidence(db, fe
             assert await conn.scalar(sa.text(f"SELECT count(*) FROM {table} WHERE id = 'retained'")) == 1
         finally:
             await trans.rollback()
+
+
+async def test_input_upgrade_replays_and_preserves_historical_text(db):
+    revision = migration("a00000000093_human_ask_transport")
+    def upgrade(conn):
+        with Operations.context(MigrationContext.configure(conn)):
+            revision.upgrade()
+    async with db._engine.begin() as conn:
+        await conn.execute(sa.text("ALTER TABLE conversation_inputs DROP COLUMN ask_id"))
+        await conn.execute(sa.text("ALTER TABLE conversation_inputs DROP COLUMN source_version"))
+        await conn.run_sync(upgrade)
+        await conn.run_sync(upgrade)
+        await conn.execute(sa.text("""
+            INSERT INTO conversation_inputs
+            (id, transport, external_message_id, verified_actor, author_id, channel_id,
+             text, text_sha256, char_count, source, received_at, created_at)
+            VALUES ('historical', 'discord', 'message', 'human:discord:1', '1', 'channel',
+                    :body, :hash, 16000, 'legacy', 1, 1)
+        """), {"body": "x" * 16000, "hash": "a" * 64})
+        assert await conn.scalar(sa.text("SELECT length(text) FROM conversation_inputs WHERE id='historical'")) == 16000
+        assert await conn.scalar(sa.text("SELECT conversation_id FROM conversation_inputs WHERE id='historical'")) is None
+        with pytest.raises(IntegrityError):
+            async with conn.begin_nested():
+                await conn.execute(sa.text("UPDATE conversation_inputs SET routing_state='guessed'"))
+
+
+async def test_transport_upgrade_from_historical_outbox_preserves_receipts(db):
+    revision = migration('a00000000093_human_ask_transport')
+
+    def upgrade(conn):
+        with Operations.context(MigrationContext.configure(conn)):
+            revision.upgrade()
+
+    async with db._engine.begin() as conn:
+        await conn.execute(sa.text("""
+            INSERT INTO outbound_deliveries
+            (id, owner_kind, owner_id, dedup_key, destination, payload, payload_hash, marker,
+             state, due_at, external_receipt_id, receipt_confirmed_at, created_at, updated_at)
+            VALUES ('old-report', 'morning', 'r', 'old-key', '{}', '{}', 'hash', 'marker',
+                    'sent', 1, 'confirmed-message', 2, 1, 2)
+        """))
+        for name in ('ask_id', 'binding_id', 'project_id', 'decision_generation', 'display_version',
+                     'mode_generation', 'root_generation', 'send_kind', 'write_started_at', 'attempt_token'):
+            await conn.execute(sa.text(f'ALTER TABLE outbound_deliveries DROP COLUMN {name} CASCADE'))
+        for name in ('ask_action_tokens', 'ask_external_bindings', 'human_communication_modes'):
+            await conn.execute(sa.text(f'DROP TABLE {name}'))
+        await conn.run_sync(upgrade)
+        await conn.run_sync(upgrade)
+        assert await conn.scalar(sa.text(
+            "SELECT external_receipt_id FROM outbound_deliveries WHERE id='old-report'"
+        )) == 'confirmed-message'
+        with pytest.raises(IntegrityError, match='ck_outbound_deliveries_ask'):
+            async with conn.begin_nested():
+                await conn.execute(sa.text("UPDATE outbound_deliveries SET owner_kind='ask'"))

@@ -223,7 +223,7 @@ class ReviewOperations:
 
     async def before_filing(self, decision, conn):
         review = await self.locked(decision, conn)
-        await authorize_application(review, decision, conn=conn)
+        await authorize_application(review, decision, conn=conn, service=self.service)
         op = await get_operation(conn, decision["id"], "file_task", lock=True)
         if op["status"] == "succeeded":
             raise FilingExists()
@@ -428,7 +428,7 @@ class ReviewOperations:
         domain = decision["packet"]["domain"]
         async with self.db.immediate() as conn:
             review = await self.locked(decision, conn)
-            await authorize_application(review, decision, conn=conn)
+            await authorize_application(review, decision, conn=conn, service=self.service)
             apply = await get_operation(conn, decision["id"], "apply", lock=True)
             already_applied = apply["status"] == "succeeded"
             if already_applied and (
@@ -685,7 +685,7 @@ class ReviewOperations:
                                   self.service.vault_root)
         async with self.db.immediate() as conn:
             review = await self.locked(decision, conn)
-            await authorize_application(review, decision, conn=conn)
+            await authorize_application(review, decision, conn=conn, service=self.service)
             op = await get_operation(conn, decision["id"], kind, lock=True)
             if op is None or op["status"] == "succeeded":
                 return

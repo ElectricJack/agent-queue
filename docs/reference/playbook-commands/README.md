@@ -149,6 +149,21 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | Command | Title | Summary |
 |---|---|---|
 | [`artifact_verify`](artifact_verify.md) | Artifact Verify | Resolve a durable artifact URI and re-hash the bytes it names. |
+| [`ask_apply_input`](ask_apply_input.md) | Ask Apply Input | Scoped human request communication and decision evidence. |
+| [`ask_button`](ask_button.md) | Ask Button | Scoped human request communication and decision evidence. |
+| [`ask_cutover`](ask_cutover.md) | Ask Cutover | Scoped human request communication and decision evidence. |
+| [`ask_decide`](ask_decide.md) | Ask Decide | Scoped human request communication and decision evidence. |
+| [`ask_discussion_reply`](ask_discussion_reply.md) | Ask Discussion Reply | Scoped human request communication and decision evidence. |
+| [`ask_history`](ask_history.md) | Ask History | Scoped human request communication and decision evidence. |
+| [`ask_intake`](ask_intake.md) | Ask Intake | Scoped human request communication and decision evidence. |
+| [`ask_list`](ask_list.md) | Ask List | Scoped human request communication and decision evidence. |
+| [`ask_prepare_decision`](ask_prepare_decision.md) | Ask Prepare Decision | Scoped human request communication and decision evidence. |
+| [`ask_reconcile`](ask_reconcile.md) | Ask Reconcile | Scoped human request communication and decision evidence. |
+| [`ask_repair_delivery`](ask_repair_delivery.md) | Ask Repair Delivery | Scoped human request communication and decision evidence. |
+| [`ask_reply`](ask_reply.md) | Ask Reply | Scoped human request communication and decision evidence. |
+| [`ask_retry_operation`](ask_retry_operation.md) | Ask Retry Operation | Scoped human request communication and decision evidence. |
+| [`ask_show`](ask_show.md) | Ask Show | Scoped human request communication and decision evidence. |
+| [`ask_update_context`](ask_update_context.md) | Ask Update Context | Scoped human request communication and decision evidence. |
 | [`ci_baseline_status`](ci_baseline_status.md) | Read the default branch's CI verdict | Judge the head commit's check runs, name the failing checks and tests, and derive the repair task keyed by their failure signature. |
 | [`ci_repair_adopt`](ci_repair_adopt.md) | Adopt a task as the CI repair | Key a live task as the repair for a red branch and record the failing tests it owns, so the CI sentinel reuses it instead of filing another. |
 | [`collaboration_accept`](collaboration_accept.md) | Collaboration Accept | Join a collaboration thread for the held task's live claim. |

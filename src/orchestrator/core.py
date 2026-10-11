@@ -410,6 +410,7 @@ class Orchestrator(
         # and delivery both live in the service, so nothing about the cycle
         # depends on whether Discord is reachable.
         self.digest_schedule = None
+        self.delivery_scheduler = None
         # The one dashboard origin every externally posted link names
         # (escalations, digest, reviews, digest_preview).  Reads config per
         # call, so a hot-reloaded ``dashboard.server`` bites at once.
@@ -3213,6 +3214,12 @@ class Orchestrator(
             # had something to say.  Escalations are pumped first above and
             # the digest pump stands down while any are owed a send, which is
             # §7's priority rule.  ``tick`` never raises.
+            if self.delivery_scheduler is not None:
+                try:
+                    await self.delivery_scheduler.tick()
+                except Exception:
+                    logger.warning("Shared delivery pump failed", exc_info=True)
+
             if self.digest_schedule is not None:
                 try:
                     await self.digest_schedule.tick()
@@ -3329,6 +3336,14 @@ class Orchestrator(
 
     async def _maintain_conversations(self, *, now: float) -> None:
         """Hourly maintenance; an outbox or database outage cannot stop scheduling."""
+        handler = getattr(self, "_command_handler", None)
+        if handler is not None:
+            try:
+                from src.commands.principal import ExecutionPrincipal, principal_context
+                with principal_context(ExecutionPrincipal.service("ask-maintenance")):
+                    await handler.execute("ask_reconcile", {"apply": True, "limit": 100})
+            except Exception:
+                logger.warning("Ask intake reconciliation failed", exc_info=True)
         if now - self._last_conversation_maintenance < 3600:
             return
         self._last_conversation_maintenance = now
