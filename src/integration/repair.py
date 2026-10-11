@@ -667,6 +667,8 @@ class RepairService:
             raise ValueError("batch is outside enabled hierarchical integration scope")
         policy = HierarchicalIntegrationPolicy.model_validate(batch["policy_snapshot"])
         boundary = policy.root
+        if boundary.route is None:
+            raise ValueError("batch route is not configured")
         artifact = (
             await conn.execute(
                 select(playbook_artifacts).where(
@@ -6315,7 +6317,8 @@ class RepairService:
             "manifest": manifest,
             "branch_sha": starting_sha,
             "required_checks": boundary.required_checks.model_dump(mode="json"),
-            "artifact": boundary.route.artifact.model_dump(mode="json"),
+            "artifact": (boundary.route.artifact.model_dump(mode="json")
+                         if boundary.route is not None else None),
             "receipts": receipts,
             "repair_commits": [],
             "failed_checks": [],
@@ -6786,6 +6789,8 @@ class RepairService:
         if operation["target_kind"] not in {"parent", "batch"}:
             raise _RepairInvariant("repair target kind is corrupt")
         boundary = policy.parent if operation["target_kind"] == "parent" else policy.root
+        if boundary.route is None:
+            raise _RepairInvariant("repair route is not configured")
         if (
             operation["artifact_snapshot"]
             != boundary.route.artifact.model_dump(mode="json")

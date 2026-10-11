@@ -568,6 +568,8 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
             raise HierarchyError("invalid", f"hierarchical integration policy is invalid: {exc}") from exc
         boundary = policy.parent
         route = boundary.route
+        if route is None:
+            raise HierarchyError("invalid", "parent route is not configured")
         artifact_row = (
             await conn.execute(
                 select(playbook_artifacts).where(
@@ -1465,7 +1467,8 @@ class PolicyActivation:
                         raise ValueError("integration route profile fields are deprecated: "
                                          + ", ".join(deprecated))
                     for boundary in (policy.parent, policy.root):
-                        if not boundary.route.is_available_to_project(project_id):
+                        if (boundary.route is not None
+                                and not boundary.route.is_available_to_project(project_id)):
                             raise ValueError("integration route is scoped to another project")
                     configured_policy = policy.model_dump(mode="json")
                 updates["hierarchical_integration_policy"] = configured_policy

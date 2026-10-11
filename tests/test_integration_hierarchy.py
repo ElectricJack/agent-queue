@@ -2072,3 +2072,32 @@ def test_build_child_files_the_class_as_a_hint_and_keeps_work_fields():
     assert child.class_hint == "deep-high"
     assert child.route_source == "unrouted" and child.route is None
     assert (child.project_id, child.repo_id, child.branch_name) == ("p", "repo", "aq/t.1")
+
+
+ROUTE_FREE_CHECKS = {"names": ["Tests"], "version": "ci-000000000000", "producer_id": "1"}
+ROUTE_FREE_REPAIR = {"debug_intelligence_class": "standard-high"}
+
+
+def _route_free_boundary(admission="reviewed"):
+    return {
+        "required_checks": ROUTE_FREE_CHECKS, "admission": admission, "repair": ROUTE_FREE_REPAIR,
+        "primary_intelligence_class": "standard-high",
+        "verifier_intelligence_class": "standard-high",
+    }
+
+
+def _route_free_policy():
+    return {"parent": _route_free_boundary(), "root": _route_free_boundary("authorized"),
+            "branchless_parent": "verifier", "on_failed_child": "block"}
+
+
+def test_route_free_policy_validates():
+    policy = HierarchicalIntegrationPolicy.model_validate(_route_free_policy())
+    assert policy.parent.route is None and policy.root.route is None
+
+
+def test_route_free_policy_dump_omits_route_and_round_trips():
+    policy = HierarchicalIntegrationPolicy.model_validate(_route_free_policy())
+    dumped = policy.model_dump(mode="json")
+    assert "route" not in dumped["parent"] and "route" not in dumped["root"]
+    assert HierarchicalIntegrationPolicy.model_validate(dumped) == policy

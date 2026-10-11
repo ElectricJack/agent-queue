@@ -215,7 +215,10 @@ class IntegrationBoundaryPolicy(BaseModel):
     admission: Literal["reviewed", "authorized"] = "reviewed"
     authorized_task_ids: tuple[str, ...] = ()
     repair: RepairPolicy
-    route: PlaybookRoute
+    # Legacy playbook route. The git-first train never reads it, and the
+    # reviewed integration playbooks it named are retired, so it is optional;
+    # an absent route is omitted from serialized snapshots.
+    route: PlaybookRoute | None = None
     primary_intelligence_class: str | None = Field(default=None, min_length=1)
     # Deprecated and ignored, like ``RepairPolicy.debug_profile_id``: repair
     # and verifier tasks carry the ``*_intelligence_class`` hint only.
@@ -223,6 +226,13 @@ class IntegrationBoundaryPolicy(BaseModel):
     verifier_intelligence_class: str | None = Field(default=None, min_length=1)
     # Deprecated and ignored; see ``primary_profile_id``.
     verifier_profile_id: str | None = Field(default=None, min_length=1)
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_route(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        dumped = handler(self)
+        if self.route is None:
+            dumped.pop("route", None)
+        return dumped
 
 
 class IntegrationCleanupPolicy(BaseModel):

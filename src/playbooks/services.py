@@ -172,7 +172,7 @@ async def resolve_integration_route(
 
     boundary = policy.root if event_type == "integration.sweep_due" else policy.parent
     route = boundary.route
-    if not route.is_available_to_project(project_id):
+    if route is None or not route.is_available_to_project(project_id):
         return None
     return IntegrationRouteTarget(
         activation_id=route.activation_id,

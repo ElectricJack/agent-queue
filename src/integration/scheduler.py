@@ -753,6 +753,8 @@ class TrainService:
                 project["hierarchical_integration_policy"]
             )
             boundary = policy.root
+            if boundary.route is None:
+                raise ValueError("root route is not configured")
             artifact = (
                 await conn.execute(
                     select(playbook_artifacts).where(
