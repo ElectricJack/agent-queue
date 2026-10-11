@@ -23,8 +23,14 @@ the apply" checkable rather than aspirational.
 
 from __future__ import annotations
 
+import time
+from collections.abc import Iterable
 from typing import Any
 
+from sqlalchemy import exists, select
+
+from src.dashboard_paths import escalation_path
+from src.database.tables import escalation_deliveries, escalations
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.escalations.sweep import SCAN_LIMIT, TARGET_OPEN_ITEMS, EscalationSweeper
 
@@ -38,6 +44,69 @@ _LIST = 20
 #: The pile check reads one row per incident plus its sources, so it is given
 #: longer than doctor's 5 s default: 81 rows is a few hundred small queries.
 _TIMEOUT_S = 30.0
+UNDELIVERED_CHECK_ID = "escalations.undelivered"
+UNDELIVERED_AFTER_SECONDS = 5 * 60
+
+
+async def undelivered_escalations(
+    ctx: DoctorContext, *, now: float | None = None, project_ids: Iterable[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Read the entire overdue set; a newest-incident scan can hide old gates."""
+    if ctx.db is None:
+        return []
+    now = time.time() if now is None else now
+    confirmed_root = exists().where(
+        escalation_deliveries.c.escalation_id == escalations.c.id,
+        escalation_deliveries.c.kind == "root",
+        escalation_deliveries.c.status == "sent",
+        escalation_deliveries.c.receipt_confirmed_at.is_not(None),
+    )
+    statement = select(escalations).where(
+        escalations.c.state.in_(("needs_human", "reply_received", "resolving")),
+        escalations.c.source_kind != "supervisor_delivery",
+        escalations.c.created_at < now - UNDELIVERED_AFTER_SECONDS,
+        ~confirmed_root,
+    ).order_by(escalations.c.created_at, escalations.c.id)
+    if project_ids is not None:
+        statement = statement.where(escalations.c.project_id.in_(tuple(project_ids)))
+    async with ctx.db._engine.connect() as conn:
+        incidents = (await conn.execute(statement)).mappings().all()
+        ids = [row["id"] for row in incidents]
+        roots = []
+        if ids:
+            roots = (await conn.execute(select(escalation_deliveries).where(
+                escalation_deliveries.c.escalation_id.in_(ids),
+                escalation_deliveries.c.kind == "root",
+            ).order_by(
+                escalation_deliveries.c.generation, escalation_deliveries.c.updated_at,
+                escalation_deliveries.c.id,
+            ))).mappings().all()
+    latest = {row["escalation_id"]: row for row in roots}
+    findings = []
+    for incident in incidents:
+        root = latest.get(incident["id"])
+        status = root["status"] if root else "missing"
+        age = now - incident["created_at"]
+        findings.append({
+            "project_id": incident["project_id"], "escalation_id": incident["id"],
+            "task_id": incident["task_id"], "title": incident["task_title"],
+            "deep_link": escalation_path(incident["id"]), "age_seconds": age,
+            "delivery_status": status, "last_error": root["last_error"] if root else None,
+            "detail": f"{incident['id']} has no confirmed human delivery after {age / 60:.1f} "
+                      f"minutes (root: {status})",
+        })
+    return findings
+
+
+async def _check_undelivered(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return CheckResult(UNDELIVERED_CHECK_ID, Severity.INFO, "database not configured")
+    findings = await undelivered_escalations(ctx)
+    return CheckResult(
+        UNDELIVERED_CHECK_ID, Severity.WARN if findings else Severity.OK,
+        f"{len(findings)} human escalation(s) undelivered for more than five minutes",
+        data={"findings": findings, "count": len(findings)},
+    )
 
 
 def _sweeper(ctx: DoctorContext) -> EscalationSweeper | None:
@@ -133,7 +202,8 @@ def escalation_checks() -> list[DoctorCheck]:
             fix=_fix_pile,
             timeout_s=_TIMEOUT_S,
             owner=OWNER,
-        )
+        ),
+        DoctorCheck(id=UNDELIVERED_CHECK_ID, run=_check_undelivered, owner=OWNER),
     ]
 
 

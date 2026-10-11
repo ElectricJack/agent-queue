@@ -97,15 +97,20 @@ class LegacyConversationMigrator:
             state = str(question.get("state") or "")
             if not question.get("requires_human") and state not in ("human", "answered"):
                 continue
-            incident, created = await self._question(question, now=now)
-            report.migrated_questions += int(created)
             if state == "answered":
-                if await self._preserve_accepted_answer(question, incident, now=now):
-                    report.accepted_answers_preserved += 1
+                # Never expose the newly queued root between creation and
+                # preservation of an answer already accepted on the old surface.
+                async with self.db.immediate() as conn:
+                    incident, created = await self._question(question, now=now, conn=conn)
+                    if await self._preserve_accepted_answer(question, incident, now=now, conn=conn):
+                        report.accepted_answers_preserved += 1
+                report.migrated_questions += int(created)
                 # This conversation was already completed on the old surface.
                 # Preserve its evidence, but do not create a new thread or any
                 # delivery work merely because the rollout observed it.
                 continue
+            incident, created = await self._question(question, now=now)
+            report.migrated_questions += int(created)
             if await self._adopt(
                 incident,
                 by_source.get(("question", str(question["id"]))),
@@ -133,11 +138,12 @@ class LegacyConversationMigrator:
         return report
 
     async def _question(
-        self, question: Mapping[str, Any], *, now: float
+        self, question: Mapping[str, Any], *, now: float, conn=None
     ) -> tuple[dict[str, Any], bool]:
         task = await self.db.get_task(str(question["task_id"]))
         task_status = getattr(getattr(task, "status", None), "value", None)
         return await self.db.create_escalation(
+            conn=conn,
             id=f"escalation-{question['id']}",
             project_id=str(question["project_id"]),
             task_id=str(question["task_id"]),
@@ -145,7 +151,7 @@ class LegacyConversationMigrator:
             source_identity=str(question["id"]),
             incident_key=f"question:{question['id']}",
             supervisor_owner=f"supervisor-{question['project_id']}",
-            task_title=getattr(task, "title", None),
+            task_title=getattr(task, "title", None) or f"Question about {question['task_id']}",
             task_status=task_status,
             summary=f"Worker question on task {question['task_id']}",
             investigation=str(question.get("reason") or "Migrated from legacy Discord."),
@@ -158,6 +164,16 @@ class LegacyConversationMigrator:
     async def _gate(
         self, gate: Mapping[str, Any], *, now: float
     ) -> tuple[dict[str, Any], bool]:
+        waiters = sorted(await self.db.get_gate_waiters(str(gate["id"])))
+        tasks = [await self.db.get_task(task_id) for task_id in waiters[:5]]
+        subjects = "; ".join(task.title for task in tasks if task is not None)
+        title = subjects or str(gate.get("title") or f"Decision for {gate['project_id']}")
+        question = str(gate.get("question") or "Human decision required.")
+        reason = (
+            f"Project {gate['project_id']} is waiting for your approval: {question} "
+            + (f"This decision blocks {len(waiters)} task(s): {subjects or ', '.join(waiters[:5])}."
+               if waiters else f"The {gate.get('gate_type', 'human')} gate is still open.")
+        )
         return await self.db.create_escalation(
             id=f"escalation-gate-{gate['id']}",
             project_id=str(gate["project_id"]),
@@ -166,18 +182,18 @@ class LegacyConversationMigrator:
             source_identity=str(gate["id"]),
             incident_key=f"gate:{gate['id']}",
             supervisor_owner=f"supervisor-{gate['project_id']}",
-            task_title=None,
+            task_title=title[:500],
             task_status=None,
-            summary=str(gate.get("title") or f"Human gate {gate['id']}"),
-            investigation="Migrated from a pending legacy Discord gate card.",
-            decision_requested=str(gate.get("question") or "Human decision required."),
+            summary=reason[:4000],
+            investigation=reason[:8000],
+            decision_requested=question,
             choices=None,
             severity="medium",
             now=now,
         )
 
     async def _preserve_accepted_answer(
-        self, question: Mapping[str, Any], incident: Mapping[str, Any], *, now: float
+        self, question: Mapping[str, Any], incident: Mapping[str, Any], *, now: float, conn=None
     ) -> bool:
         """Record accepted evidence without queuing or delivering it again."""
         answer = str(question.get("answer") or "").strip()
@@ -192,8 +208,9 @@ class LegacyConversationMigrator:
             external_message_id=f"accepted-question:{question['id']}",
             received_at=float(question.get("updated_at") or now),
             message_id=f"legacy-answer-{question['id']}",
+            conn=conn,
         )
-        current = await self.db.get_escalation(str(incident["id"]))
+        current = incident if conn is not None else await self.db.get_escalation(str(incident["id"]))
         if current and current["state"] not in TERMINAL_ESCALATION_STATES:
             await self.db.resolve_legacy_accepted_escalation(
                 str(incident["id"]),
@@ -205,6 +222,7 @@ class LegacyConversationMigrator:
                     "redelivery": False,
                 },
                 now=now,
+                conn=conn,
             )
         return created
 

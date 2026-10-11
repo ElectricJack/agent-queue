@@ -7986,6 +7986,30 @@ async def test_ordinary_repair_next_allocation_counts_once_and_has_no_ceiling(or
     assert (await env.store.get("ordinary")).repair_attempt_count == 101
 
 
+async def test_ordinary_repair_exhaustion_queues_one_human_delivery_with_its_notice(ordinary_env):
+    env = ordinary_env
+    policy = RepairPolicy(primary_attempts=1, debug_attempts=1,
+                          debug_intelligence_class="deep-high")
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "ordinary",
+        ).values(repair_attempt_count=2))
+    for _ in range(2):
+        result = await env.service.allocate(
+            "ordinary", target_ref=env.ref, head_sha=STARTING_SHA, policy=policy,
+            authorize=AsyncMock(return_value=True),
+        )
+        assert result["outcome"] == "human_required"
+    incident = await env.db.get_escalation(result["escalation_id"])
+    assert incident["task_title"] == "Restore delivery of batch ordinary"
+    assert incident["deep_link"] == f"/focus/escalations/{incident['id']}"
+    [root] = await env.db.list_escalation_deliveries(incident["id"])
+    assert root["status"] == "pending"
+    assert root["dedup_key"] == f"{incident['id']}:root:0"
+    notices = await env.db.get_pending_messages("session", "supervisor-p")
+    assert len(notices) == 1
+
+
 async def test_ordinary_repair_missing_completed_input_does_not_spend_a_successor(ordinary_env):
     from sqlalchemy import delete
 

@@ -5536,10 +5536,11 @@
         "discord"
       ],
       "default_arm": true,
-      "digest": "sha256:ec40ed9d29cdccaf98f4ad0076f7e910d0fc44a55792100c8255cb453a1b9267",
+      "digest": "sha256:af73508afbc390283180c59751265865f9a8ef2256813e57b600ea22fe59b3d6",
       "imports": [
         "src.config",
         "src.database",
+        "src.database.tables",
         "src.discord.cutover",
         "src.models"
       ],
@@ -6293,7 +6294,7 @@
         "escalations"
       ],
       "default_arm": true,
-      "digest": "sha256:ab7dc7f2994c50d26776a2d38cd9d6bf328e2a12b65acb450c400e04d30d3d6e",
+      "digest": "sha256:96644c6166bcd864319c8a5d8a151aa7941792e1216fe593f86ef0b228cc65f7",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -6302,7 +6303,9 @@
         "src.models",
         "src.orchestrator"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Scoped command contracts and verified-human application for escalations."
     },
     "tests/test_escalation_delivery.py": {
@@ -6354,14 +6357,19 @@
         "escalations"
       ],
       "default_arm": true,
-      "digest": "sha256:5c9e5fcd46cd2faa893f886bbbf0b7b277dd7e7ae783ed3a4e54c57c23fbabb4",
+      "digest": "sha256:c61701da0d59e3fb7c40eeab39567408af3a87d58a252c916713785f8c3e82cc",
       "imports": [
+        "src.config",
         "src.database",
         "src.database.queries.escalation_queries",
         "src.database.tables",
+        "src.doctor.escalation_checks",
+        "src.doctor.models",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Durable escalation, reply, delivery, and digest persistence on PostgreSQL."
     },
     "tests/test_escalation_state.py": {

@@ -31,7 +31,7 @@ from sqlalchemy import update
 from src.config import DiscordConfig, DiscordEscalationConfig, DiscordEscalationsConfig
 from src.database import Database
 from src.database.queries.escalation_queries import ESCALATION_OUTCOMES
-from src.database.tables import messages
+from src.database.tables import escalation_deliveries, messages
 from src.escalations import (
     AUTO_OBSOLETE_TASK_STATUSES,
     STALE_OBSOLETE_SECONDS,
@@ -420,6 +420,7 @@ async def incident(world, **overrides):
         "incident_key": "q:q-1",
         "supervisor_owner": "supervisor-p",
         "summary": "Nobody can tell which branch to cut from",
+        "task_title": "Choose a release branch",
         "investigation": "Two release branches both claim the fix",
         "decision_requested": "Cut from main or from the release branch?",
         "severity": "medium",
@@ -730,8 +731,8 @@ async def test_a_burst_of_state_changes_is_coalesced_then_sent_in_order(world):
 
 async def test_a_coalesced_edit_is_deferred_to_the_window_edge_and_still_claimable(world):
     row = await incident(world, now=world.clock() - 3600)
-    world.config.discord.escalation.reminder_minutes = 30
     await post_once(world, row)
+    world.config.discord.escalation.reminder_minutes = 30
 
     # One edit goes out...
     await world.service().reconcile(await world.db.get_escalation(row["id"]))
@@ -765,8 +766,8 @@ async def test_a_coalesced_edit_is_deferred_to_the_window_edge_and_still_claimab
 
 async def test_latest_state_wins_when_an_overtaken_edit_is_still_queued(world):
     row = await incident(world, now=world.clock() - 3600)
-    world.config.discord.escalation.reminder_minutes = 30
     await post_once(world, row)
+    world.config.discord.escalation.reminder_minutes = 30
     root = next(iter(world.transport.messages))
     stale_row, _ = await world.db.enqueue_escalation_delivery(
         row["id"],
@@ -794,6 +795,11 @@ async def test_latest_state_wins_when_an_overtaken_edit_is_still_queued(world):
 
 async def test_a_state_edit_waits_for_the_post_it_is_going_to_rewrite(world):
     row = await incident(world)
+    # Hold the atomically queued root outside this probe's delivery window.
+    async with world.db.immediate() as conn:
+        await conn.execute(update(escalation_deliveries).where(
+            escalation_deliveries.c.escalation_id == row["id"],
+        ).values(next_attempt_at=world.clock() + 3600))
     await world.db.enqueue_escalation_delivery(
         row["id"],
         dedup_key=state_dedup_key(row["id"], 0, "answered"),
@@ -815,6 +821,10 @@ async def test_a_state_edit_waits_for_the_post_it_is_going_to_rewrite(world):
 
 async def test_a_state_edit_whose_post_never_arrives_is_abandoned_not_forever(world):
     row = await incident(world)
+    async with world.db.immediate() as conn:
+        await conn.execute(update(escalation_deliveries).where(
+            escalation_deliveries.c.escalation_id == row["id"],
+        ).values(next_attempt_at=world.clock() + 3600))
     await world.db.enqueue_escalation_delivery(
         row["id"],
         dedup_key=state_dedup_key(row["id"], 0, "answered"),

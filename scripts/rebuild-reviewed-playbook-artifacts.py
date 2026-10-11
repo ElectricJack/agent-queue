@@ -1201,6 +1201,7 @@ def _ci_main_sentinel_body(source: PlaybookSource) -> dict[str, Any]:
                     "source_identity": bound("escalation_key"),
                     "incident_key": bound("escalation_key"),
                     "summary": bound("escalation_title"),
+                    "task_title": bound("escalation_title"),
                     "investigation": bound("escalation_question"),
                     "decision_requested": {
                         "type": "literal",

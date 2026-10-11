@@ -529,12 +529,23 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _object_bootstrap_findings(ctx, active, now),
         _worker_relaunch_findings(ctx, tasks),
         _continuous_promotion_findings(ctx, active, now),
+        _escalation_delivery_findings(ctx, active, now),
     )
     findings = (
         [item for group in groups for item in group]
         + _route_findings(tasks) + flock_findings + conversation + delivery_engines
     )
     return _sweep_result(ctx, findings, len(active))
+
+
+async def _escalation_delivery_findings(ctx, active, now):
+    from src.doctor.escalation_checks import undelivered_escalations
+
+    return [
+        _finding("escalation_undelivered", item["project_id"], item["detail"],
+                 **{key: value for key, value in item.items() if key not in {"project_id", "detail"}})
+        for item in await undelivered_escalations(ctx, now=now, project_ids=active)
+    ]
 
 
 async def _continuous_promotion_findings(ctx, active, now):
