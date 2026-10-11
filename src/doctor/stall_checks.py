@@ -367,7 +367,7 @@ async def _unmaterialized_pr_findings(ctx: DoctorContext, active: set[str]) -> l
     checkpoint = task_integration_checkpoints
     origin = task_branch_origins
     async with ctx.db._engine.connect() as conn:
-        rows = (await conn.execute(
+        rows = await _mapping_rows(conn,
             select(task_table.c.id, task_table.c.project_id, task_table.c.pr_url)
             .select_from(
                 task_table.join(project_table, project_table.c.id == task_table.c.project_id)
@@ -385,7 +385,7 @@ async def _unmaterialized_pr_findings(ctx: DoctorContext, active: set[str]) -> l
                 or_(checkpoint.c.task_id.is_(None), origin.c.id.is_(None)),
             )
             .order_by(task_table.c.id).limit(100)
-        )).mappings().all()
+        )
     return [
         _finding("unmaterialized_train_pr", row["project_id"],
                  f"{row['id']} has a PR but is missing a train checkpoint or live origin; "
@@ -634,28 +634,24 @@ async def _stranded_child_findings(ctx: DoctorContext, now: float) -> list[dict]
     )
 
     async with ctx.db._engine.connect() as conn:
-        rows = (
-            await conn.execute(
-                stranded_child_statement(
-                    completed_before=now - STRANDED_CHILD_AFTER_SECONDS
-                )
-            )
-        ).mappings().all()
-    findings = []
-    for row in rows:
-        minutes = int((now - row["updated_at"]) / 60)
-        findings.append(_finding(
+        rows = await _mapping_rows(conn, stranded_child_statement(
+            completed_before=now - STRANDED_CHILD_AFTER_SECONDS,
+        ))
+    return [
+        _finding(
             "stranded_child",
             row["project_id"],
-            f"{row['task_id']} completed {minutes}m ago on branch {row['branch']} with "
+            f"{row['task_id']} completed {int((now - row['updated_at']) / 60)}m ago "
+            f"on branch {row['branch']} with "
             f"no pull request and no delivery, and its container {row['parent_task_id']} "
             f"is {row['parent_status']} "
             f"(checkpoint {_row(row, 'parent_state')}, operation "
             f"{_row(row, 'operation_state')}, Subject {_row(row, 'subject_phase')}); "
             "no collector will carry it",
             **{key: value for key, value in row.items() if key != "project_id"},
-        ))
-    return findings
+        )
+        for row in rows
+    ]
 
 
 def _row(row, key: str) -> str:

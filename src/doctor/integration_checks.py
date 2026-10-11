@@ -84,9 +84,7 @@ async def _check_legacy_deliveries(ctx: DoctorContext) -> CheckResult:
             integration_legacy_deliveries.c.task_id,
         ))).mappings().all()
         repositories = {row["id"]: row for row in (await conn.execute(select(repos))).mappings()}
-    observer = getattr(ctx.db, "_delivery_observer", None)
-    if observer is None and rows:
-        observer = _doctor_observer(ctx, prerequisite=False)
+    observer = _doctor_observer(ctx, prerequisite=False) if rows else None
     snapshots, findings, unknown = {}, [], []
     for row in rows:
         repo = repositories.get(row["repository_id"])
