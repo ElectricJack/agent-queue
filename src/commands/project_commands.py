@@ -451,7 +451,10 @@ class ProjectCommandsMixin:
             from src.commands.supervisor_authority import integration_operator
 
             principal = current_principal() or TRUSTED_LOCAL
-            if "promotion_flow" in sensitive and principal.kind is not PrincipalKind.LOCAL:
+            from src.commands.operator_authority import operator_grant
+
+            if ("promotion_flow" in sensitive and principal.kind is not PrincipalKind.LOCAL
+                    and operator_grant("edit_project") is None):
                 return {
                     "success": False,
                     "error": "local_operator_only",

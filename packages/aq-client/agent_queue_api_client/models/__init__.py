@@ -973,6 +973,12 @@ from .operator_decision_dto_options_item import OperatorDecisionDTOOptionsItem
 from .operator_decision_record import OperatorDecisionRecord
 from .operator_decision_record_effect import OperatorDecisionRecordEffect
 from .operator_decision_record_object_kind import OperatorDecisionRecordObjectKind
+from .operator_execute_request import OperatorExecuteRequest
+from .operator_execute_request_arguments_type_0 import OperatorExecuteRequestArgumentsType0
+from .operator_execute_response_422 import OperatorExecuteResponse422
+from .operator_preflight_request import OperatorPreflightRequest
+from .operator_preflight_request_policy_type_0 import OperatorPreflightRequestPolicyType0
+from .operator_preflight_response_422 import OperatorPreflightResponse422
 from .orchestrator_control_request import OrchestratorControlRequest
 from .orchestrator_control_response import OrchestratorControlResponse
 from .orchestrator_control_response_422 import OrchestratorControlResponse422
@@ -2843,6 +2849,12 @@ __all__ = (
     "OperatorDecisionRecord",
     "OperatorDecisionRecordEffect",
     "OperatorDecisionRecordObjectKind",
+    "OperatorExecuteRequest",
+    "OperatorExecuteRequestArgumentsType0",
+    "OperatorExecuteResponse422",
+    "OperatorPreflightRequest",
+    "OperatorPreflightRequestPolicyType0",
+    "OperatorPreflightResponse422",
     "OrchestratorControlRequest",
     "OrchestratorControlResponse",
     "OrchestratorControlResponse422",

@@ -104,6 +104,50 @@ def test_class_only_fails_over_like_preferred():
     assert d.action == "move" and d.to_profile_id == "std-high-claude"
 
 
+@pytest.mark.parametrize("operator", [False, True])
+@pytest.mark.parametrize("mode", ["legacy", "routed", "forced"])
+def test_failover_cannot_cross_operator_roles(operator, mode):
+    rungs = {
+        "source": Rung("source", "codex", "deep-high", "codex", operator=operator),
+        "target": Rung("target", "claude", "deep-high", "claude", operator=not operator),
+    }
+    candidate = _cand("t", "source", route_candidates=(
+        (("target", "deep-high"),) if mode == "routed" else ()
+    ))
+    options = {"to_profile": "target", "force": True} if mode == "forced" else {}
+    [decision] = plan_sweep([candidate], _ctx(rungs=rungs), **options)
+    assert (decision.action, decision.kind) == ("hold", "no_equivalent_rung")
+
+
+@pytest.mark.parametrize("harness, class_id", [("local", "deep-high"), ("claude", "cheap")])
+def test_forced_operator_failover_preserves_frontier(harness, class_id):
+    rungs = {
+        "source": Rung("source", "codex", "deep-high", "codex", operator=True),
+        "target": Rung("target", harness, class_id, "claude", operator=True),
+    }
+    [decision] = plan_sweep([_cand("t", "source")], _ctx(rungs=rungs),
+                            to_profile="target", force=True)
+    assert (decision.action, decision.kind) == ("hold", "no_equivalent_rung")
+
+
+@pytest.mark.parametrize("routed", [False, True])
+def test_spill_keeps_operator_and_ordinary_capacity_separate(routed):
+    from src.providers.spill import CapacityView, PoolCapacity, _target_rungs
+
+    rungs = {
+        "source": Rung("source", "codex", "deep-high", "codex", lifecycle="pool", operator=True),
+        "ordinary": Rung("ordinary", "claude", "deep-high", "claude", lifecycle="pool"),
+        "operator": Rung("operator", "claude", "deep-high", "claude", lifecycle="pool", operator=True),
+    }
+    context = _ctx(rungs=rungs, states={"codex": AVAILABLE, "claude": AVAILABLE})
+    view = CapacityView(pools={name: PoolCapacity(name) for name in rungs})
+    targets = _target_rungs(context, view, class_id="deep-high", source_id="source",
+                           project_id="p", providers=["claude"], route_candidates=(
+                               (("ordinary", "deep-high"), ("operator", "deep-high")) if routed else ()
+                           ))
+    assert [target.profile_id for target in targets] == ["operator"]
+
+
 def test_pinned_holds_with_provider_pinned():
     [d] = plan_sweep([_cand("t1", intent=PINNED)], _ctx())
     assert (d.action, d.kind) == ("hold", "provider_pinned")

@@ -14,6 +14,9 @@ SESSION = RequestScope(kind="session", session_id="s1", task_id="t1", project_id
 #: the capability gate.
 EXPECTED_AGENT_COMMANDS = {
     "prime",
+    # Wrappers verify a live operator claim; raw setup controls remain excluded.
+    "operator_execute",
+    "operator_preflight",
     "dry_run_playbook",
     "get_schema",
     "task_show",

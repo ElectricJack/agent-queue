@@ -135,7 +135,10 @@ class IntegrationCommandsMixin:
         from src.integration.protection import LocalRulesetReader
 
         request = IntegrationCutoverArgs.model_validate(args)
-        if not read_only and (current_principal() or TRUSTED_LOCAL).kind is not PrincipalKind.LOCAL:
+        from src.commands.operator_authority import operator_grant
+
+        if (not read_only and (current_principal() or TRUSTED_LOCAL).kind is not PrincipalKind.LOCAL
+                and operator_grant("integration_cutover") is None):
             return _failure("unauthorized", "cutover and reverse require a local operator")
         operator, refusal = await integration_operator(self.db, request.project_id)
         if refusal:

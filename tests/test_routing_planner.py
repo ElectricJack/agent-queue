@@ -136,6 +136,39 @@ def _snapshot(profiles=None, *, out=(), degraded=(), usage=None, busy=None, back
     )
 
 
+@pytest.mark.parametrize("class_hint", ["standard-high", "deep-high", "fast-high", "deep-low"])
+def test_operator_tasks_use_only_the_operator_frontier_role(class_hint):
+    text = BALANCED_POLICY.replace("kinds:\n", "kinds:\n  operator: {class: standard-high, max_class: deep-high}\n")
+    policy, digest = parse_policy(text)
+    operators = tuple(replace(p, id="operator-" + p.id, operator=True) for p in _fleet())
+    result = plan_route(_task(task_type="operator", class_hint=class_hint), policy,
+                        _snapshot((*_fleet(), *operators)), policy_sha256=digest)
+    assert result.outcome == "planned", result
+    assert result.value["profile_id"].startswith("operator-")
+    assert result.value["intelligence_class"] in {"standard-high", "deep-high"}
+    assert all(c["harness"] in {"claude", "codex"} for c in result.value["candidates"])
+    assert all(c["profile_id"].startswith("operator-") for c in result.value["candidates"])
+
+
+def test_operator_capacity_is_never_general_worker_capacity():
+    profiles = tuple(replace(p, id="operator-" + p.id, operator=True) for p in _fleet())
+    result = _plan(_task(task_type="feature"), _snapshot(profiles))
+    assert result.outcome == "no_candidates"
+    missing = _plan(_task(task_type="operator"), _snapshot((*_fleet(), *profiles)))
+    assert missing.outcome == "no_candidates" and missing.value["reason"] == "operator_rule_missing"
+    policy, digest = parse_policy(BALANCED_POLICY.replace(
+        "kinds:\n", "kinds:\n  operator: {class: standard-high, max_class: deep-high}\n",
+    ))
+    unavailable = plan_route(_task(task_type="operator"), policy, _snapshot(), policy_sha256=digest)
+    assert unavailable.outcome == "no_candidates"
+
+
+def test_operator_profiles_cannot_use_local_or_cheap_models():
+    assert not worker_classes(_rung("fast-high", "codex", operator=True))
+    assert not worker_classes(_rung("standard-high", "opencode", operator=True))
+    assert not worker_classes(_rung("standard-high", "codex", operator=True, local=True))
+
+
 def _task(**changes) -> TaskFacts:
     values = {"task_id": "t-1", "title": "Fix the checkout race", "description": "…"}
     values.update(changes)
@@ -1703,3 +1736,9 @@ def test_a_narrow_lane_with_max_risk_asks_for_the_risk() -> None:
     ]
     # Without risk keys the questions are the ones asked before risks existed.
     assert _risk_plan(SHIPPED_POLICY, task).value["questions"] == ["narrow", "test_verified"]
+
+
+def test_operator_routing_cannot_bypass_frontier_role_using_a_benchmark_selector():
+    result = _plan(_task(task_type="operator", benchmark_arms=("cheap",)), _snapshot())
+    assert result.outcome == "no_candidates"
+    assert result.value["reason"] == "operator_work_cannot_use_benchmark_arms"

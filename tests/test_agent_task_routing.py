@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from src.intelligence_classes import IntelligenceClass
-from src.models import Agent, AgentProfile, AgentState, Project, Task, TaskStatus
+from src.models import Agent, AgentProfile, AgentState, Project, Task, TaskStatus, TaskType
 from src.scheduler import Scheduler, SchedulerState
 from src.assignment_routing import EffectiveAssignmentRoute
 from tests.db_fixtures import lease_dsn
@@ -563,3 +563,25 @@ def test_matching_discards_worker_profile_fallback_from_another_harness():
         requested_task(intelligence_class=None), [agent], profiles,
     )
     assert [action.agent_id for action in Scheduler.schedule(state)] == ["personal"]
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+def test_operator_role_is_required_at_worker_assignment(harness):
+    from src.agents.routing import task_agent_mismatch
+
+    profile = AgentProfile(id="ops", name="Operator", harness=harness, lifecycle="pool",
+                           default_class="deep-high", aq_commands=["operator_execute"])
+    worker = Agent(id="ops", name="Ops", profile_id="ops", harness=harness,
+                   intelligence_class="deep-high")
+    task = Task(id="setup", project_id="p", title="Setup", description="", profile_id="ops",
+                task_type=TaskType.OPERATOR, intelligence_class="deep-high")
+    assert task_agent_mismatch(task, worker, task_profile=profile, agent_profile=profile) is None
+    normal = replace(profile, aq_commands=[])
+    assert "operator role" in task_agent_mismatch(task, worker, task_profile=profile, agent_profile=normal)
+    assert "operator role" in task_agent_mismatch(replace(task, task_type=TaskType.FEATURE), worker,
+                                                  task_profile=profile, agent_profile=profile)
+    assert "frontier" in task_agent_mismatch(task, replace(worker, intelligence_class="fast-high"),
+                                              task_profile=profile, agent_profile=profile)
+    other = "claude" if harness == "codex" else "codex"
+    assert "harness" in task_agent_mismatch(task, replace(worker, harness=other),
+                                            task_profile=profile, agent_profile=replace(profile, harness=other))

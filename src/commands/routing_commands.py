@@ -260,6 +260,7 @@ class RoutingCommandsMixin:
         from src.routing.policy import is_opencode_family
 
         facts: list[ProfileFacts] = []
+        from src.commands.operator_authority import is_operator_profile
         keys: set[str] = set()
         for profile in await self.db.list_profiles(conn=conn):
             harness = str(getattr(profile, "harness", "") or "")
@@ -297,6 +298,7 @@ class RoutingCommandsMixin:
                 ),
                 slots=int(slots or 0),
                 enabled=bool(getattr(profile, "enabled", True)),
+                operator=is_operator_profile(profile),
                 template=bool(getattr(profile, "template", False)),
                 read_only=bool(getattr(profile, "read_only", False)),
                 runtime=str(getattr(profile, "runtime", "") or ""),

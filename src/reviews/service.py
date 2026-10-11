@@ -22,6 +22,7 @@ mixin owns authorization and wiring; nothing here asks who the caller is.
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import time
 import uuid
@@ -134,6 +135,43 @@ def _spec_kind(content: str, default: str | None = None) -> str | None:
         return spec_kind_from_content(content, default)
     except ValueError as exc:
         raise ReviewError("bad_spec_kind", str(exc)) from None
+
+
+def _formatting_key(body: str) -> tuple[str, ...]:
+    """Ignore blank lines/trailing space in prose, preserving code bytes."""
+    lines, fence = [], None
+    for line in body.splitlines():
+        match = re.match(r"^\s*(`{3,}|~{3,})", line)
+        if match:
+            marker = match[1][0]
+            fence = None if fence == marker else marker
+            lines.append(line)
+        elif fence or line.startswith(("    ", "\t")):
+            lines.append(line)
+        elif line.strip():
+            lines.append(line.rstrip())
+    return tuple(lines)
+
+
+def _review_hygiene(body, previous, changes_note, playbook, spec_kind):
+    same_pin = (
+        (playbook.meta if playbook else None) == previous.get("playbook")
+        and (playbook.artifact if playbook else None) == previous.get("playbook_artifact")
+    )
+    same_kind = spec_kind == previous.get("spec_kind")
+    if same_pin and same_kind and _formatting_key(body) == _formatting_key(previous["content"]):
+        raise ReviewError(
+            "unchanged_content", "Review content is unchanged or formatting-only; "
+            "record progress with aq task comment instead.",
+        )
+    if re.match(
+        r"(?i)^\s*(?:(?:progress|status)[ -](?:only|update)|"
+        r"(?:formatting|whitespace|cosmetic)[ -]only)\b", changes_note or "",
+    ):
+        raise ReviewError(
+            "progress_only", "A formatting/progress-only change note cannot resubmit a review; "
+            "record progress with aq task comment instead.",
+        )
 
 
 def _title(title: str) -> str:
@@ -327,6 +365,8 @@ class ReviewService:
             raise ReviewError("stale_revision", "review changed: reload it before reopening")
         previous = await self._get_revision(review_id, current)
         spec_kind = _spec_kind(content, previous.get("spec_kind"))
+        if not reopen:
+            _review_hygiene(body, previous, changes_note, playbook, spec_kind)
         now = self._clock()
         new_revision = current + 1
 

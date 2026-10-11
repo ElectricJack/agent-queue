@@ -1,6 +1,6 @@
 ---
 playbook_id: morning-report
-artifact_sha256: sha256:bed529ce79ba352d12dc88cfbb44f449d45a3d16eaac0e86f774bbff3638e8f8
+artifact_sha256: sha256:7c45a735f4f1618ac7ed0247e1098611595ac3b1c9b70abdacbaf1e6a16a5ecd
 source_sha256: sha256:fc6f075eb1485241fc79d953655ebf647db5f0804f61431b9dee297b7404aed3
 contract_fingerprint: sha256:15b5ac5c8f0a02fd60511475df6f1a12f40b067aed9ec87d3210b9dea8c6d226
 questions_resolved: 0

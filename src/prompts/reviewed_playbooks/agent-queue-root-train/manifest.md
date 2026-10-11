@@ -1,6 +1,6 @@
 ---
 playbook_id: agent-queue-root-train
-artifact_sha256: sha256:0b01412a51b1e122fa4f7fd85a79380a2e0e0f3d05b04a4cb5ff2116f172b8bb
+artifact_sha256: sha256:e54de329fda3b12177b48cfb6d88090cbd9b623245cbddb43ec6178244c8f913
 source_sha256: sha256:4a490651f6c86fb7cef3a1be29f94e5708795736977bc94cb2d39c17d6adf1a5
 contract_fingerprint: sha256:33581303bf8556083f103154d1b94b810df3c398a49c2dbe90bcf68d37697e41
 questions_resolved: 0

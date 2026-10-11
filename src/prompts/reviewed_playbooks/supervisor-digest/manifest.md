@@ -1,6 +1,6 @@
 ---
 playbook_id: supervisor-digest
-artifact_sha256: sha256:6d48ce8467b7ae621606e2be54f04f76b0b4ff11bb7a2fde43eeb1a418bee1e7
+artifact_sha256: sha256:e57fe019662b2b5f4168c9769aa9299ff9a24fbbe51b2e0735642620354a0520
 source_sha256: sha256:b205da4c310a5da0b4cbecdb5ed05475d2edde60b80c98c64b4dcf17a39f5dc5
 contract_fingerprint: sha256:1107e62d25b94ea78fe362e909ff5578e3e6c0f06521863220c75dd9126733a7
 questions_resolved: 0

@@ -118,6 +118,30 @@ async def revise(svc, review_id, content, *, note="changed", resolves=()):
     )
 
 
+@pytest.mark.parametrize("content,note,code", [
+    (DOC, "Addressed comments", "unchanged_content"),
+    ("---\ntitle: different\n---\n" + DOC, "Updated metadata", "unchanged_content"),
+    (DOC.replace("\n\n", "\n\n\n"), "Spacing", "unchanged_content"),
+    (DOC + "\nNew behavior.\n", "Progress-only: runners checked", "progress_only"),
+    (DOC + "\nNew behavior.\n", "Formatting only", "progress_only"),
+])
+async def test_resubmit_hygiene_does_not_advance_revision_or_emit(svc, db, hooks, content, note, code):
+    result = await submit(svc)
+    events = list(hooks.events)
+    await raises(code, revise(svc, result["review_id"], content, note=note))
+    assert (await db.get_review(result["review_id"]))["current_revision"] == 1
+    assert len(await db.list_review_revisions(result["review_id"])) == 1
+    assert hooks.events == events
+
+
+async def test_code_whitespace_change_is_substantive(svc):
+    content = DOC + "\n```python\nif ready:\n    run()\n```\n"
+    result = await submit(svc, content=content)
+    revised = await revise(svc, result["review_id"], content.replace("    run()", "run()"),
+                           note="Fix code example indentation")
+    assert revised["revision"] == 2
+
+
 async def approve(svc, review_id, revision=1, note="ok"):
     return await svc.decide(
         review_id=review_id, revision=revision, decision="approve", note=note, decided_by=OPERATOR

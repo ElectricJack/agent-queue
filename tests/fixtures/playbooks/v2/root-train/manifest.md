@@ -1,6 +1,6 @@
 ---
 playbook_id: root-train
-artifact_sha256: sha256:6e28d8dbc4eb93c255813417c6b5d03fdda5bf099dd1be70cf039fb67aa2ed52
+artifact_sha256: sha256:89e28233e5589c723959a728422adaa2a0d4a14e0709d2cbbc1f7d9b7bb4795e
 source_sha256: sha256:37a6a9659c6cbe46244f1e45a25987bbe47669399bdf33691f924a16933f41d6
 contract_fingerprint: sha256:33581303bf8556083f103154d1b94b810df3c398a49c2dbe90bcf68d37697e41
 questions_resolved: 0

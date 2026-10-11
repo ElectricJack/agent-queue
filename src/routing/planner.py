@@ -116,6 +116,7 @@ class ProfileFacts:
     needs_workspace: bool = True
     #: The harness runs a self-hosted model (:data:`LOCAL_MODEL_PROVIDERS`).
     local: bool = False
+    operator: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,6 +336,12 @@ def worker_classes(profile: ProfileFacts) -> frozenset[str]:
     if not fixed and profile.lifecycle != "task":
         return frozenset()
     eligible = frozenset({fixed}) & profile.classes if fixed else profile.classes
+    if profile.operator:
+        from src.commands.operator_authority import OPERATOR_CLASSES, OPERATOR_HARNESSES
+
+        if profile.harness not in OPERATOR_HARNESSES or profile.local:
+            return frozenset()
+        eligible &= OPERATOR_CLASSES
     return frozenset(
         class_id for class_id in eligible
         if worker_route(
@@ -507,6 +514,9 @@ def _rule(
         if policy.rank(chosen) < policy.rank(floor):
             raised_from, raised_for_risk, chosen = chosen, risk, floor
             notes.append(f"class raised from {raised_from} to {chosen} for risk {risk}")
+    if kind == "operator" and chosen not in {"standard-high", "deep-high"}:
+        chosen = "deep-high" if policy.rank(chosen) > policy.rank("standard-high") else "standard-high"
+        notes.append("operator work requires frontier standard-high or deep-high")
     return _Rule(
         kind=kind, rule=rule_name, origin=origin_name, class_id=chosen, hint=hint,
         clamped_from=clamped_from, lane=lane, narrow=narrow,
@@ -534,11 +544,13 @@ def _cells(
     selectors: frozenset[str] | None,
     *,
     exclude: frozenset[str] = frozenset(),
+    operator: bool = False,
 ) -> list[ProfileFacts]:
     """Worker profiles at *class_id* a lane's *selectors* admit and *exclude* does not."""
     return [
         profile for profile in snapshot.profiles
         if class_id in worker_classes(profile)
+        and profile.operator == operator
         and (selectors is None or any(selector_matches(profile.harness, s) for s in selectors))
         and not any(selector_matches(profile.harness, s) for s in exclude)
     ]
@@ -602,7 +614,8 @@ def _filter(
     """
     local_refused = local_gate and local_refusal(task, policy, kind) is not None
     stages = (
-        ("reserved", lambda c: not respect_reserved or not _reserved_away(policy, c)),
+        ("reserved", lambda c: kind == "operator" or not respect_reserved
+         or not _reserved_away(policy, c)),
         ("excluded_providers", lambda c: c.provider not in task.exclude_providers),
         (
             "preferred_provider_unavailable",
@@ -655,10 +668,12 @@ def _candidates(
     """Step 2.  *flags* ``None`` means the classification is still unknown;
     *risk* ``None`` means no risk was classified."""
     risk_harnesses = _risk_harnesses(policy, risk)
+    if rule.kind == "operator" and "operator" not in policy.kinds:
+        return _Pool((), (), "operator_rule_missing")
     if rule.lane is not None:
         lane = policy.lanes[rule.lane]
         class_id = lane.class_ or rule.class_id
-        cells = _cells(snapshot, class_id, frozenset(lane.harnesses))
+        cells = _cells(snapshot, class_id, frozenset(lane.harnesses), operator=rule.kind == "operator")
         prefer = lane.preferred_harnesses
         found = [
             _candidate(
@@ -684,7 +699,8 @@ def _candidates(
         _candidate(profile, rule.class_id, tier=FALLBACK, lane=None,
                    preferred_hosted=profile.harness in rule.prefer_harnesses)
         for profile in _cells(
-            snapshot, rule.class_id, None, exclude=policy.narrow_harnesses()
+            snapshot, rule.class_id, None, exclude=policy.narrow_harnesses(),
+            operator=rule.kind == "operator",
         )
         if not is_opencode_family(profile.harness, profile.provider, profile.harness_family)
     ]
@@ -702,7 +718,8 @@ def _candidates(
                 continue
             lane_cells = [
                 _candidate(profile, mapped, tier=PREFERRED, lane=name)
-                for profile in _cells(snapshot, mapped, frozenset(lane.harnesses))
+                for profile in _cells(snapshot, mapped, frozenset(lane.harnesses),
+                                      operator=rule.kind == "operator")
             ]
             lane_cells, _reason = _filter(
                 lane_cells, task, policy, kind=rule.kind, risk_harnesses=risk_harnesses,
@@ -1087,6 +1104,10 @@ def plan_route(
     classification: Any = None,
 ) -> PlanResult:
     """``task_route_plan`` for a task the router still owes a route."""
+    if task.task_type == "operator" and task.benchmark_arms:
+        return PlanResult("no_candidates", {
+            "task_id": task.task_id, "reason": "operator_work_cannot_use_benchmark_arms",
+        })
     if task.benchmark_arms:
         # A benchmark arm must never inherit the ordinary class fallbacks:
         # they would turn an unavailable model into another arm's result.

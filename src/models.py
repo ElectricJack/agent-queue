@@ -102,6 +102,7 @@ class TaskType(Enum):
     TEST = "test"
     DOCS = "docs"
     CHORE = "chore"
+    OPERATOR = "operator"
     RESEARCH = "research"
     PLAN = "plan"
     SYNC = "sync"
