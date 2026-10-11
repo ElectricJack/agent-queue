@@ -318,12 +318,8 @@ class OperatorCommandsMixin:
             return refusal("preflight audit did not return a durable event id")
         return {"success": True, "preflight_id": preflight_id, **report}
 
-    async def _operator_repository_probes(self, request, task, probes, branches, app_ids,
-                                          blockers):
-        """Append the integration repository's GitHub blockers: branches, runners, App ids.
-
-        Raises on an unreadable repository; the caller reports it as one blocker.
-        """
+    async def _operator_repository_probes(self, request, task, probes, branches, app_ids, blockers):
+        """Append the repository's GitHub blockers; raises if the repository is unreadable."""
         project = await self.db.get_project(task.project_id)
         repo = await self.db.get_repo(request.repository_id or project.integration_repository_id)
         if repo is None or repo.project_id != task.project_id:
@@ -338,7 +334,6 @@ class OperatorCommandsMixin:
         if default_branch and default_branch not in branches:
             branches.append(default_branch)
         from src.integration.promotion_steps import read_stored_promotion_flow
-
         flows = [await read_stored_promotion_flow(self.db, task.project_id) or []]
         flows.extend(a.arguments.get("promotion_flow") or [] for a in request.actions
                      if a.command == "edit_project" and "promotion_flow" in a.arguments)
@@ -364,8 +359,7 @@ class OperatorCommandsMixin:
                 blockers.append(f"branch {branch}: {exc}")
         if request.runner_labels:
             try:
-                online = []
-                page = 1
+                online, page = [], 1
                 while True:
                     result = await client.request_json(
                         "GET", f"/repositories/{binding.repository_id}/actions/runners"
@@ -379,14 +373,13 @@ class OperatorCommandsMixin:
                         raise ValueError("runner inventory exceeds the 1,000-runner preflight limit")
                     page += 1
                 labels = [{item["name"] for item in r.get("labels", [])} for r in online]
-                required = set(request.runner_labels)
-                if not any(required <= available for available in labels):
+                if not any((required := set(request.runner_labels)) <= available
+                           for available in labels):
                     blockers.append("no online runner with all labels " + ", ".join(sorted(required)))
                 probes["online_runners"] = [r.get("name") for r in online]
             except Exception as exc:
                 blockers.append(f"runner prerequisites: {type(exc).__name__}: {exc}")
         from src.git.github_contracts import credential_identity_from_client
-
         identity = credential_identity_from_client(client)
         probes["app_identity"] = asdict(identity)
         observed_apps = {identity.app_id, *probes["required_app_identities"].values()}
