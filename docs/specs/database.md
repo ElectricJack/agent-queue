@@ -24,6 +24,10 @@ them. Import requires an empty target apart from Alembic bookkeeping and the imm
 `record_installation` identity seed created with the schema. That installation identity
 is preserved. Any other target data, including record scopes or knowledge, refuses import.
 Task record backfill and knowledge import remain separate, explicit operations.
+Revision `a00000000091` also excludes its seven human ask audit tables from legacy
+imports. Older review and escalation rows retain their data: missing nullable ask
+references become SQL NULL, and new version, entry-kind and lease fields receive
+their PostgreSQL defaults.
 
 The class uses a convention of thin `_row_to_<model>` private methods to map result rows into typed dataclass instances from `src/models.py` (see [specs/models-and-state-machine](models-and-state-machine.md)). Update methods accept arbitrary `**kwargs` and build parameterized `SET` clauses dynamically, converting enum values to their `.value` string automatically.
 
@@ -4678,3 +4682,157 @@ actuals and the operation id; every other state carries no actuals
 | `provider_operation_id` | TEXT | nullable | Stable operation id, required once unknown or settled |
 | `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Reservation time |
 | `updated_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Last settlement time |
+
+## Human ask and decision ledgers (revision `a00000000091`)
+
+The ask ledger separates a human decision from its later application. Task and
+session identities in source packets remain soft references. Durable ask, review,
+discussion and operation evidence uses restrictive foreign keys; deleting an
+incident sets its discussion/action incident references to NULL and preserves that
+evidence. All timestamps below are FLOAT epoch seconds. JSON fields use JSONB.
+
+### Table: `human_asks`
+
+One canonical ask per `(project_id, source_kind, source_key)`, protected by
+`uq_human_asks_source`. The pending index covers project, next actor, decision state,
+creation time and id. Named checks bound identity lengths, versions, state values,
+severity and context size. Complete context requires a title, why, waiting effect
+and between one and twenty choices.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK; also unique with project_id |
+| `project_id` | TEXT | NOT NULL, FK projects.id, RESTRICT |
+| `source_kind`, `source_key` | TEXT | NOT NULL, canonical source identity |
+| `source_identity` | JSONB | NOT NULL, retained source identity |
+| `source_fingerprint`, `generation_fingerprint` | TEXT | NOT NULL, source and decision generation pins |
+| `feedback_version` | INTEGER | NOT NULL, DEFAULT 0, >= 0 |
+| `decision_generation`, `display_version` | INTEGER | NOT NULL, DEFAULT 1, >= 1 |
+| `context`, `audience`, `decider` | JSONB | NOT NULL, context, visibility and decision authority |
+| `logical_owner` | TEXT | NOT NULL, 1-512 characters |
+| `next_actor` | TEXT | DEFAULT human; human, agent or none |
+| `decision_state` | TEXT | DEFAULT pending; pending, approved, changes_requested, declined, withdrawn, superseded or answered |
+| `application_state` | TEXT | DEFAULT not_started; not_started, applying, applied, failed or unknown |
+| `context_state` | TEXT | DEFAULT complete; complete, context_needed or quarantined |
+| `severity` | TEXT | DEFAULT medium; critical, high, medium or low |
+| `created_at`, `updated_at` | FLOAT | NOT NULL |
+
+### Table: `ask_source_aliases`
+
+Maps legacy source handles to their canonical ask without discarding provenance.
+`fk_ask_source_aliases_ask` restricts deletion through the composite project/ask
+identity; `idx_ask_source_aliases_ask` supports reverse lookup.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `project_id`, `legacy_kind`, `legacy_id` | TEXT | Composite PK |
+| `ask_id` | TEXT | NOT NULL; composite FK with project_id to human_asks |
+| `source_generation` | INTEGER | NOT NULL, >= 1 |
+| `source_reference`, `provenance` | JSONB | NOT NULL, retained source and mapping evidence |
+| `created_at` | FLOAT | NOT NULL |
+
+### Table: `ask_decision_previews`
+
+A bounded preview packet pins the actor, source and feedback versions before a
+decision. `ck_ask_decision_previews_expiry` limits its lifetime to 600 seconds;
+the expiry index supports cleanup.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `ask_id` | TEXT | NOT NULL, FK human_asks.id, RESTRICT |
+| `decision_generation`, `feedback_version` | INTEGER | NOT NULL, >= 1 and >= 0 respectively |
+| `actor_id`, `source_fingerprint`, `packet_sha256` | TEXT | NOT NULL, exact preview pins |
+| `input_id` | TEXT | Nullable durable input identity |
+| `packet` | JSONB | NOT NULL, retained decision packet |
+| `created_at`, `expires_at` | FLOAT | NOT NULL; creation < expiry <= creation + 600 |
+| `consumed_at` | FLOAT | Nullable, successful consumption time |
+
+### Table: `approved_document_snapshots`
+
+Retains approved document bytes when there is no review revision to pin. The
+`tr_approved_document_snapshots_immutable` trigger rejects UPDATE and DELETE on
+both fresh metadata and Alembic-created schemas.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `project_id` | TEXT | NOT NULL, FK projects.id, RESTRICT |
+| `source_path`, `body_sha256` | TEXT | NOT NULL, original path and exact content hash |
+| `title` | TEXT | NOT NULL, 1-200 characters |
+| `body` | BYTEA | NOT NULL, at most 262144 bytes |
+| `spec_kind` | TEXT | NOT NULL, design or implementation |
+| `approval_provenance` | JSONB | NOT NULL, retained approval evidence |
+| `created_at` | FLOAT | NOT NULL |
+
+### Table: `ask_decisions`
+
+An immutable audit row for one decision generation. Unique constraints cover
+`(ask_id, decision_generation)` and `(ask_id, actor_id, idempotency_key)`; the
+history index orders by ask, creation time and id. `tr_ask_decisions_immutable`
+rejects UPDATE and DELETE. A document can pin either a review revision or an
+approved snapshot. Review id and revision must be supplied together.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `ask_id` | TEXT | NOT NULL, FK human_asks.id, RESTRICT |
+| `decision_generation`, `feedback_version` | INTEGER | NOT NULL, >= 1 and >= 0 respectively |
+| `option_key`, `adapter`, `adapter_version`, `actor_id` | TEXT | NOT NULL, chosen adapter operation and actor |
+| `actor`, `packet` | JSONB | NOT NULL, actor evidence and exact decision packet |
+| `evidence_entry_id` | TEXT | NOT NULL, FK escalation_messages.id, RESTRICT |
+| `idempotency_key` | TEXT | NOT NULL, 1-512 characters |
+| `request_sha256`, `source_fingerprint`, `packet_sha256` | TEXT | NOT NULL, request and packet pins |
+| `review_id`, `review_revision` | TEXT, INTEGER | Nullable composite FK to doc_review_revisions, RESTRICT |
+| `content_sha256`, `attachment_manifest_sha256` | TEXT | Nullable review content and attachment pins |
+| `snapshot_id` | TEXT | Nullable FK approved_document_snapshots.id, RESTRICT |
+| `overall_note` | TEXT | NOT NULL, DEFAULT empty string, <= 16000 characters |
+| `accepted_dispositions` | JSONB | NOT NULL, DEFAULT [] |
+| `created_at` | FLOAT | NOT NULL |
+
+### Table: `review_feedback_obligations`
+
+Retains each accepted feedback obligation, unique per `(decision_id, feedback_key)`.
+The owner/progress index supports follow-up. Completed obligations require retained
+completion evidence (`ck_review_feedback_obligations_evidence`).
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `decision_id` | TEXT | NOT NULL, FK ask_decisions.id, RESTRICT |
+| `feedback_key` | TEXT | NOT NULL, identity within the decision |
+| `comment_id` | TEXT | Nullable FK doc_review_comments.id, RESTRICT |
+| `original_text`, `acceptance_text` | TEXT | NOT NULL, 1-16000 characters each |
+| `original_anchor`, `accepted_by` | JSONB | NOT NULL, original anchor and accepting actor |
+| `original_author`, `logical_owner` | TEXT | NOT NULL |
+| `original_revision` | INTEGER | Nullable source revision |
+| `disposition` | TEXT | NOT NULL; follow_up, fold_in, applied, no_change or withdrawn |
+| `required_before_release` | BOOLEAN | NOT NULL, DEFAULT false |
+| `operation_id` | TEXT | Nullable FK escalation_actions.id, RESTRICT |
+| `task_id` | TEXT | Nullable soft task reference |
+| `progress` | TEXT | DEFAULT pending; pending, filed, in_progress, completed or failed |
+| `completion_evidence` | JSONB | Nullable until completion |
+| `created_at`, `updated_at` | FLOAT | NOT NULL |
+
+### Table: `ask_reconciliation_cases`
+
+Retains conflicting source evidence for explicit repair, unique per project and
+conflict key. The owner index covers project, logical owner and status. Resolving a
+case requires a repair receipt (`ck_ask_reconciliation_cases_receipt`).
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `project_id` | TEXT | NOT NULL, FK projects.id, RESTRICT |
+| `conflict_key`, `logical_owner`, `reason` | TEXT | NOT NULL |
+| `source_evidence` | JSONB | NOT NULL, retained conflict evidence |
+| `affected_aliases`, `affected_deliveries` | JSONB | NOT NULL, DEFAULT [] |
+| `status` | TEXT | DEFAULT open; open or resolved |
+| `repair_receipt` | JSONB | Nullable until resolution |
+| `created_at`, `updated_at` | FLOAT | NOT NULL |
+
+Revision 91 also adds `feedback_version`, `decision_generation` and the restrictive
+`pending_decision_id` lock to `doc_reviews`; discussion provenance and responder
+dispositions to `doc_review_comments`; ask/input/version/entry-kind/reply references
+to `escalation_messages`; and ask decision, operation dependency, lease, retry and
+receipt fields to `escalation_actions`. Legacy incident action kinds remain valid.

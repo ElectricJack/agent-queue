@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from src.database.legacy_sqlite_import import _DEFERRED_COLS, _EXCLUDED_TABLES, _ORDERED_TABLES
+from src.database.legacy_sqlite_import import (
+    _DEFERRED_COLS,
+    _EXCLUDED_TABLES,
+    _ORDERED_TABLES,
+    _POSTGRES_ONLY_COLUMNS,
+)
 from src.database.tables import metadata
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
@@ -103,6 +108,35 @@ _DURABLE_ROWS = {
 pytestmark = pytest.mark.migration
 
 
+def _legacy_source_metadata():
+    """Copy the importable schema without revision 91's PostgreSQL additions."""
+    from sqlalchemy import MetaData
+
+    from migrations.versions.a00000000091_human_ask_decisions import ADDITIONS
+
+    source_metadata = MetaData()
+    for table in _ORDERED_TABLES:
+        table.to_metadata(source_metadata)
+    new_checks = {
+        "ck_doc_reviews_feedback_version", "ck_doc_reviews_decision_generation",
+        "ck_escalation_messages_entry_kind", "ck_escalation_actions_ask_operation",
+        "ck_escalation_actions_lease_generation", "ck_escalation_actions_lease",
+    }
+    for name, additions in ADDITIONS.items():
+        table = source_metadata.tables[name]
+        absent = {column.name for column in additions}
+        for constraint in list(table.constraints):
+            if constraint.name in new_checks or absent.intersection(constraint.columns.keys()):
+                table.constraints.remove(constraint)
+                table.foreign_keys.difference_update(getattr(constraint, "elements", ()))
+        table.indexes = {
+            index for index in table.indexes if not absent.intersection(index.columns.keys())
+        }
+        for column in absent:
+            table._columns.remove(table.c[column])
+    return source_metadata
+
+
 def test_ordered_tables_covers_every_table() -> None:
     """Every schema table is imported or has a documented exclusion."""
     listed = {t.name for t in _ORDERED_TABLES}
@@ -132,11 +166,7 @@ def test_ordered_tables_has_no_duplicates() -> None:
 
 def test_legacy_source_metadata_is_closed_over_foreign_keys() -> None:
     """The legacy schema must resolve FKs without PostgreSQL-only domains."""
-    from sqlalchemy import MetaData
-
-    source_metadata = MetaData()
-    for table in _ORDERED_TABLES:
-        table.to_metadata(source_metadata)
+    source_metadata = _legacy_source_metadata()
 
     for table in source_metadata.tables.values():
         for fk in table.foreign_keys:
@@ -154,7 +184,7 @@ def test_insertion_order_is_fk_safe() -> None:
     for table in _ORDERED_TABLES:
         deferred = _DEFERRED_COLS.get(table.name, frozenset())
         for fk in table.foreign_keys:
-            if fk.parent.name in deferred:
+            if fk.parent.name in deferred | _POSTGRES_ONLY_COLUMNS.get(table.name, frozenset()):
                 continue
             target = fk.column.table.name
             if position[target] >= position[table.name]:
@@ -203,7 +233,7 @@ async def _empty_pg_adapter():
 async def _seeded_source(tmp_path, *, with_legacy_identities: bool = False) -> str:
     """A synthetic legacy SQLite source with rows across the deferred-FK tables:
     a self-FK parent pointer (tasks) and the agents⇄tasks circular FK."""
-    from sqlalchemy import JSON, MetaData, insert, text
+    from sqlalchemy import JSON, insert, text
     from sqlalchemy.dialects.postgresql import JSONB
     from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -211,10 +241,7 @@ async def _seeded_source(tmp_path, *, with_legacy_identities: bool = False) -> s
 
     # The legacy source predates PostgreSQL-only tables and timestamp defaults.
     # Keep production metadata intact while recreating its importable columns.
-    source_metadata = MetaData()
-    for table in metadata.tables.values():
-        if table.name not in _EXCLUDED_TABLES:
-            table.to_metadata(source_metadata)
+    source_metadata = _legacy_source_metadata()
     source_metadata.tables["task_context"].c.created_at.server_default = None
     # PostgreSQL columns such as tasks.route (revision 40) became JSONB;
     # legacy SQLite stored JSON, and SQLAlchemy 2.0 cannot render JSONB on
@@ -286,6 +313,36 @@ async def _seeded_source(tmp_path, *, with_legacy_identities: bool = False) -> s
              "generation": 2, "job_pin_count": 1, "created_at": 0.0},
         )
         for table_name, row in _DURABLE_ROWS.items():
+            await conn.execute(insert(source_metadata.tables[table_name]), row)
+        for table_name, row in {
+            "doc_reviews": {
+                "id": "review", "project_id": "x", "kind": "spec", "title": "Legacy review",
+                "vault_path": "specs/legacy.md", "state": "in_review", "created_at": 0,
+                "updated_at": 0,
+            },
+            "doc_review_comments": {
+                "id": "comment", "review_id": "review", "revision": 1, "heading_path": [],
+                "body": "Keep this feedback", "author": "user", "created_seq": 1,
+                "created_at": 0,
+            },
+            "escalations": {
+                "id": "incident", "project_id": "x", "source_kind": "task",
+                "source_identity": "p", "incident_key": "incident", "supervisor_owner": "owner",
+                "summary": "Legacy incident", "investigation": "Evidence",
+                "decision_requested": "Answer", "severity": "medium", "created_at": 0,
+                "updated_at": 0,
+            },
+            "escalation_messages": {
+                "id": "reply", "escalation_id": "incident", "direction": "inbound",
+                "transport": "discord", "verified_actor": "user", "text": "Answer",
+                "received_at": 0, "created_at": 0,
+            },
+            "escalation_actions": {
+                "id": "action", "escalation_id": "incident", "reply_id": "reply",
+                "idempotency_key": "answer", "action_kind": "question_answer", "target_id": "p",
+                "executor": "owner", "started_revision": 0, "created_at": 0,
+            },
+        }.items():
             await conn.execute(insert(source_metadata.tables[table_name]), row)
         # playbook_activations -> playbook_artifacts is a plain (non-deferred)
         # FK, so the copy only works if both tables are in _ORDERED_TABLES and
@@ -384,6 +441,30 @@ async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
                 await conn.execute(select(supervisor_report_requests))
             ).mappings().one()
             assert dict(report) == _REPORT_REQUEST_ROW
+            for table_name, expected in {
+                "doc_reviews": {
+                    "feedback_version": 0, "decision_generation": 1, "pending_decision_id": None,
+                },
+                "doc_review_comments": {
+                    "body": "Keep this feedback", "source_discussion_id": None,
+                    "responder_disposition": None,
+                },
+                "escalation_messages": {
+                    "text": "Answer", "entry_kind": "discussion", "ask_id": None,
+                    "input_id": None, "source_version": None, "reply_to_entry_id": None,
+                },
+                "escalation_actions": {
+                    "reply_id": "reply", "ask_id": None, "decision_id": None,
+                    "operation_kind": None, "operation_key": None, "dependency_keys": [],
+                    "lease_owner": None, "lease_expires_at": None, "lease_generation": 0,
+                    "retry_at": None, "receipt": None,
+                },
+            }.items():
+                assert counts[table_name] == 1
+                actual = (
+                    await conn.execute(select(metadata.tables[table_name]))
+                ).mappings().one()
+                assert {key: actual[key] for key in expected} == expected, table_name
             assert (
                 await conn.execute(text("SELECT parent_task_id FROM tasks WHERE id='c'"))
             ).scalar() == "p"
