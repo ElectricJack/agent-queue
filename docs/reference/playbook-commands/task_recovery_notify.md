@@ -66,8 +66,9 @@ notice. Nothing is written when there is no actionable failure yet.
 
 ## When a playbook uses it
 
-[`src/prompts/default_playbooks/blocked-task-escalation.md`](../../../src/prompts/default_playbooks/blocked-task-escalation.md)
-is its only caller and the only rule in that playbook: every `task.failed` event
+The retired
+[`blocked-task-escalation` recording](../../../src/prompts/reviewed_playbooks/blocked-task-escalation/source.md)
+is its only reviewed caller and the only rule in that playbook: every `task.failed` event
 whose `status` field is `BLOCKED` runs one step — `task_recovery_notify` with
 `task_id` and `project_id` bound from the event — and then ends. The playbook
 never repairs, retries, reopens or closes anything and writes no message of its

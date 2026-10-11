@@ -48,10 +48,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 PROFILE_DEFAULTS = REPO_ROOT / "src" / "profiles" / "defaults"
 
-#: Frontmatter id -> the shipped Markdown it was compiled from.
+#: Frontmatter id -> the shipped Markdown it was compiled from. Retired policies
+#: retain their reviewed source for audit, outside the auto-installed defaults.
 SHIPPED_SOURCES: dict[str, str] = {
     "object-loop": "src/prompts/project_playbooks/matter-engine-cpp/object-loop.md",
-    "supervisor-hourly-report": "src/prompts/default_playbooks/supervisor-hourly-report.md",
+    "supervisor-hourly-report": "src/prompts/reviewed_playbooks/supervisor-hourly-report/source.md",
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
@@ -59,11 +60,11 @@ SHIPPED_SOURCES: dict[str, str] = {
         "src/prompts/project_playbooks/agent-queue/agent-queue-parent-integration.md"
     ),
     "agent-queue-root-train": "src/prompts/project_playbooks/agent-queue/agent-queue-root-train.md",
-    "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
+    "blocked-task-escalation": "src/prompts/reviewed_playbooks/blocked-task-escalation/source.md",
     "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
     "morning-report": "src/prompts/default_playbooks/morning-report.md",
-    "supervisor-digest": "src/prompts/default_playbooks/supervisor-digest.md",
+    "supervisor-digest": "src/prompts/reviewed_playbooks/supervisor-digest/source.md",
     "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
     "github-issue-triage": "src/prompts/project_playbooks/agent-queue/github-issue-triage.md",
     "parent-integration": "src/prompts/integration_playbooks/parent-integration.md",

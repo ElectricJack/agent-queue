@@ -2984,7 +2984,7 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:aede8216c1e99cd8cd2939f4fc1a03506a605f24ce353b5efd5fa85c124ad027",
+      "digest": "sha256:8d033f777fe3006135da77e4ff13d3eb9ca9b83ff3d3ccc1feeaa13ac328684d",
       "imports": [
         "src.api.codegen",
         "src.cli.auto_commands",
@@ -2997,7 +2997,7 @@
         "src.playbooks.expressions"
       ],
       "markers": [],
-      "summary": "Source, artifact and contract checks for the shipped ``blocked-task-escalation`` playbook."
+      "summary": "Audit checks for the retired, reviewed ``blocked-task-escalation`` playbook."
     },
     "tests/test_branch_discard.py": {
       "areas": [

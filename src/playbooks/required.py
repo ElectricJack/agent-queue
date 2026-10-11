@@ -35,6 +35,8 @@ DEFAULT_SYSTEM_PLAYBOOK_IDS = ("supervisor-failure-triage", "default-pipeline")
 # Explicit installation inventory. Morning reporting still requires operator
 # activation and reports.morning.enabled. Project defaults are code-owned
 # creation/graft settings in this release, not a separate shipped playbook.
+# Retired policies remain available as reviewed bundles for explicit import,
+# but are absent from both this inventory and the default source directory.
 INITIAL_SYSTEM_PLAYBOOK_IDS = (
     *REQUIRED_SYSTEM_PLAYBOOK_IDS,
     *DEFAULT_SYSTEM_PLAYBOOK_IDS,

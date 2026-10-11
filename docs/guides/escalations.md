@@ -300,12 +300,13 @@ returns the receipt and never repeats the action.
 Three sources, all of them a supervisor's judgement rather than an automatic
 reflex:
 
-* **A blocked task.** The shipped system playbook
-  [`blocked-task-escalation`](../../src/prompts/default_playbooks/blocked-task-escalation.md)
-  turns every `task.failed` event whose status is `BLOCKED` into exactly one
-  message to `session:supervisor-<project>`, telling it to read the session
-  log tail with `aq session logs` and decide: retry, hold, follow up, or ask
-  the human. The playbook itself repairs nothing.
+* **A failed task.** The shipped system playbook
+  [`supervisor-failure-triage`](../../src/prompts/default_playbooks/supervisor-failure-triage.md)
+  reconciles every `task.failed` event with the task's durable failure incident.
+  Only a new actionable incident wakes the project supervisor to read the
+  evidence and decide: retry, hold, follow up, or ask the human. The retired
+  `blocked-task-escalation` recording remains available for audit, but its
+  source is no longer installed at startup.
 * **A worker question.** A question a supervisor cannot answer is escalated
   with `aq question escalate <question-id> --reason "…"`, which creates or
   reuses a durable escalation with the question as its source. A human
