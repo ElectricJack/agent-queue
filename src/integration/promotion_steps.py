@@ -1790,7 +1790,9 @@ async def check_source_green(client, trust, required, source):
 
     selected = trust.model_copy(update={"required_checks": required})
     try:
-        observer = AuthenticatedGitHubObserver(client, expected_event="push")
+        observer = AuthenticatedGitHubObserver(
+            client, expected_event="push", ignore_cancelled_batches=True,
+        )
         observed = await observer.observe(selected, source)
         # Delivery-branch fallback CI is a reusable workflow whose check names
         # include the caller job. Only source admission may use its explicitly

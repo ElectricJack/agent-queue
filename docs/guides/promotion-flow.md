@@ -127,6 +127,13 @@ Partial canonical evidence and real failures still block the request. The
 private promotion ref, candidate checks and promotion attestation continue to
 use the step's canonical names.
 
+If a completed `aq/batches/` push run on the same commit was cancelled or
+skipped, source admission can retain green checks from another run. This
+requires alternative evidence for each affected name under the trusted App
+and a valid successful workflow attempt. Real failures, pending checks and
+cancellations without coverage still block promotion. Candidate and
+attestation gates continue to require their newest checks.
+
 Activation requires this configuration on the designated default branch and
 the updated source-admission code in the running daemon. After delivery, an
 authorized operator verifies `aq promote request --project agent-queue --step

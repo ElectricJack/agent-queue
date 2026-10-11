@@ -292,6 +292,152 @@ async def test_source_audit_configuration_does_not_replace_exact_candidate_check
 
 
 @pytest.fixture
+async def cancelled_source_batch(promote_env):
+    """A green promotion push followed by a cancelled batch on the identical SHA."""
+    e = promote_env
+    check, workflow, _job = e.github._rows(e.source)
+    e.source_checks = [check, {**check, "id": 3000, "conclusion": "cancelled",
+                              "check_suite": {"id": 300}}]
+    e.source_workflows = [
+        {**workflow, "head_branch": "aq/promote/staging/test"},
+        {**workflow, "id": 4000, "check_suite_id": 300, "conclusion": "cancelled",
+         "head_branch": "aq/batches/superseded"},
+    ]
+    listing = e.github.paged_items
+
+    async def source_listing(path, *, key):
+        if e.source in path:
+            if key == "check_runs":
+                return copy.deepcopy(e.source_checks)
+            if key == "workflow_runs":
+                return copy.deepcopy(e.source_workflows)
+        return await listing(path, key=key)
+
+    e.github.paged_items = source_listing
+    return e
+
+
+@pytest.mark.parametrize("conclusion", ["cancelled", "skipped"])
+@pytest.mark.parametrize("check_conclusion", ["success", "cancelled", "skipped"])
+@pytest.mark.parametrize("green_branch", ["dev", "aq/promote/staging/test"])
+async def test_request_accepts_green_source_under_cancelled_batch_checks(
+    cancelled_source_batch, conclusion, check_conclusion, green_branch,
+):
+    e = cancelled_source_batch
+    e.source_checks[1]["conclusion"] = check_conclusion
+    e.source_workflows[0]["head_branch"] = green_branch
+    e.source_workflows[1]["conclusion"] = conclusion
+    # The source-only exception cannot authorize candidate or attestation CI.
+    strict = await AuthenticatedGitHubObserver(e.github, expected_event="push").observe(
+        e.trust, e.source,
+    )
+    assert isinstance(strict, FailedCIObservation)
+    assert strict.checks[0]["check_run_id"] == 3000
+
+    opened = await request(e)
+    assert opened["outcome"] == "requested", opened
+    assert opened["promotion"]["source_sha"] == e.source
+    assert e.github.pull["head"]["sha"] == e.source
+    assert git(e.ops.git.remote_path, "rev-parse", "main") == e.base
+
+
+@pytest.mark.parametrize("condition,outcome", [
+    ("no_coverage", "promotion_source_red"),
+    ("older_failure", "promotion_source_red"),
+    ("older_pending", "promotion_source_pending"),
+    ("older_infra", "promotion_source_unavailable"),
+    ("foreign_app", "promotion_source_red"),
+    ("wrong_head", "promotion_source_untrusted"),
+    ("pr_only", "promotion_source_red"),
+    ("workflow_failed", "promotion_source_red"),
+    ("workflow_pending", "promotion_source_pending"),
+    ("workflow_malformed", "promotion_source_untrusted"),
+    ("batch_failure", "promotion_source_red"),
+    ("batch_pending", "promotion_source_pending"),
+    ("batch_infra", "promotion_source_unavailable"),
+    ("batch_workflow_failed", "promotion_source_red"),
+    ("batch_workflow_pending", "promotion_source_pending"),
+    ("batch_workflow_malformed", "promotion_source_untrusted"),
+    ("same_suite_rerun", "promotion_source_red"),
+    ("other_branch", "promotion_source_red"),
+    ("batch_wrong_head", "promotion_source_untrusted"),
+    ("newer_failure", "promotion_source_red"),
+])
+async def test_cancelled_batch_never_replaces_invalid_source_evidence(
+    cancelled_source_batch, condition, outcome,
+):
+    e = cancelled_source_batch
+    good, batch = e.source_checks
+    workflow, batch_workflow = e.source_workflows
+    if condition == "no_coverage":
+        e.source_checks.pop(0)
+    elif condition == "older_failure":
+        good["conclusion"] = "failure"
+    elif condition == "older_pending":
+        good.update(status="in_progress", conclusion=None)
+    elif condition == "older_infra":
+        good["conclusion"] = "timed_out"
+    elif condition == "foreign_app":
+        good["app"] = {"id": 999}
+    elif condition == "wrong_head":
+        good["head_sha"] = e.base
+    elif condition == "pr_only":
+        workflow["event"] = "pull_request"
+    elif condition == "workflow_failed":
+        workflow["conclusion"] = "failure"
+    elif condition == "workflow_pending":
+        workflow.update(status="in_progress", conclusion=None)
+    elif condition == "workflow_malformed":
+        workflow["run_attempt"] = None
+    elif condition == "batch_failure":
+        batch["conclusion"] = "failure"
+    elif condition == "batch_pending":
+        batch.update(status="in_progress", conclusion=None)
+    elif condition == "batch_infra":
+        batch["conclusion"] = "timed_out"
+    elif condition == "batch_workflow_failed":
+        batch_workflow["conclusion"] = "failure"
+    elif condition == "batch_workflow_pending":
+        batch_workflow.update(status="in_progress", conclusion=None)
+    elif condition == "batch_workflow_malformed":
+        batch_workflow["run_attempt"] = None
+    elif condition == "same_suite_rerun":
+        e.source_workflows.append({**batch_workflow, "run_attempt": 2, "conclusion": "failure"})
+    elif condition == "other_branch":
+        batch_workflow["head_branch"] = "dev"
+    elif condition == "batch_wrong_head":
+        batch["head_sha"] = e.base
+    elif condition == "newer_failure":
+        e.source_checks.append({**good, "id": 2000, "conclusion": "failure"})
+
+    before = git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/")
+    result = await request(e)
+    assert result["outcome"] == outcome, result
+    assert e.github.created == 0
+    assert git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/") == before
+    async with e.db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.id)) is None
+        assert await conn.scalar(select(integration_batches.c.id)) is None
+
+
+@pytest.mark.parametrize("conclusion", ["cancelled", "skipped"])
+async def test_source_audit_retains_green_coverage_under_cancelled_batch(source_audit, conclusion):
+    e = source_audit
+    e.audit_checks.extend(
+        {**check, "id": 3000 + index, "conclusion": conclusion if index % 2 else "success",
+         "check_suite": {"id": 300}}
+        for index, check in enumerate(e.audit_checks[:len(e.trust.required_checks.names)])
+    )
+    e.audit_workflows.append({
+        **e.audit_workflows[0], "id": 4000, "check_suite_id": 300,
+        "head_branch": "aq/batches/superseded", "conclusion": conclusion,
+    })
+    result = await e.handler._cmd_promote_request({"project_id": "p", "step_id": "staging"})
+    assert result["outcome"] == "requested", result
+    assert result["promotion"]["source_sha"] == e.source
+
+
+@pytest.fixture
 def production_push(promote_env, monkeypatch):
     """Keep production OID validation and isolated Git transport; substitute its URL."""
     e = promote_env

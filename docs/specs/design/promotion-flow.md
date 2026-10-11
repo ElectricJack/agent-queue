@@ -126,6 +126,17 @@ approvals continue to require their configured exact names. Enabling the
 alternative requires committing its full named check set to the designated
 default branch and running daemon code that understands source admission.
 
+Promotion source admission may retain the newest remaining check for a name
+when newer checks on the same SHA belong to a completed cancelled or skipped
+`aq/batches/` push workflow, including jobs that succeeded before cancellation.
+Every observed attempt of that batch suite must
+be cancelled or skipped; a pending, failed or malformed attempt prevents this
+exception. Cancellation without alternative evidence still refuses admission.
+The remaining checks must pass the existing exact-head, producer App, push-event
+and latest-attempt validation. Real failures and unfinished checks remain
+blocking, including those from batch branches. Candidate and attestation gates
+continue to select the newest check without this source-only exception.
+
 ## Trust-manifest bootstrap without hierarchical routes
 
 `integration_trust_manifest` accepts an optional `hosted_check_policy` object
