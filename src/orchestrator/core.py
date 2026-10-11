@@ -72,6 +72,7 @@ import logging
 import os
 import time
 import uuid
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -737,6 +738,18 @@ class Orchestrator(
     def _get_handler(self) -> Any:
         """Return the command handler or None. Used by interactive views."""
         return self._command_handler
+
+    @cached_property
+    def morning_due(self):
+        """The morning-report playbook's once-per-local-day trigger.
+
+        A pure clock check with no Discord dependency, reading the live
+        (hot-reloaded) config.  Its event id is the day's dispatch dedup key,
+        so a restart cannot start a second run.  ``tick`` never raises.
+        """
+        from src.reports.morning_due import MorningDueEmitter
+
+        return MorningDueEmitter(lambda: self.config, self.bus)
 
     def playbook_services(self):
         """Everything a PlaybookRunner needs, built from daemon-wide singletons."""
@@ -3151,13 +3164,13 @@ class Orchestrator(
 
             # ── Phase 3: Housekeeping ───────────────────────────────────────
 
-            # 7a. Run timer service tick — emit synthetic timer.* events for
-            # playbooks with periodic triggers (playbooks spec §7).
+            # 7a. Synthetic playbook events: timer.*/cron.* (playbooks §7), report.morning_due.
             if self.timer_service:
                 try:
                     await self.timer_service.tick()
                 except Exception as e:
                     logger.warning("Timer service tick failed: %s", e)
+            await self.morning_due.tick()
 
             # 7b. Run plugin cron jobs (plain async functions, not LLM prompts).
             if hasattr(self, "plugin_registry") and self.plugin_registry:

@@ -1,7 +1,7 @@
 ---
 playbook_id: morning-report
-artifact_sha256: sha256:bed529ce79ba352d12dc88cfbb44f449d45a3d16eaac0e86f774bbff3638e8f8
-source_sha256: sha256:fc6f075eb1485241fc79d953655ebf647db5f0804f61431b9dee297b7404aed3
+artifact_sha256: sha256:16fde92cca3982a44fa37dc7638fb535066e62200f55bc67bda6e46b0af8c0a2
+source_sha256: sha256:23cea13fc31dfa06ee58109d9cf3efcf28e1448cc7de0d76eb680038302cb108
 contract_fingerprint: sha256:15b5ac5c8f0a02fd60511475df6f1a12f40b067aed9ec87d3210b9dea8c6d226
 questions_resolved: 0
 capabilities_granted:
@@ -14,8 +14,12 @@ profiles_referenced: []
 
 # Playbooks V2 artifact manifest — `morning-report`
 
-The deterministic recording contains one system minute-tick command and two
-terminals. It grants only `morning_report_tick`, references no profile, and
-contains no model, worker task or transport step. Structural and contract checks
-validate import. The operator enables this optional policy; shipping does not
-add it to required or default activations.
+The deterministic recording triggers on `report.morning_due`, which the daemon
+emits once per local day with a per-day event id, so dispatch dedup holds it to
+one run per day. The run calls `morning_report_tick`, settles on the event's own
+report, and loops through a 60-second durable timer while that report is pending;
+a failed call gets one timer-spaced retry before the failed terminal. It grants
+only `morning_report_tick`, references no profile, and contains no model, worker
+task or transport step. Structural and contract checks validate import. The
+operator enables this optional policy; shipping does not add it to required or
+default activations.
