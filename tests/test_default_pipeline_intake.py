@@ -251,9 +251,14 @@ async def test_review_approval_ingests_once_at_deep_high(handler, pipeline, kind
         content="---\nspec_kind: implementation\n---\n# Specification\n",
         submitted_by="human:local-operator",
     )
-    args, preview = await prepared(handler, submitted["review_id"])
-    decided = await accept(handler, args, preview)
-    assert decided["success"], decided
+    args, preview = await prepared(
+        handler, submitted["review_id"], note="Approved",
+        dispositions=[{"feedback_key": "overall_note", "disposition": "no_change",
+                       "reason": "Approval acknowledgment; no implementation change requested."}],
+    )
+    approved = await accept(handler, args, preview)
+    assert approved["success"], approved
+    assert approved["application_state"] == "applied", approved
     payload = next(call.args[1] for call in handler.orchestrator.bus.emit.call_args_list
                    if call.args[0] == "spec.approved")
     path = Path(payload["spec_path"])

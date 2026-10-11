@@ -66,6 +66,12 @@ def context_for(source, title, why, waiting, *, requested_by=None, blocked=()):
 
 
 async def authorize_source(handler, source, actor, *, conn, application=False):
+    if actor.provenance.get("kind") == "verified_input":
+        from src.asks.authority import authorize_input_actor
+
+        await authorize_input_actor(handler.db, handler.config, source, actor,
+                                    conn=conn, application=application)
+        return
     principal = current_principal() or TRUSTED_LOCAL
     if principal.project_id and principal.project_id != source.project_id:
         raise AskError("ask.not_found", "Request was not found")

@@ -1,48 +1,62 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..types import UNSET, Unset
+if TYPE_CHECKING:
+    from ..models.ask_update_context_request_expected import AskUpdateContextRequestExpected
 
-T = TypeVar("T", bound="AskRetryOperationResponse422")
+
+T = TypeVar("T", bound="AskUpdateContextRequest")
 
 
 @_attrs_define
-class AskRetryOperationResponse422:
+class AskUpdateContextRequest:
     """
     Attributes:
-        error (str | Unset):
+        ask_id (str):
+        expected (AskUpdateContextRequestExpected):
     """
 
-    error: str | Unset = UNSET
+    ask_id: str
+    expected: AskUpdateContextRequestExpected
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        error = self.error
+        ask_id = self.ask_id
+
+        expected = self.expected.to_dict()
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({})
-        if error is not UNSET:
-            field_dict["error"] = error
+        field_dict.update(
+            {
+                "ask_id": ask_id,
+                "expected": expected,
+            }
+        )
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        d = dict(src_dict)
-        error = d.pop("error", UNSET)
+        from ..models.ask_update_context_request_expected import AskUpdateContextRequestExpected
 
-        ask_retry_operation_response_422 = cls(
-            error=error,
+        d = dict(src_dict)
+        ask_id = d.pop("ask_id")
+
+        expected = AskUpdateContextRequestExpected.from_dict(d.pop("expected"))
+
+        ask_update_context_request = cls(
+            ask_id=ask_id,
+            expected=expected,
         )
 
-        ask_retry_operation_response_422.additional_properties = d
-        return ask_retry_operation_response_422
+        ask_update_context_request.additional_properties = d
+        return ask_update_context_request
 
     @property
     def additional_keys(self) -> list[str]:

@@ -6,43 +6,67 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..types import UNSET, Unset
-
-T = TypeVar("T", bound="AskDecideResponse422")
+T = TypeVar("T", bound="AskDiscussionReplyRequest")
 
 
 @_attrs_define
-class AskDecideResponse422:
+class AskDiscussionReplyRequest:
     """
     Attributes:
-        error (str | Unset):
+        ask_id (str):
+        input_id (str):
+        text (str):
+        idempotency_key (str):
     """
 
-    error: str | Unset = UNSET
+    ask_id: str
+    input_id: str
+    text: str
+    idempotency_key: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        error = self.error
+        ask_id = self.ask_id
+
+        input_id = self.input_id
+
+        text = self.text
+
+        idempotency_key = self.idempotency_key
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({})
-        if error is not UNSET:
-            field_dict["error"] = error
+        field_dict.update(
+            {
+                "ask_id": ask_id,
+                "input_id": input_id,
+                "text": text,
+                "idempotency_key": idempotency_key,
+            }
+        )
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        error = d.pop("error", UNSET)
+        ask_id = d.pop("ask_id")
 
-        ask_decide_response_422 = cls(
-            error=error,
+        input_id = d.pop("input_id")
+
+        text = d.pop("text")
+
+        idempotency_key = d.pop("idempotency_key")
+
+        ask_discussion_reply_request = cls(
+            ask_id=ask_id,
+            input_id=input_id,
+            text=text,
+            idempotency_key=idempotency_key,
         )
 
-        ask_decide_response_422.additional_properties = d
-        return ask_decide_response_422
+        ask_discussion_reply_request.additional_properties = d
+        return ask_discussion_reply_request
 
     @property
     def additional_keys(self) -> list[str]:

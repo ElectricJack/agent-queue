@@ -7399,6 +7399,7 @@ _ALL_TOOL_DEFINITIONS.extend(
                 "type": "object",
                 "properties": {
                     "review_id": {"type": "string"},
+                    "source_discussion_id": {"type": "string"},
                     "revision": {"type": "integer", "minimum": 1},
                     "quote": {"type": "string"},
                     "heading_path": {"type": "array", "items": {"type": "string"}},
@@ -9050,3 +9051,16 @@ _ALL_TOOL_DEFINITIONS.extend([
                                      "after_id": {"type": "string"}},
                       "required": ["project_id"]}},
 ])
+
+
+from src.api.models.ask import ASK_ARGS as _ASK_ARGS  # noqa: E402
+
+for _name, _args in _ASK_ARGS.items():
+    _TOOL_CATEGORIES[_name] = "review"
+    _existing = next((d for d in _ALL_TOOL_DEFINITIONS if d["name"] == _name), None)
+    if _existing is not None:
+        _existing["input_schema"] = _args.model_json_schema()
+    else:
+        _ALL_TOOL_DEFINITIONS.append({"name": _name,
+            "description": "Scoped human request communication and decision evidence.",
+            "input_schema": _args.model_json_schema()})
