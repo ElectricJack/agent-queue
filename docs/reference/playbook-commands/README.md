@@ -214,6 +214,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`promote_hotfix`](promote_hotfix.md) | Promote Hotfix | File a hotfix based on a promotion target, through ordinary task routing. |
 | [`promote_list`](promote_list.md) | Promote List | List promotion history using the local evidence cache. |
 | [`promote_prepare`](promote_prepare.md) | Promote Prepare | File ordinary release preparation on the repository default branch. |
+| [`promote_repair`](promote_repair.md) | Promote Repair | Back up and restore a stranded promotion task the train refuses. |
 | [`promote_request`](promote_request.md) | Promote Request | Open an idempotent promotion intent and a PR pinned to its source commit. |
 | [`promote_rulesets`](promote_rulesets.md) | Promote Rulesets | Authenticated hierarchical integration operational control. |
 | [`promote_schema`](promote_schema.md) | Promote Schema | Authenticated hierarchical integration operational control. |

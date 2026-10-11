@@ -8322,6 +8322,9 @@
     "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_cancel": {
       "reason": "Closes an unpublished promotion PR and aborts its intent under the integration branch lock; never touches the target or tag."
     },
+    "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_repair": {
+      "reason": "Backs up and restores a stranded promotion intent's daemon-owned task to the IN_PROGRESS, unrouted row StepAdmission admits; never touches the target, tag or PR."
+    },
     "src/commands/promote_commands.py::PromoteCommandsMixin._cmd_promote_request": {
       "reason": "Delegates the command boundary to the shared immutable promotion/backmerge admission mechanism."
     },
@@ -8472,7 +8475,7 @@
     "src/commands/promote_commands.py::import from src.integration.promotion_notes import PREPARE_CONTEXT, NotesRefusal, assemble_notes_input, authored_notes_section, draft_notes, notes_metadata, previous_tag, semver, source_version, step_has_version, step_pr_body": {
       "reason": "Promotion preparation and admission use integration-owned exact-source version and release-notes mechanisms."
     },
-    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, PromotionSourceRefusal, check_source_green, promotion_ref": {
+    "src/commands/promote_commands.py::import from src.integration.promotion_steps import PROMOTION_CONTEXT, PROMOTION_RESULT, FlowSchema, PromotionSourceRefusal, check_source_green, promotion_ref, promotion_task_defect": {
       "reason": "Promotion commands use retained step schema, exact-source CI refusal and private request identity contracts."
     },
     "src/orchestrator/events.py::EventsMixin._emit_task_event": {

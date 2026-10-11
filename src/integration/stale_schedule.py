@@ -207,7 +207,6 @@ async def classify_outstanding_request_on(
     return OutstandingRequest(project_id, "stale", reason, **known)
 
 
-
 async def _write_blockers_on(conn: Any, batch_id: str) -> tuple[dict[str, str], ...]:
     """Evidence that a remote write for *batch_id* may still be in flight.
 

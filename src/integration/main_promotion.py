@@ -62,16 +62,6 @@ _CLAIM_SECONDS = 135.0
 logger = logging.getLogger(__name__)
 
 
-
-
-
-
-
-
-
-
-
-
 RepositoryResolver = Callable[[str], Awaitable[Any] | Any]
 CrashHook = Callable[[str], Awaitable[None] | None]
 AttestationResolver = Callable[

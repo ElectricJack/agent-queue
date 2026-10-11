@@ -197,6 +197,7 @@ not commands executed as part of this documentation task:
 | `aq promote request --project demo --step release --from S --version V` | Opens the private PR and an idempotent intent. Replace S with a full commit OID and V with the version at that commit. Omit `--from` to pin the current source tip. |
 | `aq promote approve REQUEST_ID --project demo` | The local human operator posts a GitHub review as their authenticated `gh` user. It does not write a second approval gate in AQ. |
 | `aq promote cancel REQUEST_ID --project demo` | The operator or requester closes an unpublished PR and aborts its intent; publication already underway or proved delivered is refused. |
+| `aq promote repair REQUEST_ID --project demo` | The operator or supervisor backs up a stranded open intent's task row as JSON under `<data_dir>/backups/promotion/`, then restores it to `IN_PROGRESS` and unrouted so the train admits it again. A healthy task returns `already_healthy` and is not written. |
 | `aq promote status --project demo --step release` | Reads intent state, cached evidence and request age. |
 | `aq promote list --project demo --step release --limit 20` | Lists recorded promotion intents from the local cache. It is not a fresh enumeration of remote release tags. |
 
@@ -297,6 +298,7 @@ deployment and restore retain their operator restrictions.
 | `promotion_not_fast_forward` | Inspect target/source ancestry; cancel and request a source that contains the target. |
 | PR gate waiting or unknown | Inspect the exact pinned PR head, required checks and reviewer identity; retry observation after a provider outage. |
 | `promotion_tag_conflict` | Inspect both tag-object OID and peeled commit; preserve the immutable tag and resolve with the operator. |
+| Intent stays `sealed`; the log says `promotion … held: promotion_intent_invalid` | The intent's task is no longer the daemon-owned `IN_PROGRESS`, unrouted row the train admits, for example after a restart reset it to `READY` and routed it. `aq doctor --check integration.promotion_stranded` names each such intent; run the `aq promote repair` command it prints. |
 | Remote warnings | Have the repository administrator reconcile rulesets and triggers, then repeat `validate --remote`. |
 
 ## Related pages

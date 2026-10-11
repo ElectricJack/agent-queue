@@ -105,11 +105,6 @@ def binding_diagnosis(
     }
 
 
-
-
-
-
-
 ATTESTATION_CHECK_NAME = "Agent Queue Integration Attestation"
 TRUST_MANIFEST_PATH = ".github/agent-queue-integration.json"
 _SHA_PATTERN = r"^[0-9a-f]{40}$"
