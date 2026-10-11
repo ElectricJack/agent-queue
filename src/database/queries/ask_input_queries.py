@@ -191,8 +191,7 @@ class AskInputQueriesMixin:
                 await conn.scalar(
                     text(
                         "SELECT EXISTS (SELECT 1 FROM human_communication_modes "
-                        "WHERE mode = 'channel' AND destination->>'channel_id' = :channel "
-                        "AND destination->>'guild_id' = :guild)"
+                        "WHERE mode = 'channel' AND destination = 'discord:' || :guild || ':' || :channel)"
                     ),
                     {"channel": channel_id, "guild": guild_id},
                 )

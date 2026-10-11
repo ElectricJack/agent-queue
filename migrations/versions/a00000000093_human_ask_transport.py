@@ -15,10 +15,28 @@ depends_on = None
 
 
 def upgrade():
-    from src.database.tables import conversation_inputs
+    from src.database.tables import (
+        conversation_inputs, ask_external_bindings, human_communication_modes,
+        ask_action_tokens, outbound_deliveries,
+    )
 
     bind = op.get_bind()
     inspector = sa.inspect(bind)
+    for table in (human_communication_modes, ask_external_bindings, ask_action_tokens):
+        table.create(bind, checkfirst=True)
+    existing = {c["name"] for c in inspector.get_columns("outbound_deliveries")}
+    for name in (
+        "ask_id", "binding_id", "project_id", "decision_generation", "display_version",
+        "mode_generation", "root_generation", "send_kind", "write_started_at", "attempt_token",
+    ):
+        if name not in existing:
+            op.add_column("outbound_deliveries", outbound_deliveries.c[name]._copy())
+    checks = {c["name"] for c in inspector.get_check_constraints("outbound_deliveries")}
+    for constraint in outbound_deliveries.constraints:
+        if isinstance(constraint, sa.CheckConstraint) and constraint.name not in checks:
+            op.create_check_constraint(constraint.name, "outbound_deliveries", str(constraint.sqltext))
+    for index in outbound_deliveries.indexes:
+        index.create(bind, checkfirst=True)
     columns = {c["name"] for c in inspector.get_columns("conversation_inputs")}
     additions = {
         "ask_id",

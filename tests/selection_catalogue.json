@@ -250,6 +250,7 @@
       "description": "Discord bot: escalation-only inbound routing, the legacy-conversation cutover, housekeeping, retired slash commands, the invalid-request rate guard and the simplified lifecycle.",
       "modules": [
         "tests/test_discord_adapter.py",
+        "tests/test_discord_ask_buttons.py",
         "tests/test_discord_bot_routing.py",
         "tests/test_discord_cutover.py",
         "tests/test_discord_docs.py",
@@ -311,6 +312,7 @@
         "tests/test_ask_api.py",
         "tests/test_ask_commands.py",
         "tests/test_ask_decisions.py",
+        "tests/test_ask_delivery.py",
         "tests/test_ask_discussion.py",
         "tests/test_ask_intake.py",
         "tests/test_ask_migration.py",
@@ -2928,6 +2930,30 @@
         "parametrize"
       ],
       "summary": "Foundational packet/idempotency, durable audit and operation lease invariants."
+    },
+    "tests/test_ask_delivery.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:cc8d836a9ae91e7ebe596411c1910040d20f7463a14f75cb89b32b21d1dc2b62",
+      "imports": [
+        "src.asks.delivery",
+        "src.asks.intake",
+        "src.asks.models",
+        "src.asks.render",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.delivery.dispatch",
+        "src.delivery.scheduler",
+        "src.digest.dispatch",
+        "src.escalations.transport",
+        "src.remote_links"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Canonical root writes survive late HTTP completion, restart, pause and repair."
     },
     "tests/test_ask_discussion.py": {
       "areas": [
@@ -5670,6 +5696,22 @@
         "asyncio"
       ],
       "summary": "Tests for the DiscordMessagingAdapter and messaging adapter integration."
+    },
+    "tests/test_discord_ask_buttons.py": {
+      "areas": [
+        "discord"
+      ],
+      "default_arm": true,
+      "digest": "sha256:2dc6e4ada3be607a022ba0dfc1dd9d342194ab750b60ede676c0c8b4500b3372",
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.discord.ask_buttons"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Opaque gateway controls carry authenticated, generation-bound human evidence."
     },
     "tests/test_discord_bot_routing.py": {
       "areas": [
