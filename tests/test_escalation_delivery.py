@@ -27,7 +27,7 @@ from src.escalations import (
     sanitise,
 )
 from src.escalations.plan import root_dedup_key
-from src.models import Project
+from src.models import Project, ProjectStatus
 from tests.db_fixtures import lease_dsn
 
 BASE_URL = "https://queue.example.test"
@@ -105,6 +105,159 @@ def make_service(db, transport, config=None, *, clock=None, owner="daemon-a", **
 
 def facts_for(row) -> EscalationFacts:
     return EscalationFacts.from_row(row)
+
+
+@pytest.mark.parametrize("source_kind", ["task_attempt", "gate"])
+async def test_paused_project_holds_escalations_and_gate_pings_until_resume(db, source_kind):
+    await make_incident(db, source_kind=source_kind)
+    await db.update_project("p", status=ProjectStatus.PAUSED)
+    sink = SinkTransport()
+    clock = Clock()
+    service = make_service(db, sink, clock=clock)
+    await service.tick()
+    row = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert row["status"] == "pending" and row["attempt_count"] == 0
+    assert sink.calls == []
+    assert await db.count_due_escalation_deliveries(clock()) == 0
+    assert (await db.get_escalation("esc-1"))["held_while_paused"] is True
+    await db.update_project("p", status=ProjectStatus.ACTIVE)
+    restarted = make_service(db, sink, clock=clock, owner="daemon-b")
+    await restarted.tick()
+    await restarted.tick()
+    assert sink.calls.count("post_root") == 1
+    assert (await db.list_escalation_deliveries("esc-1"))[0]["status"] == "sent"
+
+
+async def test_held_backlog_does_not_starve_another_project(db):
+    await make_incident(db)
+    await db.update_project("p", status=ProjectStatus.PAUSED)
+    await db.create_project(Project(id="active", name="Active"))
+    await make_incident(db, id="esc-active", project_id="active")
+    sink = SinkTransport()
+    service = make_service(db, sink)
+    await service.tick(limit=1)
+    assert (await db.list_escalation_deliveries("esc-1"))[0]["attempt_count"] == 0
+    assert (await db.list_escalation_deliveries("esc-active"))[0]["status"] == "sent"
+    assert sink.calls.count("post_root") == 1
+
+
+async def test_pause_between_root_and_thread_preserves_binding_for_resume(db):
+    await make_incident(db)
+    sink = SinkTransport()
+    post = sink.post_root
+
+    async def pause_after_post(**kwargs):
+        result = await post(**kwargs)
+        await db.update_project("p", status=ProjectStatus.PAUSED)
+        return result
+
+    sink.post_root = pause_after_post
+    service = make_service(db, sink)
+    report = await service.tick()
+    row = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert report.held == 1 and row["status"] == "retry"
+    assert row["root_message_id"] and not row["thread_id"]
+    assert sink.calls == ["post_root"]
+    sink.post_root = post
+    await db.update_project("p", status=ProjectStatus.ACTIVE)
+    await service.tick()
+    assert sink.calls.count("post_root") == 1
+    assert sink.calls.count("ensure_thread") == 1
+    assert (await db.list_escalation_deliveries("esc-1"))[0]["status"] == "sent"
+
+
+@pytest.mark.parametrize("reclaimed", [False, True])
+async def test_pause_after_claim_preserves_budget_and_prior_ambiguity(db, reclaimed):
+    await make_incident(db)
+    sink = SinkTransport()
+    clock = Clock()
+    service = make_service(db, sink, clock=clock)
+    await service.reconcile("esc-1")
+    if reclaimed:
+        await db.claim_escalation_deliveries(lease_owner="old", now=clock(), lease_seconds=1)
+        clock.advance(2)
+    claim = db.claim_escalation_deliveries
+
+    async def pause_after_claim(**kwargs):
+        rows = await claim(**kwargs)
+        await db.update_project("p", status=ProjectStatus.PAUSED)
+        return rows
+
+    db.claim_escalation_deliveries = pause_after_claim
+    report = await service.pump()
+    held = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert report.held == 1
+    assert held["status"] == "retry" and held["lease_owner"] is None
+    assert held["attempt_count"] == int(reclaimed)
+    assert sink.calls == []
+    db.claim_escalation_deliveries = claim
+    await db.update_project("p", status=ProjectStatus.ACTIVE)
+    await make_service(db, sink, clock=clock, owner="restarted").pump()
+    row = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert row["status"] == ("unknown" if reclaimed else "sent")
+    assert sink.calls.count("post_root") == int(not reclaimed)
+
+
+async def test_pause_after_resolution_post_does_not_repeat_the_outcome(db):
+    incident = await make_incident(db)
+    sink = SinkTransport()
+    clock = Clock()
+    service = make_service(db, sink, clock=clock)
+    await service.tick()
+    await db.transition_escalation(
+        "esc-1", expected_revision=incident["revision"], new_state="cancelled",
+        now=clock.advance(30), terminal_outcome="Rehearsal withdrawn",
+    )
+    post = sink.post_thread_message
+
+    async def pause_after_post(**kwargs):
+        result = await post(**kwargs)
+        await db.update_project("p", status=ProjectStatus.PAUSED)
+        return result
+
+    sink.post_thread_message = pause_after_post
+    clock.advance(60)
+    before = sink.calls.count("post_thread_message")
+    report = await service.tick()
+    resolution = next(
+        row for row in await db.list_escalation_deliveries("esc-1")
+        if row["kind"] == "resolution"
+    )
+    assert report.held == 1 and resolution["attempt_count"] == 1
+    assert sink.calls.count("post_thread_message") == before + 1
+    assert "edit_root" not in sink.calls
+    sink.post_thread_message = post
+    await db.update_project("p", status=ProjectStatus.ACTIVE)
+    await make_service(db, sink, clock=clock, owner="restarted").tick()
+    assert sink.calls.count("post_thread_message") == before + 1
+    assert sink.calls.count("edit_root") == 1
+    assert sink.calls.count("archive_thread") == 1
+
+
+@pytest.mark.parametrize("expired", [False, True])
+async def test_pause_does_not_spend_retries_or_reclaim_expired_leases(db, expired):
+    await make_incident(db)
+    sink = SinkTransport()
+    clock = Clock()
+    service = make_service(db, sink, clock=clock)
+    await service.reconcile("esc-1")
+    if expired:
+        await db.claim_escalation_deliveries(lease_owner="old", now=clock(), lease_seconds=1)
+    else:
+        sink.faults.append(("post_root", TransportRetryable("offline")))
+        await service.pump()
+    before = (await db.list_escalation_deliveries("esc-1"))[0]
+    await db.update_project("p", status=ProjectStatus.PAUSED)
+    clock.advance(300)
+    sink.calls.clear()
+    await make_service(db, sink, clock=clock, owner="restarted").tick()
+    after = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert before == after
+    assert sink.calls == []
+    await db.update_project("p", status=ProjectStatus.ACTIVE)
+    await service.tick()
+    row = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert row["status"] == ("unknown" if expired else "sent")
 
 
 @pytest.mark.parametrize("state", ["needs_human", "reply_received", "resolved", "stale"])

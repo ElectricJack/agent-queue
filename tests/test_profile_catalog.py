@@ -36,6 +36,8 @@ def test_the_worker_set_is_the_class_x_harness_cross_product():
     catalog = {profile.id: profile for profile in shipped_profile_catalog()}
 
     assert set(catalog) == {
+        "operator-standard-high-claude", "operator-deep-high-claude",
+        "operator-standard-high-codex", "operator-deep-high-codex",
         "fast-low-claude", "fast-high-claude", "standard-high-claude",
         "deep-low-claude", "deep-high-claude",
         "fast-low-codex", "fast-high-codex", "standard-high-codex",
@@ -124,6 +126,7 @@ def test_refresh_seeds_ready_providers_and_preserves_existing_profile_edits(tmp_
     _seed_vault(tmp_path)
     first = refresh_catalog_profiles(tmp_path, _probes("codex"))
     assert set(first["created"]) == {
+        "operator-standard-high-codex", "operator-deep-high-codex",
         "fast-low-codex", "fast-high-codex", "standard-high-codex",
         "deep-low-codex", "deep-high-codex", "astra-low-codex", "astra-high-codex",
     }
@@ -171,6 +174,7 @@ def test_refresh_skips_every_retired_catalog_id(tmp_path):
 
     assert refreshed["created"] == []
     assert set(refreshed["retired"]) == {
+        "operator-standard-high-codex", "operator-deep-high-codex",
         "fast-low-codex", "fast-high-codex", "standard-high-codex",
         "deep-low-codex", "deep-high-codex", "astra-low-codex", "astra-high-codex",
     }

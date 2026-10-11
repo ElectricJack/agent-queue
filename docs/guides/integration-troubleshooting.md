@@ -293,6 +293,21 @@ default branch, and nothing is rewritten:
 aq doctor --check integration.promotion_flow
 ```
 
+## A promotion intent stays sealed
+
+The train admits a promotion only while its daemon-owned task is `IN_PROGRESS`
+and unrouted. If something else rewrites that row, every train visit holds the
+intent with `promotion_intent_invalid`, and the daemon log names the defect
+once per hold. For example, a restart might reset the task to `READY` and the
+router might hand it a worker profile. The doctor check lists every open intent
+in that state together with its repair command. The repair writes a JSON backup
+of the task row before it restores the row:
+
+```bash
+aq doctor --check integration.promotion_stranded
+aq promote repair REQUEST_ID --project PROJECT_ID
+```
+
 ## Source and related pages
 
 [Reconciler operation](hierarchical-integration-trains.md) describes current

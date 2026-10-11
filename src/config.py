@@ -2617,7 +2617,8 @@ class IntegrationConfig:
     #: Integration protocol selector. Shadow keeps the subject runtimes
     #: authoritative and logs Git-first comparisons. Active replaces the root,
     #: parent and development runtimes with one Git-first train
-    #: (src/integration/train.py) and stops outbox dispatch; read at daemon start.
+    #: (src/integration/train.py). Only promotion policy outbox events are
+    #: dispatched in active mode; read at daemon start.
     git_first: str = "shadow"
 
     #: Consecutive identical unsuccessful evaluations after which the

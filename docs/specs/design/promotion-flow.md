@@ -87,6 +87,29 @@ intents; observation never publishes a branch or bypasses approval. Private PR
 heads are created under the full forty-zero absent-ref lease; publication uses
 the observed full target OID.
 
+The active Git-first service dispatches the five `promotion.*` policy event
+types through the durable outbox. Legacy integration events remain undelivered
+in that mode, so enabling promotion policy never reactivates a legacy writer.
+Both the outbox page and its scan boundary apply the same event-type filter.
+
+`promote_repair` lets an operator or project supervisor back up and restore a
+stranded daemon-owned promotion task to `IN_PROGRESS` with no worker route.
+This route-reset exception never selects a worker profile; the mandatory-routing
+ratchet records it alongside other route resets.
+
+Concurrent train and promotion-policy check refreshes share the cache key
+`(repository_id, sha, check_name, producer_id)`. Insert attempts use distinct row
+IDs so the cache-key upsert handles their race; updates retain the stored row ID
+and continue to reject older observations and run attempts.
+
+`integration.continuous_promotion_lag` and `stall.sweep` report active continuous
+steps with source-only commits older than six hours. Age is the oldest
+unpromoted first-parent source commit's committer timestamp, so continued source
+advancement cannot hide accumulated drift. Reports include exact source/target
+heads, ahead/behind counts and the threshold. Missing Git evidence is reported
+as unavailable, never as a healthy flow. These diagnostics read Git and stored
+configuration; they do not request or publish promotions.
+
 Promotion source admission may also use the committed manifest's optional
 `check_sets.promotion-source-audit`. It explicitly lists the full check names
 produced by the delivery-branch audit, `unattested-ci / <required name>`, for

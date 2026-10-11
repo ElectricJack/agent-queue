@@ -88,10 +88,6 @@ _OID = re.compile(r"^[0-9a-f]{40}$")
 logger = logging.getLogger(__name__)
 
 
-
-
-
-
 class ReceiptProjection(BaseModel):
     """Existing train/parent receipt bindings supplied by the proof adapter."""
 
@@ -1347,8 +1343,6 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
             "head_sha": head_sha,
             "operation_id": operation["id"],
         }
-
-
 
 
 class PolicyActivation:

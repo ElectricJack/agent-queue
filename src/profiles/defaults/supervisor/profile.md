@@ -243,6 +243,7 @@ start code work, tests or QA from a digest author turn.
     "promote_prepare",
     "promote_hotfix",
     "promote_cancel",
+    "promote_repair",
     "promote_schema",
     "promote_validate",
     "promote_rulesets",

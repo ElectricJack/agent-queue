@@ -701,9 +701,10 @@
               "research",
               "plan",
               "design",
-              "art"
+              "art",
+              "operator"
             ],
-            "description": "The kind of work, a hint to the router (optional): design is code or system design, art is art-heavy design"
+            "description": "The kind of work, a hint to the router (optional): design is code or system design, art is art-heavy design, operator is scoped project setup"
           },
           "intelligence_class": {
             "type": "string",
@@ -1689,6 +1690,7 @@
               "plan",
               "design",
               "art",
+              "operator",
               null
             ],
             "description": "New task type (optional, set to null to clear)"
@@ -10389,6 +10391,230 @@
         "title": "DecisionListArgs",
         "type": "object"
       }
+    },
+    {
+      "name": "operator_execute",
+      "description": "Run an audited project setup action from a live operator claim, retaining session identity.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "title": "Command",
+            "type": "string"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Decision Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "preflight_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preflight Id"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "title": "OperatorExecuteArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "operator_preflight",
+      "description": "Check all planned operator inputs and report every blocker together before mutations.",
+      "input_schema": {
+        "$defs": {
+          "OperatorAction": {
+            "additionalProperties": false,
+            "properties": {
+              "command": {
+                "title": "Command",
+                "type": "string"
+              },
+              "arguments": {
+                "additionalProperties": true,
+                "title": "Arguments",
+                "type": "object"
+              },
+              "decision_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Decision Id"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "title": "OperatorAction",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "actions": {
+            "items": {
+              "$ref": "#/$defs/OperatorAction"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Actions",
+            "type": "array"
+          },
+          "branches": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Branches",
+            "type": "array"
+          },
+          "runner_labels": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Runner Labels",
+            "type": "array"
+          },
+          "app_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 10,
+            "title": "App Ids",
+            "type": "array"
+          },
+          "policy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Policy"
+          },
+          "repository_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Repository Id"
+          }
+        },
+        "required": [
+          "actions"
+        ],
+        "title": "OperatorPreflightArgs",
+        "type": "object"
+      }
     }
   ],
   "fallback": {
@@ -15703,6 +15929,57 @@
         "type": "object"
       }
     },
+    "promote_repair": {
+      "name": "promote_repair",
+      "description": "Back up and restore a stranded promotion task the train refuses.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "request_id": {
+            "description": "Promotion request identity returned by request.",
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "request_id"
+        ],
+        "title": "PromoteIntentArgs",
+        "type": "object"
+      }
+    },
     "promote_request": {
       "name": "promote_request",
       "description": "Open an idempotent promotion intent and a PR pinned to its source commit.",
@@ -16564,6 +16841,7 @@
     }
   },
   "categories": {
+    "operator": "Scoped operator setup and preflight",
     "policy": "Portable project policy profiles: export, diff and selective import",
     "cron": "Session-owned recurring prompts: register, inspect and cancel wake-ups.",
     "git": "Branch, commit, push, PR, merge, and remote URL operations for project repositories",
@@ -16601,6 +16879,8 @@
     "graph": "Server-side spatial task-graph layout \u2014 synchronous rebuild and tidy jobs"
   },
   "tool_categories": {
+    "operator_execute": "operator",
+    "operator_preflight": "operator",
     "policy_export": "policy",
     "policy_diff": "policy",
     "policy_apply": "policy",

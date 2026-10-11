@@ -968,6 +968,17 @@ async def create_missing_targets(
     return None, landed
 
 
+def promotion_task_defect(task, *, allow_completed=False) -> str | None:
+    """Why StepAdmission refuses a promotion's daemon-authored task row, or None."""
+    statuses = ("IN_PROGRESS", "COMPLETED") if allow_completed else ("IN_PROGRESS",)
+    if task["task_type"] != "promotion" or task["status"] not in statuses:
+        return (f"task {task['id']} is a {task['status']} {task['task_type']} task, "
+                f"not an {' or '.join(statuses)} promotion")
+    if task["profile_id"] is not None:
+        return f"promotion task {task['id']} is routed to profile {task['profile_id']!r}"
+    return None
+
+
 class PromotionIntentInvalid(ValueError):
     """A requested step no longer names its frozen, retained source."""
 
@@ -1005,12 +1016,12 @@ class StepAdmission:
             pinned_step = row["policy_snapshot"]["promotion_step"]
             pinned_intent = row["policy_snapshot"]["promotion_intent"]
             expected = (batch.project_id, batch.repository_id, batch.target_ref)
+            if defect := promotion_task_defect(task, allow_completed=allow_completed):
+                raise ValueError(f"{defect}; run `aq promote repair {row['request_id']} "
+                                 f"--project {batch.project_id}`")
             if (row["trigger"] != "promotion" or member.order != 0
                     or (row["project_id"], row["repository_id"], row["target_ref"]) != expected
                     or (task["project_id"], task["repo_id"]) != expected[:2]
-                    or task["task_type"] != "promotion" or task["profile_id"] is not None
-                    or task["status"] not in ({"IN_PROGRESS", "COMPLETED"} if allow_completed
-                                              else {"IN_PROGRESS"})
                     or (not allow_completed and row["intent"] != "open")
                     or meta != pinned_intent
                     or not meta.get("requester")

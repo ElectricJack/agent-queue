@@ -1098,8 +1098,9 @@ class Holding(Service):
 
     async def visit(self, batch, members, snapshot):
         self.calls += 1
+        reason = self.reasons.pop(0)
         return BatchObservation("held", SOURCE, TARGET_SHA,
-                                detail={"reason": self.reasons.pop(0)})
+                                detail=reason if isinstance(reason, dict) else {"reason": reason})
 
 
 PROMOTION = TrainTarget("p", "r", "refs/heads/main", "promotion",
@@ -1148,6 +1149,32 @@ async def test_named_promotion_hold_defers_its_target_until_woken():
     assert (await t.tick())["started"] == [label]
     await t.drain()
     assert service.calls == 4
+
+
+async def test_a_promotion_hold_logs_its_reason_once_per_hold(caplog):
+    """solid-impact-50: an intent StepAdmission refuses must not idle silently."""
+    clock = [100.0]
+    error = "promotion task t-1 is routed to profile 'worker'; run `aq promote repair r --project p`"
+    invalid = {"reason": "promotion_intent_invalid", "error": error}
+    service = Holding(invalid, dict(invalid), "promotion_operator_approval_missing")
+
+    async def lane_for(target):
+        return lane(service)
+
+    t = IntegrationTrain(targets=Targets(PROMOTION),
+                         batches=Batches({PROMOTION.key: (batch(), MEMBERS)}),
+                         lane_for=lane_for, repair=Repair(), clock=lambda: clock[0])
+    caplog.set_level(logging.INFO, logger="src.integration.train")
+    for now in (100.0, 130.0, 190.0):
+        clock[0] = now
+        assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
+        await t.drain()
+    held = "promotion batch-1 on refs/heads/main held: "
+    assert [(r.levelno, r.getMessage()) for r in caplog.records
+            if r.name == "src.integration.train" and " held: " in r.getMessage()] == [
+        (logging.WARNING, f"{held}promotion_intent_invalid {error}"),
+        (logging.INFO, f"{held}promotion_operator_approval_missing"),
+    ]
 
 
 async def test_only_a_named_promotion_hold_defers_its_target():

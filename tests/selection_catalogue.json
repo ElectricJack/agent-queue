@@ -870,6 +870,12 @@
         "tests/test_object_loop_playbook.py"
       ]
     },
+    "operator-workers": {
+      "description": "Scoped operator worker authority, human decisions, auditing and setup preflight.",
+      "modules": [
+        "tests/test_operator_workers.py"
+      ]
+    },
     "orchestrator": {
       "description": "The orchestrator cycle and daemon lifecycle: run_one_cycle, promotion and assignment, pre-assignment constraints, failure events, daemon entry-point lifecycle and the workflow pipeline view.",
       "modules": [
@@ -9524,16 +9530,26 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:d73888b346b86776c1c9c33eb13504e25d2cc5678960550b85cf46b9ed9e789d",
+      "digest": "sha256:4e9688f9e1fa9579ab5508c28ba8e8a8cfbdd000d659ffae35f39ffe2eb6ce39",
       "imports": [
+        "src.commands.integration_commands",
+        "src.config",
         "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
         "src.integration.ci",
+        "src.integration.outbox",
         "src.integration.promotion_steps",
+        "src.integration.service",
         "src.integration.train",
-        "src.integration.train_sources"
+        "src.integration.train_sources",
+        "src.playbooks.run_state",
+        "src.playbooks.services"
       ],
-      "markers": [],
-      "summary": "One-step request → pinned human review → exact FF and annotated release tag."
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Connected promotion policy, exact FF, release tags and continuous lag diagnostics."
     },
     "tests/test_integration_train_regressions.py": {
       "areas": [
@@ -11934,7 +11950,7 @@
         "digest"
       ],
       "default_arm": true,
-      "digest": "sha256:be66ad1043080fb6c830b0009a7fe3472e1125eefcd00d16e0e95eb0a8b756b4",
+      "digest": "sha256:5a2359d982c33cd30fdc9049e03d84b0a1ba5b9c5379e5eb8eed05339a94cafb",
       "imports": [
         "src.cli.app",
         "src.commands.contracts",
@@ -11947,8 +11963,11 @@
         "src.delivery.message",
         "src.digest",
         "src.escalations.transport",
+        "src.event_bus",
+        "src.event_schemas",
         "src.git.manager",
         "src.models",
+        "src.orchestrator",
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
@@ -11961,7 +11980,9 @@
         "src.reports.git",
         "src.reports.hourly",
         "src.reports.morning",
-        "src.reports.schedule"
+        "src.reports.morning_due",
+        "src.reports.schedule",
+        "src.runtimes"
       ],
       "markers": [
         "parametrize"
@@ -12103,6 +12124,36 @@
       ],
       "markers": [],
       "summary": "SQLite/PostgreSQL parity tests for durable onboarding request storage."
+    },
+    "tests/test_operator_workers.py": {
+      "areas": [
+        "operator-workers"
+      ],
+      "default_arm": true,
+      "digest": "sha256:2f81e2ac5ae3c0e812872af3020b6e31df1b28312e97a737fb431db17a13507e",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.cli",
+        "src.cli.app",
+        "src.cli.styles",
+        "src.commands.operator_authority",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.models",
+        "src.operator_decisions",
+        "src.playbooks.definition",
+        "src.policy_profiles.models",
+        "src.policy_profiles.service",
+        "src.profiles.capabilities",
+        "src.reviews.service",
+        "src.tools.definitions"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Operator authority keeps a real worker claim, audit and human decision fences."
     },
     "tests/test_orchestrator.py": {
       "areas": [
@@ -14182,7 +14233,7 @@
         "provider-failover"
       ],
       "default_arm": true,
-      "digest": "sha256:b49da3e982e626d1df83ed9c783d350a2edf68cad4f0f2069c7f3e63d4b0213a",
+      "digest": "sha256:40f636e2ed72df558f2db8786bf6995ffa7022bc8d50faf2eb3c0438a3041aaa",
       "imports": [
         "src.api.models.provider",
         "src.commands.handler",
@@ -14202,6 +14253,7 @@
         "src.providers.availability_service",
         "src.providers.intent",
         "src.providers.reroute",
+        "src.providers.spill",
         "src.scheduler",
         "src.sessions.harness_parser"
       ],
@@ -14980,10 +15032,11 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:a03bd25572ecc858f687107cc66d76ffbac0682f1a20071b6fd3f3198e964d85",
+      "digest": "sha256:98d5d13028c6147d1981d2dff108fca6a391d6bb637a04ba0f6f7ae2c6c1a960",
       "imports": [
         "src.config",
         "src.escalations.transport",
+        "src.models",
         "src.remote_links",
         "src.reviews.notifier"
       ],
@@ -16065,9 +16118,10 @@
         "profiles"
       ],
       "default_arm": true,
-      "digest": "sha256:072a640bab07526cd7407fe081ef5fb56ce961c692592c75d45e42e93fcd0e53",
+      "digest": "sha256:6c0b571682674f59a1f7fc5408fec25a5be1e5821c34c7b307e8fce4c6e710b3",
       "imports": [
         "src.api.scope",
+        "src.commands.operator_authority",
         "src.prime.sections",
         "src.profiles.capabilities",
         "src.profiles.parser",

@@ -28,7 +28,7 @@ from sqlalchemy.exc import IntegrityError
 
 from src.database import Database
 from src.database.tables import GATE_TYPES
-from src.models import Project, Task, TaskStatus
+from src.models import Project, ProjectStatus, Task, TaskStatus
 from src.task_names import ADJECTIVES, NOUNS
 from tests.db_fixtures import lease_dsn
 
@@ -138,7 +138,7 @@ class TestInsertAndRead:
         async with db.immediate() as conn:
             await db.insert_review(review=review, revision=_revision(), conn=conn)
 
-        assert await db.get_review(review["id"]) == review
+        assert await db.get_review(review["id"]) == {**review, "held_while_paused": False}
 
     async def test_get_missing_review_is_none(self, db):
         assert await db.get_review("rev-nope-none") is None
@@ -230,7 +230,7 @@ class TestTransition:
                 conn=conn,
             )
         assert ok is False
-        assert await db.get_review("rev-bright-harbor") == before
+        assert await db.get_review("rev-bright-harbor") == {**before, "held_while_paused": False}
 
     async def test_transition_of_a_missing_review_is_false(self, db):
         async with db.immediate() as conn:
@@ -411,6 +411,63 @@ class TestComments:
 
 
 class TestNotificationOutbox:
+    async def test_paused_reviews_stay_durable_and_release_on_resume(self, db):
+        await _submit(db, "rev-held")
+        await db.create_project(Project(id="active", name="Active"))
+        await _submit(db, "rev-other", project_id="active")
+        await db.update_project(PROJECT, status=ProjectStatus.PAUSED)
+        assert [r["id"] for r in await db.reviews_pending_notification()] == ["rev-other"]
+        assert (await db.get_review("rev-held"))["notified_revision"] == 0
+        assert (await db.get_review("rev-held"))["held_while_paused"] is True
+        assert (await db.list_reviews(project_id=PROJECT))[0]["held_while_paused"] is True
+        await db.update_project(PROJECT, status=ProjectStatus.ACTIVE)
+        assert {r["id"] for r in await db.reviews_pending_notification()} == {
+            "rev-held", "rev-other",
+        }
+        assert (await db.get_review("rev-held"))["held_while_paused"] is False
+
+    @pytest.mark.parametrize("state", ["withdrawn", "approved", "changes_requested"])
+    async def test_request_closed_while_paused_is_retired_not_released(self, db, state):
+        await _submit(db, "rev-closed")
+        await db.update_project(PROJECT, status=ProjectStatus.PAUSED)
+        async with db.immediate() as conn:
+            assert await db.transition_review(
+                "rev-closed", from_states={"in_review"}, expected_revision=1,
+                values={"state": state}, conn=conn,
+            )
+        await db.update_project(PROJECT, status=ProjectStatus.ACTIVE)
+        assert await db.reviews_pending_notification() == []
+        assert (await db.get_review("rev-closed"))["notified_revision"] == 1
+
+    async def test_request_closed_while_active_keeps_its_pending_announcement(self, db):
+        await _submit(db, "rev-closed")
+        async with db.immediate() as conn:
+            assert await db.transition_review(
+                "rev-closed", from_states={"in_review"}, expected_revision=1,
+                values={"state": "approved"}, conn=conn,
+            )
+        assert [r["id"] for r in await db.reviews_pending_notification()] == ["rev-closed"]
+        assert (await db.get_review("rev-closed"))["notified_revision"] == 0
+
+    async def test_revision_after_a_paused_decision_is_released_on_resume(self, db):
+        await _submit(db, "rev-revised")
+        await db.update_project(PROJECT, status=ProjectStatus.PAUSED)
+        async with db.immediate() as conn:
+            assert await db.transition_review(
+                "rev-revised", from_states={"in_review"}, expected_revision=1,
+                values={"state": "changes_requested"}, conn=conn,
+            )
+            assert await db.transition_review(
+                "rev-revised", from_states={"changes_requested"}, expected_revision=1,
+                values={"state": "in_review", "current_revision": 2}, conn=conn,
+            )
+        assert await db.reviews_pending_notification() == []
+        await db.update_project(PROJECT, status=ProjectStatus.ACTIVE)
+        assert [
+            (r["id"], r["current_revision"], r["notified_revision"])
+            for r in await db.reviews_pending_notification()
+        ] == [("rev-revised", 2, 1)]
+
     async def test_only_human_deciders_enter_the_discord_outbox(self, db):
         await _submit(db, "rev-internal-score", decider="supervisor")
         await _submit(db, "rev-human-result", decider="user")

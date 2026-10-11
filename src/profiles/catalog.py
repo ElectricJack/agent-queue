@@ -145,6 +145,13 @@ def shipped_profile_catalog(
                     source_profile_id=template_profile_id(harness),
                 )
             )
+            if class_id in {"standard-high", "deep-high"}:
+                entries.append(CatalogProfile(
+                    id=f"operator-{class_id}-{harness}", provider_id=harness,
+                    harness=harness, intelligence_class=class_id,
+                    name=f"{titles[harness]} · Operator · {_class_title(cls, class_id)}",
+                    source_profile_id=f"operator-{harness}",
+                ))
     return tuple(entries)
 
 
@@ -314,7 +321,8 @@ def _seed_rungs(root: Path, profiles: Iterable[CatalogProfile]) -> dict[str, lis
             result["skipped"].append(profile.id)
             continue
         route = (profile.harness, profile.intelligence_class)
-        if route in existing_routes:
+        operator = profile.source_profile_id.startswith("operator-")
+        if not operator and route in existing_routes:
             result["duplicates"].append(profile.id)
             logger.info(
                 "catalog profile %s not seeded; %s already serves harness=%s default_class=%s",
@@ -327,7 +335,8 @@ def _seed_rungs(root: Path, profiles: Iterable[CatalogProfile]) -> dict[str, lis
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(render_rung_stub(profile), encoding="utf-8")
         result["created"].append(profile.id)
-        existing_routes[route] = profile.id
+        if not operator:
+            existing_routes[route] = profile.id
         logger.info(
             "derived worker rung created: %s (harness=%s default_class=%s)",
             profile.id, profile.harness, profile.intelligence_class,
@@ -369,6 +378,8 @@ def render_rung_stub(profile: CatalogProfile) -> str:
     rung becomes a pool only when an operator sizes it with ``aq pool``.
     """
     config = {"default_class": profile.intelligence_class, "lifecycle": "task"}
+    if profile.source_profile_id.startswith("operator-"):
+        config.update(lifecycle="pool", min_active=0, max_active=1)
     return (
         "---\n"
         f"id: {profile.id}\n"
@@ -466,6 +477,9 @@ def _existing_profile_routes(profiles_root: Path) -> dict[tuple[str, str], str]:
         except OSError:
             continue
         if not parsed.is_valid:
+            continue
+        if ((parsed.frontmatter.extends or "").startswith("operator-")
+                or "operator_execute" in ((parsed.capabilities or {}).get("aq_commands") or ())):
             continue
         profile_id = parsed.frontmatter.id or path.parent.name
         route = worker_route(

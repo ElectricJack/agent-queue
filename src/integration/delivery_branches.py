@@ -493,8 +493,6 @@ async def preserve_branch_tips(
                          repository_id=repository_id, now=now)
 
 
-
-
 def protected_branches(default_branch: str, promotion_flow=None) -> frozenset[str]:
     """All flow targets stay protected, including ones in the ``aq/`` namespace."""
     # The promotion lane builds on gitops -> development -> this module.

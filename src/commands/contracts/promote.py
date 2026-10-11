@@ -108,6 +108,11 @@ class PromoteValue(CommandValue):
     backmerges: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class PromoteRepairValue(PromoteValue):
+    backup_path: str | None = None
+    previous: dict[str, Any] | None = None
+
+
 REFUSALS = (
     "backmerge_ledger_invalid", "hotfix_patch_required",
     "not_found",
@@ -160,17 +165,19 @@ def register_promote_contracts(registry):
         ("integration_backmerge_source", BackmergeSourceArgs, ("backmerges_authored",), False),
         ("promote_approve", PromoteIntentArgs, ("approved", "already_approved"), False),
         ("promote_cancel", PromoteIntentArgs, ("cancelled", "already_cancelled"), False),
+        ("promote_repair", PromoteIntentArgs, ("repaired", "already_healthy"), False),
         ("promote_status", PromoteReadArgs, ("status",), True),
         ("promote_list", PromoteReadArgs, ("listed",), True),
     ):
         outcomes = successes + REFUSALS
+        value_model = PromoteRepairValue if name == "promote_repair" else PromoteValue
         contract = _operational_contract(
             name,
             args_model,
             outcomes,
             successes=frozenset(successes),
             side_effect=SideEffectClass.READ if read else SideEffectClass.COMPOSITE,
-            result_model=PromoteValue,
+            result_model=value_model,
         )
         summaries = {
             "integration_promotion_policy_input": "Read pinned source and outstanding promotion facts for reviewed policy.",
@@ -181,6 +188,7 @@ def register_promote_contracts(registry):
             "promote_request": "Open an idempotent promotion intent and a PR pinned to its source commit.",
             "promote_approve": "Post a pinned GitHub approval using the authenticated human gh login.",
             "promote_cancel": "Close an unpublished promotion PR and abort its intent.",
+            "promote_repair": "Back up and restore a stranded promotion task the train refuses.",
             "promote_status": "Read promotion intents and cached check and PR review evidence.",
             "promote_list": "List promotion history using the local evidence cache.",
         }
@@ -192,8 +200,8 @@ def register_promote_contracts(registry):
             }
         )
 
-        async def adapter(args, ctx, _name=name, _outcomes=outcomes):
-            return await _hierarchy_adapter(_name, args, ctx, PromoteValue, set(_outcomes))
+        async def adapter(args, ctx, _name=name, _outcomes=outcomes, _value=value_model):
+            return await _hierarchy_adapter(_name, args, ctx, _value, set(_outcomes))
 
         if registry.get(name) is None:
             registry.register(CommandRegistration(name, contract, adapter))

@@ -70,26 +70,15 @@ class IntegrationService:
         if interval_seconds <= 0:
             raise ValueError("integration interval must be positive")
         if train is not None and any(
-            runtime is not None
-            for runtime in (
-                subject_runtime,
-                parent_subject_runtime,
-                development_subject_runtime,
-            )
+            runtime is not None for runtime in
+            (subject_runtime, parent_subject_runtime, development_subject_runtime)
         ):
             # git_first: active selects the train for the whole loop; it never
             # runs beside the subject runtimes as a second engine.
             raise ValueError("the integration train replaces the subject runtimes")
-        for value in (
-            source_timeout_seconds,
-            item_timeout_seconds,
-            *(source_timeouts or {}).values(),
-        ):
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, int | float)
-                or value <= 0
-            ):
+        for value in (source_timeout_seconds, item_timeout_seconds,
+                      *(source_timeouts or {}).values()):
+            if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
                 raise ValueError("integration timeout must be positive")
         self._db, self._outbox = db, outbox
         self._subject_runtime = subject_runtime
@@ -134,13 +123,13 @@ class IntegrationService:
                 )
             if not background and self._reconciliation_task is not None:
                 await self._reconciliation_task
-            if self._train is not None:
-                # Pending legacy events stay undelivered: no old writer is
-                # allocated once the train owns delivery, even across a restart.
-                return
-            await self._source(
-                "integration outbox", self._outbox.dispatch_due, self._clock()
-            )
+            from src.integration.outbox import PROMOTION_EVENT_TYPES
+
+            # Promotion policy authors intents for the train; legacy events
+            # stay fenced from their old writers while the train owns delivery.
+            filters = {"event_types": PROMOTION_EVENT_TYPES} if self._train is not None else {}
+            await self._source("integration outbox", self._outbox.dispatch_due,
+                               self._clock(), **filters)
 
     async def _reconcile(self):
         if self._train is not None:

@@ -72,6 +72,9 @@ function FocusEscalationContent({ escalationId }: { escalationId: string }) {
           <span className="rounded bg-gray-800 px-1.5 py-0.5 font-mono">{escalation.state}</span>
           <span className="rounded bg-gray-800 px-1.5 py-0.5">{escalation.severity}</span>
           <span>{escalation.project_id}</span>
+          {escalation.held_while_paused && (
+            <span className="rounded bg-gray-800 px-1.5 py-0.5">held while paused</span>
+          )}
           <span>opened {when(escalation.created_at)}</span>
         </p>
         <h2 className="text-lg font-semibold">{escalation.decision_requested}</h2>

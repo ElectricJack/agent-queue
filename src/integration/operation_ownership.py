@@ -33,7 +33,3 @@ async def operation_project_id(db, operation: dict | None) -> str | None:
         return str(batch["project_id"]) if batch is not None else None
     return None
 
-
-async def operation_project_id_for(db, operation_id: str) -> str | None:
-    """Resolve *operation_id* and return the project that owns it."""
-    return await operation_project_id(db, await db.get_integration_operation(operation_id))

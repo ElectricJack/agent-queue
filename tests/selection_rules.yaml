@@ -267,6 +267,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/commands/question_commands.py"], areas: ["agent-questions"] }
   - { paths: ["src/commands/report_commands.py"], areas: ["digest"] }
   - { paths: ["src/commands/routing_commands.py"], areas: ["task-routing"] }
+  - { paths: ["src/commands/operator_commands.py", "src/commands/operator_authority.py"], areas: ["operator-workers", "task-routing", "policy-profiles"] }
   - { paths: ["src/commands/session_commands.py"], areas: ["session-runtime", "claims"] }
   - { paths: ["src/commands/task_commands.py", "src/commands/helpers.py"], areas: ["task-lifecycle", "task-hierarchy", "task-dependencies", "task-archive"] }
   - { paths: ["src/commands/task_comment_commands.py"], areas: ["task-comments"] }

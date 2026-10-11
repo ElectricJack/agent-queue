@@ -620,6 +620,10 @@ class IntegrationTrain:
         if target.kind == "promotion" and visit.state == "held" and isinstance(reason, str):
             wait = (visit.batch_id, reason)
             initial, maximum = PROMOTION_WAIT_SECONDS, PROMOTION_MAX_WAIT_SECONDS
+            if lane.wait != wait:  # once per hold, or a refused intent idles silently
+                logger.log(logging.WARNING if reason.endswith("_invalid") else logging.INFO,
+                           "promotion %s on %s held: %s", visit.batch_id, target.target_ref,
+                           " ".join(filter(None, (reason, visit.detail.get("error")))))
         elif visit.state == "blocked":
             wait = (visit.batch_id, visit.target_sha, repr(visit.detail))
             initial, maximum = BLOCKED_WAIT_SECONDS, BLOCKED_MAX_WAIT_SECONDS

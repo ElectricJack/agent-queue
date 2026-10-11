@@ -82,6 +82,12 @@ beforeEach(() => {
   wire.reply.mockResolvedValue({ success: true });
 });
 
+it("shows a held escalation while the project is paused", () => {
+  wire.get.mockReturnValue(detail({ held_while_paused: true }));
+  renderAt("/focus/escalations/escalation-abc");
+  expect(screen.getByText("held while paused")).toBeInTheDocument();
+});
+
 describe("FocusEscalation", () => {
   it("shows the decision, its context, the options and the task link inside focus", async () => {
     renderAt("/focus/escalations/escalation-abc");

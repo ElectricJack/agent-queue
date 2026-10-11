@@ -48,6 +48,12 @@ function renderInbox(path = "/reviews") {
   return render(inbox(path));
 }
 
+it("labels a human review held by a paused project", () => {
+  reviewsApi.reviews[0]!.held_while_paused = true;
+  renderInbox();
+  expect(screen.getByText("held while paused")).toBeInTheDocument();
+});
+
 beforeEach(() => {
   withdrawApi.mutateAsync.mockReset();
   withdrawApi.mutateAsync.mockResolvedValue({ success: true, flagged_task_ids: [] });

@@ -79,18 +79,6 @@ _CANDIDATE_MUTATION_PURPOSES = frozenset(
 )
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 def _merge_evidence(result) -> str:
     """The merge-tree diagnostic from a failed ``merge-tree`` result, if any."""
     for stream in (result.stdout, result.stderr):
@@ -98,12 +86,6 @@ def _merge_evidence(result) -> str:
         if stream:
             return stream
     return ""
-
-
-
-
-
-
 
 
 class AuditForgeProvider(Protocol):

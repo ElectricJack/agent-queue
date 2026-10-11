@@ -243,11 +243,12 @@ and [releases](releases.md); their pending sections describe work awaiting deliv
   publishes it under the managed lease. Only a push run on the repaired exact
   head can satisfy the required checks and attestation. An existing push run
   that is still executing remains pending.
-- **No replay.** The scheduler, outbox dispatch and green continuations stop.
+- **Legacy isolation.** The scheduler, legacy outbox dispatch and green continuations stop.
   Progress comes from Git, cached check evidence, review evidence and batch intent
   at visit time, so a restart or missed notification is repaired by the next visit.
-  Pending `integration_outbox` rows are left undelivered and are never handed to the
-  old writers while `active` is set.
+  Pending legacy `integration_outbox` rows are left undelivered and are never handed
+  to the old writers while `active` is set. Promotion policy events are dispatched
+  through a filtered outbox page, so activated continuous flows can author train intents.
 
 ## Restored PR gate, cadence and cleanup
 

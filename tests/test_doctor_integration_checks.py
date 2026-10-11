@@ -6,6 +6,7 @@ import pytest
 from src.doctor import default_registry
 from src.doctor.models import DoctorContext, Severity
 from src.models import Project
+from tests.test_promotion_steps import promotion as promotion, setup as setup
 # integration.trust (App-mode integration train spec §9.6)
 # ---------------------------------------------------------------------------
 
@@ -364,3 +365,44 @@ async def test_ci_source_check_names_local_runners_and_invalid_blocks(reuse_data
     assert result.detail.startswith("1 project(s) run required checks locally")
     assert "Before downgrading" in result.detail
     assert result.data["rollback_projects"] == ["local"]
+
+
+# ---------------------------------------------------------------------------
+# integration.promotion_stranded (an open intent whose task StepAdmission refuses)
+# ---------------------------------------------------------------------------
+
+
+async def test_promotion_stranded_names_the_repair_for_a_refused_task(promotion):
+    from sqlalchemy import insert, update
+
+    from src.database.tables import agent_profiles, tasks
+    from src.doctor.integration_checks import _BY_ID
+
+    check = _BY_ID["integration.promotion_stranded"]
+    assert check.id in {c.id for c in default_registry().checks()}
+    assert (await check.run(DoctorContext(config=SimpleNamespace()))).severity == Severity.INFO
+    ctx = DoctorContext(config=SimpleNamespace(), db=promotion.db)
+    result = await check.run(ctx)
+    assert (result.severity, result.data) == (Severity.OK, {"stranded": []})
+
+    async with promotion.db._engine.begin() as conn:
+        await conn.execute(insert(agent_profiles).values(
+            id="worker", name="Worker", description="", model="test", created_at=1, updated_at=1))
+        await conn.execute(update(tasks).values(
+            status="READY", profile_id="worker", route_source="override"))
+    result = await check.run(ctx)
+    assert result.severity == Severity.ERROR
+    assert result.data["stranded"] == [{
+        "batch_id": promotion.batch.id, "project_id": "p",
+        "request_id": "promotion:r:release:1.2.3", "task_id": "promotion-task",
+        "reason": "task promotion-task is a READY promotion task, "
+                  "not an IN_PROGRESS or COMPLETED promotion"}]
+    assert "aq promote repair promotion:r:release:1.2.3 --project p" in result.detail
+
+    async with promotion.db._engine.begin() as conn:
+        await conn.execute(update(tasks).values(status="COMPLETED"))
+    result = await check.run(ctx)
+    assert result.data["stranded"][0]["reason"] == (
+        "promotion task promotion-task is routed to profile 'worker'")
+    await promotion.store.set_intent(promotion.batch.id, "aborted")
+    assert (await check.run(ctx)).severity == Severity.OK

@@ -9,6 +9,8 @@ from __future__ import annotations
 # Which category each tool belongs to.
 # Tools not listed here are "core" (always loaded).
 _TOOL_CATEGORIES: dict[str, str] = {
+    "operator_execute": "operator",
+    "operator_preflight": "operator",
     "policy_export": "policy",
     "policy_diff": "policy",
     "policy_apply": "policy",
@@ -1414,10 +1416,11 @@ _ALL_TOOL_DEFINITIONS = [
                         "plan",
                         "design",
                         "art",
+                        "operator",
                     ],
                     "description": (
                         "The kind of work, a hint to the router (optional): design is "
-                        "code or system design, art is art-heavy design"
+                        "code or system design, art is art-heavy design, operator is scoped project setup"
                     ),
                 },
                 "intelligence_class": {
@@ -2461,6 +2464,7 @@ _ALL_TOOL_DEFINITIONS = [
                         "plan",
                         "design",
                         "art",
+                        "operator",
                         None,
                     ],
                     "description": "New task type (optional, set to null to clear)",
@@ -8920,4 +8924,18 @@ _ALL_TOOL_DEFINITIONS.extend([
     {"name": "decision_list",
      "description": "Read shared operator decisions and active holds for a task, batch or operation.",
      "input_schema": _DecisionListArgs.model_json_schema()},
+])
+
+from src.commands.operator_authority import (  # noqa: E402
+    OperatorExecuteArgs as _OperatorExecuteArgs,
+    OperatorPreflightArgs as _OperatorPreflightArgs,
+)
+
+_ALL_TOOL_DEFINITIONS.extend([
+    {"name": "operator_execute",
+     "description": "Run an audited project setup action from a live operator claim, retaining session identity.",
+     "input_schema": _OperatorExecuteArgs.model_json_schema()},
+    {"name": "operator_preflight",
+     "description": "Check all planned operator inputs and report every blocker together before mutations.",
+     "input_schema": _OperatorPreflightArgs.model_json_schema()},
 ])

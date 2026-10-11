@@ -7392,6 +7392,107 @@
       }
     },
     {
+      "path": "aq operator execute",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "operator_execute",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--command"
+        ],
+        "optional": [
+          "--arguments",
+          "--decision-id",
+          "--project-id",
+          "--task-id",
+          "--session-id",
+          "--preflight-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--arguments"
+        ],
+        "nullable": [
+          "--decision-id",
+          "--project-id",
+          "--task-id",
+          "--session-id",
+          "--preflight-id"
+        ]
+      }
+    },
+    {
+      "path": "aq operator preflight",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "operator_preflight",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--actions"
+        ],
+        "optional": [
+          "--project-id",
+          "--task-id",
+          "--session-id",
+          "--branches",
+          "--runner-labels",
+          "--app-ids",
+          "--policy",
+          "--repository-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--actions",
+          "--branches",
+          "--runner-labels",
+          "--app-ids",
+          "--policy"
+        ],
+        "nullable": [
+          "--project-id",
+          "--task-id",
+          "--session-id",
+          "--repository-id"
+        ]
+      }
+    },
+    {
       "path": "aq playbook activate",
       "registration": "generated",
       "owner_kind": "core",
@@ -10497,6 +10598,38 @@
           "--bump",
           "--version",
           "--from-task",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq promote repair",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.promote.promote_repair",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "request_id",
+          "--project"
+        ],
+        "optional": [
           "--json",
           "--brief",
           "--save-output",

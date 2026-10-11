@@ -16,6 +16,7 @@ from sqlalchemy import insert, select, text, update
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.commands.promote_commands import PromoteCommandsMixin
 from src.database.tables import (
+    agent_profiles,
     integration_batches,
     projects,
     repos,
@@ -606,7 +607,7 @@ def test_intent_contracts_have_typed_arguments_and_read_only_cache_commands():
     from src.commands.contracts import CONTRACTS
     from src.commands.contracts.models import SideEffectClass
 
-    for name in ("prepare", "request", "hotfix", "approve", "cancel", "status", "list"):
+    for name in ("prepare", "request", "hotfix", "approve", "cancel", "repair", "status", "list"):
         registration = CONTRACTS.get("promote_" + name)
         assert registration is not None
         contract = registration.contract.execution
@@ -649,6 +650,7 @@ def test_intent_contracts_have_typed_arguments_and_read_only_cache_commands():
         ),
         ("approve", ["promotion:r:release:0.2.0"], {"request_id": "promotion:r:release:0.2.0"}),
         ("cancel", ["promotion:r:release:0.2.0"], {"request_id": "promotion:r:release:0.2.0"}),
+        ("repair", ["promotion:r:release:0.2.0"], {"request_id": "promotion:r:release:0.2.0"}),
         ("status", ["--step", "release"], {"step_id": "release"}),
         ("list", ["--limit", "5"], {"step_id": None, "limit": 5}),
     ],
@@ -757,7 +759,8 @@ def _supervisor(project_id=None, session_id="supervisor"):
     from src.profiles.capabilities import CapabilityPolicy
 
     policy = CapabilityPolicy.from_namespaces(
-        aq_commands=["promote_prepare", "promote_request", "promote_cancel", "promote_status", "promote_list"],
+        aq_commands=["promote_prepare", "promote_request", "promote_cancel", "promote_repair",
+                     "promote_status", "promote_list"],
         harness_tools=[],
         plugin_tools=[],
     )
@@ -817,6 +820,68 @@ async def test_supervisor_cancels_its_own_request_and_operator_cancels_any(promo
         {"project_id": "p", "request_id": second["request_id"]}
     )
     assert result["outcome"] == "cancelled", result
+
+
+async def test_repair_backs_up_then_restores_a_stranded_promotion_task(promote_env, tmp_path):
+    """A restart reset the staging promotion to READY and the router gave it a worker."""
+    e = promote_env
+    e.handler.config = SimpleNamespace(data_dir=str(tmp_path))
+    created = await request(e)
+    args = {"project_id": "p", "request_id": created["request_id"]}
+    healthy = await e.handler._cmd_promote_repair(args)
+    assert healthy["outcome"] == "already_healthy", healthy
+    assert not (tmp_path / "backups").exists()
+    async with e.db._engine.begin() as conn:
+        await conn.execute(insert(agent_profiles).values(
+            id="worker", name="Worker", description="", model="test", created_at=1, updated_at=1,
+        ))
+        await conn.execute(update(tasks).where(tasks.c.task_type == "promotion").values(
+            status="READY", profile_id="worker", route_source="override",
+        ))
+    worker = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, policy=DENY_ALL, session_id="worker", project_id="p"
+    )
+    with principal_context(worker):
+        assert (await e.handler._cmd_promote_repair(args))["outcome"] == "unauthorized"
+    wake = e.handler.orchestrator.integration_train.wake
+    wake.reset_mock()
+    with principal_context(_supervisor("p")):
+        repaired = await e.handler._cmd_promote_repair(args)
+    assert repaired["outcome"] == "repaired", repaired
+    assert repaired["task_id"] == healthy["task_id"]
+    assert repaired["previous"] == {
+        "status": "READY", "profile_id": "worker", "route_source": "override", "route": None,
+    }
+    backup = Path(repaired["backup_path"])
+    assert backup.parent == tmp_path / "backups" / "promotion"
+    saved = json.loads(backup.read_text())
+    assert (saved["id"], saved["status"], saved["profile_id"]) == (
+        repaired["task_id"], "READY", "worker")
+    async with e.db._engine.connect() as conn:
+        task = (await conn.execute(
+            select(tasks).where(tasks.c.id == repaired["task_id"])
+        )).mappings().one()
+    assert (task["status"], task["profile_id"], task["route_source"], task["route"]) == (
+        "IN_PROGRESS", None, "unrouted", None)
+    assert wake.call_args_list == [call("p", "r", "refs/heads/" + e.meta["step"]["target"])]
+    assert (await e.handler._cmd_promote_repair(args))["outcome"] == "already_healthy"
+    assert len(list(backup.parent.iterdir())) == 1
+
+
+async def test_repair_refuses_a_closed_intent_without_writing(promote_env, tmp_path):
+    e = promote_env
+    e.handler.config = SimpleNamespace(data_dir=str(tmp_path))
+    created = await request(e)
+    args = {"project_id": "p", "request_id": created["request_id"]}
+    assert (await e.handler._cmd_promote_cancel(args))["outcome"] == "cancelled"
+    async with e.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.task_type == "promotion").values(
+            status="READY"))
+    refused = await e.handler._cmd_promote_repair(args)
+    assert refused["outcome"] == "promotion_not_open", refused
+    missing = await e.handler._cmd_promote_repair({"project_id": "p", "request_id": "nope"})
+    assert missing["outcome"] == "not_found", missing
+    assert not (tmp_path / "backups").exists()
 
 
 async def test_request_after_cancel_refuses_reused_identity(promote_env):

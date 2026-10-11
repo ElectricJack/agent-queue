@@ -11,6 +11,9 @@
 # tests/selection_catalogue.json.
 version: 1
 areas:
+  - id: operator-workers
+    description: "Scoped operator worker authority, human decisions, auditing and setup preflight."
+    match: [tests/test_operator_workers.py]
   - id: policy-profiles
     description: "Portable policy archives, selective imports and guarded preview/review flows."
     match: [tests/test_policy_profiles.py, tests/test_cli_policy.py]

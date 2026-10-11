@@ -328,6 +328,10 @@ ROUTE_WRITERS: dict[tuple[str, str], str] = {
         "sends a queued task back to its router: clears the route (aq task route, "
         "edit_task hint edits)"
     ),
+    ("src/commands/promote_commands.py", "PromoteCommandsMixin._cmd_promote_repair"): (
+        "operator/supervisor repair clears an erroneous worker route from a "
+        "daemon-owned promotion intent; never selects a worker profile"
+    ),
     # -- the persistence layer -------------------------------------------------
     ("src/database/queries/task_queries.py", "TaskQueryMixin._insert_task_row"): (
         "db.create_task persists the Task it is given; every Task(...) is scanned"

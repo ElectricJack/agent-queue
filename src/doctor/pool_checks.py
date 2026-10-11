@@ -520,14 +520,16 @@ async def _check_task_lifecycle_shadow(ctx: DoctorContext) -> CheckResult:
     if ctx.db is None:
         return _no_db_result("pools.task_lifecycle_shadow")
     profiles = await ctx.db.list_profiles()
-    pool_routes: dict[tuple[str, str], list[str]] = {}
+    from src.commands.operator_authority import is_operator_profile
+
+    pool_routes: dict[tuple[str, str, bool], list[str]] = {}
     for profile in profiles:
         if getattr(profile, "lifecycle", "task") != "pool":
             continue
         harness = str(getattr(profile, "harness", "") or "").strip()
         default_class = str(getattr(profile, "default_class", "") or "").strip()
         if harness and default_class:
-            pool_routes.setdefault((harness, default_class), []).append(profile.id)
+            pool_routes.setdefault((harness, default_class, is_operator_profile(profile)), []).append(profile.id)
 
     duplicates: list[dict] = []
     duplicate_ids: set[str] = set()
@@ -540,9 +542,11 @@ async def _check_task_lifecycle_shadow(ctx: DoctorContext) -> CheckResult:
             harness=getattr(profile, "harness", ""),
             default_class=getattr(profile, "default_class", ""),
             lifecycle=lifecycle,
+            template=bool(getattr(profile, "template", False)),
             read_only=bool(getattr(profile, "read_only", False)),
         )
-        matches = sorted(pool_routes.get(route, [])) if route is not None else []
+        key = (*route, is_operator_profile(profile)) if route is not None else None
+        matches = sorted(pool_routes.get(key, [])) if key is not None else []
         if matches:
             duplicate_ids.add(profile.id)
             duplicates.append(
