@@ -73,6 +73,90 @@ from src.scheduler import AssignAction
 STARTING_SHA = "a" * 40
 
 
+@pytest.mark.parametrize("conclusion", ["failure", "success"])
+def test_repair_evidence_preserves_previous_stage_snapshot(conclusion):
+    from src.integration.repair import RepairService
+
+    dossier = {
+        "failed_checks": [{"evidence_id": "prior", "checks": {"unit": "failure"}}],
+        "logs": [{"evidence_id": "prior"}],
+        "hypotheses": [{"evidence_id": "prior"}],
+        "commands_attempted": [{"run_id": "prior-run"}],
+        "budget": {"deadline_at": 130.0, "attempts": 1},
+    }
+    evidence = {
+        "id": "next", "producer_id": "forge", "workflow_id": "workflow",
+        "run_id": "next-run", "attempt": "2", "classification": "conclusive",
+        "conclusion": conclusion, "required_check_version": "checks-v1",
+        "checks": {"unit": conclusion}, "unrelated": "keep out of projections",
+    }
+    before = json.dumps({"dossier": dossier, "evidence": evidence}, sort_keys=True)
+    updated = RepairService._dossier_with_evidence(dossier, evidence, attempts=2)
+
+    assert json.dumps({"dossier": dossier, "evidence": evidence}, sort_keys=True) == before
+    assert updated["failed_checks"] == dossier["failed_checks"] + (
+        [{"evidence_id": "next", "checks": {"unit": "failure"}}]
+        if conclusion == "failure" else []
+    )
+    assert updated["logs"] == dossier["logs"] + [{
+        "evidence_id": "next", "producer_id": "forge", "workflow_id": "workflow",
+        "run_id": "next-run", "attempt": 2,
+    }]
+    assert updated["hypotheses"] == dossier["hypotheses"] + [{
+        "evidence_id": "next", "classification": "conclusive", "conclusion": conclusion,
+    }]
+    assert updated["commands_attempted"] == dossier["commands_attempted"] + [{
+        "workflow_id": "workflow", "run_id": "next-run", "attempt": 2,
+        "required_check_version": "checks-v1",
+    }]
+    assert updated["budget"] == {"deadline_at": 130.0, "attempts": 2}
+
+
+@pytest.mark.parametrize("target_kind", ["parent", "batch"])
+async def test_repair_supervisor_notices_preserve_identity_priority_and_dedup(db, target_kind):
+    from src.integration.repair import RepairService
+
+    if target_kind == "parent":
+        await _seed_parent_operation(db)
+        operation_id = "operation"
+        expected_id, expected_priority = "msg-unstaged-parent-red-operation-failed-check", 80
+        expected_kind = "integration_unstaged_parent_red"
+    else:
+        operation_id = await _seed_root_operation(db, candidate_evidence=False)
+        expected_id, expected_priority = "msg-stuck-batch-batch", 50
+        expected_kind = "integration_stuck_batch"
+    service = RepairService(db)
+    async with db.immediate() as conn:
+        operation = (await conn.execute(select(integration_repair_operations).where(
+            integration_repair_operations.c.id == operation_id,
+        ))).mappings().one()
+        if target_kind == "parent":
+            evidence = (await conn.execute(select(integration_check_evidence))).mappings().one()
+        for now in (100.0, 101.0):
+            if target_kind == "parent":
+                await service._escalate_unstaged_parent_red_on(
+                    conn, operation=operation, evidence=evidence, now=now,
+                )
+            else:
+                await service._escalate_stuck_batch_on(conn, operation, failures=3, now=now)
+        notices = (await conn.execute(select(messages))).mappings().all()
+    assert len(notices) == 1
+    notice = notices[0]
+    assert notice["id"] == expected_id
+    assert notice["project_id"] == "p"
+    assert (notice["from_kind"], notice["from_id"]) == ("system", "integration-repair")
+    assert (notice["to_kind"], notice["to_id"]) == ("session", "supervisor-p")
+    assert notice["priority"] == expected_priority
+    assert notice["created_at"] == 100.0
+    assert notice["archive_after_inject"] == 1
+    assert notice["body_kind"] == expected_kind
+    if target_kind == "parent":
+        assert "generation 3" in notice["body"]
+        assert STARTING_SHA in notice["body"]
+    else:
+        assert "3 consecutive failed repair checks after 99 seconds" in notice["body"]
+
+
 @pytest.mark.parametrize("task_branch", ["aq/integration/batch", "refs/heads/aq/integration/batch"])
 def test_repair_delegate_matches_full_root_ref_after_claim(task_branch):
     from src.integration.repair import RepairService

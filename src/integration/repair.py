@@ -1918,9 +1918,8 @@ class RepairService:
             .on_conflict_do_nothing(index_elements=[messages.c.id])
         )
 
-    @staticmethod
     async def _escalate_unstaged_parent_red_on(
-        conn, *, operation: dict[str, Any], evidence: dict[str, Any], now: float
+        self, conn, *, operation: dict[str, Any], evidence: dict[str, Any], now: float
     ) -> None:
         """Surface a live red the mechanism refused to stage.
 
@@ -1935,36 +1934,22 @@ class RepairService:
         ).mappings().one_or_none()
         if parent is None:
             return
-        await conn.execute(
-            pg_insert(messages)
-            .values(
-                id=f"msg-unstaged-parent-red-{operation['id']}-{evidence['id']}",
-                project_id=parent["project_id"],
-                from_kind="system",
-                from_id="integration-repair",
-                to_kind="session",
-                to_id=f"supervisor-{parent['project_id']}",
-                subject=(
-                    f"Parent {operation['parent_task_id']} is red with no repair stage"
-                ),
-                body=(
-                    f"Run {evidence['run_id']} failed the required checks for "
-                    f"{operation['parent_task_id']} at generation "
-                    f"{evidence['parent_generation']}, head {evidence['parent_head_sha']}, "
-                    f"and operation {operation['id']} could not open a repair stage for it. "
-                    f"No writer is scheduled; this needs an operator."
-                ),
-                created_at=now,
-                priority=80,
-                archive_after_inject=1,
-                body_kind="integration_unstaged_parent_red",
-            )
-            .on_conflict_do_nothing(index_elements=[messages.c.id])
+        await self._stage_notice_on(
+            conn, operation, project_id=parent["project_id"], priority=80,
+            key=f"unstaged-parent-red-{operation['id']}-{evidence['id']}",
+            subject=f"Parent {operation['parent_task_id']} is red with no repair stage",
+            body=(
+                f"Run {evidence['run_id']} failed the required checks for "
+                f"{operation['parent_task_id']} at generation "
+                f"{evidence['parent_generation']}, head {evidence['parent_head_sha']}, "
+                f"and operation {operation['id']} could not open a repair stage for it. "
+                f"No writer is scheduled; this needs an operator."
+            ),
+            now=now, body_kind="integration_unstaged_parent_red",
         )
 
-    @staticmethod
     async def _escalate_stuck_batch_on(
-        conn, operation, *, failures: int, now: float
+        self, conn, operation, *, failures: int, now: float
     ) -> None:
         """Notify the supervisor once after three consecutive counted failures.
 
@@ -1987,27 +1972,16 @@ class RepairService:
             )
         ).scalars().all()
         age_seconds = max(0, int(now - batch["created_at"]))
-        await conn.execute(
-            pg_insert(messages)
-            .values(
-                id=f"msg-stuck-batch-{operation['batch_id']}",
-                project_id=batch["project_id"],
-                from_kind="system",
-                from_id="integration-repair",
-                to_kind="session",
-                to_id=f"supervisor-{batch['project_id']}",
-                subject=f"Integration batch {operation['batch_id']} needs attention",
-                body=(
-                    f"Integration batch {operation['batch_id']} has {failures} consecutive "
-                    f"failed repair checks after {age_seconds} seconds. "
-                    f"Members: {', '.join(members) or '(none)'}"
-                ),
-                created_at=now,
-                priority=50,
-                archive_after_inject=1,
-                body_kind="integration_stuck_batch",
-            )
-            .on_conflict_do_nothing(index_elements=[messages.c.id])
+        await self._stage_notice_on(
+            conn, operation, project_id=batch["project_id"],
+            key=f"stuck-batch-{operation['batch_id']}",
+            subject=f"Integration batch {operation['batch_id']} needs attention",
+            body=(
+                f"Integration batch {operation['batch_id']} has {failures} consecutive "
+                f"failed repair checks after {age_seconds} seconds. "
+                f"Members: {', '.join(members) or '(none)'}"
+            ),
+            now=now, body_kind="integration_stuck_batch",
         )
 
     async def _settle_resolved_parent_dispatch(self, operation_id):
@@ -4298,15 +4272,16 @@ class RepairService:
 
     async def _stage_notice_on(
         self, conn, operation: dict[str, Any], *, key: str, subject: str, body: str,
-        body_kind: str, now: float,
+        body_kind: str, now: float, project_id: str | None = None, priority: int = 50,
     ) -> None:
         """One supervisor message per *key*, however often the condition recurs."""
-        project_id = await self._operation_project_id_on(conn, operation)
+        if project_id is None:
+            project_id = await self._operation_project_id_on(conn, operation)
         await conn.execute(pg_insert(messages).values(
             id=f"msg-{key}", project_id=project_id,
             from_kind="system", from_id="integration-repair", to_kind="session",
             to_id=f"supervisor-{project_id}", subject=subject, body=body,
-            created_at=now, priority=50, archive_after_inject=1, body_kind=body_kind,
+            created_at=now, priority=priority, archive_after_inject=1, body_kind=body_kind,
         ).on_conflict_do_nothing(index_elements=[messages.c.id]))
 
     async def due_stages(
@@ -6345,33 +6320,17 @@ class RepairService:
                 {"evidence_id": evidence["id"], "checks": evidence["checks"]}
             )
         updated["failed_checks"] = failed_checks
-        updated["logs"] = list(updated.get("logs", [])) + [
-            {
-                "evidence_id": evidence["id"],
-                "producer_id": evidence["producer_id"],
-                "workflow_id": evidence["workflow_id"],
-                "run_id": evidence["run_id"],
-                "attempt": int(evidence["attempt"]),
-            }
-        ]
-        updated["hypotheses"] = list(updated.get("hypotheses", [])) + [
-            {
-                "evidence_id": evidence["id"],
-                "classification": evidence["classification"],
-                "conclusion": evidence["conclusion"],
-            }
-        ]
-        updated["commands_attempted"] = list(updated.get("commands_attempted", [])) + [
-            {
-                "workflow_id": evidence["workflow_id"],
-                "run_id": evidence["run_id"],
-                "attempt": int(evidence["attempt"]),
-                "required_check_version": evidence["required_check_version"],
-            }
-        ]
-        budget = dict(updated.get("budget", {}))
-        budget["attempts"] = attempts
-        updated["budget"] = budget
+        metadata = dict(evidence, evidence_id=evidence["id"], attempt=int(evidence["attempt"]))
+        sections = {
+            "logs": ("evidence_id", "producer_id", "workflow_id", "run_id", "attempt"),
+            "hypotheses": ("evidence_id", "classification", "conclusion"),
+            "commands_attempted": ("workflow_id", "run_id", "attempt", "required_check_version"),
+        }
+        for section, fields in sections.items():
+            updated[section] = list(updated.get(section, [])) + [
+                {field: metadata[field] for field in fields}
+            ]
+        updated["budget"] = dict(updated.get("budget", {}), attempts=attempts)
         return updated
 
     async def _current_receipts_on(self, conn, operation) -> list[dict[str, Any]]:
@@ -6386,12 +6345,7 @@ class RepairService:
             )
         rows = (await conn.execute(statement)).mappings().all()
         return [
-            {
-                "id": row["id"],
-                "source_task_id": row["source_task_id"],
-                "disposition": row["disposition"],
-                "after_sha": row["after_sha"],
-            }
+            {key: row[key] for key in ("id", "source_task_id", "disposition", "after_sha")}
             for row in sorted(rows, key=lambda item: item["id"])
         ]
 
