@@ -759,6 +759,9 @@ class TestPromptDelivery:
         assert "FIX what it finds" in prompt
         assert "no scheduler" in prompt and "start of every turn" in prompt
         assert "re-establish it after any restart" in prompt
+        assert "SWEEP-AUTH" in prompt
+        assert "remaining checks and report that single error with its recovery command" in prompt
+        assert "aq session token <session-id> --json" in prompt
         assert "Do not run background inbox polls or shell sleep loops" in prompt
         assert "Do not run `aq prime`" in prompt
         if project_id is None:

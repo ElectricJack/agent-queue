@@ -62,7 +62,7 @@ def _session(name, project_id, task_id):
     }
 
 
-def _run(tmp_path, responses, *args, missing_commands=()):
+def _run(tmp_path, responses, *args, missing_commands=(), session_id=None):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake = tmp_path / "fake.py"
@@ -80,6 +80,8 @@ def _run(tmp_path, responses, *args, missing_commands=()):
         "PATH": str(bin_dir), "HOME": str(tmp_path), "AQ_API_URL": "http://127.0.0.1:9",
         "FAKE_LOG": str(log), "FAKE_RESPONSES": str(tmp_path / "responses.json"),
     }
+    if session_id:
+        env["AQ_SESSION_ID"] = session_id
     proc = subprocess.run(
         [sys.executable, "-I", str(SCRIPT), *args],
         capture_output=True, text=True, timeout=60, env=env, cwd=tmp_path, check=False,
@@ -297,6 +299,55 @@ def test_out_of_scope_read_preserves_auth_exit(tmp_path):
     assert "SWEEP-AUTH aq task list -p rom: task_list denied" in proc.stdout
     assert "OK: nothing stalled" not in proc.stdout
     assert calls == [["aq", "task", "list", "-p", "rom"]]
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_expired_token_reports_one_recovery_command(tmp_path, scoped):
+    response = _reply({
+        "schema_version": 1, "data": None,
+        "error": {"code": "out_of_scope", "message": "invalid or expired token"},
+    }, exit_code=4)
+    command = "task list -p rom" if scoped else "project list"
+    proc, calls = _run(
+        tmp_path, {"aq": {command: response}},
+        *(("--project", "rom") if scoped else ()), session_id="supervisor-id",
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert len(proc.stdout.splitlines()) == 1
+    assert proc.stdout.count("SWEEP-AUTH") == 1
+    assert "local operator" in proc.stdout
+    assert "aq session token supervisor-id --json" in proc.stdout
+    assert "AQ_API_TOKEN with .data.token" in proc.stdout
+    assert "project-scoped supervisor token" not in proc.stdout
+    assert calls == [["aq", *command.split()]]
+
+
+def test_project_scope_error_keeps_project_fix(tmp_path):
+    response = _reply({
+        "schema_version": 1, "data": None,
+        "error": {"code": "out_of_scope", "message": "project_list denied"},
+    }, exit_code=4)
+    proc, calls = _run(tmp_path, {"aq": {"project list": response}})
+    assert proc.returncode == 2
+    assert "re-run with `--project <pid>`" in proc.stdout
+    assert "session token" not in proc.stdout
+    assert calls == [["aq", "project", "list"]]
+
+
+def test_parallel_auth_failures_report_once_and_stop_patrol(tmp_path):
+    tasks = [_task(f"ready-{i}", "READY") for i in range(8)]
+    responses = _scoped_responses(tasks)
+    for task in tasks:
+        responses["aq"][f"task explain --task-id {task['id']}"] = _reply({
+            "schema_version": 1, "data": None,
+            "error": {"code": "out_of_scope", "message": "invalid or expired token"},
+        }, exit_code=4)
+    proc, calls = _run(tmp_path, responses, "--project", "rom", session_id="supervisor-id")
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert len(proc.stdout.splitlines()) == 1
+    assert proc.stdout.count("SWEEP-AUTH") == 1
+    assert "aq session token supervisor-id --json" in proc.stdout
+    assert not any(call[1:3] in (["pool", "status"], ["session", "list"]) for call in calls)
 
 
 def test_unavailable_cli_is_incomplete(tmp_path):

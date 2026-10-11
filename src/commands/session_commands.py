@@ -690,7 +690,9 @@ class SessionCommandsMixin:
         The new token carries the session's own scope — ``session_id``,
         ``project_id``, and ``task_id`` **only for a task session**.  A
         pool worker's scope pins no task (its task changes with every
-        claim), matching what ``_launch_pool_session`` mints.
+        claim), matching what ``_launch_pool_session`` mints. A live named
+        supervisor retains its launch elevation and project/global scope;
+        this also supports operator recovery from an expired credential.
         """
         session, err = await self._resolve_session(args)
         if err:
@@ -700,12 +702,22 @@ class SessionCommandsMixin:
         token_store = getattr(self.orchestrator, "token_store", None)
         if token_store is None:
             return {"success": False, "error": "no token store on this daemon"}
+        supervisor = session.profile_id == "supervisor" and session.lifecycle == "named"
+        if supervisor and (
+            session.state not in {"starting", "running"}
+            or session.desired_state != "running"
+            or session.ended_at is not None
+            or session.task_id is not None
+            or not session.instance_token
+        ):
+            return {"success": False, "error": "a live named supervisor session is required"}
         task_id = session.task_id if session.lifecycle == "task" else None
         token = await token_store.mint(
             session_id=session.id,
             session_instance_token=session.instance_token,
             task_id=task_id,
             project_id=session.project_id,
+            elevated=supervisor,
         )
         return {
             "success": True,

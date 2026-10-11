@@ -4033,8 +4033,8 @@ class Orchestrator(
         aq-surface S2 §4.1 — ``SessionTokenStore.revoke_expired``.  Gated on
         either flag: tokens are minted by sessions, and enforcement can be
         on independently.  Rate-limited to one pass per 60s (the auth path
-        itself is DB-backed with an in-memory cache; the sweep is deletion,
-        not the hot path).
+        itself is DB-backed with an in-memory cache). The sweep first renews
+        still-valid tokens for live supervisors, then deletes expired rows.
         """
         if not (self.config.sessions.enabled or self.config.api_auth.require_session_token):
             return

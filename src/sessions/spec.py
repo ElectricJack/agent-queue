@@ -219,7 +219,12 @@ SUPERVISOR_PATROL_PROMPT = (
     "background inbox poll or shell sleep loop. The patrol only lives as long "
     "as this session; re-establish it after any restart. If your harness has "
     "no scheduler, say so once in your first reply and fall back to sweeping "
-    "at the start of every turn.\n"
+    "at the start of every turn. If the sweep reports SWEEP-AUTH, stop the patrol's "
+    "remaining checks and report that single error with its recovery command. "
+    "Do not retry denied calls or remove AQ_API_TOKEN to bypass authentication. "
+    "An expired credential needs local-operator recovery with "
+    "`aq session token <session-id> --json` and replacement of this session's "
+    "AQ_API_TOKEN with .data.token.\n"
 )
 
 #: Bootstrap for a pool worker session (swarm-work-model §11.3) — no task in

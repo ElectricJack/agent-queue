@@ -2486,7 +2486,7 @@
         "api-scope"
       ],
       "default_arm": true,
-      "digest": "sha256:b0c9f9c1ce2035cdc324f15084d998a09db3f91446b342548d0404dc58a4ab41",
+      "digest": "sha256:d14694c8a2f7b276e3d02960681895d2bf4653d0dd6f44a5cdf1191d3f00b210",
       "imports": [
         "src.api",
         "src.api.auth",
@@ -2503,6 +2503,7 @@
         "src.prime"
       ],
       "markers": [
+        "parametrize",
         "usefixtures"
       ],
       "summary": "Tests for aq-surface Phase S2 session-scoped API auth."
