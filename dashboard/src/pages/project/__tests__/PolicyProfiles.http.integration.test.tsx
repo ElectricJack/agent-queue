@@ -21,12 +21,16 @@ beforeEach(() => {
     if (path === "/api/policy/export") return response({ success: true, checksum: "preview", archive: "", bundle: {}, warnings: [{ item_id: "playbook:system:legacy", playbook_id: "legacy", message: "Skipped legacy: source unavailable, recompile and reactivate legacy" }], files: [{ path: "manifest.json", content: "EXACT MANIFEST" }, { path: "items/0000.json", content: "EXACT PAYLOAD" }] });
     if (path === "/api/policy/diff") {
       const selections = body.selections as Record<string, { scope?: string; overwrite?: boolean }> | undefined;
-      return response({ success: true, name: "Demo profile", project_id: "target", placeholders: [{ name: "branch", description: "Release branch" }], values: { branch: "" }, items: [
+      return response({ success: true, name: "Demo profile", project_id: body.project_id, placeholders: [{ name: "branch", description: "Release branch" }], values: body.values ?? { branch: "" }, items: [
         { id: "template:project:base", name: "base", type: "template", original_scope: "project", scope: selections?.["template:project:base"]?.scope ?? "project", status: "will overwrite", selected: selections?.["template:project:base"]?.overwrite ?? false, requires_scope_choice: false, current_checksum: "existing", diff: "-old policy\n+new policy", state: "copy" },
         { id: "playbook:system:router", name: "router", type: "playbook", original_scope: "system", scope: selections?.["playbook:system:router"]?.scope ?? "project", status: "new", selected: !!selections?.["playbook:system:router"] && selections["playbook:system:router"]?.scope !== "skip", requires_scope_choice: true, current_checksum: null, diff: "", state: "pending review" },
       ] });
     }
-    if (path === "/api/policy/apply") return response({ success: true, applied: ["template:project:base", "playbook:system:router"], reviews: [{ item_id: "playbook:system:router", review_id: "review-1" }], pending_configuration: [] });
+    if (path === "/api/policy/apply") {
+      const selections = body.selections as Record<string, { scope: string; overwrite?: boolean }>;
+      const applied = Object.keys(selections).filter(id => selections[id]!.scope !== "skip");
+      return response({ success: true, applied, reviews: applied.includes("playbook:system:router") ? [{ item_id: "playbook:system:router", review_id: "review-1" }] : [], pending_configuration: [], activated: false });
+    }
     throw new Error(`Unexpected command ${path}`);
   }));
 });
@@ -46,6 +50,7 @@ it("uploads, groups types, opens overwrite diff, fills values and explicitly pla
   expect(screen.getByRole("checkbox", { name: "Overwrite base" })).not.toBeChecked();
   expect(screen.getByRole("checkbox", { name: "Confirm placement for router" })).not.toBeChecked();
   expect(screen.getByRole("combobox", { name: "Placement for router" })).toHaveValue("project");
+  expect(screen.getByRole("button", { name: "Import selected items" })).toBeDisabled();
   await user.click(screen.getByText("Diff for base"));
   expect(screen.getByText(/-old policy/)).toBeVisible();
   await user.type(screen.getByRole("textbox", { name: "Release branch" }), "release");
@@ -57,9 +62,12 @@ it("uploads, groups types, opens overwrite diff, fills values and explicitly pla
   await user.click(screen.getByRole("button", { name: "Import selected items" }));
   expect(await screen.findByText(/Imported 2 items. 1 pending review/)).toBeInTheDocument();
   const applied = requests.find(request => request.path === "/api/policy/apply")!.body;
+  expect(applied.project_id).toBe("target");
   expect(applied.values).toEqual({ branch: "release" });
   expect(applied.selections).toMatchObject({ "template:project:base": { scope: "project", overwrite: true, expected_checksum: "existing" }, "playbook:system:router": { scope: "global", expected_checksum: null } });
   expect(typeof applied.archive).toBe("string");
+  expect(requests.every(request => request.path.startsWith("/api/policy/"))).toBe(true);
+  expect(screen.getByRole("status")).toHaveTextContent("No playbooks activated");
 });
 
 it("previews every export file before offering the download", async () => {
@@ -88,7 +96,7 @@ it("loads the built-in default through the same per-item preview and apply flow"
   await user.selectOptions(screen.getByRole("combobox", { name: "Placement for router" }), "skip");
   await user.click(screen.getByRole("button", { name: "Update preview" }));
   await user.click(screen.getByRole("button", { name: "Import selected items" }));
-  await screen.findByText(/Imported 2 items/);
+  await screen.findByText(/Imported 1 items. 0 pending review/);
   const applied = requests.find(request => request.path === "/api/policy/apply")!.body;
   expect(applied.builtin).toBe("default");
   expect(applied.archive).toBeUndefined();
