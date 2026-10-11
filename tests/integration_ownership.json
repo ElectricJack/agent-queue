@@ -8652,6 +8652,9 @@
         19,
         30
       ]
+    },
+    "src/api/target_scope.py::import from src.database.tables import ask_decision_previews, ask_decisions, conversation_inputs, escalation_messages, escalations, gates, human_asks, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections": {
+      "reason": "Project ownership resolver table import includes integration targets alongside generic human ask targets. Integration table dependencies remain charged; human identity and decision evidence retain generic storage ownership."
     }
   },
   "exclusions": {
@@ -16045,7 +16048,10 @@
     "src/asks/authority.py::authorize_input_actor": "Generic stored human-input identity, source binding, audience and live supervisor checks shared by every ask source. No integration subject, branch, gate or publication state is interpreted; authorize_source and IntegrationAdapter remain independently charged.",
     "src/commands/contracts/ask.py::GATEWAY_COMMANDS": "Generic gateway capability names for human request transport; no integration lifecycle or publication authority. Integration handlers remain independently charged.",
     "src/commands/contracts/ask.py::OPERATOR_COMMANDS": "Generic operator capability names for human request maintenance; no integration lifecycle or publication authority. Integration handlers remain independently charged.",
-    "src/commands/contracts/ask.py::register_ask_contracts": "Generic command registration and result/effect schemas shared by every ask source. Delegates to CommandHandler without interpreting integration state; integration source handlers and the builtin registry remain independently charged."
+    "src/commands/contracts/ask.py::register_ask_contracts": "Generic command registration and result/effect schemas shared by every ask source. Delegates to CommandHandler without interpreting integration state; integration source handlers and the builtin registry remain independently charged.",
+    "src/database/tables.py::human_asks": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+    "src/database/tables.py::ask_decision_previews": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+    "src/database/tables.py::ask_decisions": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

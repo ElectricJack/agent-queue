@@ -286,6 +286,37 @@ def test_renamed_owned_table_cannot_hide_from_table_budget(tmp_path):
     assert "ref_updates" in ownership.inventory(tmp_path, manifest)["tables"]
 
 
+def test_generic_table_in_mixed_import_keeps_integration_schema_charged(tmp_path):
+    manifest = _fixture_manifest(tmp_path)
+    _write(tmp_path, "src/database/tables.py",
+           'human_asks = Table("human_asks", metadata)\n'
+           'integration_subjects = Table("integration_subjects", metadata)\n')
+    _write(tmp_path, "src/integration/use.py",
+           "from src.database.tables import human_asks, integration_subjects\n"
+           "def apply():\n    return human_asks, integration_subjects\n")
+    manifest["generic_dependencies"] = {
+        "src/database/tables.py::human_asks": "Shared human decision evidence.",
+    }
+    manifest["shared"] = {"src/database/tables.py::integration_subjects": {}}
+    result = ownership.inventory(tmp_path, manifest)
+    assert result["unknown"] == []
+    assert set(result["tables"]) == {"integration_subjects"}
+    assert result["spans"]["src/database/tables.py"] == [2]
+    assert result["spans"]["src/integration/use.py"] == [1, 2, 3]
+
+
+def test_human_ask_evidence_keeps_source_authority_charged(report, manifest):
+    for name in ("human_asks", "ask_decision_previews", "ask_decisions"):
+        assert f"src/database/tables.py::{name}" in manifest["generic_dependencies"]
+        assert name not in report["tables"]
+    path = "src/asks/sources.py"
+    source = ownership.python_source(path, (ROOT / path).read_bytes())
+    units = {unit.name: unit for unit in source.units}
+    for name in ("IntegrationAdapter", "authorize_source"):
+        assert f"{path}::{name}" in manifest["shared"]
+        assert set(range(units[name].start, units[name].end + 1)) <= set(report["spans"][path])
+
+
 def test_transition_budget_cannot_reset_to_current_counts(manifest):
     copy = deepcopy(manifest)
     copy["phase"] = "transition"

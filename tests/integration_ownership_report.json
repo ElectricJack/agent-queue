@@ -9723,6 +9723,9 @@
         19,
         30
       ]
+    },
+    "src/api/target_scope.py::import from src.database.tables import ask_decision_previews, ask_decisions, conversation_inputs, escalation_messages, escalations, gates, human_asks, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections": {
+      "reason": "Project ownership resolver table import includes integration targets alongside generic human ask targets. Integration table dependencies remain charged; human identity and decision evidence retain generic storage ownership."
     }
   },
   "shared_state": {
@@ -10380,5 +10383,21 @@
     },
     "owned_total": 155468,
     "reason": "Reviewed generic task display helpers and worker recovery metadata separately from the fenced parent-conflict snapshot. Extracted ordinary context rendering from the charged adapter; immutable baseline, landing measurements, transition allowance and table caps remain unchanged."
+  },
+  "human_ask_storage_review": {
+    "source_revision": "f2b8e4532168ef90bcd3d44480d5e23048f7fc48",
+    "design": "2026-10-11-one-place-to-ask-jack-cohesive-human-communication-in-aq.md section 9",
+    "reason": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+    "generic_dependencies": {
+      "src/database/tables.py::human_asks": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+      "src/database/tables.py::ask_decision_previews": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+      "src/database/tables.py::ask_decisions": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged."
+    },
+    "charged_import": "src/api/target_scope.py::import from src.database.tables import ask_decision_previews, ask_decisions, conversation_inputs, escalation_messages, escalations, gates, human_asks, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections",
+    "retained_authority": [
+      "src/asks/sources.py::IntegrationAdapter",
+      "src/asks/sources.py::authorize_source"
+    ],
+    "budget": "Pinned baseline, 15000-line allowance, table predicate and all caps unchanged."
   }
 }
