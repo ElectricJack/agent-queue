@@ -783,104 +783,53 @@ async def _find_stranded_dependents(
     *,
     candidate_statuses: tuple[TaskStatus, ...] = (TaskStatus.COMPLETED,),
 ) -> list[dict]:
-    """Find candidates held behind a cleaned-up commits-less delivery.
+    """Find candidates blocked by a cleaned-up delivery and empty latest completion.
 
-    A delivered manifest normally makes its source durable enough to survive
-    branch cleanup. Older publisher builds consulted an empty completion first,
-    however, and silently marked that blocker unavailable. The cleanup record
-    is the durable evidence that this is that specific failure mode; a merely
-    completed task with no commits is not enough to warrant an alarm.  Whether
-    the dependent itself is already delivered is git's answer.
+    Older publishers treated such blockers as unavailable despite the durable
+    manifest. Cleanup proves this specific failure; a completed task with no
+    commits alone warrants no alarm. Git decides if the dependent is delivered.
     """
 
-    from src.database.tables import (
-        projects,
-        task_completion_records,
-        task_dependencies,
-        tasks,
-    )
+    from src.database.tables import projects, task_completion_records, task_dependencies, tasks
 
     async with ctx.db._engine.connect() as conn:
-        development = set(
-            (
-                await conn.execute(
-                    select(projects.c.id).where(
-                        projects.c.hierarchical_integration_mode == "development"
-                    )
-                )
-            ).scalars()
-        )
+        development = set((await conn.execute(select(projects.c.id).where(
+            projects.c.hierarchical_integration_mode == "development",
+        ))).scalars())
         if not development:
             return []
-        candidates = (
-            (
-                await conn.execute(
-                    select(tasks.c.id, tasks.c.project_id)
-                    .where(
-                        tasks.c.project_id.in_(development),
-                        tasks.c.status.in_(tuple(status.value for status in candidate_statuses)),
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
+        candidates = await _mapping_rows(conn, select(tasks.c.id, tasks.c.project_id).where(
+            tasks.c.project_id.in_(development),
+            tasks.c.status.in_(tuple(status.value for status in candidate_statuses)),
+        ))
         candidate_projects = {row["id"]: row["project_id"] for row in candidates}
         if not candidate_projects:
             return []
-        links = (
-            (
-                await conn.execute(
-                    select(task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id)
-                    .where(
-                        task_dependencies.c.task_id.in_(candidate_projects),
-                        task_dependencies.c.dep_type.in_(("blocks", "waits-for", "conditional-blocks")),
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
+        links = await _mapping_rows(conn, select(
+            task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id,
+        ).where(
+            task_dependencies.c.task_id.in_(candidate_projects),
+            task_dependencies.c.dep_type.in_(("blocks", "waits-for", "conditional-blocks")),
+        ))
         blocker_ids = {link["depends_on_task_id"] for link in links}
         if not blocker_ids:
             return []
         blockers = {
-            row["id"]: row
-            for row in (
-                (
-                    await conn.execute(
-                        select(tasks.c.id, tasks.c.project_id, tasks.c.status)
-                        .where(tasks.c.id.in_(blocker_ids))
-                    )
-                )
-                .mappings()
-                .all()
-            )
+            row["id"]: row for row in await _mapping_rows(conn, select(
+                tasks.c.id, tasks.c.project_id, tasks.c.status,
+            ).where(tasks.c.id.in_(blocker_ids)))
         }
         completions = {}
-        for row in (
-            (
-                await conn.execute(
-                    select(
-                        task_completion_records.c.task_id,
-                        task_completion_records.c.id,
-                        task_completion_records.c.commits,
-                    )
-                    .where(task_completion_records.c.task_id.in_(blocker_ids))
-                    .order_by(
-                        task_completion_records.c.task_id,
-                        task_completion_records.c.completed_at.desc(),
-                        task_completion_records.c.id.desc(),
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        ):
+        for row in await _mapping_rows(conn, select(
+            task_completion_records.c.task_id, task_completion_records.c.id,
+            task_completion_records.c.commits,
+        ).where(task_completion_records.c.task_id.in_(blocker_ids)).order_by(
+            task_completion_records.c.task_id, task_completion_records.c.completed_at.desc(),
+            task_completion_records.c.id.desc(),
+        )):
             completions.setdefault(row["task_id"], row)
         from src.integration.development import operation_rows_on
         rows = await operation_rows_on(conn, development)
-
 
     stranded = {}
     for row in rows:
@@ -909,16 +858,11 @@ async def _find_stranded_dependents(
                 if candidate_projects.get(dependent_id) != row["project_id"]:
                     continue
                 key = (dependent_id, blocker_id)
-                stranded.setdefault(
-                    key,
-                    {
-                        "project_id": row["project_id"],
-                        "dependent_task_id": dependent_id,
-                        "blocker_task_id": blocker_id,
-                        "delivery_id": row["id"],
-                        "source_sha": source_sha,
-                    },
-                )
+                stranded.setdefault(key, {
+                    "project_id": row["project_id"], "dependent_task_id": dependent_id,
+                    "blocker_task_id": blocker_id, "delivery_id": row["id"],
+                    "source_sha": source_sha,
+                })
     # A dependent whose own work git already finds on its target is not
     # stranded, whatever its blocker's history.  Git answers that, not a
     # delivery row; without an observer nothing is proven and all are listed.
@@ -953,37 +897,18 @@ async def _find_reviewed_file_blocked_batches(ctx: DoctorContext) -> list[dict]:
         integration_repair_stages,
     )
     async with ctx.db._engine.connect() as conn:
-        rows = (
-            (
-                await conn.execute(
-                    select(
-                        batch.c.id.label("batch_id"),
-                        batch.c.project_id,
-                        batch.c.current_revision,
-                        operation.c.id.label("operation_id"),
-                        stage.c.repair_task_id,
-                        stage.c.dossier,
-                    )
-                    .select_from(
-                        batch.join(operation, operation.c.batch_id == batch.c.id).join(
-                            stage,
-                            (stage.c.operation_id == operation.c.id)
-                            & (stage.c.ordinal == operation.c.active_stage),
-                        )
-                    )
-                    .where(
-                        batch.c.lifecycle.in_(("repairing", "human_blocked")),
-                        operation.c.state.in_(("active", "escalated", "human_required")),
-                        stage.c.dossier["reviewed_file_guard"]["invariant"]
-                        .as_string()
-                        .in_(REVIEWED_FILE_GUARDS),
-                    )
-                    .order_by(batch.c.id)
-                )
-            )
-            .mappings()
-            .all()
-        )
+        rows = await _mapping_rows(conn, select(
+            batch.c.id.label("batch_id"), batch.c.project_id, batch.c.current_revision,
+            operation.c.id.label("operation_id"), stage.c.repair_task_id, stage.c.dossier,
+        ).select_from(batch.join(operation, operation.c.batch_id == batch.c.id).join(
+            stage, (stage.c.operation_id == operation.c.id)
+            & (stage.c.ordinal == operation.c.active_stage),
+        )).where(
+            batch.c.lifecycle.in_(("repairing", "human_blocked")),
+            operation.c.state.in_(("active", "escalated", "human_required")),
+            stage.c.dossier["reviewed_file_guard"]["invariant"].as_string()
+            .in_(REVIEWED_FILE_GUARDS),
+        ).order_by(batch.c.id))
     findings = []
     for row in rows:
         guard = row["dossier"]["reviewed_file_guard"]
@@ -994,6 +919,11 @@ async def _find_reviewed_file_blocked_batches(ctx: DoctorContext) -> list[dict]:
             | guard
         )
     return findings
+
+
+async def _mapping_rows(conn, statement):
+    """Materialize diagnostic SELECT results on the caller's connection."""
+    return (await conn.execute(statement)).mappings().all()
 
 
 async def _find_orphaned_prs(ctx, project_ids=None, *, now=None):

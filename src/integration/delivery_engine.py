@@ -12,11 +12,7 @@ def _field(project, name, default=None):
 
 
 def engine_refusal(mode: str, config, *, orchestrator=None) -> str | None:
-    """Match startup selection; a live service is authoritative when available.
-
-    Offline doctor runs have only config. Observation and disabled modes are
-    intentional non-writers and must never be reported as broken delivery.
-    """
+    """Use the live service or offline startup config; observe/disabled need no writer."""
     if mode in {"disabled", "observe", None}:
         return None
     if mode not in DELIVERY_MODES:
@@ -30,8 +26,7 @@ def engine_refusal(mode: str, config, *, orchestrator=None) -> str | None:
     if integration is None:
         return "integration runtime configuration is unavailable"
     if getattr(integration, "git_first", "shadow") == "active":
-        # The train owns development too; the legacy runtime being absent is
-        # expected and is not evidence that a development project is stranded.
+        # The train also delivers development; the absent legacy runtime is expected.
         if orchestrator is not None and getattr(orchestrator, "integration_train", None) is None:
             return "integration.git_first is active but the integration train is not running"
     elif not getattr(integration, "reconciler_active", True):
@@ -61,19 +56,13 @@ async def project_delivery_issue(db, project, config, *, orchestrator=None) -> d
         "with `aq project set <id>`, or explicitly disable integration."
     )
     return {
-        "project_id": project_id,
-        "mode": mode,
-        "repository_id": repository_id,
-        "reason": reason,
-        "remedy": remedy,
+        "project_id": project_id, "mode": mode, "repository_id": repository_id,
+        "reason": reason, "remedy": remedy,
         "detail": f"no delivery engine for this project ({project_id}, mode={mode}): {reason}. {remedy}",
     }
 
 
 async def project_delivery_issues(db, projects, config, *, orchestrator=None) -> list[dict]:
-    issues = []
-    for project in sorted(projects, key=lambda item: _field(item, "id")):
-        issue = await project_delivery_issue(db, project, config, orchestrator=orchestrator)
-        if issue is not None:
-            issues.append(issue)
-    return issues
+    return [issue for project in sorted(projects, key=lambda item: _field(item, "id"))
+            if (issue := await project_delivery_issue(db, project, config,
+                                                     orchestrator=orchestrator)) is not None]
