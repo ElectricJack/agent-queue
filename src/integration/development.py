@@ -180,41 +180,6 @@ def _manifest_members(manifest):
     return [m for m in manifest or [] if isinstance(m, dict) and m.get("task_id")]
 
 
-def _dependency_cycles(dependencies, task_ids):
-    """Return strongly connected components that actually contain a cycle."""
-    index = 0
-    indices, lowlinks, stack, on_stack, cycles = {}, {}, [], set(), []
-
-    def visit(task_id):
-        nonlocal index
-        indices[task_id] = lowlinks[task_id] = index
-        index += 1
-        stack.append(task_id)
-        on_stack.add(task_id)
-        for dependency_id in sorted(dependencies.get(task_id, set()) & task_ids):
-            if dependency_id not in indices:
-                visit(dependency_id)
-                lowlinks[task_id] = min(lowlinks[task_id], lowlinks[dependency_id])
-            elif dependency_id in on_stack:
-                lowlinks[task_id] = min(lowlinks[task_id], indices[dependency_id])
-        if lowlinks[task_id] != indices[task_id]:
-            return
-        component = set()
-        while True:
-            member = stack.pop()
-            on_stack.remove(member)
-            component.add(member)
-            if member == task_id:
-                break
-        if len(component) > 1 or task_id in dependencies.get(task_id, set()):
-            cycles.append(component)
-
-    for task_id in sorted(task_ids):
-        if task_id not in indices:
-            visit(task_id)
-    return cycles
-
-
 def _carried_sources(repair_id, contracts):
     """Every exact revision *repair_id* carries, through the repairs it replaced.
 
@@ -386,23 +351,6 @@ class ResolvedTask:
     @property
     def terminal(self) -> bool:
         return self.status in TERMINAL_STATUSES
-
-
-@dataclass(frozen=True)
-class MergeOutcome:
-    """What merging one source into the candidate produced.
-
-    ``conflicting_files`` names the conflicts a person has to resolve; generated
-    files are never among them under a ``regenerate`` policy.  ``regenerated``
-    names the generated files rebuilt after the merge, and ``regeneration`` is
-    the evidence of a rebuild that failed.
-    """
-
-    ok: bool
-    detail: str = ""
-    conflicting_files: tuple[str, ...] = ()
-    regenerated: tuple[str, ...] = ()
-    regeneration: dict | None = None
 
 
 class DevelopmentPolicy(BaseModel):
