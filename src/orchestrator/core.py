@@ -1811,19 +1811,12 @@ class Orchestrator(
         if self.config.playbooks.enabled:
             from src.playbooks.required import (
                 RequiredPlaybookReconciler,
-                ensure_reviewed_playbook_bundles,
             )
             from src.playbooks.runtime import V2PlaybookRuntime
             from src.timer_service import TimerService
 
             if self._command_handler is None:
                 raise RuntimeError("Playbooks enabled before command handler was wired")
-            written = ensure_reviewed_playbook_bundles(self.config.data_dir)
-            if written:
-                logger.info(
-                    "Seeded or refreshed reviewed playbook bundles in the vault: %s",
-                    ", ".join(written),
-                )
             source_backfill = await self._command_handler._backfill_playbook_sources()
             if source_backfill["restored"]:
                 logger.info("Restored %d retained playbook source(s)", len(source_backfill["restored"]))
@@ -2539,17 +2532,16 @@ class Orchestrator(
                 )
         return status
 
-    async def reconcile_required_playbooks(self) -> dict[str, Any]:
-        """Re-run the startup reconcile: import shipped bundles, repair activations.
+    async def reconcile_required_playbooks(self, *, repair: bool = False) -> dict[str, Any]:
+        """Refresh policy readiness, or explicitly repair required activations.
 
-        For ``aq doctor --check playbooks.reviewed_bundles --fix``, which
-        refreshes the vault bundles and then needs them imported and a broken
-        activation re-pointed without waiting for a restart.
+        Doctor fixes pass ``repair=True`` after refreshing the requested vault
+        bundles, so repair can take effect without waiting for a restart.
         """
         reconciler = getattr(self, "required_playbook_reconciler", None)
         if reconciler is None:
             return self.required_playbook_status
-        self.required_playbook_status = await reconciler.reconcile()
+        self.required_playbook_status = await reconciler.reconcile(repair=repair)
         if self.playbook_manager is not None:
             await self.playbook_manager.apply_required_playbook_status(
                 self.required_playbook_status

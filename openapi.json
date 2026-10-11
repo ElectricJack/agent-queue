@@ -39735,6 +39735,18 @@
             "type": "string",
             "title": "Project Id"
           },
+          "builtin": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "default"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Builtin"
+          },
           "path": {
             "anyOf": [
               {

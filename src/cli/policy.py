@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import click
 
@@ -37,6 +38,29 @@ def execute(ctx: click.Context, command: str, args: dict) -> dict:
     return result
 
 
+def policy_source(value: str) -> dict[str, str]:
+    if value == "default":
+        return {"builtin": "default"}
+    path = Path(value)
+    if not path.exists():
+        raise click.UsageError(f"Policy profile does not exist: {value}")
+    return {"path": str(path.resolve())}
+
+
+def creation_policy(ctx: click.Context, value: str | None) -> str | None:
+    """Choose before creating; scripts retain the explicit no-policy default."""
+    if value is None and not (ctx.obj or {}).get("json") and sys.stdin.isatty():
+        choice = click.prompt(
+            "Policy profile", type=click.Choice(["default", "exported", "none"]), default="default"
+        )
+        value = click.prompt("Exported policy path", type=click.Path(exists=True)) if choice == "exported" else choice
+    if value in (None, "none"):
+        return None
+    reject_json_mode(ctx, "project policy selection", "policy selection is interactive")
+    policy_source(value)  # Validate before project creation has side effects.
+    return value
+
+
 def render_diff(data: dict) -> None:
     for policy_type in sorted({row["type"] for row in data["items"]}):
         console.print(f"[bold]{policy_type}[/]")
@@ -65,7 +89,7 @@ def select_and_apply(
     reject_json_mode(ctx, "policy apply", "the selection workflow displays multiple previews")
     args = {
         "project_id": project_id,
-        "path": str(Path(path).resolve()),
+        **policy_source(path),
         "values": pairs(values),
         "selections": {key: {"scope": value} for key, value in pairs(scope, scopes=True).items()},
         "only": list(only),
@@ -168,7 +192,7 @@ def policy_export(ctx, project_id, path, name, yes):
 
 def selection_options(function):
     for decorator in (
-        click.argument("path", type=click.Path(exists=True)),
+        click.argument("path", type=str),
         click.option("--project", "project_id", required=True),
         click.option("--only", multiple=True, help="Item id to include; repeat to select more."),
         click.option("--skip", multiple=True, help="Item id to omit; repeat to omit more."),
@@ -187,7 +211,7 @@ def selection_options(function):
 def policy_diff(ctx, path, project_id, only, skip, scope, values, no_overwrite):
     args = {
         "project_id": project_id,
-        "path": str(Path(path).resolve()),
+        **policy_source(path),
         "values": pairs(values),
         "only": list(only),
         "skip": list(skip),

@@ -33,6 +33,12 @@
           "project_id": {
             "type": "string"
           },
+          "builtin": {
+            "type": "string",
+            "enum": [
+              "default"
+            ]
+          },
           "path": {
             "type": "string"
           },
@@ -77,6 +83,12 @@
         "properties": {
           "project_id": {
             "type": "string"
+          },
+          "builtin": {
+            "type": "string",
+            "enum": [
+              "default"
+            ]
           },
           "path": {
             "type": "string"

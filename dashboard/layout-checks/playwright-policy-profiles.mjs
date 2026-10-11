@@ -20,7 +20,9 @@ stub.override("POST /api/policy/export", () => ({
   files: [{ path: "manifest.json", content: "EXACT MANIFEST" }, { path: "items/0000.json", content: "EXACT POLICY" }],
   written: [],
 }));
+let previewed;
 stub.override("POST /api/policy/diff", (body) => {
+  previewed = body;
   const rows = [
     { id: template, name: "spec.base", type: "template", original_scope: "project", status: "will overwrite", state: "copy", current_checksum: "existing", diff: "-previous policy\n+new policy" },
     { id: router, name: "router", type: "playbook", original_scope: "system", status: "new", state: "pending review", current_checksum: null, diff: "" },
@@ -76,6 +78,14 @@ try {
   assert.equal(applied.selections[skipped].scope, "skip");
   assert.equal(applied.selections[identical].expected_checksum, "identical");
   await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Import policy", exact: true }).click();
+  await page.getByRole("combobox", { name: "Policy profile", exact: true }).selectOption("default");
+  await page.getByRole("button", { name: "Preview default policy" }).click();
+  await page.getByText("Browser policy", { exact: true }).waitFor();
+  assert.equal(previewed.builtin, "default");
+  assert.equal(previewed.archive, undefined);
+  assert.equal(await page.getByRole("combobox", { name: "Placement for router" }).inputValue(), "project");
+  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Export policy", exact: true }).click();
   assert.equal(await page.getByRole("button", { name: "Download .aqpolicy" }).count(), 0);
   await page.getByRole("button", { name: "Preview exact files" }).click();
@@ -90,7 +100,7 @@ try {
   assert.deepEqual(await readFile(await download.path()), archive);
   assert.deepEqual(errors, []);
   assert.deepEqual(stub.unhandled, []);
-  console.log("Policy profile browser acceptance passed: upload, defaults, scopes, skip, diff, placeholders, fingerprinted apply, pending review, exact export and download.");
+  console.log("Policy profile browser acceptance passed: upload, built-in default, scopes, skip, diff, placeholders, fingerprinted apply, pending review, exact export and download.");
 } finally {
   await browser?.close();
   await stub.close();

@@ -74,3 +74,23 @@ it("previews every export file before offering the download", async () => {
   expect(screen.getByText("EXACT PAYLOAD")).toBeVisible();
   expect(screen.getByRole("button", { name: "Download .aqpolicy" })).toBeEnabled();
 });
+
+it("loads the built-in default through the same per-item preview and apply flow", async () => {
+  const user = userEvent.setup(); mount();
+  await user.click(screen.getByRole("button", { name: "Import policy" }));
+  await user.selectOptions(screen.getByRole("combobox", { name: "Policy profile" }), "default");
+  expect(screen.queryByLabelText("Policy archive")).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Preview default policy" }));
+  await screen.findByText("Demo profile");
+  expect(requests[requests.length - 1]?.body).toEqual({ project_id: "target", builtin: "default" });
+  await user.type(screen.getByRole("textbox", { name: "Release branch" }), "main");
+  await user.click(screen.getByRole("checkbox", { name: "Overwrite base" }));
+  await user.selectOptions(screen.getByRole("combobox", { name: "Placement for router" }), "skip");
+  await user.click(screen.getByRole("button", { name: "Update preview" }));
+  await user.click(screen.getByRole("button", { name: "Import selected items" }));
+  await screen.findByText(/Imported 2 items/);
+  const applied = requests.find(request => request.path === "/api/policy/apply")!.body;
+  expect(applied.builtin).toBe("default");
+  expect(applied.archive).toBeUndefined();
+  expect(applied.selections).toMatchObject({ "playbook:system:router": { scope: "skip" } });
+});

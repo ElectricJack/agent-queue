@@ -277,7 +277,12 @@ class PolicyCommandsMixin:
             if request.archive is not None
             else request.path
         )
-        bundle = request.bundle or await asyncio.to_thread(read_bundle, source)
+        if request.builtin == "default":
+            from src.policy_profiles.builtin import default_policy
+
+            bundle = await asyncio.to_thread(default_policy)
+        else:
+            bundle = request.bundle or await asyncio.to_thread(read_bundle, source)
         await asyncio.to_thread(files, bundle)
         materialized = await asyncio.to_thread(
             adapter.materialize, bundle, request.values, require_values=applying

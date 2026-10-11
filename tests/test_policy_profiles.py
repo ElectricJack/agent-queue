@@ -24,6 +24,43 @@ MORNING = Path("tests/fixtures/playbooks/v2/morning-report")
 FLOW = [{"id": "release", "source": "main", "target": "stable", "type": "request"}]
 
 
+def test_builtin_default_roundtrips_as_an_exported_profile():
+    from src.policy_profiles.builtin import default_policy
+    from src.policy_profiles.service import validate_payload
+
+    bundle = default_policy()
+    assert read_bundle(pack(bundle)) == bundle
+    assert bundle.name == "default"
+    assert {entry.type for entry in bundle.items} == {"playbook", "routing", "template"}
+    for entry in bundle.items:
+        validate_payload(entry.payload)
+
+
+async def test_builtin_default_uses_preview_placement_review_and_no_activation(env):
+    handler, vault, _ = env
+    before = await handler.db.list_playbook_activations()
+    preview = await handler.execute("policy_diff", {"project_id": "target", "builtin": "default"})
+    assert preview["success"], preview
+    assert not (vault / "projects/target/policy").exists()
+    selections = {
+        row["id"]: {
+            "scope": "skip" if row["original_scope"] == "system" else "project",
+            "expected_checksum": row["current_checksum"],
+        }
+        for row in preview["items"]
+    }
+    result = await handler.execute("policy_apply", {
+        "project_id": "target", "builtin": "default", "selections": selections,
+    })
+    assert result["success"], result
+    assert len(result["reviews"]) == 2
+    assert result["pending_configuration"] == ["routing:project:preferences"]
+    assert result["activated"] is False
+    assert await handler.db.list_playbook_activations() == before
+    assert (vault / "projects/target/templates/spec/default.md").is_file()
+    assert not (vault / "system/playbooks/default-assignment-routing.md").exists()
+
+
 def put(root, relative, text):
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)

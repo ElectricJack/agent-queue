@@ -166,6 +166,14 @@ printf '%s\n' \
     > "$E2E_MARKER"
 mkdir -p "$AQ_E2E_HOME/workspaces"
 mkdir -p "$E2E_ONBOARDING_ROOT"
+# This fixture deliberately performs first installation before adding its own
+# vault files. Normal daemon startup never seeds a nonempty operator vault.
+PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 - "$AQ_E2E_HOME" <<'PY'
+import sys
+from src.playbooks.required import install_initial_playbooks
+
+install_initial_playbooks(sys.argv[1])
+PY
 mkdir -p "$E2E_VAULT/agent-types"
 mkdir -p "$E2E_VAULT/formulas"
 mkdir -p "$E2E_BIN"

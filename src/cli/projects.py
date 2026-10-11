@@ -15,7 +15,7 @@ from uuid import uuid4
 import click
 
 from .app import cli, console, _run, _get_client, _handle_errors
-from .envelope import emit, reject_json_mode
+from .envelope import emit
 
 
 def _getval(obj: Any, key: str, default: Any = None) -> Any:
@@ -37,7 +37,7 @@ def project() -> None:
 @project.command("create")
 @click.option("--name", required=True)
 @click.option(
-    "--from-policy", type=click.Path(exists=True), help="Open policy item selection after creation."
+    "--from-policy", help="Policy profile: default, exported path, or none; prompts in a terminal."
 )
 @click.option("--repo-url")
 @click.option("--default-branch")
@@ -52,10 +52,9 @@ def project() -> None:
 @_handle_errors
 def project_create(ctx, name, from_policy, **options):
     from src.cli import app
-    from src.cli.policy import select_and_apply
+    from src.cli.policy import creation_policy, select_and_apply
 
-    if from_policy:
-        reject_json_mode(ctx, "project create --from-policy", "policy selection is interactive")
+    from_policy = creation_policy(ctx, from_policy)
 
     async def create():
         async with app._get_client((ctx.obj or {}).get("api_url")) as client:
@@ -78,6 +77,7 @@ def project_create(ctx, name, from_policy, **options):
 
 
 @project.command("onboard")
+@click.option("--from-policy", help="Policy profile: default, exported path, or none.")
 @click.option("--request-id", help="Durable idempotency key (generated when omitted).")
 @click.option(
     "--source-mode",
@@ -109,6 +109,7 @@ def project_create(ctx, name, from_policy, **options):
 @_handle_errors
 def project_onboard(
     ctx: click.Context,
+    from_policy: str | None,
     request_id: str | None,
     source_mode: str,
     root_id: str,
@@ -128,6 +129,9 @@ def project_onboard(
     private_repo: bool,
 ) -> None:
     """Link, initialize, or clone a repository and register its AQ project."""
+    from src.cli.policy import creation_policy, select_and_apply
+
+    from_policy = creation_policy(ctx, from_policy)
     api_url = ctx.obj.get("api_url") if ctx.obj else None
     args: dict[str, Any] = {
         "request_id": request_id or str(uuid4()),
@@ -182,6 +186,8 @@ def project_onboard(
             f"[dim]{_getval(data, 'canonical_path')}[/]"
         ),
     )
+    if from_policy and result.get("success") is not False:
+        select_and_apply(ctx, from_policy, result["project_id"])
 
 
 @project.command("bind-repository")

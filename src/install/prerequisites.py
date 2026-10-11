@@ -251,6 +251,9 @@ def data_directory_step(
                 f"Grant this user write access to {resolved} (for example `chown -R "
                 f"$USER {resolved}`), then rerun `aq install`.",
             )
+        from src.playbooks.required import install_initial_playbooks
+
+        install_initial_playbooks(str(resolved))
         return StepResult.succeeded(
             STEP_DATA_DIR,
             f"{'using existing' if existed else 'created'} {resolved}",
