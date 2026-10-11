@@ -202,13 +202,9 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "branch_retirements",
         # Human ask/decision ledgers shipped in PostgreSQL revision 91.
         # Legacy files have neither these audit records nor their JSONB checks.
-        "human_asks",
-        "ask_source_aliases",
-        "ask_decision_previews",
-        "approved_document_snapshots",
-        "ask_decisions",
-        "review_feedback_obligations",
-        "ask_reconciliation_cases",
+        "human_asks", "ask_source_aliases", "ask_decision_previews",
+        "approved_document_snapshots", "ask_decisions",
+        "review_feedback_obligations", "ask_reconciliation_cases",
         # Durable record/knowledge tables shipped after SQLite removal in
         # revision 55. Legacy files have no record identities, revisions,
         # informational links or outbox state; backfill/import is explicit.
