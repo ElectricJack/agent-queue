@@ -66,6 +66,7 @@ TASK_TYPE_ICONS: dict[str, str] = {
     "test": "🧪",
     "docs": "📝",
     "chore": "🔧",
+    "operator": "⚙️",
     "research": "🔍",
     "plan": "📋",
     "sync": "🔄",

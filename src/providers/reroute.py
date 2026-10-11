@@ -44,6 +44,7 @@ from dataclasses import asdict, dataclass, field, replace
 from types import SimpleNamespace
 from typing import Any
 
+from src.commands.operator_authority import is_operator_profile
 from src.providers.availability import AVAILABLE, DEGRADED, UNAVAILABLE
 from src.providers.intent import CLASS_ONLY, PINNED, effective_intent
 
@@ -108,6 +109,7 @@ class Rung:
     lifecycle: str = "task"
     enabled: bool = True
     capacity: int = 1
+    operator: bool = False
 
 
 @dataclass(frozen=True)
@@ -240,6 +242,7 @@ def equivalent_rung(
     provider: str,
     *,
     allow_degraded: bool = False,
+    operator: bool = False,
 ) -> tuple[Rung | None, bool]:
     """``(target, exists)`` for *class_id* on *provider*.
 
@@ -251,6 +254,7 @@ def equivalent_rung(
         rung
         for rung in ctx.rungs.values()
         if rung.enabled and rung.class_id == class_id and rung.provider == provider
+        and compatible_worker_role(operator, rung)
     ]
     if not rungs:
         return None, False
@@ -258,6 +262,15 @@ def equivalent_rung(
     if state == AVAILABLE or (allow_degraded and state == DEGRADED):
         return min(rungs, key=_rung_rank), True
     return None, True
+
+
+def compatible_worker_role(operator: bool, target: Rung) -> bool:
+    """Keep operator authority and frontier limits across failover and spill."""
+    from src.commands.operator_authority import OPERATOR_CLASSES, OPERATOR_HARNESSES
+
+    return target.operator == operator and (
+        not operator or (target.class_id in OPERATOR_CLASSES and target.harness in OPERATOR_HARNESSES)
+    )
 
 
 def route_candidates_of(route: Any) -> tuple[tuple[str, str], ...]:
@@ -351,6 +364,7 @@ def plan_sweep(
         provider = ctx.profile_providers.get(cand.profile_id, "")
         state = ctx.state(provider)
         rung = ctx.rungs.get(cand.profile_id)
+        operator = bool(rung and rung.operator)
         class_id = (cand.intelligence_class or "").strip() or (rung.class_id if rung else "")
         decision = Decision(
             task_id=cand.task_id,
@@ -449,6 +463,9 @@ def plan_sweep(
                 )
                 continue
         if to_profile:
+            if not compatible_worker_role(operator, chosen):
+                _hold(decision, "no_equivalent_rung", "target must preserve the worker's operator role and frontier")
+                continue
             target_state = ctx.state(chosen.provider)
             if not (target_state == AVAILABLE or (allow_degraded and target_state == DEGRADED)):
                 _hold(decision, "no_available_target", f"provider {chosen.provider} is {target_state}")
@@ -466,6 +483,8 @@ def plan_sweep(
             for profile_id, candidate_class in routed:
                 option = candidate_rung(ctx, profile_id, candidate_class or class_id)
                 if option is None or option.profile_id == cand.profile_id:
+                    continue
+                if not compatible_worker_role(operator, option):
                     continue
                 if option.provider == provider or option.provider in left:
                     continue
@@ -495,7 +514,7 @@ def plan_sweep(
                 if other == provider or other in left:
                     continue
                 found, exists = equivalent_rung(
-                    ctx, class_id, other, allow_degraded=allow_degraded
+                    ctx, class_id, other, allow_degraded=allow_degraded, operator=operator
                 )
                 any_rung = any_rung or exists
                 if found is not None:
@@ -718,6 +737,7 @@ class ProviderRerouteService:
                 lifecycle=lifecycle,
                 enabled=enabled,
                 capacity=max(1, capacity),
+                operator=is_operator_profile(profile),
             )
         now = self.now()
         states: dict[str, str] = {}

@@ -20,6 +20,7 @@ from src.api.scope import (
     _PLAYBOOK_COMPILER_COMMANDS,
     _TRIAGE_COMMANDS,
 )
+from src.commands.operator_authority import OPERATOR_READS, OPERATOR_WRITES
 from src.profiles.capabilities import (
     HARNESS_TOOL_NAMES,
     NAMESPACES,
@@ -46,6 +47,8 @@ PROFILE_IDS = sorted(p.name for p in DEFAULTS_DIR.iterdir() if (p / "profile.md"
 #: Resolutions are filed for Package 1 in the child plan §14.
 EXPECTED_UNREACHABLE: dict[str, set[str]] = {
     "final-reviewer": {"pr_merge", "reopen_with_feedback"},
+    "operator-claude": set(),
+    "operator-codex": set(),
     "planner": set(),
     "playbook-compiler": set(),
     "pr-merger": {"pr_merge"},
@@ -58,6 +61,9 @@ EXPECTED_UNREACHABLE: dict[str, set[str]] = {
 }
 
 REACHABLE = AGENT_COMMAND_SET | _TRIAGE_COMMANDS | _PLAYBOOK_COMPILER_COMMANDS
+#: An operator template's setup grants are dispatched through ``operator_execute``
+#: under a request-local grant, never by its session token directly.
+OPERATOR_REACHABLE = REACHABLE | OPERATOR_READS | OPERATOR_WRITES
 
 
 def _parsed(profile_id: str):
@@ -67,7 +73,7 @@ def _parsed(profile_id: str):
 def test_every_shipped_profile_is_covered():
     """The pin lists exactly the shipped profiles — no drift either way."""
     assert set(PROFILE_IDS) == set(EXPECTED_UNREACHABLE)
-    assert len(PROFILE_IDS) == 10
+    assert len(PROFILE_IDS) == 12
 
 
 @pytest.mark.parametrize("profile_id", PROFILE_IDS)
@@ -120,11 +126,9 @@ class TestShippedProfile:
     def test_unreachable_command_report_matches_the_pin(self, profile_id):
         """§1.5 report — surfaced, not failed, but pinned so it cannot grow."""
         parsed = _parsed(profile_id)
-        unreachable = (
-            set()
-            if profile_id == "supervisor"
-            else set(parsed.capabilities["aq_commands"]) - REACHABLE
-        )
+        granted = set(parsed.capabilities["aq_commands"])
+        reachable = OPERATOR_REACHABLE if "operator_execute" in granted else REACHABLE
+        unreachable = set() if profile_id == "supervisor" else granted - reachable
         assert unreachable == EXPECTED_UNREACHABLE[profile_id]
 
 

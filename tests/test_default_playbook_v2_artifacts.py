@@ -542,9 +542,11 @@ def _routing_policy_block(source: str) -> str:
 
 #: The ``## Routing policy`` digest of the shipped default router: the
 #: risk-aware revision approved as rev-azure-flare revision 1, with no
-#: priority gate on any lane, as decided in review rev-wise-impact.
+#: priority gate on any lane, as decided in review rev-wise-impact, plus the
+#: ``operator`` kind that routes setup work only to scoped operator rungs
+#: (docs/guides/operator-workers.md).
 SHIPPED_ROUTING_POLICY_SHA256 = (
-    "sha256:42b499b0557a71d07b285ef0c4b913299b72fb795a21c490466d4ca3ed367f33"
+    "sha256:66ba5e4acd3f5a900139067d9bc182dd47c1683a26c162ac8e8840c16ceff421"
 )
 
 ROUTING_BUNDLES = (

@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from src.commands.principal import PrincipalKind, current_principal
+from src.commands.operator_authority import operator_grant
 from src.policy_profiles.archive import files, pack, read_bundle, write_bundle
 from src.policy_profiles.models import (
     Bundle,
@@ -25,7 +26,8 @@ from src.policy_profiles.service import PolicyFiles, apply_files, item
 class PolicyCommandsMixin:
     def _policy_authority(self) -> dict | None:
         principal = current_principal()
-        if principal is not None and principal.kind is not PrincipalKind.LOCAL:
+        if (principal is not None and principal.kind is not PrincipalKind.LOCAL
+                and operator_grant() is None):
             return {"success": False, "error": "Policy profiles require the local operator"}
         return None
 
@@ -319,6 +321,11 @@ class PolicyCommandsMixin:
             request.no_overwrite,
             applying=applying,
         )
+        if operator_grant() is not None and any(
+            row.selected and (row.scope != "project" or row.type == "agent_settings")
+            for row in rows
+        ):
+            raise ValueError("operator policy imports require project scope and cannot edit agents")
         return request, adapter, bundle, materialized, rows, planned
 
     async def _cmd_policy_diff(self, args: dict) -> dict:

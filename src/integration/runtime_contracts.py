@@ -44,7 +44,7 @@ from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from src.integration.models import ArtifactSnapshot, Fence
+from src.integration.models import Fence
 
 SHA_PATTERN = r"^[0-9a-f]{40}$"
 ARTIFACT_PATTERN = r"^sha256:[0-9a-f]{64}$"
@@ -265,10 +265,6 @@ class PolicyArtifactPin(_Frozen):
 
     playbook_id: str = Field(min_length=1)
     artifact_sha256: str = Field(pattern=ARTIFACT_PATTERN)
-
-    @classmethod
-    def from_snapshot(cls, snapshot: ArtifactSnapshot) -> PolicyArtifactPin:
-        return cls(playbook_id=snapshot.playbook_id, artifact_sha256=snapshot.artifact_sha256)
 
 
 class WriterLease(_Frozen):

@@ -39,6 +39,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from src.commands.operator_authority import local_or_operator, operator_grant
 from src.commands.principal import SERVER_OWNED_ARG_KEYS
 from src.playbooks.authoring import PlaybookSource, SourceError
 from src.playbooks.definition import (
@@ -353,6 +354,16 @@ _UniqueReviewLoader.add_constructor(
 class PlaybookV2CommandsMixin:
     """Playbook V2 semantic-graph command methods mixed into CommandHandler."""
 
+    async def _operator_playbook_check(self, scope, scope_identifier, sha, *, enabling=False):
+        grant = operator_grant()
+        if grant is None:
+            return None
+        if scope != "project" or scope_identifier != grant.project_id:
+            return "operator can manage only its project's playbooks"
+        if enabling and not await self._operator_artifact_approved(grant.project_id, sha):
+            return "operator activation requires an approved review of the exact artifact"
+        return None
+
     # ------------------------------------------------------------------
     # Gates
     # ------------------------------------------------------------------
@@ -625,6 +636,7 @@ class PlaybookV2CommandsMixin:
         principal = current_principal()
         if principal is not None and not (
             principal.kind is PrincipalKind.LOCAL or principal.elevated
+            or operator_grant("playbook_v2_import") is not None
         ):
             return {
                 "success": False,
@@ -647,7 +659,17 @@ class PlaybookV2CommandsMixin:
         ):
             return {"success": False, **self._v2_storage_unavailable()}
 
-        directory, error = self._v2_resolve_vault_directory(args.get("path"), "path")
+        bundle = await self._v2_read_import_bundle(args.get("path"))
+        if bundle.get("error"):
+            return bundle
+        return await self._v2_store_artifact(
+            bundle["definition"], bundle["artifact_bytes"],
+            provenance={"validated_bundle": True}, source=bundle["source_text"],
+        )
+
+    async def _v2_read_import_bundle(self, path) -> dict:
+        """Validate every bundle input without storing or activating it."""
+        directory, error = self._v2_resolve_vault_directory(path, "path")
         if error:
             return {"success": False, "error": error}
         assert directory is not None
@@ -683,6 +705,9 @@ class PlaybookV2CommandsMixin:
                 "success": False,
                 "error": "artifact.json is not canonical PlaybookDefinition bytes",
             }
+        scope, identifier = self._v2_scope(definition)
+        if error := await self._operator_playbook_check(scope, identifier, None):
+            return {"success": False, "error": error}
 
         actual_sha = "sha256:" + hashlib.sha256(artifact_bytes).hexdigest()
         try:
@@ -753,9 +778,8 @@ class PlaybookV2CommandsMixin:
                 "error": "source_sha256 does not match source.md bytes",
             }
 
-        return await self._v2_store_artifact(
-            definition, artifact_bytes, provenance={"validated_bundle": True}, source=source_text
-        )
+        return {"definition": definition, "artifact_bytes": artifact_bytes,
+                "source_text": source_text}
 
     async def _v2_store_artifact(
         self,
@@ -1566,6 +1590,10 @@ class PlaybookV2CommandsMixin:
         if error:
             return {"error": error}
         scope, scope_identifier = self._v2_scope(target)
+        if error := await self._operator_playbook_check(
+            scope, scope_identifier, artifact_sha256, enabling=args.get("enabled", True),
+        ):
+            return {"error": error}
         from src.commands.principal import PrincipalKind, current_principal
 
         principal = current_principal()
@@ -1700,14 +1728,12 @@ class PlaybookV2CommandsMixin:
         artifact hash. Active definitions and unfinished work are never deleted.
         """
         from sqlalchemy import delete, select
-        from src.commands.principal import PrincipalKind, current_principal
         from src.database.tables import (
             playbook_activations, playbook_pending_events, playbook_v2_runs,
             integration_repair_operations, projects,
         )
 
-        principal = current_principal()
-        if principal is not None and principal.kind is not PrincipalKind.LOCAL:
+        if not local_or_operator("playbook_delete"):
             return {"error": "playbook deletion requires local operator authority"}
         if not self._v2_activation_writes_enabled():
             return {"error": V2_WRITES_DISABLED_ERROR}
@@ -1715,6 +1741,8 @@ class PlaybookV2CommandsMixin:
         sha = _clean_str(args, "artifact_sha256")
         scope = args.get("scope")
         identifier = args.get("scope_identifier")
+        if error := await self._operator_playbook_check(scope, identifier, sha):
+            return {"error": error}
         if (not name or not sha or _validate_sha(sha, "artifact_sha256")
                 or scope not in {"system", "project", "agent_type"}
                 or not isinstance(identifier, str)
@@ -1808,6 +1836,10 @@ class PlaybookV2CommandsMixin:
             return {"error": f"Playbook '{playbook_id}' not found"}
         row = rows[0]
         artifact_sha256 = row.get("active_artifact_sha256") or None
+        if error := await self._operator_playbook_check(
+            row["scope"], row.get("scope_identifier"), artifact_sha256, enabling=enabled,
+        ):
+            return {"error": error}
         if enabled and not artifact_sha256:
             return {
                 "error": (

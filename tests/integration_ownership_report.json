@@ -9635,6 +9635,9 @@
     },
     "src/doctor/stall_checks.py::_completed_undelivered_findings": {
       "reason": "Stall-sweep line over the integration.completed_undelivered doctor read: reports COMPLETED task branches nothing will deliver or retire under a bounded budget. Read-only; no storage, fence or publication authority."
+    },
+    "src/commands/operator_commands.py::OperatorCommandsMixin._operator_repository_probes": {
+      "reason": "Operator preflight's read-only GitHub prerequisites for integration setup: the project integration repository, promotion-flow branches, online runner labels and trust-manifest App identities. Reports blockers only; no integration storage, lifecycle or ref writes."
     }
   },
   "shared_state": {
@@ -10014,7 +10017,14 @@
     "src/database/queries/agent_cron_queries.py::AgentCronQueriesMixin.reconcile_agent_cron": "Recurring prompt coalescing and message transport diagnostics; last_delivery_status describes terminal submission, not code integration.",
     "src/database/tables.py::agent_cron": "Session-owned recurring prompts and message delivery diagnostics introduced by revision 86; no integration state, ref mutations or replay journal.",
     "src/database/tables.py::agent_cron['last_delivery_status']": "Recurring prompt terminal delivery status, unrelated to code delivery.",
-    "src/prime/sections.py::_build_task_context_body": "Ordinary task context, recovery observations, comments and attachments, including reuse of the shared provider handoff formatter. No integration assignment, lifecycle or authority is read or rendered here; the live fenced parent-conflict snapshot remains in the independently charged build_task_context_section adapter, and the shared handoff formatter remains charged."
+    "src/prime/sections.py::_build_task_context_body": "Ordinary task context, recovery observations, comments and attachments, including reuse of the shared provider handoff formatter. No integration assignment, lifecycle or authority is read or rendered here; the live fenced parent-conflict snapshot remains in the independently charged build_task_context_section adapter, and the shared handoff formatter remains charged.",
+    "src/commands/operator_authority.py::OPERATOR_FORBIDDEN": "Operator-worker denylist of human gate and delivery command names; it only refuses dispatch. The named commands keep their own charged handlers; no integration storage, lifecycle or ref authority.",
+    "src/commands/operator_authority.py::OPERATOR_READS": "Operator-worker command-name allowlist; it grants nothing itself. Every named integration command keeps its own charged handler, authorization and storage; no integration storage, lifecycle or ref authority.",
+    "src/commands/operator_authority.py::OPERATOR_WRITES": "Operator-worker command-name allowlist; it grants nothing itself. Every named integration command keeps its own charged handler, authorization and storage; no integration storage, lifecycle or ref authority.",
+    "src/commands/operator_authority.py::HUMAN_DECISION_COMMANDS": "Names operator-worker setup commands that require an exact recorded human decision before dispatch; the named commands keep their own charged handlers. No integration storage, lifecycle or ref authority.",
+    "src/commands/operator_authority.py::PROJECT_SETUP_FIELDS": "edit_project argument-name allowlist for operator workers; the charged edit_project handler validates and writes every field. No integration storage, lifecycle or ref authority.",
+    "src/commands/operator_commands.py::OperatorCommandsMixin._operator_action": "Validates one operator-worker action against the command's schema, project target scope, profile grant and human decision; dispatch goes through the charged command handler. No integration storage, lifecycle or ref authority.",
+    "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

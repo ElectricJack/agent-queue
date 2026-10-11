@@ -165,6 +165,7 @@ version: 1
 class_order: [fast-off, fast-low, fast-high, standard-low, standard-high, deep-low, deep-high]
 default_kind: feature
 kinds:
+  operator: {class: standard-high, max_class: deep-high, prefer_harnesses: [codex]}
   design:   {class: deep-high,     max_class: deep-high,     lane: code-design}
   art:      {class: deep-high,     max_class: deep-high,     lane: art-design}
   research: {class: standard-high, max_class: deep-high}
@@ -271,6 +272,11 @@ with those.
   approved work into tasks. `research` is an investigation whose deliverable
   is findings rather than a change. `feature`, `bugfix`, `refactor`, `test`,
   `docs`, `chore` and `sync` are what they say.
+  `operator` is project setup, trust/CI checks, integration cutover, promotion
+  configuration, playbook lifecycle, provider diagnostics and policy imports.
+  It runs only on scoped operator profiles at standard-high or deep-high on
+  Claude or Codex. Those profiles are never ordinary worker candidates.
+  Human review decisions, deployment, money and live trading remain human work.
 - `intelligence_class`: one of `allowed_classes`. Keep the `class_hint` when
   the task has one. Default to `standard-high` for ordinary feature
   implementation, debugging, refactoring, tests, and coordinated changes

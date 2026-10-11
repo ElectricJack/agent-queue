@@ -15,6 +15,8 @@ from src.api.auth import RequestScope
 AGENT_COMMAND_SET: frozenset[str] = frozenset(
     {
         "prime",
+        "operator_execute",
+        "operator_preflight",
         "dry_run_playbook",
         "get_schema",
         "task_show",
