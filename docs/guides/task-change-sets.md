@@ -3,7 +3,7 @@
 Supervisors stage any change involving multiple tasks as one proposal. This
 prevents a scheduler tick from claiming a newly created task before its blockers
 have been added. Nothing in a proposal is live until the human decision and
-`task_batch_commit` succeed; creates, edits, dependencies, controls and comments
+its source application succeed; creates, edits, dependencies, controls and comments
 then become visible together.
 
 Preview a YAML or JSON file, then stage the same file:
@@ -64,9 +64,14 @@ containers; `parent-child` and valid `waits-for` membership keep their existing
 semantics. Routing profiles are chosen by the router; a proposal may carry hints
 but cannot choose a profile.
 
-The existing proposal preview presents the diff and comments. The pipeline's
-human gate must await the exact proposal id and resolve `approve` or `approved`.
-Then the pipeline commits it, or an authorized supervisor runs:
+The proposal preview presents the diff and comments. Approve and Discard first
+prepare a decision packet for the current proposal digest, project and gate;
+the confirmation applies that exact packet. Approval resolves the bound gate
+and materializes the proposal in one transaction. A materialization conflict
+rolls back the approval too. Decline discards the proposal and cancels its gate,
+retaining any approval hold without emitting an approval release.
+
+An authorized supervisor can still replay an already approved materialization:
 
 ```bash
 aq task batch-commit --proposal-id prop-abc123
@@ -80,3 +85,14 @@ proposal against the current graph. A failed commit stays ready and rolls back
 all changes; replaying a successful commit returns the original created ids.
 The proposal read endpoint retains its receipt, and `task.change_set_committed`
 records the actor, source, reviewed diff and receipt in the same transaction.
+
+Human command callers use `ask_prepare_decision` with the ask's
+`decision_generation`, `source_fingerprint` and `feedback_version`, then
+`ask_decide` with the returned preview id and a stable idempotency key.
+`gate_show` exposes the bound ask. An unversioned human `gate_resolve` refuses
+with the ask link instead of interpreting an actor label or arbitrary reply.
+Generic human gates additionally require producer-owned `approval_hold_v1`
+semantics and complete context. Missing context leaves an owned request with
+no decision controls. Decline keeps waiters blocked; `gate_reopen` requires the
+current version and creates a new decision generation. Technical and routing
+gates retain their specialized mechanisms.

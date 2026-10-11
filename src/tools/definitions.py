@@ -377,6 +377,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "gate_create": "task",
     "gate_list": "task",
     "gate_show": "task",
+    "gate_reopen": "task",
     "gate_resolve": "task",
     # explain + ready frontier — work-graph WG-4.  The frontier is a
     # project-scoped query, so it belongs to the ``project`` group: that is
@@ -4152,6 +4153,10 @@ _ALL_TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "expected": {"type": "object"},
+                "preview_id": {"type": "string"},
+                "idempotency_key": {"type": "string"},
+                "overall_note": {"type": "string"},
                 "run_id": {
                     "type": "string",
                     "description": "The playbook run ID to resume",
@@ -7288,8 +7293,12 @@ _ALL_TOOL_DEFINITIONS.extend(
                 "additionalProperties": False,
             },
         },
+        {"name": "gate_reopen", "description": "Operator reopens a declined approval as a new generation.",
+         "input_schema": {"type": "object", "properties": {
+             "gate_id": {"type": "string"}, "expected": {"type": "object"}},
+             "required": ["gate_id", "expected"], "additionalProperties": False}},
         {'name': 'ask_prepare_decision',
-         'description': 'Prepare a ten-minute review packet preview without applying its decision.',
+         'description': 'Prepare a ten-minute source decision packet preview without applying its decision.',
          'input_schema': {'type': 'object',
                           'properties': {'ask_id': {'type': 'string'},
                                          'expected': {'type': 'object',
@@ -7309,7 +7318,7 @@ _ALL_TOOL_DEFINITIONS.extend(
                           'required': ['ask_id', 'expected', 'option_key'],
                           'additionalProperties': False}},
         {'name': 'ask_decide',
-         'description': 'Accept the exact prepared review packet and report durable application state.',
+         'description': 'Accept the exact prepared source packet and report durable application state.',
          'input_schema': {'type': 'object',
                           'properties': {'ask_id': {'type': 'string'},
                                          'expected': {'type': 'object',
@@ -7729,6 +7738,10 @@ _ALL_TOOL_DEFINITIONS.extend(
             "input_schema": {
                 "type": "object",
                 "properties": {
+                    "expected": {"type": "object", "additionalProperties": True},
+                    "preview_id": {"type": "string"},
+                    "option_key": {"type": "string"},
+                    "prepare": {"type": "boolean"},
                     "escalation_id": {"type": "string"},
                     "reply_id": {"type": "string"},
                     "expected_revision": {"type": "integer", "minimum": 0},
@@ -9011,4 +9024,29 @@ _ALL_TOOL_DEFINITIONS.extend([
     {"name": "operator_preflight",
      "description": "Check all planned operator inputs and report every blocker together before mutations.",
      "input_schema": _OperatorPreflightArgs.model_json_schema()},
+])
+
+
+from src.commands.contracts.builtin import EnsureSpecIngestArgs as _EnsureSpecIngestArgs  # noqa: E402
+
+_TOOL_CATEGORIES.update({
+    "ensure_spec_ingest": "task", "approved_spec_packet": "task",
+    "spec_ingest_reconcile": "task", "spec_ingest_legacy_inventory": "task",
+})
+_ALL_TOOL_DEFINITIONS.extend([
+    {"name": "ensure_spec_ingest",
+     "description": "Ensure one role task per applied approval decision, including archived receipts.",
+     "input_schema": _EnsureSpecIngestArgs.model_json_schema()},
+    {"name": "approved_spec_packet",
+     "description": "Read the immutable document and feedback of the live held ingestion role.",
+     "input_schema": _EnsureSpecIngestArgs.model_json_schema()},
+    {"name": "spec_ingest_reconcile",
+     "description": "Replay at most twenty pending approved-spec dispatches; operator/service only.",
+     "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "spec_ingest_legacy_inventory",
+     "description": "Inventory path-only ingestion assignments for explicit operator reconciliation.",
+     "input_schema": {"type": "object", "additionalProperties": False,
+                      "properties": {"project_id": {"type": "string"},
+                                     "after_id": {"type": "string"}},
+                      "required": ["project_id"]}},
 ])

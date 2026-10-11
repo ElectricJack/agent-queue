@@ -1,12 +1,12 @@
 ---
 playbook_id: default-pipeline
-artifact_sha256: sha256:d3fe27a59ae4c3644ffb04aad79f6318eed241980325646d7832f2ee7ff166ce
-source_sha256: sha256:a34ae4f0a406f1f171861246943dc023eb9dae1a955981eba2320d996afd86fa
-contract_fingerprint: sha256:82a81a1588d65c999b24e78bbf360fd2aa86f5f0612c65a74806262c4fa07fcd
+artifact_sha256: sha256:afd035806c1b0a36d6927b638359b8e210bd8c4dbc82307f94af0b1cc27945d0
+source_sha256: sha256:92af62c6c1142f7888b290fc61b0483977c46cb49910f7d21f7357f4ac51ca10
+contract_fingerprint: sha256:0d87be85423d42e1945155c4bf76d2c58b0fcd04052bfafaae419a36972d06c3
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
-  - ensure_task
+  - ensure_spec_ingest
   - gate_create
   - task_batch_commit
   harness_tools: []
@@ -22,11 +22,7 @@ fingerprint, referenced profiles, and declared capabilities. Import and activati
 perform structural, scope, contract, profile, and event validation mechanically.
 Policy approvals, when desired, belong in a custom playbook rather than AQ core.
 
-Recorded 2026-09-11 for policy-simplification task agile-glacier.2 from the
-supervisor-corrected live source. The commit rule dispatches only for a `human`
-gate resolved `approve` or `approved` that names a proposal, and hands the gate
-and project to `task_batch_commit`, which re-checks the exact decision. Every
-`not_approved`, `rejected` or `runtime_error` outcome reaches a `failed`
-terminal. Spec ingest is a role task; its `standard-high` input is a class hint,
-and the role profile supplies its execution class. Supersedes the
-integration-only artifact `sha256:7881d3089a34…`.
+Updated for H03, approved implementation review `rev-sharp-zenith` revision 1.
+The ingestion rule consumes immutable decision identity through `ensure_spec_ingest`.
+The role and dedup key are server-owned, with one task receipt per decision.
+The other two rules retain their exact human-gate checks and failure terminals.

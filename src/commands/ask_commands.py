@@ -1,18 +1,98 @@
-"""CommandHandler-owned review decision boundary. No caller-authored authority fields."""
+"""CommandHandler-owned human decision boundary. No caller-authored authority fields."""
 
 from dataclasses import asdict
+from contextlib import asynccontextmanager
 
 from src.asks.adapters import AdapterRegistry
 from src.asks.models import AskError, DecisionIntent, SourceIdentity, SourceVersion, digest
 from src.asks.operations import ReviewOperations
 from src.asks.review import ReviewAdapter, authenticated_actor
 from src.asks.service import AskService
+from src.asks.standalone import StandaloneSpecAdapter
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 
 
 class AskCommandsMixin:
     def _ask_service(self):
-        return AskService(self.db, AdapterRegistry([ReviewAdapter(self._review_service())]))
+        from src.asks.sources import source_adapters
+        return AskService(self.db, AdapterRegistry([
+            ReviewAdapter(self._review_service()), StandaloneSpecAdapter(self.db),
+            *source_adapters(self),
+        ]))
+
+    async def _apply_ask_decision(self, decision):
+        if decision["packet"]["source"]["kind"] not in {"review", "standalone_spec"}:
+            from src.asks.source_operations import apply
+            try:
+                result = await apply(self, decision)
+            except AskError as exc:
+                # The immutable decision may already exist when a current
+                # source/authority check refuses application. Keep its identity
+                # and actual durable state in the response for reconciliation.
+                async with self.db.immediate() as conn:
+                    ask = await self.db.get_ask(decision["ask_id"], conn=conn)
+                return {"decision_id": decision["id"],
+                        "application_state": ask["application_state"],
+                        "error_code": exc.code, "error": str(exc), "fields": exc.fields}
+            if result["application_state"] == "applied":
+                await self._finish_ask_escalation(decision, result)
+            return result
+        if not decision["snapshot_id"]:
+            return await ReviewOperations(self._review_service()).apply(decision["id"])
+        from src.asks.ingestion import dispatch
+        receipt = await dispatch(self.db, decision, self.orchestrator.bus.emit,
+                                 self.config.vault_root)
+        return {"decision_id": decision["id"], "application_state": "applied",
+                "ingestion_state": "acknowledged" if (receipt or {}).get("task_id") else "pending"}
+
+    async def _publish_source_application(self, decision, result):
+        """Best-effort wakeups after the domain receipt has committed."""
+        import logging
+        source = decision["packet"]["source"]
+        if (source["kind"] not in {"gate", "proposal"}
+                or result["application_state"] != "applied"):
+            return
+        if decision["option_key"] == "decline":
+            if source["kind"] == "proposal":
+                await self._emit_proposal_event("proposal.status_changed", {
+                    "project_id": source["project_id"], "proposal_id": source["key"],
+                    "status": "discarded",
+                })
+            return
+        receipt = result["receipt"]
+        try:
+            gate = await self.db.get_gate(receipt["gate_id"])
+            await self.db.log_blocked_flips(set(receipt.get("flipped", [])))
+            await self.db._notify_ready([(tid, "unblocked") for tid in receipt.get("ready_task_ids", [])])
+            await self.orchestrator.bus.emit("gate.resolved", {
+                "gate_id": gate["id"], "project_id": source["project_id"],
+                "resolved_by": decision["actor_id"], "resolution": decision["option_key"],
+                "gate_type": "human", "await_id": gate["await_id"],
+                "unblocked_task_ids": receipt.get("flipped", []), "decision_id": decision["id"],
+            })
+            await self.orchestrator._emit_blocked_flips(set(receipt.get("flipped", [])),
+                                                      reason="gate:resolved")
+        except Exception:
+            logging.getLogger(__name__).exception("Source receipt committed; notification failed")
+
+    async def _finish_ask_escalation(self, decision, result):
+        """Project a confirmed source receipt without closing over a newer human reply."""
+        actor = decision["packet"]["actor"]
+        escalation_id = actor["provenance"].get("escalation_id")
+        if not escalation_id:
+            return
+        current = await self.db.get_escalation(escalation_id)
+        revision = decision["packet"]["domain"]["escalation_revision"]
+        if current["state"] == "reply_received" and current["revision"] == revision:
+            current = await self.db.transition_escalation(escalation_id,
+                expected_revision=revision, new_state="resolving") or current
+        if current["state"] == "resolving" and current["revision"] == revision + 1:
+            current = await self.db.transition_escalation(escalation_id,
+                expected_revision=revision + 1, new_state="resolved", outcome="human",
+                terminal_outcome=f"Applied {decision['option_key']} to the bound source.",
+                terminal_evidence={"decision_id": decision["id"], "receipt": result["receipt"]},
+            ) or current
+        result["escalation"] = current
 
     async def _ask_source_for_caller(self, ask_id, *, conn):
         ask = await self.db.get_ask(str(ask_id), conn=conn)
@@ -105,12 +185,46 @@ class AskCommandsMixin:
                 "ask.context_missing", "A complete expected version and decision are required"
             ) from None
 
+    @asynccontextmanager
+    async def _ask_transaction(self, source, service):
+        if source.kind == "proposal":
+            from src.commands.task_changes import boundary
+            async def lock(conn):
+                await service.adapters.get(source.kind).snapshot(source, conn=conn)
+            async with boundary(self.db, source.project_id, source_lock=lock) as conn:
+                yield conn
+        else:
+            async with self.db.immediate() as conn:
+                yield conn
+
+    async def _publish_source_ask(self, source):
+        service = self._ask_service()
+        async with self._ask_transaction(source, service) as conn:
+            result = await service.publish(source, legacy=True, conn=conn)
+        return result.ask
+
+    async def _legacy_ask_decision(self, source, args, *, option_key):
+        ask = await self._publish_source_ask(source)
+        if not args.get("expected") or not args.get("preview_id"):
+            return {"success": False, "error_code": "ask.context_missing",
+                    "error": "Open this request, review its effects and prepare a versioned decision",
+                    "ask_id": ask["id"], "ask_url": f"/asks/{ask['id']}",
+                    "expected": {k: ask[k] for k in (
+                        "decision_generation", "source_fingerprint", "feedback_version")}}
+        return await self._cmd_ask_decide({
+            "ask_id": ask["id"], "expected": args["expected"], "option_key": option_key,
+            "overall_note": args.get("overall_note", ""), "preview_id": args["preview_id"],
+            "idempotency_key": args.get("idempotency_key"),
+        })
+
     async def _cmd_ask_prepare_decision(self, args):
         try:
             intent, actor = self._ask_intent(args), authenticated_actor()
+            service = self._ask_service()
             async with self.db.immediate() as conn:
                 _, source = await self._ask_source_for_caller(args.get("ask_id"), conn=conn)
-                preview = await self._ask_service().prepare_decision(
+            async with self._ask_transaction(source, service) as conn:
+                preview = await service.prepare_decision(
                     source, actor, intent, conn=conn
                 )
             return {"success": True, "preview": preview, "expected": asdict(intent.expected)}
@@ -132,8 +246,9 @@ class AskCommandsMixin:
                 )
             async with self.db.immediate() as conn:
                 ask, source = await self._ask_source_for_caller(args.get("ask_id"), conn=conn)
+            service = self._ask_service()
+            async with self._ask_transaction(source, service) as conn:
                 # Authorize before inserting any evidence, while holding source before ask.
-                service = self._ask_service()
                 adapter = service.adapters.get(source.kind)
                 snap = await adapter.snapshot(source, conn=conn)
                 existing = await self.db.get_ask_decision_by_request(
@@ -164,7 +279,13 @@ class AskCommandsMixin:
                     idempotency_key=key,
                     evidence_entry_id=evidence_id,
                 )
-            result = await ReviewOperations(self._review_service()).apply(decision["id"])
+            if source.kind == "proposal":
+                notifications = getattr(service.adapters.get("proposal"), "notifications", None)
+                if notifications:
+                    await self._publish_committed(*notifications)
+            result = await self._apply_ask_decision(decision)
+            if created:
+                await self._publish_source_application(decision, result)
             return {
                 "success": result["application_state"] == "applied",
                 "created": created,
@@ -190,8 +311,12 @@ class AskCommandsMixin:
             decision = await self.db.get_ask_decision(str(args.get("decision_id")), conn=conn)
         if not decision:
             return {"success": False, "error_code": "ask.not_found", "error": "Decision not found"}
-        result = await ReviewOperations(self._review_service()).apply(decision["id"])
-        return {"success": result["application_state"] == "applied", **result}
+        try:
+            result = await self._apply_ask_decision(decision)
+            return {"success": result["application_state"] == "applied", **result}
+        except AskError as exc:
+            return {"success": False, "error_code": exc.code, "error": str(exc),
+                    "fields": exc.fields}
 
     async def _cmd_review_feedback_complete(self, args):
         """Record evidence for one filed obligation; this never approves a review."""

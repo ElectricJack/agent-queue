@@ -2166,12 +2166,14 @@
         "agent-questions"
       ],
       "default_arm": true,
-      "digest": "sha256:686962e753824ea8ca4e7c256fd79e8a08ecf9a88d8c338548efc2fa0044b02e",
+      "digest": "sha256:3ea9b0337b1af7c0a6431377297d1f9c37f5922a2b2ba87167e0806a033e764a",
       "imports": [
         "src.api.auth",
         "src.api.dependencies",
         "src.api.execute",
+        "src.asks.models",
         "src.commands.handler",
+        "src.commands.principal",
         "src.config",
         "src.database",
         "src.event_bus",
@@ -2246,9 +2248,10 @@
         "agent-questions"
       ],
       "default_arm": true,
-      "digest": "sha256:f3768e392a30ed8cab38e2eda42c93e65199bafe73353c05c98756d2da13ce1b",
+      "digest": "sha256:1b6a445ba3511e51afb1ea96788bae0ea2de4c6569e89feaf59215bf3b72e270",
       "imports": [
         "src.api.models.agent",
+        "src.asks.models",
         "src.commands.handler",
         "src.config",
         "src.database",
@@ -2267,7 +2270,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Question routing against isolated SQLite; only the terminal provider is fake."
+      "summary": "Question routing against disposable PostgreSQL; only the terminal provider is fake."
     },
     "tests/test_agent_queue_train_policy.py": {
       "areas": [
@@ -2902,11 +2905,13 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:35b7e49660d622a11effd1a54b561092360b5d61337cbe67b898007eae1e1bab",
+      "digest": "sha256:a1f57067bd626e419ced8eb175d3bb4006911bce6aedb27fc20b33d1b0e8f665",
       "imports": [
         "src.api.models",
         "src.asks.operations",
-        "src.database.tables"
+        "src.database.queries.proposal_queries",
+        "src.database.tables",
+        "src.models"
       ],
       "markers": [
         "parametrize"
@@ -2918,11 +2923,13 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:5084c9ef970ea054592f50cd90751e5b4e58bbf7fe94fdbf28970ea73c0244bc",
+      "digest": "sha256:517248d1179abe8b8f162746f9a0bd034c3d31b392de65651e8b317be8ccda0c",
       "imports": [
         "src.asks.adapters",
         "src.asks.models",
-        "src.database.tables"
+        "src.commands.principal",
+        "src.database.tables",
+        "src.models"
       ],
       "markers": [
         "parametrize"
@@ -5226,12 +5233,14 @@
         "shipped-playbooks"
       ],
       "default_arm": true,
-      "digest": "sha256:fa456e37e074865fdbc6223af619e859b712e2c438bb43671397b6a51f9b7e25",
+      "digest": "sha256:21203ec6d0e8937d284eae76d5bfe5d5b523a4e2392fa392fa2e510c49da08f7",
       "imports": [
+        "src.asks.operations",
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.database.queries.proposal_queries",
+        "src.database.tables",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
@@ -9016,8 +9025,11 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:a18a7689cbe5ae206959f27af16ce65dbb2855a18133d0e7d23467ed50e0e0e4",
+      "digest": "sha256:2e4f2b2cab46bc699ce2d736d518229dad7d01a73de6e00c210b46191c4754ba",
       "imports": [
+        "src.asks.models",
+        "src.commands.handler",
+        "src.config",
         "src.database",
         "src.database.tables",
         "src.integration.gates",
@@ -11548,14 +11560,14 @@
         "migrations"
       ],
       "default_arm": false,
-      "digest": "sha256:489b4466cf95b67d0a917615aab996d6ea6b99c967fed2300a0e0673a2cf9130",
+      "digest": "sha256:1068dcb8ea6aa7f942e1f7fedc931b33bf36819bc34c08e4008f691760e654ca",
       "imports": [
         "src.database.tables"
       ],
       "markers": [
         "migration"
       ],
-      "summary": "A18: revision 91 on fresh metadata and the actual pre-91 shape, disposable PostgreSQL only."
+      "summary": "Human ask migrations on fresh and historical shapes, disposable PostgreSQL only."
     },
     "tests/test_migration_integration_cleanup.py": {
       "areas": [
@@ -16287,8 +16299,10 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:20e40921e26f72dd6045cc9a63e134af7558b5f795a67c8b1c536434ead7fee3",
-      "imports": [],
+      "digest": "sha256:81e115e082cf60fd0198f5e337d621cccbb5d2d0da5f30bcb7922b5ad14fff47",
+      "imports": [
+        "src.database.tables"
+      ],
       "markers": [],
       "summary": "spec_approve — frontmatter flip + spec.approved event (Phase 6 Task 5)."
     },
@@ -16548,9 +16562,10 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:2d93684d683458dfb45ab0d4224ac91bebfd928d9991f9cdd5aad275f1fb7bdb",
+      "digest": "sha256:809dba2e006f26aa0d029564f5a05475bd65ccc69c4336dca8e1759a4d524c33",
       "imports": [
         "src.api.auth",
+        "src.asks.models",
         "src.commands.handler",
         "src.config",
         "src.database",

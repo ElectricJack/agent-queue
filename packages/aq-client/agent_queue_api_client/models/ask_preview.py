@@ -1,42 +1,51 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="AskSourceVersion")
+if TYPE_CHECKING:
+    from ..models.ask_preview_packet import AskPreviewPacket
+
+
+T = TypeVar("T", bound="AskPreview")
 
 
 @_attrs_define
-class AskSourceVersion:
+class AskPreview:
     """
     Attributes:
-        decision_generation (int):
-        source_fingerprint (str):
-        feedback_version (int):
+        id (str):
+        packet (AskPreviewPacket):
+        packet_sha256 (str):
+        expires_at (float):
     """
 
-    decision_generation: int
-    source_fingerprint: str
-    feedback_version: int
+    id: str
+    packet: AskPreviewPacket
+    packet_sha256: str
+    expires_at: float
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        decision_generation = self.decision_generation
+        id = self.id
 
-        source_fingerprint = self.source_fingerprint
+        packet = self.packet.to_dict()
 
-        feedback_version = self.feedback_version
+        packet_sha256 = self.packet_sha256
+
+        expires_at = self.expires_at
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "decision_generation": decision_generation,
-                "source_fingerprint": source_fingerprint,
-                "feedback_version": feedback_version,
+                "id": id,
+                "packet": packet,
+                "packet_sha256": packet_sha256,
+                "expires_at": expires_at,
             }
         )
 
@@ -44,21 +53,26 @@ class AskSourceVersion:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.ask_preview_packet import AskPreviewPacket
+
         d = dict(src_dict)
-        decision_generation = d.pop("decision_generation")
+        id = d.pop("id")
 
-        source_fingerprint = d.pop("source_fingerprint")
+        packet = AskPreviewPacket.from_dict(d.pop("packet"))
 
-        feedback_version = d.pop("feedback_version")
+        packet_sha256 = d.pop("packet_sha256")
 
-        ask_source_version = cls(
-            decision_generation=decision_generation,
-            source_fingerprint=source_fingerprint,
-            feedback_version=feedback_version,
+        expires_at = d.pop("expires_at")
+
+        ask_preview = cls(
+            id=id,
+            packet=packet,
+            packet_sha256=packet_sha256,
+            expires_at=expires_at,
         )
 
-        ask_source_version.additional_properties = d
-        return ask_source_version
+        ask_preview.additional_properties = d
+        return ask_preview
 
     @property
     def additional_keys(self) -> list[str]:

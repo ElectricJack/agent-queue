@@ -6,11 +6,11 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="AskDecideResponsePlaybookType0")
+T = TypeVar("T", bound="AskSourceRecordContext")
 
 
 @_attrs_define
-class AskDecideResponsePlaybookType0:
+class AskSourceRecordContext:
     """ """
 
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -25,10 +25,10 @@ class AskDecideResponsePlaybookType0:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        ask_decide_response_playbook_type_0 = cls()
+        ask_source_record_context = cls()
 
-        ask_decide_response_playbook_type_0.additional_properties = d
-        return ask_decide_response_playbook_type_0
+        ask_source_record_context.additional_properties = d
+        return ask_source_record_context
 
     @property
     def additional_keys(self) -> list[str]:

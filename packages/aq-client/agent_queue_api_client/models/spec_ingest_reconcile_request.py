@@ -6,11 +6,11 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="EscalationApplyReplyResponseActionResultType0")
+T = TypeVar("T", bound="SpecIngestReconcileRequest")
 
 
 @_attrs_define
-class EscalationApplyReplyResponseActionResultType0:
+class SpecIngestReconcileRequest:
     """ """
 
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -25,10 +25,10 @@ class EscalationApplyReplyResponseActionResultType0:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        escalation_apply_reply_response_action_result_type_0 = cls()
+        spec_ingest_reconcile_request = cls()
 
-        escalation_apply_reply_response_action_result_type_0.additional_properties = d
-        return escalation_apply_reply_response_action_result_type_0
+        spec_ingest_reconcile_request.additional_properties = d
+        return spec_ingest_reconcile_request
 
     @property
     def additional_keys(self) -> list[str]:

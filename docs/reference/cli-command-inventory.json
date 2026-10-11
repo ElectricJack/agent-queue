@@ -2098,13 +2098,19 @@
           "--target-id"
         ],
         "optional": [
+          "--expected",
+          "--preview-id",
+          "--option-key",
+          "--prepare",
           "--decision",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
-        "structured": [],
+        "structured": [
+          "--expected"
+        ],
         "nullable": []
       }
     },
@@ -8156,12 +8162,18 @@
           "--human-input"
         ],
         "optional": [
+          "--expected",
+          "--preview-id",
+          "--idempotency-key",
+          "--overall-note",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
-        "structured": [],
+        "structured": [
+          "--expected"
+        ],
         "nullable": []
       }
     },
@@ -17376,6 +17388,42 @@
       }
     },
     {
+      "path": "aq task approved-spec-packet",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "approved_spec_packet",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--decision-id",
+          "--packet-sha256"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq task archive",
       "registration": "generated",
       "owner_kind": "core",
@@ -18162,6 +18210,42 @@
       }
     },
     {
+      "path": "aq task ensure-spec-ingest",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "ensure_spec_ingest",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--decision-id",
+          "--packet-sha256"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq task explain",
       "registration": "generated",
       "owner_kind": "core",
@@ -18222,6 +18306,7 @@
           "--title"
         ],
         "optional": [
+          "--human-request",
           "--question",
           "--await-id",
           "--timeout-at",
@@ -18232,6 +18317,7 @@
           "--api-url"
         ],
         "structured": [
+          "--human-request",
           "--waiter-task-ids"
         ],
         "nullable": [
@@ -18278,6 +18364,43 @@
       }
     },
     {
+      "path": "aq task gate-reopen",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "gate_reopen",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--gate-id",
+          "--expected"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--expected"
+        ],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq task gate-resolve",
       "registration": "generated",
       "owner_kind": "core",
@@ -18299,18 +18422,30 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--gate-id",
-          "--resolved-by"
+          "--gate-id"
         ],
         "optional": [
+          "--expected",
+          "--preview-id",
+          "--idempotency-key",
+          "--option-key",
+          "--overall-note",
+          "--resolved-by",
           "--resolution",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
-        "structured": [],
+        "structured": [
+          "--expected"
+        ],
         "nullable": [
+          "--preview-id",
+          "--idempotency-key",
+          "--option-key",
+          "--overall-note",
+          "--resolved-by",
           "--resolution"
         ]
       }
@@ -19666,6 +19801,73 @@
         ],
         "optional": [
           "--project-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task spec-ingest-legacy-inventory",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "spec_ingest_legacy_inventory",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--after-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task spec-ingest-reconcile",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "spec_ingest_reconcile",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
           "--json",
           "--brief",
           "--save-output",
