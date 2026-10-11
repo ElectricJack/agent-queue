@@ -1140,6 +1140,71 @@ async def _pool_daemon(env, tmp_path, slot):
     return provider, registry, orchestrator, handler, cfg
 
 
+async def test_supervisor_releases_hard_failed_writer_only_after_provider_confirmation(
+    env, tmp_path
+):
+    """A hard failure can release its dead attachment without retrying the task."""
+    from dataclasses import asdict
+    from types import SimpleNamespace
+
+    from src.api.auth import RequestScope
+    from src.models import AgentProfile
+    from src.sessions.provider import SessionHandle
+
+    tip = env.branch("aq/failed")
+    await env.task("failed")
+    await env.db.update_task("failed", repo_id="r", branch_name="aq/failed")
+    await env.db.set_task_meta("failed", "blocked_terminal", "session_close_hard_failure")
+    slot = await env.slot("slot", "aq/failed", locked_by_task_id="failed")
+    # The failed close already restored the checkout onto the default tip.
+    git(slot, "switch", "--detach", "origin/main")
+    await env.session("writer", work_dir=slot, task_id="failed")
+    await env.owner(
+        "owner", "aq/failed", "failed", state="handoff_pending",
+        session_id="writer", workspace_id="ws-slot",
+    )
+    provider, _, orch, handler, _ = await _pool_daemon(env, tmp_path, slot)
+
+    async def confirm_stopped(row):
+        return await provider.confirm_stopped(
+            SessionHandle(row["name"], row["provider"], row["instance_token"])
+        )
+
+    orch.development_integration = SimpleNamespace(confirm_stopped=confirm_stopped)
+    await env.db.create_profile(AgentProfile(
+        id="supervisor", name="Supervisor",
+        aq_commands=["integration_release_owner"],
+    ))
+    await env.session("sup", work_dir=tmp_path, state="running", desired_state="running")
+    await env.db.update_session("sup", profile_id="supervisor", lifecycle="named")
+    scope = asdict(RequestScope(
+        kind="session", session_id="sup", project_id="p", elevated=True,
+    ))
+    args = {"task_id": "failed", "_scope": scope}
+
+    # A stopped database row alone never proves a live process gone.
+    refused = await handler.execute("integration_release_owner", args)
+    assert refused["outcome"] == "not_eligible", refused
+    assert refused["outcomes"][0]["reason"] == "writer_live"
+    assert (await env.row("owner"))["handoff_state"] == "handoff_pending"
+    assert (await env.db.get_workspace("ws-slot")).locked_by_task_id == "failed"
+
+    await provider.stop(SessionHandle("n-writer", "fake", "tok-writer"), grace=0)
+    preview = await handler.execute("integration_release_owner", {**args, "dry_run": True})
+    assert preview["outcome"] == "released", preview
+    assert (await env.row("owner"))["handoff_state"] == "handoff_pending"
+    assert (await env.db.get_workspace("ws-slot")).locked_by_task_id == "failed"
+
+    released = await handler.execute("integration_release_owner", args)
+    assert released["outcome"] == "released", released
+    assert (await env.row("owner"))["handoff_state"] == "released"
+    assert (await env.db.get_workspace("ws-slot")).locked_by_task_id is None
+    assert (await env.db.get_task("failed")).status == TaskStatus.BLOCKED
+    assert await env.db.get_task_meta("failed", "blocked_terminal") == "session_close_hard_failure"
+    assert remote_sha(env.origin, "aq/failed") == tip
+    assert (await env.audits("owner"))[-1]["principal"] == "supervisor session:sup"
+
+
 @pytest.mark.parametrize(
     ("operation_state", "active_stage", "origin_reachable"),
     [("completed", 0, True), ("escalated", 1, True), ("completed", 0, False)],

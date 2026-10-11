@@ -18542,13 +18542,15 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:d1558e2645f5b23441d2cc10ca546488336bd03c3df87a200e45737c117bb3ed",
+      "digest": "sha256:87f43fbc69ea4e0fd074b21dae6465c52bff02718048ea954573df6171c583aa",
       "imports": [
         "src.config",
         "src.event_schemas",
         "src.git.manager",
         "src.models",
+        "src.orchestrator.execution",
         "src.orchestrator.task_checkpoint",
+        "src.orchestrator.workspace_attachments",
         "src.orchestrator.worktree_manager"
       ],
       "markers": [

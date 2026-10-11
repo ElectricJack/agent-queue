@@ -2362,7 +2362,9 @@ class ExecutionMixin:
             slot = await self._slot_workspace_at(workspace_path)
             if slot is None:
                 return False
-            await self._worktree_slots().restore_slot_after_task(slot, task_id=task_id)
+            await self._worktree_slots().restore_slot_after_task(
+                slot, task_id=task_id, detach_pushed_branch=False
+            )
             return True
         except Exception:
             logger.warning(

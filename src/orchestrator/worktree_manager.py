@@ -719,6 +719,7 @@ class WorktreeSlotManager:
         slot_ws: Workspace,
         *,
         task_id: str | None = None,
+        detach_pushed_branch: bool = True,
     ) -> bool:
         """Return a slot to a clean tree after a task ends badly.
 
@@ -743,6 +744,10 @@ class WorktreeSlotManager:
         ``origin/<default>`` so a pool-owned slot cannot pin a retry branch.
         Unpushed or salvaged work remains checked out for forensics (§3.4).
 
+        Integration close passes ``detach_pushed_branch=False`` because its
+        subsequent handoff must prove and detach the exact task tip. Moving
+        HEAD to the default branch here would invalidate that proof.
+
         Returns True when uncommitted work was archived to a task context.
         """
         slot_dir = Path(slot_ws.workspace_path)
@@ -763,7 +768,7 @@ class WorktreeSlotManager:
                     ["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=str(slot_dir)
                 )
                 branch = await self.git.aget_current_branch(str(slot_dir))
-                if not salvaged and branch.startswith(BRANCH_PREFIX):
+                if detach_pushed_branch and not salvaged and branch.startswith(BRANCH_PREFIX):
                     await self._detach_if_branch_is_pushed(
                         slot_dir, base_path, branch, project_id=slot_ws.project_id
                     )
