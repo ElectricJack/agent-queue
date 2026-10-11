@@ -42,7 +42,11 @@ from src.commands.contracts import CONTRACTS
 from src.commands.contracts.models import CommandArgs
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database.tables import (
+    ask_decision_previews,
+    ask_decisions,
+    conversation_inputs,
     gates,
+    human_asks,
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
@@ -534,6 +538,85 @@ async def test_the_same_call_on_this_projects_target_is_admitted(db, command, ar
     assert await check_request_scope(command, dict(args), _scope("p"), db=db) is None
 
 
+@pytest.fixture
+async def asks_db(db):
+    async with db._engine.begin() as conn:
+        for project in ("p", "other"):
+            ask_id = f"ask-{project}"
+            await conn.execute(insert(human_asks).values(
+                id=ask_id, project_id=project, source_kind="question", source_key=ask_id,
+                source_identity={}, source_fingerprint="source", generation_fingerprint="gen",
+                context={}, context_state="context_needed", audience={}, logical_owner="owner",
+                decider={}, created_at=1, updated_at=1,
+            ))
+            await conn.execute(insert(ask_decision_previews).values(
+                id=f"preview-{project}", ask_id=ask_id, decision_generation=1,
+                actor_id="user:jack", source_fingerprint="source", feedback_version=0,
+                packet={}, packet_sha256="packet", created_at=1, expires_at=60,
+            ))
+            await db.insert_ask_correspondence({
+                "id": f"ask-evidence-{project}", "ask_id": ask_id, "direction": "inbound",
+                "transport": "local", "verified_actor": "user:jack", "text": "Answer",
+                "entry_kind": "decision_evidence", "received_at": 1, "created_at": 1,
+            }, conn=conn)
+            await conn.execute(insert(ask_decisions).values(
+                id=f"decision-{project}", ask_id=ask_id, decision_generation=1,
+                option_key="answer", adapter="question", adapter_version="1",
+                actor_id="user:jack", actor={}, evidence_entry_id=f"ask-evidence-{project}",
+                idempotency_key="answer", request_sha256="request", source_fingerprint="source",
+                feedback_version=0, packet={}, packet_sha256="packet", created_at=1,
+            ))
+        for project in ("p", "other", None):
+            await conn.execute(insert(conversation_inputs).values(
+                id=f"input-{project}", project_id=project, transport="local",
+                external_message_id=f"message-{project}", verified_actor="user:jack",
+                author_id="jack", channel_id="local", text="Answer", text_sha256="text",
+                char_count=6, received_at=1, created_at=1,
+            ))
+    return db
+
+
+@pytest.mark.parametrize("command,key,prefix", [
+    ("ask_history", "ask_id", "ask"),
+    ("ask_decide", "preview_id", "preview"),
+    ("ask_retry_operation", "decision_id", "decision"),
+    ("ask_show", "input_id", "input"),
+    ("ask_apply_input", "input_id", "input"),
+    ("ask_discussion_reply", "input_id", "input"),
+])
+async def test_ask_targets_resolve_their_project_and_refuse_foreign_rows(
+    asks_db, command, key, prefix,
+):
+    assert await target_scope_error(command, {key: f"{prefix}-p"}, "p", db=asks_db) is None
+    foreign = await target_scope_error(command, {key: f"{prefix}-other"}, "p", db=asks_db)
+    assert foreign is not None and "another project" in foreign
+    missing = await target_scope_error(command, {key: "missing"}, "p", db=asks_db)
+    assert missing is not None and "out of scope" in missing
+
+
+@pytest.mark.parametrize("command,key,prefix", [
+    ("ask_decide", "preview_id", "preview"),
+    ("ask_apply_input", "input_id", "input"),
+    ("ask_discussion_reply", "input_id", "input"),
+])
+async def test_an_owned_ask_does_not_admit_a_foreign_preview_or_input(
+    asks_db, command, key, prefix,
+):
+    args = {"ask_id": "ask-p", key: f"{prefix}-other"}
+    error = await target_scope_error(command, args, "p", db=asks_db)
+    assert error is not None and "another project" in error
+
+
+async def test_an_owned_ask_does_not_admit_an_unowned_input(asks_db):
+    error = await target_scope_error(
+        "ask_apply_input", {"ask_id": "ask-p", "input_id": "input-None"}, "p", db=asks_db,
+    )
+    assert error is not None and "out of scope" in error
+    assert unresolvable_targets({"input_id": "input-p"}, command="supervisor_inbox_reply") == [
+        "input_id",
+    ]
+
+
 @pytest.mark.parametrize("command,args,outcome,method", [
     ("integration_abort_batch", {"batch_id": "batch-p"}, "preview", "abort_batch"),
     ("integration_abort_batch", {"batch_id": "batch-p", "dry_run": False,
@@ -708,6 +791,9 @@ async def test_no_target_keyed_command_dies_on_an_injected_project_id(db, comman
 #: partial check.  Each is here for a stated reason; a new one is a gap in
 #: :data:`TARGET_RESOLVERS`, not an oversight in the policy.
 _UNRESOLVED_TARGETS = {
+    # These are authenticated daemon/local-only controls, never project-session calls.
+    "ask_button": ["author_id", "channel_id", "custom_id", "guild_id", "interaction_id", "message_id"],
+    "ask_repair_delivery": ["delivery_id"],
     "escalation_apply_reply": ["target_id"],  # an action's target is polymorphic
     "integration_repair_start": ["trigger_id"],  # a daemon event, not a project row
     "integration_transfer_owner": ["next_owner_id"],  # an agent, resolved in-handler
