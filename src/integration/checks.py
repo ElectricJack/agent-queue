@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -655,7 +656,10 @@ class HybridChecks:
 def _upsert(check: CommitCheck):
     table = integration_check_evidence
     values = {
-        "id": "check:" + digest([check.repository_id, check.sha, check.name, check.producer_id]),
+        # Concurrent first observations must conflict only on the cache key:
+        # a second deterministic unique key can fail outside that upsert's arbiter.
+        # Updates retain the existing row ID, including older deterministic IDs.
+        "id": "check:" + uuid.uuid4().hex,
         "repository_id": check.repository_id,
         "sha": check.sha,
         "check_name": check.name,

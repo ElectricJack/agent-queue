@@ -167,6 +167,32 @@ async def test_hosted_success_is_cached_per_check_with_its_attempt(db):
     client.paged_items.assert_not_awaited()
 
 
+async def test_concurrent_first_refreshes_share_one_cache_row_per_check(db):
+    """The train and promotion policy may observe the same uncached head together."""
+    refreshes = 8
+    for generation in range(8):
+        observed_head = head(sha=f"{generation + 1:040x}")
+        barrier = asyncio.Barrier(refreshes)
+
+        class Provider:
+            required = REQUIRED
+
+            async def observe(self, observed_head, *, now):
+                await asyncio.wait_for(barrier.wait(), 10)
+                return tuple(row(name, "success", sha=observed_head.sha, observed_at=now)
+                             for name in REQUIRED.names)
+
+        results = await asyncio.gather(*(
+            ExactChecks(db, Provider(), clock=Clock(1000 + index)).refresh(observed_head)
+            for index in range(refreshes)
+        ))
+        assert all(result.green for result in results)
+        cached = [check for check in await stored(db) if check["sha"] == observed_head.sha]
+        assert {check["check_name"] for check in cached} == set(REQUIRED.names)
+        assert len(cached) == len(REQUIRED.names)
+        assert all(check["observed_at"] == 1000 + refreshes - 1 for check in cached)
+
+
 @pytest.mark.parametrize("conclusion,delay", [("pending", 60), ("unavailable", 300)])
 async def test_unfinished_checks_reuse_durable_cache_until_due(db, conclusion, delay):
     clock = Clock()
@@ -201,6 +227,7 @@ async def test_current_rerun_supersedes_cached_success(db):
     clock = Clock()
     checks = hosted(db, client, trust, clock)
     assert (await checks.refresh(head())).green
+    [original] = await stored(db)
 
     rerun(client, status="in_progress", conclusion=None)
     clock.now += 10
@@ -213,7 +240,8 @@ async def test_current_rerun_supersedes_cached_success(db):
     assert red.state is ChecksState.RED
     assert (red.checks[0].attempt, red.checks[0].run_id) == (2, "31")
     assert (await checks.read(head())).state is ChecksState.RED
-    assert len(await stored(db)) == 1
+    [updated] = await stored(db)
+    assert updated["id"] == original["id"]
 
 
 async def test_missing_push_run_is_bounded_across_cache_reconstruction_and_recovers(db):
