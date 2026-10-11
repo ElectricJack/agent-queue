@@ -15,12 +15,14 @@ T = TypeVar("T", bound="AskListRequest")
 class AskListRequest:
     """
     Attributes:
+        source_kind (None | str | Unset):
         project_id (None | str | Unset):
         view (str | Unset):  Default: 'needs_you'.
         limit (int | Unset):  Default: 50.
         cursor (None | str | Unset):
     """
 
+    source_kind: None | str | Unset = UNSET
     project_id: None | str | Unset = UNSET
     view: str | Unset = "needs_you"
     limit: int | Unset = 50
@@ -28,6 +30,12 @@ class AskListRequest:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        source_kind: None | str | Unset
+        if isinstance(self.source_kind, Unset):
+            source_kind = UNSET
+        else:
+            source_kind = self.source_kind
+
         project_id: None | str | Unset
         if isinstance(self.project_id, Unset):
             project_id = UNSET
@@ -47,6 +55,8 @@ class AskListRequest:
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
+        if source_kind is not UNSET:
+            field_dict["source_kind"] = source_kind
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
         if view is not UNSET:
@@ -61,6 +71,15 @@ class AskListRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
+
+        def _parse_source_kind(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        source_kind = _parse_source_kind(d.pop("source_kind", UNSET))
 
         def _parse_project_id(data: object) -> None | str | Unset:
             if data is None:
@@ -85,6 +104,7 @@ class AskListRequest:
         cursor = _parse_cursor(d.pop("cursor", UNSET))
 
         ask_list_request = cls(
+            source_kind=source_kind,
             project_id=project_id,
             view=view,
             limit=limit,

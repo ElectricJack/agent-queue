@@ -472,6 +472,7 @@ class DigestScheduleService:
         )
         collected = await self.db.collect_digest_supervisor_facts(
             window,
+            channel_id=schedule.destination.removeprefix("discord:"),
             now=now,
             project_ids=schedule.project_ids or None,
             open_escalations=open_escalations,
@@ -485,8 +486,7 @@ class DigestScheduleService:
             window=window,
             landed=collected["landed"],
             stuck=collected["stuck"],
-            escalations=collected["escalations"],
-            reviews=collected["reviews"],
+            asks=collected["asks"],
             sessions_working=collected["sessions_working"],
             sessions_total=collected["sessions_total"],
             active_tasks=collected["active_tasks"],

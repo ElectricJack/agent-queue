@@ -2905,11 +2905,13 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:603e0a1736ba4ee982f276332e2b9437300e5d6f9b84d43af470091cfe2ff937",
+      "digest": "sha256:2fd256ce663a26db7c7bcd3977babc51e5d0377ac9e175bc97115ee8a35c464a",
       "imports": [
         "src.database.tables"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Public ask reads preserve project/audience and human decision boundaries."
     },
     "tests/test_ask_decisions.py": {
