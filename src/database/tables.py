@@ -1957,9 +1957,20 @@ conversation_inputs = Table(
     Column(
         "conversation_id",
         Text,
-        ForeignKey("supervisor_conversations.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("supervisor_conversations.id", name="fk_conversation_inputs_conversation",
+                   ondelete="SET NULL"),
+        nullable=True,
     ),
+    Column("ask_id", Text, ForeignKey("human_asks.id", ondelete="RESTRICT"), nullable=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=True),
+    Column("routing_state", Text, nullable=False, server_default="conversation"),
+    Column("routing_evidence", JSONB, nullable=False, server_default="{}"),
+    Column("receipt", JSONB, nullable=False, server_default="{}"),
+    Column("guild_id", Text, nullable=True),
+    Column("reference_message_id", Text, nullable=True),
+    Column("external_thread_id", Text, nullable=True),
+    Column("source_version", JSONB, nullable=True),
+    Column("retention_entry_id", Text, nullable=True),
     Column("transport", Text, nullable=False),
     Column("external_message_id", Text, nullable=False),
     Column("verified_actor", Text, nullable=False),
@@ -1981,14 +1992,21 @@ conversation_inputs = Table(
         "state IN ('accepted','answered','expired','revoked')",
         name="ck_conversation_inputs_state",
     ),
-    CheckConstraint("char_count BETWEEN 1 AND 4000", name="ck_conversation_inputs_char_count"),
+    CheckConstraint("char_count BETWEEN 1 AND 16000", name="ck_conversation_inputs_char_count"),
     CheckConstraint(
-        "source IN ('gateway','backfill','replay','test')",
+        "routing_state IN ('queued','conversation','discussion','interpretation',"
+        "'clarification','receipt','applied','quarantined')",
+        name="ck_conversation_inputs_routing_state",
+    ),
+    CheckConstraint(
+        "source IN ('gateway','backfill','replay','test','local','legacy','interaction')",
         name="ck_conversation_inputs_source",
     ),
     Index("idx_conversation_inputs_history", "conversation_id", "received_at", "id"),
     Index("idx_conversation_inputs_author_window", "author_id", "received_at"),
     Index("idx_conversation_inputs_channel_window", "channel_id", "received_at"),
+    Index("idx_conversation_inputs_ask", "ask_id", "received_at", "id"),
+    Index("idx_conversation_inputs_routing", "routing_state", "created_at", "id"),
 )
 
 # Reconnect backfill position per configured channel or bound thread.  The

@@ -3329,6 +3329,14 @@ class Orchestrator(
 
     async def _maintain_conversations(self, *, now: float) -> None:
         """Hourly maintenance; an outbox or database outage cannot stop scheduling."""
+        handler = getattr(self, "_command_handler", None)
+        if handler is not None:
+            try:
+                from src.commands.principal import ExecutionPrincipal, principal_context
+                with principal_context(ExecutionPrincipal.service("ask-maintenance")):
+                    await handler.execute("ask_reconcile", {"apply": True, "limit": 100})
+            except Exception:
+                logger.warning("Ask intake reconciliation failed", exc_info=True)
         if now - self._last_conversation_maintenance < 3600:
             return
         self._last_conversation_maintenance = now

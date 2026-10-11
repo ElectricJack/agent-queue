@@ -93,11 +93,22 @@ async def authorize_review(review, actor, *, conn):
         )
 
 
-async def authorize_application(review, decision, *, conn):
+async def authorize_application(review, decision, *, conn, service=None):
     """Recheck delegated authority while the accepted decision is still pending."""
     if review["pending_decision_id"] != decision["id"]:
         return
     actor = decision["actor"]
+    if actor["provenance"].get("kind") == "verified_input":
+        from src.asks.authority import authorize_input_actor
+        from src.asks.models import DecisionActor, SourceIdentity
+
+        if service is None:
+            raise AskError("ask.not_decider", "Input authorization service is unavailable")
+        await authorize_input_actor(
+            service.db, service.input_config, SourceIdentity(**decision["packet"]["source"]),
+            DecisionActor(**actor), conn=conn, application=True,
+        )
+        return
     if actor["provenance"]["kind"] == "local":
         return  # immutable correspondence binds the authenticated human acceptance
     provenance = actor["provenance"]
@@ -247,7 +258,13 @@ class ReviewAdapter:
             .mappings()
             .one()
         )
-        await authorize_review(review, actor, conn=conn)
+        if actor.provenance.get("kind") == "verified_input":
+            from src.asks.authority import authorize_input_actor
+
+            await authorize_input_actor(self.db, self.service.input_config, snapshot.identity,
+                                        actor, conn=conn)
+        else:
+            await authorize_review(review, actor, conn=conn)
         if accepted_decision is not None:
             return accepted_decision["packet"]["domain"]
         if review["pending_decision_id"]:

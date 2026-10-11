@@ -976,7 +976,8 @@ class CommandHandler(
                 }
                 if name == "update_config"
                 else {"envelope": "<redacted-conversation-envelope>", "source": args.get("source")}
-                if name == "supervisor_inbox_post"
+                if name in {"supervisor_inbox_post", "ask_intake", "ask_button", "ask_reply",
+                            "ask_apply_input", "ask_discussion_reply"}
                 else {
                     **args,
                     "data_base64": f"<image bytes: {len(args.get('data_base64', ''))} base64 chars>",

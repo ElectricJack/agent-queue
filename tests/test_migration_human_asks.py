@@ -54,6 +54,7 @@ async def upgrade_from_90(db):
     async with db._engine.connect() as conn:
         trans = await conn.begin()
         try:
+            await conn.execute(sa.text("ALTER TABLE conversation_inputs DROP COLUMN ask_id"))
             await conn.run_sync(run("downgrade"))
             assert not await conn.run_sync(lambda c: sa.inspect(c).has_table("human_asks"))
             assert "feedback_version" not in await conn.run_sync(
@@ -204,7 +205,8 @@ async def test_standalone_bytes_and_approval_provenance_are_immutable(db):
 
 def test_revision_is_single_head_with_named_checks_jsonb_and_bare_defaults():
     script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    assert script.get_heads() == ["a00000000092"]
+    assert script.get_heads() == ["a00000000093"]
+    assert script.get_revision("a00000000093").down_revision == "a00000000092"
     assert script.get_revision("a00000000092").down_revision == "a00000000091"
     assert script.get_revision("a00000000091").down_revision == "a00000000090"
     revision = migration()
@@ -264,3 +266,27 @@ async def test_source_fences_upgrade_historical_answers_and_replay(db):
                     ))
         finally:
             await trans.rollback()
+
+
+async def test_input_upgrade_replays_and_preserves_historical_text(db):
+    revision = migration("a00000000093_human_ask_transport")
+    def upgrade(conn):
+        with Operations.context(MigrationContext.configure(conn)):
+            revision.upgrade()
+    async with db._engine.begin() as conn:
+        await conn.execute(sa.text("ALTER TABLE conversation_inputs DROP COLUMN ask_id"))
+        await conn.execute(sa.text("ALTER TABLE conversation_inputs DROP COLUMN source_version"))
+        await conn.run_sync(upgrade)
+        await conn.run_sync(upgrade)
+        await conn.execute(sa.text("""
+            INSERT INTO conversation_inputs
+            (id, transport, external_message_id, verified_actor, author_id, channel_id,
+             text, text_sha256, char_count, source, received_at, created_at)
+            VALUES ('historical', 'discord', 'message', 'human:discord:1', '1', 'channel',
+                    :body, :hash, 16000, 'legacy', 1, 1)
+        """), {"body": "x" * 16000, "hash": "a" * 64})
+        assert await conn.scalar(sa.text("SELECT length(text) FROM conversation_inputs WHERE id='historical'")) == 16000
+        assert await conn.scalar(sa.text("SELECT conversation_id FROM conversation_inputs WHERE id='historical'")) is None
+        with pytest.raises(IntegrityError):
+            async with conn.begin_nested():
+                await conn.execute(sa.text("UPDATE conversation_inputs SET routing_state='guessed'"))

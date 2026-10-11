@@ -154,13 +154,13 @@ class ReviewQueriesMixin:
         await conn.execute(insert(doc_reviews).values(**review))
         await conn.execute(insert(doc_review_revisions).values(**revision))
 
-    async def get_review(self, review_id: str) -> dict | None:
-        async with self._engine.begin() as conn:
-            row = (
-                (await conn.execute(_review_projection().where(doc_reviews.c.id == review_id)))
-                .mappings()
-                .first()
-            )
+    async def get_review(self, review_id: str, *, conn=None) -> dict | None:
+        stmt = _review_projection().where(doc_reviews.c.id == review_id)
+        if conn is not None:
+            row = (await conn.execute(stmt)).mappings().first()
+        else:
+            async with self._engine.begin() as owned:
+                row = (await owned.execute(stmt)).mappings().first()
         return dict(row) if row else None
 
     async def lock_review_for_dispatch(self, review_id: str, *, conn) -> dict | None:
