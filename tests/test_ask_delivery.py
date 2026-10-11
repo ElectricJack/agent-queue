@@ -133,11 +133,24 @@ async def test_pause_before_claim_and_immediately_before_send_consumes_no_attemp
 
 async def test_legacy_alias_returns_canonical_delivery_receipt(delivery_env):
     env = delivery_env
+    submitted = await env.handler.execute(
+        "review_submit",
+        {
+            "project_id": env.ask["project_id"],
+            "kind": "spec",
+            "title": "Delivery alias review",
+            "content": "# Design\n\nReview the proposed delivery behavior.\n",
+        },
+    )
+    assert submitted["success"], submitted
+    shown = await env.handler.execute("review_show", {"review_id": submitted["review_id"]})
+    assert shown["success"], shown
+    env.ask = shown["ask"]
     await settle(env)
     root = await binding(env)
     canonical = await env.handler.execute("ask_show", {"ask_id": env.ask["id"]})
     alias = await env.handler.execute(
-        "ask_show", {"ask_id": env.gate["id"], "alias_kind": "gate"}
+        "ask_show", {"ask_id": submitted["review_id"], "alias_kind": "review"}
     )
 
     assert canonical["success"] and alias["success"], (canonical, alias)
