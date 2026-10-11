@@ -49,7 +49,7 @@ from zoneinfo import ZoneInfo
 
 from src.agents.configuration import SUPERVISOR_AGENT_ID
 from src.config import ReportsConfig
-from src.delivery.dispatch import LEASE_SECONDS, OutboundAdapter, dispatch_batch
+from src.delivery.dispatch import LEASE_SECONDS
 from src.delivery.message import FrozenMessage, MessageDelivery, operation_marker
 from src.digest.aggregate import build_digest
 from src.digest.facts import CATEGORIES, DigestWindow
@@ -172,6 +172,7 @@ class DigestScheduleService:
         event_bus: Any | None = None,
         include_outbound: bool = False,
         conversation_adapter: Any | None = None,
+        pump_enabled: bool = True,
     ) -> None:
         self.db = db
         self.transport = transport
@@ -188,6 +189,7 @@ class DigestScheduleService:
         self._max_attempts = max_attempts
         self._authoring_ready = authoring_ready
         self._event_bus = event_bus
+        self._pump_enabled = pump_enabled
         self._include_outbound = include_outbound
         self._conversation_adapter = conversation_adapter
         self._delivery = MessageDelivery(transport, clock=clock, max_attempts=max_attempts)
@@ -250,7 +252,7 @@ class DigestScheduleService:
                 logger.warning("digest author release failed", exc_info=True)
         if not schedule.enabled:
             report.skipped = "discord.digest.enabled is false"
-            if self._include_outbound:
+            if self._include_outbound and self._pump_enabled:
                 try:
                     await self.pump(schedule, report, limit=limit)
                 except Exception:
@@ -261,7 +263,8 @@ class DigestScheduleService:
         except Exception:
             logger.warning("digest window evaluation failed", exc_info=True)
         try:
-            await self.pump(schedule, report, limit=limit)
+            if self._pump_enabled:
+                await self.pump(schedule, report, limit=limit)
         except Exception:
             logger.warning("digest delivery pump failed", exc_info=True)
         return report
@@ -641,87 +644,14 @@ class DigestScheduleService:
         limit: int = 5,
     ) -> DigestTickReport:
         """Claim due windows that carry a payload and send each one once."""
-        schedule = schedule or self.schedule()
-        report = report or DigestTickReport()
-        now = self._clock()
+        from src.delivery.scheduler import DeliveryScheduler
 
-        async def claim(batch_limit):
-            claim_now = self._clock()
-            if self._include_outbound:
-                return await self.db.claim_report_deliveries(
-                    lease_owner=self._lease_owner,
-                    now=claim_now,
-                    lease_seconds=LEASE_SECONDS,
-                    limit=batch_limit,
-                    include_digest=schedule.enabled,
-                )
-            return await self.db.claim_digest_windows(
-                lease_owner=self._lease_owner,
-                now=claim_now,
-                lease_seconds=LEASE_SECONDS,
-                limit=batch_limit,
-            )
-
-        class DigestAdapter:
-            async def deliver(adapter, row):
-                await self._deliver_one(schedule, row, report)
-
-        outbound = OutboundAdapter(self.db, self._delivery, lease_owner=self._lease_owner)
-
-        class ScopedOutboundAdapter:
-            async def deliver(adapter, row):
-                if row["owner_kind"] == "conversation":
-                    if self._conversation_adapter is None:
-                        await self.db.finish_outbound_delivery(
-                            row["id"],
-                            lease_owner=self._lease_owner,
-                            status="retry",
-                            now=self._clock(),
-                            next_attempt_at=self._clock() + 30,
-                            last_error="conversation adapter is not bound",
-                        )
-                        return
-                    await self._conversation_adapter.deliver(row)
-                    return
-                if row["owner_kind"] == "morning" and row["payload"].get("report_id"):
-                    from src.reports.delivery import morning_policy, visibility_matches
-
-                    owner = await self.db.get_morning_report(row["owner_id"])
-                    policy = morning_policy(self._config)
-                    if owner is None or not visibility_matches(owner["config_snapshot"], policy):
-                        await self.db.finish_outbound_delivery(
-                            row["id"],
-                            lease_owner=self._lease_owner,
-                            status="cancelled",
-                            now=self._clock(),
-                            last_error="report visibility changed or disabled",
-                        )
-                        return
-                await outbound.deliver(row)
-
-        if self._include_outbound:
-            from src.reports.delivery import reconcile_morning_deliveries
-
-            await reconcile_morning_deliveries(
-                self.db,
-                self._config,
-                now=now,
-                links=self._links,
-            )
-
-        report.deferred = await dispatch_batch(
-            now=now,
-            limit=limit,
-            claim=claim,
-            adapters={
-                "digest": DigestAdapter(),
-                "outbound": ScopedOutboundAdapter(),
-            },
-            escalation_priority=self._escalation_priority,
-            rate_guard=self._rate_guard,
-            clock=self._clock,
-        )
-        return report
+        return await DeliveryScheduler(
+            self.db, self.transport, config=self._config, lease_owner=self._lease_owner,
+            digest=self, conversation_adapter=self._conversation_adapter, links=self._links,
+            clock=self._clock, rate_guard=self._rate_guard,
+            escalation_priority=self._escalation_priority, include_outbound=self._include_outbound,
+        ).pump(schedule=schedule, report=report, limit=limit)
 
     async def _finish(
         self,

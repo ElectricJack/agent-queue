@@ -5810,6 +5810,16 @@ outbound_deliveries = Table(
     "outbound_deliveries",
     metadata,
     Column("id", Text, primary_key=True),
+    Column("ask_id", Text, ForeignKey("human_asks.id", ondelete="RESTRICT")),
+    Column("binding_id", Text, ForeignKey("ask_external_bindings.id", ondelete="RESTRICT")),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="RESTRICT")),
+    Column("decision_generation", Integer),
+    Column("display_version", Integer),
+    Column("mode_generation", Integer),
+    Column("root_generation", Integer),
+    Column("send_kind", Text),
+    Column("write_started_at", Float),
+    Column("attempt_token", Text),
     Column("owner_kind", Text, nullable=False),
     Column("owner_id", Text, nullable=False),
     Column("dedup_key", Text, nullable=False),
@@ -5843,6 +5853,18 @@ outbound_deliveries = Table(
         "state <> 'sent' OR (external_receipt_id IS NOT NULL AND receipt_confirmed_at IS NOT NULL)",
         name="ck_outbound_deliveries_receipt",
     ),
+    CheckConstraint("send_kind IS NULL OR send_kind IN "
+                    "('root','root_edit','reply','move_notice','redirect')",
+                    name="ck_outbound_deliveries_send_kind"),
+    CheckConstraint("owner_kind <> 'ask' OR (ask_id IS NOT NULL AND binding_id IS NOT NULL "
+                    "AND project_id IS NOT NULL AND decision_generation IS NOT NULL "
+                    "AND display_version IS NOT NULL AND mode_generation IS NOT NULL "
+                    "AND root_generation IS NOT NULL AND decision_generation > 0 "
+                    "AND display_version > 0 AND mode_generation > 0 AND root_generation > 0 "
+                    "AND send_kind IS NOT NULL)", name="ck_outbound_deliveries_ask"),
+    Index("idx_outbound_deliveries_ask", "ask_id", "display_version"),
+    Index("idx_outbound_deliveries_binding", "binding_id", "state"),
+    Index("idx_outbound_deliveries_mode", "project_id", "mode_generation", "send_kind"),
     Index("idx_outbound_deliveries_due", "state", "due_at"),
     Index("idx_outbound_deliveries_owner", "owner_kind", "owner_id", "created_at"),
 )
@@ -6992,6 +7014,86 @@ ask_reconciliation_cases = Table(
     CheckConstraint("status <> 'resolved' OR repair_receipt IS NOT NULL",
                     name="ck_ask_reconciliation_cases_receipt"),
     Index("idx_ask_reconciliation_cases_owner", "project_id", "logical_owner", "status"),
+)
+
+
+human_communication_modes = Table(
+    "human_communication_modes", metadata,
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="RESTRICT"), primary_key=True),
+    Column("destination", Text, primary_key=True),
+    Column("generation", Integer, nullable=False, server_default="1"),
+    Column("mode", Text, nullable=False, server_default="legacy"),
+    Column("migrated", Boolean, nullable=False, server_default=false()),
+    Column("config_fingerprint", Text, nullable=False),
+    Column("compatibility_deadline", Float),
+    Column("inventory", JSONB, nullable=False, server_default="{}"),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint("generation > 0", name="ck_human_modes_generation"),
+    CheckConstraint("mode IN ('legacy','shadow','dashboard','transferring','channel',"
+                    "'delivery_disabled')", name="ck_human_modes_mode"),
+    CheckConstraint("NOT migrated OR mode <> 'legacy'", name="ck_human_modes_no_revival"),
+)
+
+ask_external_bindings = Table(
+    "ask_external_bindings", metadata,
+    Column("id", Text, primary_key=True),
+    Column("ask_id", Text, ForeignKey("human_asks.id", ondelete="RESTRICT"), nullable=False),
+    Column("project_id", Text, nullable=False),
+    Column("destination", Text, nullable=False),
+    Column("transport", Text, nullable=False, server_default="discord"),
+    Column("guild_id", Text, nullable=False),
+    Column("channel_id", Text, nullable=False),
+    Column("mode_generation", Integer, nullable=False),
+    Column("root_generation", Integer, nullable=False, server_default="1"),
+    Column("external_root_id", Text),
+    Column("legacy_thread_id", Text),
+    Column("alternate_roots", JSONB, nullable=False, server_default="[]"),
+    Column("receipt", JSONB),
+    Column("desired_display_version", Integer, nullable=False, server_default="1"),
+    Column("applied_display_version", Integer, nullable=False, server_default="0"),
+    Column("root_state", Text, nullable=False, server_default="pending"),
+    Column("active", Boolean, nullable=False, server_default=true()),
+    # A durable external-write fence, independent of the expiring claim lease.
+    Column("inflight_id", Text),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    ForeignKeyConstraint(["project_id", "ask_id"], ["human_asks.project_id", "human_asks.id"],
+                         name="fk_ask_binding_project", ondelete="RESTRICT"),
+    CheckConstraint("root_generation > 0 AND mode_generation > 0 "
+                    "AND desired_display_version > 0 AND applied_display_version >= 0",
+                    name="ck_ask_binding_versions"),
+    CheckConstraint("root_state IN ('pending','confirmed','unknown','missing','retired')",
+                    name="ck_ask_binding_state"),
+    CheckConstraint("root_state <> 'confirmed' OR (external_root_id IS NOT NULL "
+                    "AND receipt IS NOT NULL)", name="ck_ask_binding_receipt"),
+    Index("uq_ask_binding_active", "ask_id", "destination", unique=True,
+          postgresql_where=text("active")),
+    UniqueConstraint("transport", "channel_id", "external_root_id", name="uq_ask_binding_root"),
+    Index("idx_ask_binding_mode", "project_id", "destination", "mode_generation"),
+)
+
+ask_action_tokens = Table(
+    "ask_action_tokens", metadata,
+    Column("token", Text, primary_key=True),
+    Column("ask_id", Text, ForeignKey("human_asks.id", ondelete="RESTRICT"), nullable=False),
+    Column("binding_id", Text, ForeignKey("ask_external_bindings.id", ondelete="RESTRICT"),
+           nullable=False),
+    Column("decision_generation", Integer, nullable=False),
+    Column("source_fingerprint", Text, nullable=False),
+    Column("feedback_version", Integer, nullable=False),
+    Column("display_version", Integer, nullable=False),
+    Column("mode_generation", Integer, nullable=False),
+    Column("root_generation", Integer, nullable=False),
+    Column("root_message_id", Text, nullable=False),
+    Column("option_key", Text, nullable=False),
+    Column("audience", JSONB, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("expires_at", Float, nullable=False),
+    Column("revoked_at", Float),
+    CheckConstraint("length(token) BETWEEN 20 AND 80 AND expires_at > created_at",
+                    name="ck_ask_action_token"),
+    Index("idx_ask_action_token_binding", "binding_id", "display_version"),
+    Index("idx_ask_action_token_expiry", "expires_at"),
 )
 
 

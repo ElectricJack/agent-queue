@@ -96,6 +96,9 @@ async def enqueue(handler, item, ask, text, *, key, conn):
     # Full text remains in scoped correspondence; the public reply labels its excerpt.
     if len(text) > 1750:
         text = text[:1600] + f"\n[Excerpt; read the complete answer in /asks/{item['ask_id']}]"
+    adapter = getattr(handler, 'ask_delivery', None)
+    if ask and adapter is not None:
+        return await adapter.reserve_reply(ask, item, text, entry_id=key, conn=conn)
     now = time.time()
     row, _ = await handler.db.reserve_outbound_delivery_in_transaction(
         conn,

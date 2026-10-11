@@ -62,6 +62,11 @@ def operator_only():
 
 
 class AskCommunicationCommandsMixin:
+    async def _run_ask_delivery_cycle(self, scheduler, *, limit):
+        from src.commands.principal import ExecutionPrincipal, principal_context
+        with principal_context(ExecutionPrincipal.service("ask-delivery")):
+            return await scheduler.pump(limit=limit)
+
     @checked("ask_intake")
     async def _cmd_ask_intake(self, args):
         from src.api.models.ask import AskEnvelope
@@ -142,6 +147,7 @@ class AskCommunicationCommandsMixin:
     async def _cmd_ask_show(self, args):
         async with self.db.immediate() as conn:
             ask = await discussion.locked_ask(self, args["ask_id"], conn=conn)
+            ask['delivery'] = await self.db.ask_delivery_status(ask['id'], conn=conn)
             inputs = [
                 dict(row)
                 for row in (
@@ -336,25 +342,19 @@ class AskCommunicationCommandsMixin:
     @checked("ask_cutover")
     async def _cmd_ask_cutover(self, args):
         operator_only()
-        raise AskError(
-            "ask.transport_unavailable",
-            "Transport cutover is not installed; ownership has not transferred",
-        )
+        from src.asks.transport_controls import cutover
+        return await cutover(self, args)
 
     @checked("ask_repair_delivery")
     async def _cmd_ask_repair_delivery(self, args):
         operator_only()
-        raise AskError("ask.transport_unavailable", "Delivery repair is not installed")
+        from src.asks.transport_controls import repair
+        return await repair(self, args)
 
     @checked("ask_button")
     async def _cmd_ask_button(self, args):
-        principal = current_principal() or TRUSTED_LOCAL
-        if (
-            principal.kind is not PrincipalKind.SERVICE
-            or principal.service_name != "discord-gateway"
-        ):
-            raise AskError("ask.gateway_only", "Buttons require authenticated gateway identity")
-        raise AskError("ask.transport_unavailable", "Signed button verification is not installed")
+        from src.asks.buttons import decide
+        return await decide(self, args)
 
     async def _emit_ask_event(self, name, ask, **fields):
         # Event payloads carry identities only; document reads remain scoped.

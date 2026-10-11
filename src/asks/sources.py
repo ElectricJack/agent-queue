@@ -32,8 +32,8 @@ from src.database.tables import (
 )
 
 HOLD_CHOICES = (
-    AskChoice("approve", "Approve", "Resolve this exact approval gate and release its waiters."),
-    AskChoice("decline", "Decline", "Cancel this approval; its waiters remain blocked."),
+    AskChoice("approve", "Approve", "Resolve this exact approval gate and release its waiters.", "immediate"),
+    AskChoice("decline", "Decline", "Cancel this approval; its waiters remain blocked.", "immediate"),
 )
 
 
@@ -66,6 +66,11 @@ def context_for(source, title, why, waiting, *, requested_by=None, blocked=()):
 
 
 async def authorize_source(handler, source, actor, *, conn, application=False):
+    if actor.provenance.get("kind") == "verified_button":
+        from src.asks.buttons import authorize_button_actor
+        await authorize_button_actor(handler.db, handler.config, source, actor,
+                                     conn=conn, application=application)
+        return
     if actor.provenance.get("kind") == "verified_input":
         from src.asks.authority import authorize_input_actor
 

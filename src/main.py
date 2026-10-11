@@ -429,12 +429,24 @@ async def run(
                 escalation_priority=orch.db.count_due_escalation_deliveries,
                 event_bus=orch.bus,
                 include_outbound=True,
+                pump_enabled=False,
                 conversation_adapter=conversation_adapter,
                 authoring_ready=lambda: bool(
                     orch.playbook_manager is not None
                     and orch.playbook_manager.is_active("supervisor-hourly-report")
                 ),
             )
+            from src.asks.delivery import AskDeliveryAdapter
+            from src.delivery.scheduler import DeliveryScheduler
+
+            ask_adapter = AskDeliveryAdapter(handler, discord_transport,
+                lease_owner=f"daemon-{os.getpid()}", links=orch.dashboard_links)
+            orch.delivery_scheduler = DeliveryScheduler(
+                orch.db, discord_transport, config=config, lease_owner=f"daemon-{os.getpid()}",
+                digest=orch.digest_schedule, conversation_adapter=conversation_adapter,
+                ask_adapter=ask_adapter, links=orch.dashboard_links, rate_guard=_bot_rate_guard(bot),
+            )
+            handler.ask_delivery = ask_adapter
             logger.info("Digest scheduler wired to the Discord transport")
             # READY may have attempted recovery before this binding existed.
             # Its fail-closed pass leaves cursors untouched; recover now.

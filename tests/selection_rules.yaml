@@ -414,7 +414,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/routing/**"], areas: ["task-routing"] }
   - { paths: ["src/resources/test_db_reaper.py"], areas: ["test-substrate"] }
   - { paths: ["src/resources/slot_report.py"], areas: ["development-delivery"] }
-  - { paths: ["src/asks/**", "src/database/queries/ask_queries.py", "src/database/queries/ask_input_queries.py", "src/commands/ask_communication_commands.py", "tests/ask_helpers.py"], areas: ["document-reviews"] }
+  - { paths: ["src/asks/**", "src/database/queries/ask_queries.py", "src/database/queries/ask_input_queries.py", "src/database/queries/ask_delivery_queries.py", "src/commands/ask_communication_commands.py", "tests/ask_helpers.py"], areas: ["document-reviews"] }
   - { paths: ["src/reviews/**"], areas: ["document-reviews"] }
   - { paths: ["src/runtimes/**"], areas: ["session-runtime"] }
   - { paths: ["src/services/**"], areas: ["plugins"] }
