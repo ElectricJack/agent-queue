@@ -18,6 +18,7 @@ EXECUTABLE_SCRIPTS = [
     "scripts/e2e-dashboard.sh",
     "scripts/e2e-env.sh",
     "scripts/e2e-smoke.sh",
+    "scripts/e2e-policy.sh",
 ]
 
 

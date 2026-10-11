@@ -1825,7 +1825,10 @@ class Orchestrator(
             self.required_playbook_reconciler = RequiredPlaybookReconciler(
                 config=self.config, db=self.db, handler=self._command_handler
             )
-            self.required_playbook_status = await self.required_playbook_reconciler.reconcile()
+            # Observe existing activations while startup dependencies are still
+            # being wired. Consuming the one-shot installation receipt here
+            # would import against an empty profile registry on a fresh vault.
+            self.required_playbook_status = await self.required_playbook_reconciler.refresh_status()
             self.playbook_manager = V2PlaybookRuntime(
                 config=self.config,
                 db=self.db,
@@ -2486,7 +2489,7 @@ class Orchestrator(
             logger.warning("Startup README scan failed: %s", e)
 
         # Some capability registries are populated by late startup wiring.
-        # Retry the reviewed import after all of those registries exist, then
+        # Attempt the one-shot initial import only after those registries exist, then
         # publish the now-durable activation into the runtime snapshot before
         # the first scheduler cycle can emit task.route_needed.
         if self.required_playbook_reconciler is not None:
