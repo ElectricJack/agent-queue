@@ -8582,6 +8582,76 @@
     },
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_repository_probes": {
       "reason": "Operator preflight's read-only GitHub prerequisites for integration setup: the project integration repository, promotion-flow branches, online runner labels and trust-manifest App identities. Reports blockers only; no integration storage, lifecycle or ref writes."
+    },
+    "src/asks/sources.py::IntegrationAdapter": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        456,
+        534
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.apply_on": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        517,
+        534
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.read": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        460,
+        485
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.snapshot": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        486,
+        516
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.source_kind": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        459,
+        459
+      ]
+    },
+    "src/asks/sources.py::authorize_source": {
+      "reason": "Human source authorization includes exact integration gate/escalation binding and application authority.",
+      "landing_span": [
+        66,
+        151
+      ]
+    },
+    "src/asks/sources.py::import from src.database.tables import gates, integration_subjects, task_gates, task_proposals, tasks": {
+      "reason": "Integration subject table import used by the human-decision adapter.",
+      "landing_span": [
+        26,
+        32
+      ]
+    },
+    "src/asks/sources.py::source_adapters": {
+      "reason": "Static adapter registration includes the integration human-decision adapter.",
+      "landing_span": [
+        877,
+        889
+      ]
+    },
+    "src/commands/ask_commands.py::AskCommandsMixin._ask_transaction": {
+      "reason": "Source decision transaction boundary used by the integration adapter alongside other human sources.",
+      "landing_span": [
+        187,
+        198
+      ]
+    },
+    "src/commands/gate_commands.py::GateCommandsMixin._gate_ask_source": {
+      "reason": "Maps integration subject gates to their exact human source identity.",
+      "landing_span": [
+        19,
+        30
+      ]
     }
   },
   "exclusions": {
@@ -8678,7 +8748,10 @@
     "src/commands/operator_authority.py::HUMAN_DECISION_COMMANDS": "Names operator-worker setup commands that require an exact recorded human decision before dispatch; the named commands keep their own charged handlers. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_authority.py::PROJECT_SETUP_FIELDS": "edit_project argument-name allowlist for operator workers; the charged edit_project handler validates and writes every field. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_action": "Validates one operator-worker action against the command's schema, project target scope, profile grant and human decision; dispatch goes through the charged command handler. No integration storage, lifecycle or ref authority.",
-    "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority."
+    "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority.",
+    "src/commands/ask_commands.py::AskCommandsMixin._ask_service": "Generic registry/service assembly for reviews, specifications and all human sources. Static integration adapter registration and IntegrationAdapter are independently charged; no integration decision or domain write occurs here.",
+    "src/asks/source_operations.py::apply": "Generic human-source operation leasing, pause gating and reconciliation, dispatching through the registered source adapter. No integration branch, subject, gate or policy state is interpreted or written here; IntegrationAdapter and authorize_source retain the charged integration authority and receipts.",
+    "src/asks/source_operations.py::import from src.asks.sources import authorize_source, finish_on": "Generic human-source authorization and completion imports; the integration branch of authorize_source remains independently charged, and finish_on only updates ask operations/projections."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -13477,13 +13550,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin.decide_task_recovery::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 779,
+      "line": 806,
       "owner": "TaskRecoveryQueryMixin.decide_task_recovery",
       "call": "delete",
-      "owner_fingerprint": "bbf9467d6384715a7cbc1b189deae30906fccc68f9f3bbd9b3ebb0b6611fde97",
+      "owner_fingerprint": "cbb60cea85dcb3e12fa328dbead10e1ac7d2f8df44016d876bb69396d898362a",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Owner now also fences accepted ask decisions and domain receipts."
     },
     "src/database/queries/triage_queries.py::_write_seen::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
       "line": 77,
@@ -14575,13 +14648,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: _dismiss_key(q['id'])"
     },
     "src/sessions/questions.py::AgentQuestionService.answer::b9447634eee2e9f8306f54b9e7df0b083226e4ffc77b0675af9cb69cd594f187": {
-      "line": 764,
+      "line": 788,
       "owner": "AgentQuestionService.answer",
       "call": "set_task_meta",
-      "owner_fingerprint": "f593f68a0e88040f681373aefea548d194d310c2096267fd284002be9f213810",
+      "owner_fingerprint": "3f56bf454359e646b53b4caa98f84288c439886814dd49d5f6fbdf29c7e5a8dc",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: _answered_key(question_id)"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: _answered_key(question_id) Owner now also fences accepted ask decisions and domain receipts."
     },
     "src/sessions/reconciler.py::SessionReconciler._apply_pool_verdict::672b462b5108595d73e5b020839bafa231daab0955a6d595626fa61eb403bb47": {
       "line": 1524,
@@ -14755,13 +14828,13 @@
       "reason": "task.removed audit records the confirmed operator decision, removed subtree, disposition and cancelled operations/batches; preserves history without asserting ref or delivery truth."
     },
     "src/commands/proposal_commands.py::TaskProposalCommandsMixin._materialize_proposal::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
-      "line": 578,
+      "line": 579,
       "owner": "TaskProposalCommandsMixin._materialize_proposal",
       "call": "insert",
-      "owner_fingerprint": "e20b11d611453dcbcba33987dae811de3da6dd6d3967857a9fb4af64c8d914eb",
+      "owner_fingerprint": "f161feeadc7a20582472cfd350f9571c135fc239bfc643251f5a5442aa462b19",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Immutable task change-set audit containing actor, source, approved decision/feedback coverage, reviewed diff and receipt in the proposal transaction; no ref replay or authoritative delivery lifecycle state."
+      "reason": "Immutable task change-set audit containing actor, source, approved decision/feedback coverage, reviewed diff and receipt in the proposal transaction; no ref replay or authoritative delivery lifecycle state. Owner now also fences accepted ask decisions and domain receipts."
     },
     "src/integration/train_sources.py::DatabaseBatches._admission_times::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 406,
@@ -15963,7 +16036,12 @@
     "src/doctor/session_checks.py::_check_flock": "Generic session/process registration audit used by the stall patrol and sessions.untracked for every role and project; no integration, delivery, branch or Git authority. Integration-specific sweep orchestration is charged independently.",
     "src/commands/operator_authority.py::operator_grant_var": "Generic request-local operator grant context storage; it binds one audited command and argument digest, and every integration handler it reaches is charged independently.",
     "src/commands/operator_authority.py::local_or_operator": "Generic authority predicate: LOCAL principal or an operator grant for exactly the dispatched command; integration-specific checks that call it are charged independently.",
-    "src/commands/operator_authority.py::bind_operator_dispatch": "Generic per-dispatch operator scoping: narrows the grant to the exact audited command and arguments and refuses unwrapped operator setup commands; integration handlers are charged independently."
+    "src/commands/operator_authority.py::bind_operator_dispatch": "Generic per-dispatch operator scoping: narrows the grant to the exact audited command and arguments and refuses unwrapped operator setup commands; integration handlers are charged independently.",
+    "src/asks/models.py::digest": "Generic canonical JSON hashing for all ask sources; no integration state, policy or ref authority. Integration adapters remain independently charged.",
+    "src/asks/review.py::authenticated_actor": "Generic authenticated principal construction shared by reviews and all ask sources; no integration state or authority decision. Integration authorization remains independently charged.",
+    "src/asks/operations.py::get_operation": "Generic decision-operation lookup in escalation_actions, shared by all ask sources; no integration subject, branch or lifecycle state.",
+    "src/asks/operations.py::succeed": "Generic ask operation completion on the caller connection; source adapters own and independently charge every integration effect and receipt.",
+    "src/asks/sources.py::finish_on": "Generic ask operation/projection completion for every source kind; no integration state or ref authority. IntegrationAdapter remains independently charged."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

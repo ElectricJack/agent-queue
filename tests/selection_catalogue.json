@@ -8786,11 +8786,11 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:8fea2ff358c895c79619d9751463eae9ad3366637de9e7872d7aac7484ec64c2",
+      "digest": "sha256:1c5df762029d1f75afb359ed43f5fd622485868fb0c50da77f8d1e009d5b2381",
       "imports": [
-        "src.commands.gate_commands",
-        "src.commands.integration_commands",
+        "src.commands.handler",
         "src.commands.principal",
+        "src.config",
         "src.database",
         "src.database.tables",
         "src.git.manager",
@@ -11560,12 +11560,13 @@
         "migrations"
       ],
       "default_arm": false,
-      "digest": "sha256:1068dcb8ea6aa7f942e1f7fedc931b33bf36819bc34c08e4008f691760e654ca",
+      "digest": "sha256:bb296a517fb3e29efcb1ba1a25e68e1f700def2e8c6e6d6882629aeb7d3f9d91",
       "imports": [
         "src.database.tables"
       ],
       "markers": [
-        "migration"
+        "migration",
+        "parametrize"
       ],
       "summary": "Human ask migrations on fresh and historical shapes, disposable PostgreSQL only."
     },

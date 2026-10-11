@@ -9653,6 +9653,76 @@
     },
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_repository_probes": {
       "reason": "Operator preflight's read-only GitHub prerequisites for integration setup: the project integration repository, promotion-flow branches, online runner labels and trust-manifest App identities. Reports blockers only; no integration storage, lifecycle or ref writes."
+    },
+    "src/asks/sources.py::IntegrationAdapter": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        456,
+        534
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.apply_on": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        517,
+        534
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.read": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        460,
+        485
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.snapshot": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        486,
+        516
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.source_kind": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        459,
+        459
+      ]
+    },
+    "src/asks/sources.py::authorize_source": {
+      "reason": "Human source authorization includes exact integration gate/escalation binding and application authority.",
+      "landing_span": [
+        66,
+        151
+      ]
+    },
+    "src/asks/sources.py::import from src.database.tables import gates, integration_subjects, task_gates, task_proposals, tasks": {
+      "reason": "Integration subject table import used by the human-decision adapter.",
+      "landing_span": [
+        26,
+        32
+      ]
+    },
+    "src/asks/sources.py::source_adapters": {
+      "reason": "Static adapter registration includes the integration human-decision adapter.",
+      "landing_span": [
+        877,
+        889
+      ]
+    },
+    "src/commands/ask_commands.py::AskCommandsMixin._ask_transaction": {
+      "reason": "Source decision transaction boundary used by the integration adapter alongside other human sources.",
+      "landing_span": [
+        187,
+        198
+      ]
+    },
+    "src/commands/gate_commands.py::GateCommandsMixin._gate_ask_source": {
+      "reason": "Maps integration subject gates to their exact human source identity.",
+      "landing_span": [
+        19,
+        30
+      ]
     }
   },
   "shared_state": {

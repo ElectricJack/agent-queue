@@ -264,3 +264,67 @@ async def test_source_fences_upgrade_historical_answers_and_replay(db):
                     ))
         finally:
             await trans.rollback()
+
+
+async def test_empty_source_fences_can_downgrade_and_replay(db):
+    revision = migration("a00000000092_ask_source_fences")
+
+    def replay(conn):
+        with Operations.context(MigrationContext.configure(conn)):
+            revision.downgrade()
+            assert "human_request" not in {
+                c["name"] for c in sa.inspect(conn).get_columns("gates")
+            }
+            revision.downgrade()
+            revision.upgrade()
+            revision.upgrade()
+            assert "human_request" in {
+                c["name"] for c in sa.inspect(conn).get_columns("gates")
+            }
+
+    async with db._engine.connect() as conn:
+        trans = await conn.begin()
+        try:
+            await conn.run_sync(replay)
+        finally:
+            await trans.rollback()
+
+
+@pytest.mark.parametrize("fence", ["human_request", "ask_decision_id", "unknown", "delivered"])
+async def test_source_fences_refuse_downgrade_without_discarding_evidence(db, fence):
+    revision = migration("a00000000092_ask_source_fences")
+
+    def downgrade(conn):
+        with Operations.context(MigrationContext.configure(conn)):
+            revision.downgrade()
+
+    async with db._engine.connect() as conn:
+        trans = await conn.begin()
+        try:
+            if fence == "human_request":
+                await conn.execute(sa.text("""
+                    INSERT INTO gates (id, project_id, gate_type, title, status, created_at,
+                                       human_request)
+                    VALUES ('retained', 'p-ask', 'human', 'Approve?', 'open', 1,
+                            '{"policy":"approval_hold_v1"}'::jsonb)
+                """))
+            else:
+                await conn.execute(sa.text("""
+                    INSERT INTO agent_questions
+                    (id, session_id, session_name, instance_token, task_id, project_id,
+                     agent_id, turn_id, claim_epoch, question, requires_human, state,
+                     created_at, updated_at, source_ts, ask_decision_id, submission_state)
+                    VALUES ('retained', 's', 'worker', 'instance', 't', 'p-ask', 'a', 'turn', 1,
+                            'Proceed?', true, 'human', 1, 1, 1, :decision, :state)
+                """), {"decision": "decision-1" if fence == "ask_decision_id" else None,
+                       "state": "pending" if fence == "ask_decision_id" else fence})
+            with pytest.raises(RuntimeError, match="forward-compatible reader"):
+                await conn.run_sync(downgrade)
+            # Refusal happens before any column or evidence is removed.
+            assert await conn.run_sync(lambda c: "human_request" in {
+                col["name"] for col in sa.inspect(c).get_columns("gates")
+            })
+            table = "gates" if fence == "human_request" else "agent_questions"
+            assert await conn.scalar(sa.text(f"SELECT count(*) FROM {table} WHERE id = 'retained'")) == 1
+        finally:
+            await trans.rollback()

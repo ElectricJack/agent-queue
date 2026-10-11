@@ -326,7 +326,7 @@
       "idempotency_key": "run-8:open-gate:0:1",
       "principal_fingerprint": "sha256:9f1c",
       "profile_id": null,
-      "contract_fingerprint": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d",
+      "contract_fingerprint": "sha256:dd500df1eeafbdc80e2888c5ea44da49f2b2a221e1a0aeadbe7bb2bb08dd4ab5",
       "error": null,
       "wait": null,
       "cancellation": null
@@ -383,7 +383,7 @@
       "idempotency_key": "run-8:open-gate:1:1",
       "principal_fingerprint": "sha256:9f1c",
       "profile_id": null,
-      "contract_fingerprint": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d",
+      "contract_fingerprint": "sha256:dd500df1eeafbdc80e2888c5ea44da49f2b2a221e1a0aeadbe7bb2bb08dd4ab5",
       "error": null,
       "wait": null,
       "cancellation": null
@@ -440,7 +440,7 @@
       "idempotency_key": "run-8:open-gate:2:1",
       "principal_fingerprint": "sha256:9f1c",
       "profile_id": null,
-      "contract_fingerprint": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d",
+      "contract_fingerprint": "sha256:dd500df1eeafbdc80e2888c5ea44da49f2b2a221e1a0aeadbe7bb2bb08dd4ab5",
       "error": null,
       "wait": null,
       "cancellation": null
@@ -488,7 +488,7 @@
       "idempotency_key": "run-8:open-gate:3:1",
       "principal_fingerprint": "sha256:9f1c",
       "profile_id": null,
-      "contract_fingerprint": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d",
+      "contract_fingerprint": "sha256:dd500df1eeafbdc80e2888c5ea44da49f2b2a221e1a0aeadbe7bb2bb08dd4ab5",
       "error": "gate_create: project not found",
       "wait": null,
       "cancellation": null
@@ -545,7 +545,7 @@
       "idempotency_key": "run-8:open-gate:4:1",
       "principal_fingerprint": "sha256:9f1c",
       "profile_id": null,
-      "contract_fingerprint": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d",
+      "contract_fingerprint": "sha256:dd500df1eeafbdc80e2888c5ea44da49f2b2a221e1a0aeadbe7bb2bb08dd4ab5",
       "error": null,
       "wait": null,
       "cancellation": null
