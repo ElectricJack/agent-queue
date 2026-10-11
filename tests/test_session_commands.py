@@ -1788,6 +1788,107 @@ class TestEndToEndOnFakeProvider:
             CompletionIdentity("p1", "repo", "t1", completion.id))
         assert record["source_oid"] == base and record["artifact"] is False
 
+    async def _setup_spec_ingest(self, db, real_orch, real_handler, tmp_path):
+        """A spec-ingest task holding a development slot, after its batch commit.
+
+        Its whole output is the committed graph: database rows, no source
+        commit. The role holds no ``git_push`` grant, so its task branch stays
+        local at the target tip, and development mode records no branch
+        origin to bind an unchanged base against.
+        """
+        from types import MethodType
+
+        from src.orchestrator.git_ops import GitOpsMixin
+
+        wd, git, base = await self._setup_development_git(db, real_orch, tmp_path, artifact=False)
+        await git._arun(["push", "origin", "--delete", "aq/t1"], cwd=wd)
+        await db.create_profile(AgentProfile(
+            id="spec-ingest", name="Spec Ingest", harness="claude", lifecycle="task",
+            needs_workspace=False,
+        ))
+        await db.update_task("t1", profile_id="spec-ingest", route_source="role")
+        proposal = await real_handler.execute("task_batch_propose", {
+            "project_id": "p1", "source": "spec:/specs/ingested.md",
+            "tasks": [{"tempId": "epic", "title": "Ingested epic", "description": "d"}],
+            "edges": [],
+        })
+        gate = await real_handler.execute("gate_create", {
+            "project_id": "p1", "gate_type": "human", "title": "Approve?",
+            "await_id": proposal["proposal_id"],
+        })
+        await db.resolve_gate(gate["gate_id"], resolved_by="human:test", resolution="approved")
+        committed = await real_handler.execute(
+            "task_batch_commit", {"proposal_id": proposal["proposal_id"]},
+        )
+        assert committed["success"], committed
+        # The development branch of the real completion pipeline is what
+        # demanded the push; only its result is stubbed elsewhere.
+        real_orch._run_completion_pipeline = MethodType(
+            GitOpsMixin._run_completion_pipeline, real_orch,
+        )
+        return wd, git, base
+
+    async def test_spec_ingest_task_closes_pass_after_committing_its_batch(
+        self, db, real_orch, real_handler, tmp_path
+    ):
+        from src.integration.provenance import CompletionIdentity, GitProvenance
+
+        wd, git, base = await self._setup_spec_ingest(db, real_orch, real_handler, tmp_path)
+
+        close = await real_handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "summary": "committed the ingested graph",
+        })
+
+        assert close["success"] and close["status"] == "COMPLETED", str(close)
+        completion = await db.get_task_completion("t1")
+        assert completion.outcome == "pass" and completion.commits == []
+        repo = await db.get_repo("repo")
+        record = await GitProvenance(git, wd, repository_url=repo.url).read_completion(
+            CompletionIdentity("p1", "repo", "t1", completion.id))
+        assert record["source_oid"] == base and record["artifact"] is False
+        assert not await git._arun(["ls-remote", "--heads", "origin", "aq/t1"], cwd=wd)
+
+    @pytest.mark.parametrize("work", ["dirty", "commit", "diverged_remote"])
+    async def test_spec_ingest_close_still_refuses_unpublished_source_work(
+        self, db, real_orch, real_handler, tmp_path, work
+    ):
+        from pathlib import Path
+
+        wd, git, base = await self._setup_spec_ingest(db, real_orch, real_handler, tmp_path)
+        if work == "dirty":
+            (Path(wd) / "notes.md").write_text("uncommitted")
+        elif work == "commit":
+            (Path(wd) / "notes.md").write_text("committed, never pushed")
+            await git.acommit_all(wd, "stray source work")
+        else:
+            # Someone published work on the task branch the slot never saw.
+            await git._arun(["commit", "--allow-empty", "-m", "remote work"], cwd=wd)
+            await git._arun(["push", "origin", "HEAD:refs/heads/aq/t1"], cwd=wd)
+            await git._arun(["reset", "--hard", base], cwd=wd)
+
+        close = await real_handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "summary": "committed the ingested graph",
+        })
+
+        assert close["result"] == "verification_failed", close
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert await db.get_task_completion("t1") is None
+
+    async def test_unpushed_code_task_branch_still_refuses_close(
+        self, db, real_orch, real_handler, tmp_path
+    ):
+        """No-code recognition is the role's, not any clean slot's."""
+        await self._setup_spec_ingest(db, real_orch, real_handler, tmp_path)
+        await db.update_task("t1", profile_id="claude-opus", route_source="legacy")
+
+        close = await real_handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "summary": "done",
+        })
+
+        assert close["result"] == "verification_failed", close
+        assert "exactly pushed" in str(close)
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
     async def _setup_development_repair(self, db, real_orch, tmp_path, source_id, *,
                                         parent=None, failure=None, filing="legacy"):
         """A development repair (t1) of a legacy, commits-less source close.

@@ -1819,7 +1819,7 @@ class TestDevelopmentModeCompletion:
 
     HEAD = "a" * 40
 
-    async def _dev_ctx(self, orch, task_id, branch):
+    async def _dev_ctx(self, orch, task_id, branch, **task_kw):
         from sqlalchemy import update as sa_update
 
         from src.database.tables import workspaces as workspaces_table
@@ -1835,7 +1835,7 @@ class TestDevelopmentModeCompletion:
         await orch.db.update_project(
             "p-1", hierarchical_integration_mode="development", integration_repository_id="r-1"
         )
-        task = _direct_task(task_id, branch_name=branch, repo_id="r-1")
+        task = _direct_task(task_id, branch_name=branch, repo_id="r-1", **task_kw)
         await orch.db.create_task(task)
         async with orch.db._engine.begin() as conn:
             await conn.execute(
@@ -1918,6 +1918,34 @@ class TestDevelopmentModeCompletion:
         assert await orch._run_completion_pipeline(ctx) == (None, True)
         assert ctx.no_work_proven is False
         assert await orch._task_produces_no_code(ctx) is False
+
+    async def _no_workspace_role_ctx(self, orch, task_id):
+        # A custom role, so only its declared flag can make it no-code.
+        await orch.db.create_profile(
+            AgentProfile(id="db-only-role", name="db-only-role", needs_workspace=False)
+        )
+        return await self._dev_ctx(orch, task_id, f"aq/{task_id}", profile_id="db-only-role")
+
+    async def test_no_workspace_role_closes_without_publishing_its_slot(self, orch):
+        """``needs_workspace: false`` marks a database-only role as no-code."""
+        _, ctx = await self._no_workspace_role_ctx(orch, "t-ingest")
+        orch.git.acount_commits_ahead = AsyncMock(return_value=0)
+        orch.git.als_remote_ref = AsyncMock(
+            side_effect=AssertionError("a proven no-code close must not require publication")
+        )
+
+        assert await orch._task_produces_no_code(ctx) is True
+        assert await orch._run_completion_pipeline(ctx) == (None, True)
+        assert ctx.no_work_proven is True
+
+    async def test_no_workspace_role_cannot_hide_unpublished_commits(self, orch):
+        _, ctx = await self._no_workspace_role_ctx(orch, "t-ingest-work")
+        orch.git.acount_commits_ahead = AsyncMock(return_value=1)
+        orch.git.als_remote_ref = AsyncMock(return_value=RemoteRefResult(RemoteRefState.ABSENT))
+
+        assert await orch._run_completion_pipeline(ctx) == (None, False)
+        assert ctx.no_work_proven is False
+        assert "not exactly pushed" in ctx.verification_issues[0]
 
     @pytest.mark.parametrize("source_state", ["dirty", "commit"])
     async def test_vault_only_close_refuses_source_work(self, orch, source_state):

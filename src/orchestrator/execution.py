@@ -1758,17 +1758,21 @@ class ExecutionMixin:
                     from src.integration.provenance import record_worker_completion
 
                     completion_id = completion_id or str(uuid.uuid4())
+                    no_code = await self._task_produces_no_code(ctx)
+                    # Development: a proven-empty no-code slot owes containment, not a push.
+                    no_code_proven = no_code and ctx.no_work_proven and getattr(
+                        project, "hierarchical_integration_mode", None) == "development"
                     completion_source = await record_worker_completion(
                         self.db, self.git, task, project, workspace_path,
-                        completion_id, commit=commit,
-                        no_code_intent=await self._task_produces_no_code(ctx),
+                        completion_id, commit=commit, no_code_intent=no_code,
                         allow_unpublished_no_change=await self._vault_only_delivery(ctx),
+                        no_code_proven=no_code_proven,
                     )
                     origin = await self.db.get_task_branch_origin_for_promotion(
                         task.id, task.repo_id or project.integration_repository_id,
                     )
                     completion_commits = (
-                        [] if origin and origin["base_sha"] == completion_source
+                        [] if no_code_proven or origin and origin["base_sha"] == completion_source
                         else [completion_source]
                     )
             except Exception as exc:
