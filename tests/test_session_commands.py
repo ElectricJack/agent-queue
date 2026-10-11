@@ -1878,7 +1878,7 @@ class TestEndToEndOnFakeProvider:
         self, db, real_orch, real_handler, tmp_path
     ):
         """No-code recognition is the role's, not any clean slot's."""
-        wd, git, base = await self._setup_spec_ingest(db, real_orch, real_handler, tmp_path)
+        await self._setup_spec_ingest(db, real_orch, real_handler, tmp_path)
         await db.update_task("t1", profile_id="claude-opus", route_source="legacy")
 
         close = await real_handler.execute("task_close", {

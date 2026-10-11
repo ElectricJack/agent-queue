@@ -165,44 +165,28 @@ async def resolve_workspace_checkpoint(
 
     A no-change completion may instead supply its recorded exact origin base:
     equality proves no task commits need publishing, without borrowing a ref.
-    A proven no-code completion with no origin row supplies its target tip as
-    *contained_in*: a HEAD already contained in it owes nothing to publish,
-    so an unpublished task ref is accepted. A published one must still equal
-    HEAD, so work pushed elsewhere on the task branch is never skipped.
+    A proven no-code one may supply its target tip as *contained_in*: a HEAD in
+    it owes no push while its task ref is unpublished (a published ref must equal HEAD).
     """
     workspace = await db.get_workspace_for_task(task["id"])
     if workspace is None:
-        raise _workspace_precondition(
-            "no_integration_workspace",
-            f"task {task['id']} holds no integration workspace",
-            task_id=task["id"],
-        )
+        raise _workspace_precondition("no_integration_workspace",
+            f"task {task['id']} holds no integration workspace", task_id=task["id"])
     if workspace.locked_by_task_id != task["id"]:
-        raise _workspace_precondition(
-            "workspace_not_owned",
+        raise _workspace_precondition("workspace_not_owned",
             f"integration workspace {workspace.workspace_path} is locked by "
-            f"{workspace.locked_by_task_id or 'nobody'}, not {task['id']}",
-            task_id=task["id"],
-            workspace_id=workspace.id,
-            locked_by_task_id=workspace.locked_by_task_id,
-        )
+            f"{workspace.locked_by_task_id or 'nobody'}, not {task['id']}", task_id=task["id"],
+            workspace_id=workspace.id, locked_by_task_id=workspace.locked_by_task_id)
     if task["repo_id"] != repo.id:
-        raise _workspace_precondition(
-            "repo_mismatch",
+        raise _workspace_precondition("repo_mismatch",
             f"task {task['id']} is bound to repository {task['repo_id'] or 'none'}, "
-            f"but delivery targets {repo.id}",
-            task_id=task["id"],
-            task_repo_id=task["repo_id"],
-            delivery_repo_id=repo.id,
-        )
+            f"but delivery targets {repo.id}", task_id=task["id"],
+            task_repo_id=task["repo_id"], delivery_repo_id=repo.id)
     if not task["branch_name"]:
-        raise _workspace_precondition(
-            "branch_not_recorded",
+        raise _workspace_precondition("branch_not_recorded",
             f"task {task['id']} has no branch_name recorded — record the branch "
             f"this workspace is on with `aq task set {task['id']} --branch <branch>`",
-            task_id=task["id"],
-            remedy=f"aq task set {task['id']} --branch <branch>",
-        )
+            task_id=task["id"], remedy=f"aq task set {task['id']} --branch <branch>")
     checkout = workspace.workspace_path
     branch = await git.aget_current_branch(checkout, strict=True)
     if branch != task["branch_name"].removeprefix("refs/heads/"):
@@ -220,15 +204,10 @@ async def resolve_workspace_checkpoint(
     from src.git.manager import RemoteRefState
 
     remote = await git.als_remote_ref(checkout, task["branch_name"].removeprefix("refs/heads/"))
-    if remote.state is RemoteRefState.PRESENT and remote.oid == actual_head:
-        return actual_head
-    if contained_in is not None and remote.state is RemoteRefState.ABSENT:
-        if (
-            not is_valid_git_oid(contained_in)
-            or await git.ais_ancestor(checkout, actual_head, contained_in, strict=True)
-            is not True
-        ):
-            raise HierarchyError("dirty", "no-code workspace HEAD is not contained in its target")
+    if (remote.state is RemoteRefState.PRESENT and remote.oid == actual_head) or (
+        contained_in and remote.state is RemoteRefState.ABSENT and is_valid_git_oid(contained_in)
+        and await git.ais_ancestor(checkout, actual_head, contained_in, strict=True) is True
+    ):
         return actual_head
     raise HierarchyError("dirty", "workspace HEAD is not exactly pushed")
 
@@ -281,11 +260,8 @@ async def resolve_workspace_repair_proof(
     head_sha = await resolve_workspace_checkpoint(db, git, task, repo)
     workspace = await db.get_workspace_for_task(task["id"])
     if workspace is None:
-        raise _workspace_precondition(
-            "no_integration_workspace",
-            f"task {task['id']} holds no integration workspace",
-            task_id=task["id"],
-        )
+        raise _workspace_precondition("no_integration_workspace",
+            f"task {task['id']} holds no integration workspace", task_id=task["id"])
     return await resolve_repair_commit_proof(
         git, workspace.workspace_path, base_sha=base_sha, head_sha=head_sha
     )

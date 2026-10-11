@@ -1142,10 +1142,7 @@ class GitOpsMixin:
             if not ctx.workspace_path or not await self._task_uses_git(ctx):
                 return (ctx.pr_url, True)
             if await self._task_produces_no_code(ctx) and await self._task_proves_no_work(ctx):
-                # A no-code role never publishes its slot branch and has no
-                # origin row here. Completion provenance re-proves its HEAD is
-                # contained in the target before recording no artifact.
-                return (ctx.pr_url, True)
+                return (ctx.pr_url, True)  # completion provenance rechecks containment
             try:
                 from src.integration.hierarchy import resolve_workspace_checkpoint
                 from src.database.queries.hierarchy_queries import HierarchyError
