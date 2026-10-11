@@ -262,6 +262,15 @@ They request or replace intents, wait and notify on holds, drive the existing PR
 gate, and trigger backmerge after delivery. Both ship inactive; activate the
 reviewed artifact hash for the intended project before starting delivery.
 
+Active Git-first mode dispatches promotion policy events through the durable
+outbox, including source observations after CI finishes. Legacy integration
+events remain isolated. Use `aq doctor --check integration.continuous_promotion_lag`
+or `aq doctor --check stall.sweep` to find continuous steps with source-only
+work older than six hours. The check reports the oldest unpromoted first-parent
+commit's age and exact ahead/behind counts; a newer dev head does not reset that
+age. Missing branch evidence is reported as unavailable. Inspect source CI,
+promotion status and the project's reviewed activation when a step lags.
+
 ## Inputs and outputs
 
 Input is a validated flow, committed trust, selected S and its version/notes.

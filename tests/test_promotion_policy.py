@@ -107,7 +107,8 @@ async def policy_engine(e, kind):
         assert outcome.lifecycle is RunLifecycle.COMPLETED, (outcome, runs.receipts)
         return outcome
 
-    return SimpleNamespace(run=run, calls=calls, results=results, runs=runs, artifact=artifact, ref=ref)
+    return SimpleNamespace(run=run, calls=calls, results=results, runs=runs, artifact=artifact,
+                           ref=ref, engine=engine, principal=principal)
 
 
 async def chain_lanes(e, flow):

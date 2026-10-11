@@ -12,6 +12,7 @@ from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 OWNER = "integration"
 _DEVELOPMENT_APP_ITEMS = frozenset({"credential", "repository", "protection"})
 _APP_MODE_SEVERITY = {"fail": Severity.ERROR, "warn": Severity.WARN}
+CONTINUOUS_PROMOTION_LAG_SECONDS = 6 * 3600
 
 
 def _unavailable(check_id, detail="database unavailable"):
@@ -355,38 +356,132 @@ async def _check_promotion_flow(ctx: DoctorContext) -> CheckResult:
     if ctx.db is None or ctx.handler is None:
         detail = "promotion flow re-validation unavailable without database and command handler"
         return _unavailable(check_id, detail)
-    handler = ctx.handler
     try:
         found = await recheck_stored_flows(
             ctx.db,
-            lambda project_id: handler.execute("promote_validate", {"project_id": project_id}),
+            lambda pid: ctx.handler.execute("promote_validate", {"project_id": pid}),
         )
     except Exception as exc:  # noqa: BLE001 - any read failure is the named finding
-        return _read_error(
-            check_id, "could not read stored promotion flows; check db.migrations", exc,
-        )
+        return _read_error(check_id, "could not read stored promotion flows; check db.migrations", exc)
     if not found:
-        return CheckResult(
-            id=check_id, severity=Severity.OK, detail="every stored promotion flow validates"
-        )
+        return CheckResult(check_id, Severity.OK, "every stored promotion flow validates")
     projects = [
         {"project_id": project_id, "problems": problems,
          **{key: problems[0].get(key) for key in ("code", "pointer", "message")}}
         for project_id, problems in sorted(found.items())
     ]
-    named = "; ".join(
-        f"{entry['project_id']}: {entry['code']} at {entry['pointer']!r}" for entry in projects
-    )
-    return CheckResult(
-        id=check_id,
-        severity=Severity.ERROR,
-        detail=(
-            f"{len(projects)} stored promotion flow(s) no longer validate; their targets are "
-            f"misconfigured and the train promotes to the default branch ({named}). Fix the "
-            "flow with `aq promote validate --file` and `aq project set <id> promotion-flow`."
-        ),
+    named = "; ".join(f"{p['project_id']}: {p['code']} at {p['pointer']!r}" for p in projects)
+    return CheckResult(check_id, Severity.ERROR,
+        f"{len(projects)} stored promotion flow(s) no longer validate; their targets are "
+        f"misconfigured and the train promotes to the default branch ({named}). Fix the "
+        "flow with `aq promote validate --file` and `aq project set <id> promotion-flow`.",
         data={"projects": projects},
     )
+
+
+async def continuous_promotion_lag(
+    ctx: DoctorContext, *, project_ids=None, now=None,
+    max_age_seconds=CONTINUOUS_PROMOTION_LAG_SECONDS,
+) -> dict:
+    """Age the oldest source-only first-parent commit from one fetched repo snapshot."""
+    from src.database.tables import projects, repos
+    from src.git.manager import is_valid_git_oid
+    from src.integration.delivery_observer import DeliveryTarget
+    from src.integration.promotion_steps import FlowSchema
+
+    report = {"findings": [], "unavailable": [], "checked": 0,
+              "max_age_seconds": max_age_seconds}
+    if ctx.db is None or not getattr(ctx.db, "_engine", None):
+        return report
+    now = time.time() if now is None else now
+    statement = select(
+        projects.c.id, projects.c.promotion_flow, repos.c.id.label("repository_id"),
+        repos.c.url, repos.c.default_branch,
+    ).select_from(projects.join(repos, (repos.c.id == projects.c.integration_repository_id)
+                               & (repos.c.project_id == projects.c.id))).where(
+        projects.c.status == "ACTIVE",
+        projects.c.hierarchical_integration_mode.in_(("train", "hierarchy", "development")),
+        projects.c.promotion_flow.is_not(None),
+    )
+    if project_ids is not None:
+        statement = statement.where(projects.c.id.in_(project_ids))
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(statement.order_by(projects.c.id))).mappings().all()
+    observer = None
+    for row in rows:
+        flow = FlowSchema.validate(row["promotion_flow"], default_branch=row["default_branch"])
+        # Trust is checked separately; branch drift needs only flow layers 1-2.
+        if any(problem.layer < 3 for problem in flow.problems):
+            continue
+        steps = [step for step in flow.flow or [] if step["type"] == "continuous"]
+        if not steps:
+            continue
+        observer = observer or _doctor_observer(ctx, prerequisite=False)
+        try:
+            snapshot = await observer.snapshot(DeliveryTarget(
+                row["id"], row["repository_id"], row["url"], "refs/heads/" + row["default_branch"],
+            ))
+            observed = getattr(snapshot, "observation", snapshot)
+            if observed.error:
+                raise ValueError(observed.error)
+        except Exception as exc:  # a failed read is visible, never a healthy flow
+            report["unavailable"].append({"project_id": row["id"],
+                "repository_id": row["repository_id"], "reason": str(exc)})
+            continue
+        for step in steps:
+            identity = {"project_id": row["id"], "repository_id": row["repository_id"],
+                        "step_id": step["id"], "source": step["source"], "target": step["target"]}
+            try:
+                source = observed.source_heads.get("refs/remotes/origin/" + step["source"])
+                target = observed.source_heads.get("refs/remotes/origin/" + step["target"])
+                if not is_valid_git_oid(source) or not is_valid_git_oid(target):
+                    raise ValueError("source or target branch head unavailable")
+                counts = await observed.git.arun_git_result([
+                    "--no-replace-objects", "rev-list", "--left-right", "--count",
+                    f"{target}...{source}",
+                ], cwd=observed.store, timeout=5)
+                if counts.returncode:
+                    raise ValueError("branch commit counts unavailable")
+                behind, ahead = map(int, counts.stdout.split())
+                report["checked"] += 1
+                if not ahead:
+                    continue
+                dates = await observed.git.arun_git_result([
+                    "--no-replace-objects", "log", "--first-parent", "--format=%ct",
+                    f"{target}..{source}",
+                ], cwd=observed.store, timeout=5)
+                if dates.returncode or not dates.stdout.strip():
+                    raise ValueError("source-only commit dates unavailable")
+                oldest = min(int(value) for value in dates.stdout.split())
+                age = now - oldest
+                if age <= max_age_seconds:
+                    continue
+                report["findings"].append({**identity, "source_sha": source, "target_sha": target,
+                    "ahead": ahead, "behind": behind, "oldest_unpromoted_at": oldest,
+                    "age_seconds": age, "max_age_seconds": max_age_seconds,
+                    "detail": f"continuous step {step['id']} ({step['source']} -> {step['target']}) "
+                              f"has {ahead} source-only commit(s), oldest {age / 3600:.1f}h "
+                              f"(threshold {max_age_seconds / 3600:g}h); inspect promotion status, "
+                              "source CI and the project promotion-continuous activation"})
+            except Exception as exc:  # one unreadable step does not hide the others
+                report["unavailable"].append({**identity, "reason": str(exc)})
+    return report
+
+
+async def _check_continuous_promotion_lag(ctx: DoctorContext) -> CheckResult:
+    check_id = "integration.continuous_promotion_lag"
+    if ctx.db is None:
+        return _unavailable(check_id)
+    try:
+        report = await continuous_promotion_lag(ctx)
+    except Exception as exc:
+        return _read_error(check_id, "could not observe continuous promotion branches", exc)
+    findings, unavailable = report["findings"], report["unavailable"]
+    return CheckResult(check_id, Severity.WARN if findings or unavailable else Severity.OK,
+        f"{len(findings)} continuous promotion step(s) have work older than "
+        f"{report['max_age_seconds'] / 3600:g}h; {len(unavailable)} unavailable"
+        + "".join(f"\n{item['project_id']}: {item['detail']}" for item in findings),
+        data=report)
 
 
 async def _check_ci_source(ctx: DoctorContext) -> CheckResult:
@@ -470,6 +565,7 @@ def integration_checks() -> list[DoctorCheck]:
             ("subjects_held", _check_subjects_held, 5.0, None),
             ("trust", _check_trust, 60.0, None),
             ("promotion_flow", _check_promotion_flow, 60.0, None),
+            ("continuous_promotion_lag", _check_continuous_promotion_lag, 60.0, None),
             ("ci_source", _check_ci_source, 30.0, None),
         )
     ]

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 from src.integration.models import HierarchicalIntegrationPolicy
+from src.integration.outbox import PROMOTION_EVENT_TYPES as PROMOTION_POLICY_EVENTS
 
 if TYPE_CHECKING:
     from src.commands.handler import CommandHandler
@@ -90,10 +91,6 @@ class IntegrationRouteTarget:
             and row.get("scope") == self.scope
             and (row.get("scope_identifier") or "") == self.scope_identifier
         )
-
-
-PROMOTION_POLICY_EVENTS = frozenset({"promotion.source_settled", "promotion.request_due",
-    "promotion.hotfix_completed", "promotion.intent_due", "promotion.delivered"})
 
 
 def is_integration_route_event(event_type: str) -> bool:

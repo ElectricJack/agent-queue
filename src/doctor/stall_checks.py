@@ -36,6 +36,7 @@ _PARENT_PR_PROBE_BUDGET_SECONDS = 10.0
 #: The completed-undelivered read shares one repository snapshot per project;
 #: past this the sweep leaves it to ``aq doctor --check integration.completed_undelivered``.
 _COMPLETED_UNDELIVERED_BUDGET_SECONDS = 30.0
+_CONTINUOUS_PROMOTION_BUDGET_SECONDS = 15.0
 _READY_AGE = 20 * 60
 _DEFINED_AGE = 30 * 60
 _DELIVERY_LAG = 45 * 60
@@ -527,12 +528,34 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _subject_unknown_findings(ctx, active, now),
         _object_bootstrap_findings(ctx, active, now),
         _worker_relaunch_findings(ctx, tasks),
+        _continuous_promotion_findings(ctx, active, now),
     )
     findings = (
         [item for group in groups for item in group]
         + _route_findings(tasks) + flock_findings + conversation + delivery_engines
     )
     return _sweep_result(ctx, findings, len(active))
+
+
+async def _continuous_promotion_findings(ctx, active, now):
+    from src.doctor.integration_checks import continuous_promotion_lag
+
+    try:
+        async with asyncio.timeout(_CONTINUOUS_PROMOTION_BUDGET_SECONDS):
+            report = await continuous_promotion_lag(ctx, project_ids=active, now=now)
+    except Exception as exc:
+        return [_finding("continuous_promotion_observation_unavailable", None,
+                         f"continuous promotion branch read unavailable: {type(exc).__name__}; "
+                         "run aq doctor --check integration.continuous_promotion_lag")]
+    return [
+        _finding("continuous_promotion_lag", item["project_id"], item["detail"],
+                 **{key: value for key, value in item.items() if key not in {"project_id", "detail"}})
+        for item in report["findings"]
+    ] + [
+        _finding("continuous_promotion_observation_unavailable", item["project_id"],
+                 item["reason"], evidence=item)
+        for item in report["unavailable"]
+    ]
 
 
 async def _worker_relaunch_findings(ctx: DoctorContext, tasks: list) -> list[dict]:

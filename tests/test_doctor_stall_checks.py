@@ -63,6 +63,38 @@ async def test_worker_relaunch_streak_is_visible_to_stall_sweep():
     assert findings[0]["count"] == 2 and findings[0]["cause"] == "context_thrash"
 
 
+async def test_continuous_promotion_lag_and_unavailable_evidence_reach_sweep(context, monkeypatch):
+    import importlib
+    from unittest.mock import AsyncMock
+
+    read = AsyncMock(return_value={"findings": [{
+        "project_id": "one", "step_id": "staging", "detail": "dev is ahead for 7h",
+        "source_sha": "a" * 40, "target_sha": "b" * 40, "age_seconds": 7 * 3600,
+    }], "unavailable": [{"project_id": "two", "reason": "missing target"}]})
+    monkeypatch.setattr(importlib.import_module("src.doctor.integration_checks"),
+                        "continuous_promotion_lag", read)
+    result = await module._continuous_promotion_findings(context, {"one", "two"}, NOW)
+    read.assert_awaited_once_with(context, project_ids={"one", "two"}, now=NOW)
+    assert [item["kind"] for item in result] == [
+        "continuous_promotion_lag", "continuous_promotion_observation_unavailable"]
+    assert result[0]["source_sha"] == "a" * 40
+    assert result[1]["evidence"]["reason"] == "missing target"
+
+
+async def test_continuous_promotion_sweep_timeout_is_visible(context, monkeypatch):
+    import importlib
+
+    async def unavailable(*_args, **_kwargs):
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(importlib.import_module("src.doctor.integration_checks"),
+                        "continuous_promotion_lag", unavailable)
+    monkeypatch.setattr(module, "_CONTINUOUS_PROMOTION_BUDGET_SECONDS", 0.01)
+    [finding] = await module._continuous_promotion_findings(context, {"one"}, NOW)
+    assert finding["kind"] == "continuous_promotion_observation_unavailable"
+    assert "integration.continuous_promotion_lag" in finding["detail"]
+
+
 class _Rows:
     """The one read a statement-backed probe needs from the fake engine."""
 

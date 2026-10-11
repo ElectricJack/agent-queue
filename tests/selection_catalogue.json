@@ -9524,16 +9524,26 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:d73888b346b86776c1c9c33eb13504e25d2cc5678960550b85cf46b9ed9e789d",
+      "digest": "sha256:4e9688f9e1fa9579ab5508c28ba8e8a8cfbdd000d659ffae35f39ffe2eb6ce39",
       "imports": [
+        "src.commands.integration_commands",
+        "src.config",
         "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
         "src.integration.ci",
+        "src.integration.outbox",
         "src.integration.promotion_steps",
+        "src.integration.service",
         "src.integration.train",
-        "src.integration.train_sources"
+        "src.integration.train_sources",
+        "src.playbooks.run_state",
+        "src.playbooks.services"
       ],
-      "markers": [],
-      "summary": "One-step request → pinned human review → exact FF and annotated release tag."
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Connected promotion policy, exact FF, release tags and continuous lag diagnostics."
     },
     "tests/test_integration_train_regressions.py": {
       "areas": [

@@ -28,6 +28,7 @@ from src.integration.outbox import (
     IntegrationOutbox,
     DestinationArtifactUnavailable,
     NoIntegrationEventConsumer,
+    PROMOTION_EVENT_TYPES,
     RETRY_EXHAUSTED_PREFIX,
     UNSUBSCRIBED_EVENT_TYPES,
     enqueue_integration_event,
@@ -1849,6 +1850,38 @@ async def test_dispatch_page_is_bounded(db):
     outbox = IntegrationOutbox(db, accept, page_size=2, clock=lambda: NOW)
     assert await outbox.dispatch_due(NOW) == 2
     assert len(accepted) == 2
+
+
+async def test_promotion_only_pages_do_not_dispatch_or_starve_behind_legacy_events(db):
+    async with db.immediate() as conn:
+        for index in range(7):
+            await enqueue_integration_event(conn, event_id=f"legacy-{index}",
+                dedup_key=f"legacy-{index}", project_id="p",
+                event_type="integration.sealed", payload={}, available_at=NOW - 1)
+        for index, event_type in enumerate(sorted(PROMOTION_EVENT_TYPES)):
+            await enqueue_integration_event(conn, event_id=f"promotion-{index}",
+                dedup_key=f"promotion-{index}", project_id="p",
+                event_type=event_type, payload={}, available_at=NOW)
+    accepted = []
+
+    async def accept(event_type, _payload, _event_id):
+        accepted.append(event_type)
+        return True
+
+    # Restart in the middle of the page scan; all promotion kinds remain
+    # deliverable, while legacy rows retain their attempts and availability.
+    for _restart in range(2):
+        outbox = IntegrationOutbox(db, accept, page_size=2, clock=lambda: NOW)
+        for _page in range(3):
+            await outbox.dispatch_due(NOW, event_types=PROMOTION_EVENT_TYPES)
+    assert sorted(accepted) == sorted(PROMOTION_EVENT_TYPES)
+    rows = await _outbox_rows(db)
+    legacy = [row for row in rows if row["id"].startswith("legacy-")]
+    assert len(legacy) == 7
+    assert all(row["delivered_at"] is None and row["attempts"] == 0
+               and row["available_at"] == NOW - 1 for row in legacy)
+    # An empty filtered scan must finish even though legacy work remains due.
+    assert await outbox.dispatch_due(NOW, event_types=PROMOTION_EVENT_TYPES) == 0
 
 
 async def test_slow_declines_retry_from_completion_and_page_other_projects(db, caplog):
