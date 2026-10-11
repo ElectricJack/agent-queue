@@ -1,9 +1,11 @@
-"""Required V2 playbooks survive daemon restarts and activation gaps."""
+"""One-shot V2 policy installation, read-only restarts and deliberate repair."""
 
 from __future__ import annotations
 
+import asyncio
+import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -14,6 +16,7 @@ from src.playbooks.profiles import shipped_profile_lookup
 from src.playbooks.required import (
     DEFAULT_SYSTEM_PLAYBOOK_IDS,
     INITIAL_SYSTEM_PLAYBOOK_IDS,
+    INSTALL_RECEIPT,
     REQUIRED_SYSTEM_PLAYBOOK_IDS,
     RequiredPlaybookReconciler,
     ensure_reviewed_playbook_bundles,
@@ -56,7 +59,10 @@ async def _reconciler(tmp_path):
     return db, handler, reconciler
 
 
-def test_first_install_has_an_explicit_minimal_inventory(tmp_path):
+@pytest.mark.parametrize("empty_vault", [False, True], ids=["absent", "empty"])
+def test_first_install_has_an_explicit_minimal_inventory(tmp_path, empty_vault):
+    if empty_vault:
+        (tmp_path / "vault").mkdir()
     expected = {
         "default-assignment-routing", "provider-usage-probe", "provider-failover",
         "default-pipeline", "supervisor-failure-triage", "morning-report",
@@ -65,6 +71,126 @@ def test_first_install_has_an_explicit_minimal_inventory(tmp_path):
     assert set(install_initial_playbooks(str(tmp_path))) == expected
     assert {p.stem for p in (tmp_path / "vault/system/playbooks").iterdir()} == expected
     assert {p.name for p in (tmp_path / "vault/reviewed-playbooks").iterdir()} == expected
+    assert not list((tmp_path / "vault").glob("agent-types/*/playbooks/*.md"))
+    assert json.loads((tmp_path / INSTALL_RECEIPT).read_bytes()) == {
+        "version": 1, "activation_pending": True,
+    }
+
+
+def _policy_bytes(tmp_path):
+    """Snapshot policy and immutable imports, excluding unrelated vault scaffolding."""
+    receipt = tmp_path / INSTALL_RECEIPT
+    paths = [receipt, receipt.with_suffix(".tmp")]
+    for directory in ("vault/system/playbooks", "vault/reviewed-playbooks", "compiled"):
+        paths.extend((tmp_path / directory).rglob("*"))
+    paths.extend((tmp_path / "vault").glob("agent-types/*/playbooks/*"))
+    return {str(path.relative_to(tmp_path)): path.read_bytes() for path in paths if path.is_file()}
+
+
+async def _read_only_restart(tmp_path, db):
+    """Use fresh startup objects, then assert both health reads leave policy untouched."""
+    from src.doctor.models import DoctorContext
+    from src.doctor.playbook_v2_checks import _check_required, _check_reviewed_bundles
+    from src.vault import ensure_vault_layout
+
+    before = _policy_bytes(tmp_path)
+    activations = await db.list_playbook_activations(enabled_only=False)
+    handler = _Handler(tmp_path, db)
+    handler._cmd_playbook_v2_import = AsyncMock(wraps=handler._cmd_playbook_v2_import)
+    restarted = RequiredPlaybookReconciler(config=handler.config, db=db, handler=handler)
+    handler.orchestrator = SimpleNamespace(reconcile_required_playbooks=restarted.reconcile)
+    ctx = DoctorContext(config=handler.config, db=db, handler=handler)
+    with (
+        patch("src.playbooks.required.ensure_reviewed_playbook_bundles",
+              wraps=ensure_reviewed_playbook_bundles) as refresh,
+        patch("src.vault.ensure_default_aq_skills"),  # never seed the operator's harness homes
+        patch("src.vault_index.VaultIndexGenerator.generate_all"),  # unrelated generated hubs
+        patch.object(db, "set_playbook_activation", wraps=db.set_playbook_activation) as activate,
+    ):
+        ensure_vault_layout(str(tmp_path))
+        status = await restarted.reconcile()
+        await restarted.refresh_status()
+        required = await _check_required(ctx)
+        bundles = await _check_reviewed_bundles(ctx)
+        refresh.assert_not_called()
+        activate.assert_not_awaited()
+    handler._cmd_playbook_v2_import.assert_not_awaited()
+    assert _policy_bytes(tmp_path) == before
+    assert await db.list_playbook_activations(enabled_only=False) == activations
+    return status, required, bundles, ctx
+
+
+@pytest.mark.parametrize("interrupt_at", REQUIRED_SYSTEM_PLAYBOOK_IDS[:2])
+async def test_interrupted_initial_import_is_consumed_before_import_and_not_retried(
+    tmp_path, interrupt_at,
+):
+    from src.doctor.models import Severity
+    from src.doctor.playbook_v2_checks import _fix_required
+
+    db, handler, reconciler = await _reconciler(tmp_path)
+    receipt = tmp_path / INSTALL_RECEIPT
+    imported = handler._cmd_playbook_v2_import
+
+    async def interrupt(params):
+        assert json.loads(receipt.read_bytes())["activation_pending"] is False
+        if params["path"] == f"reviewed-playbooks/{interrupt_at}":
+            raise asyncio.CancelledError("startup interrupted during import")
+        return await imported(params)
+
+    handler._cmd_playbook_v2_import = AsyncMock(side_effect=interrupt)
+    try:
+        with pytest.raises(asyncio.CancelledError, match="startup interrupted"):
+            await reconciler.reconcile()
+        position = REQUIRED_SYSTEM_PLAYBOOK_IDS.index(interrupt_at)
+        assert [call.args[0]["path"] for call in handler._cmd_playbook_v2_import.await_args_list] == [
+            f"reviewed-playbooks/{identifier}"
+            for identifier in REQUIRED_SYSTEM_PLAYBOOK_IDS[:position + 1]
+        ]
+        assert {row["playbook_id"] for row in await db.list_playbook_activations()} == set(
+            REQUIRED_SYSTEM_PLAYBOOK_IDS[:position]
+        )
+
+        status, diagnostic, _bundles, ctx = await _read_only_restart(tmp_path, db)
+        assert not status["ok"]
+        assert diagnostic.severity is Severity.ERROR
+        assert "aq doctor --check playbooks.required --fix" in diagnostic.detail
+        assert (await _fix_required(ctx)).severity is Severity.OK
+        assert {row["playbook_id"] for row in await db.list_playbook_activations()} == set(
+            REQUIRED_SYSTEM_PLAYBOOK_IDS
+        )  # optional defaults and morning reporting are not resurrected by repair
+        assert (await _read_only_restart(tmp_path, db))[0]["ok"]
+    finally:
+        await db.close()
+
+
+@pytest.mark.parametrize("receipt_bytes", [
+    b"", b'{"version":', b"[]", b'{"version": 2, "activation_pending": true}',
+    b'{"version": 1}', b'{"version": 1, "activation_pending": false}',
+], ids=["empty", "partial", "non-object", "unsupported", "missing-pending", "consumed"])
+async def test_unusable_receipt_needs_explicit_repair_without_receipt_recovery(
+    tmp_path, receipt_bytes,
+):
+    from src.doctor.models import Severity
+    from src.doctor.playbook_v2_checks import _fix_required
+
+    db, _handler, _reconciled = await _reconciler(tmp_path)
+    receipt = tmp_path / INSTALL_RECEIPT
+    receipt.write_bytes(receipt_bytes)
+    # A leftover staging file is not authority to recover a partial/consumed receipt.
+    receipt.with_suffix(".tmp").write_bytes(b'{"version": 1, "activation_pending": true}')
+    try:
+        status, diagnostic, _bundles, ctx = await _read_only_restart(tmp_path, db)
+        assert not status["ok"]
+        assert diagnostic.severity is Severity.ERROR
+        assert "aq doctor --check playbooks.required --fix" in diagnostic.detail
+        assert (await _fix_required(ctx)).severity is Severity.OK
+        assert receipt.read_bytes() == receipt_bytes
+        assert {row["playbook_id"] for row in await db.list_playbook_activations()} == set(
+            REQUIRED_SYSTEM_PLAYBOOK_IDS
+        )
+        assert (await _read_only_restart(tmp_path, db))[0]["ok"]
+    finally:
+        await db.close()
 
 
 @pytest.mark.parametrize("remove_entire_vault", [False, True])
@@ -87,12 +213,20 @@ def test_vault_restart_does_not_reseed_deleted_or_retired_policy(tmp_path, remov
     assert not list(vault.glob("agent-types/*/playbooks/*.md"))
 
 
-def test_existing_vault_is_not_migrated(tmp_path):
+async def test_existing_vault_is_not_migrated(tmp_path):
     vault = tmp_path / "vault"
     vault.mkdir()
     (vault / "operator.md").write_text("existing vault")
     assert install_initial_playbooks(str(tmp_path)) == []
     assert list(vault.iterdir()) == [vault / "operator.md"]
+    assert json.loads((tmp_path / INSTALL_RECEIPT).read_bytes())["activation_pending"] is False
+    db = Database(lease_dsn("existing-playbooks.db"))
+    await db.initialize()
+    try:
+        assert not (await _read_only_restart(tmp_path, db))[0]["ok"]
+        assert (vault / "operator.md").read_text() == "existing vault"
+    finally:
+        await db.close()
 
 
 async def test_no_receipt_never_creates_missing_activations(tmp_path):
@@ -110,27 +244,33 @@ async def test_no_receipt_never_creates_missing_activations(tmp_path):
         await db.close()
 
 
-async def test_restart_keeps_deleted_required_and_optional_activations_deleted(tmp_path):
+@pytest.mark.parametrize("deleted", ["activations", "sources", "bundles", "vault"])
+async def test_restart_keeps_deleted_policy_deleted(tmp_path, deleted):
+    import shutil
+
     from sqlalchemy import delete
 
     from src.database.tables import playbook_activations
-    from src.doctor.models import DoctorContext, Severity
-    from src.doctor.playbook_v2_checks import _check_required
+    from src.doctor.models import Severity
 
-    db, handler, reconciler = await _reconciler(tmp_path)
+    db, _handler, reconciler = await _reconciler(tmp_path)
     try:
         assert (await reconciler.reconcile())["ok"]
-        async with db._engine.begin() as conn:
-            await conn.execute(delete(playbook_activations))
-        handler._cmd_playbook_v2_import = AsyncMock(wraps=handler._cmd_playbook_v2_import)
-        restarted = RequiredPlaybookReconciler(config=handler.config, db=db, handler=handler)
-        status = await restarted.reconcile()
-        assert not status["ok"]
-        assert await db.list_playbook_activations() == []
-        handler._cmd_playbook_v2_import.assert_not_awaited()
-        diagnostic = await _check_required(DoctorContext(config=handler.config, db=db, handler=handler))
-        assert diagnostic.severity is Severity.ERROR
-        assert "aq doctor --check playbooks.required --fix" in diagnostic.detail
+        if deleted == "activations":
+            async with db._engine.begin() as conn:
+                await conn.execute(delete(playbook_activations))
+        else:
+            path = {"sources": "vault/system/playbooks", "bundles": "vault/reviewed-playbooks",
+                    "vault": "vault"}[deleted]
+            shutil.rmtree(tmp_path / path)
+        status, diagnostic, _bundles, _ctx = await _read_only_restart(tmp_path, db)
+        if deleted == "activations":
+            assert not status["ok"]
+            assert await db.list_playbook_activations() == []
+            assert diagnostic.severity is Severity.ERROR
+            assert "aq doctor --check playbooks.required --fix" in diagnostic.detail
+        else:
+            assert status["ok"]  # readiness follows the surviving immutable artifacts
     finally:
         await db.close()
 
@@ -140,8 +280,9 @@ async def test_restart_never_repoints_a_stale_activation(tmp_path):
     try:
         await reconciler.reconcile()
         stale_sha = await _activate_an_older_release(db, handler)
-        result = await reconciler.reconcile()
+        result, diagnostic, _bundles, _ctx = await _read_only_restart(tmp_path, db)
         assert not result["ok"]
+        assert "aq doctor --check playbooks.required --fix" in diagnostic.detail
         assert (await _system_row(db, "default-assignment-routing"))["active_artifact_sha256"] == stale_sha
         assert (await reconciler.reconcile(repair=True))["ok"]
         assert (await _system_row(db, "default-assignment-routing"))["active_artifact_sha256"] != stale_sha
@@ -151,7 +292,7 @@ async def test_restart_never_repoints_a_stale_activation(tmp_path):
 
 @pytest.mark.parametrize("enabled", [False, True])
 async def test_doctor_reports_and_explicitly_repairs_required_policy(tmp_path, enabled):
-    from src.doctor.models import DoctorContext, Severity
+    from src.doctor.models import Severity
     from src.doctor.playbook_v2_checks import _check_required, _fix_required
 
     db, handler, reconciler = await _reconciler(tmp_path)
@@ -160,15 +301,37 @@ async def test_doctor_reports_and_explicitly_repairs_required_policy(tmp_path, e
         older = _shipped_variant("default-assignment-routing", _router_without_task_route_apply)
         older_sha = await _store_variant(db, handler, older)
         await _activate(db, "default-assignment-routing", older_sha, enabled=enabled)
-        handler.orchestrator = SimpleNamespace(reconcile_required_playbooks=reconciler.reconcile)
-        ctx = DoctorContext(config=handler.config, db=db, handler=handler)
 
-        assert (await _check_required(ctx)).severity is Severity.ERROR
+        status, diagnostic, _bundles, ctx = await _read_only_restart(tmp_path, db)
+        assert not status["ok"]
+        assert diagnostic.severity is Severity.ERROR
         assert (await _system_row(db, "default-assignment-routing"))["active_artifact_sha256"] == older_sha
         assert (await _fix_required(ctx)).severity is Severity.OK
         assert (await _check_required(ctx)).severity is Severity.OK
         row = await _system_row(db, "default-assignment-routing")
         assert row["enabled"] and row["active_artifact_sha256"] != older_sha
+    finally:
+        await db.close()
+
+
+async def test_required_doctor_repair_without_a_running_handler_does_not_write(tmp_path):
+    from src.doctor.models import DoctorContext, Severity
+    from src.doctor.playbook_v2_checks import _fix_required
+
+    db, handler, _reconciled = await _reconciler(tmp_path)
+    try:
+        digest = _vault_bundle(tmp_path, "default-assignment-routing") / "artifact.sha256"
+        digest.write_bytes(b"operator bundle awaiting repair\n")
+        before = _policy_bytes(tmp_path)
+        activations = await db.list_playbook_activations(enabled_only=False)
+
+        result = await _fix_required(DoctorContext(config=handler.config, db=db, handler=handler))
+
+        assert result.severity is Severity.ERROR
+        assert result.detail == "Required policy repair needs the running daemon command handler"
+        assert not result.fix_applied
+        assert _policy_bytes(tmp_path) == before
+        assert await db.list_playbook_activations(enabled_only=False) == activations
     finally:
         await db.close()
 
@@ -214,7 +377,10 @@ async def test_restart_rehydrates_durable_activation_without_rewriting_it(tmp_pa
 
 
 async def test_hash_mismatched_reviewed_bundle_is_a_readiness_diagnostic(tmp_path):
-    db, _handler, reconciler = await _reconciler(tmp_path)
+    from src.doctor.models import Severity
+    from src.doctor.playbook_v2_checks import _fix_required
+
+    db, handler, reconciler = await _reconciler(tmp_path)
     try:
         digest = (
             tmp_path
@@ -224,6 +390,20 @@ async def test_hash_mismatched_reviewed_bundle_is_a_readiness_diagnostic(tmp_pat
             / "artifact.sha256"
         )
         digest.write_text("sha256:" + "0" * 64, encoding="utf-8")
+        note = digest.parent / "operator-note.md"
+        note.write_bytes(b"keep this review note\n")
+        source = tmp_path / "vault/system/playbooks/default-assignment-routing.md"
+        source.write_bytes(b"operator-owned routing source\n")
+        consumed_receipt = None
+        imported = handler._cmd_playbook_v2_import
+
+        async def observe_receipt(params):
+            nonlocal consumed_receipt
+            consumed_receipt = (tmp_path / INSTALL_RECEIPT).read_bytes()
+            assert json.loads(consumed_receipt)["activation_pending"] is False
+            return await imported(params)
+
+        handler._cmd_playbook_v2_import = AsyncMock(side_effect=observe_receipt)
 
         result = await reconciler.reconcile()
 
@@ -240,6 +420,29 @@ async def test_hash_mismatched_reviewed_bundle_is_a_readiness_diagnostic(tmp_pat
             "provider-failover",
             *DEFAULT_SYSTEM_PLAYBOOK_IDS,
         }
+        assert "morning-report" not in {row["playbook_id"] for row in activations}
+        assert handler._cmd_playbook_v2_import.await_count == len(
+            REQUIRED_SYSTEM_PLAYBOOK_IDS + DEFAULT_SYSTEM_PLAYBOOK_IDS
+        )
+        before = {row["playbook_id"]: row for row in activations}
+
+        status, diagnostic, bundles, ctx = await _read_only_restart(tmp_path, db)
+        assert not status["ok"]
+        assert diagnostic.severity is Severity.ERROR
+        assert bundles.severity is Severity.WARN
+        assert "aq doctor --check playbooks.reviewed_bundles --fix" in bundles.detail
+        assert (await _fix_required(ctx)).severity is Severity.OK
+        assert (tmp_path / INSTALL_RECEIPT).read_bytes() == consumed_receipt
+        assert note.read_bytes() == b"keep this review note\n"
+        assert source.read_bytes() == b"operator-owned routing source\n"
+        backups = list(digest.parent.parent.glob("default-assignment-routing.bak-*"))
+        assert len(backups) == 1
+        assert (backups[0] / "artifact.sha256").read_bytes() == b"sha256:" + b"0" * 64
+        assert (backups[0] / note.name).read_bytes() == note.read_bytes()
+        after = {row["playbook_id"]: row for row in await db.list_playbook_activations()}
+        assert {identifier: after[identifier] for identifier in before} == before
+        assert set(after) == set(REQUIRED_SYSTEM_PLAYBOOK_IDS + DEFAULT_SYSTEM_PLAYBOOK_IDS)
+        assert (await _read_only_restart(tmp_path, db))[0]["ok"]
     finally:
         await db.close()
 
@@ -308,6 +511,9 @@ async def test_a_fresh_install_activates_the_shared_default_playbooks_healthy(tm
 
 
 async def test_a_default_playbook_the_operator_disabled_stays_disabled(tmp_path):
+    from src.doctor.models import Severity
+    from src.doctor.playbook_v2_checks import _fix_required
+
     db, _handler, reconciler = await _reconciler(tmp_path)
     try:
         await reconciler.reconcile()
@@ -327,10 +533,7 @@ async def test_a_default_playbook_the_operator_disabled_stays_disabled(tmp_path)
             reasons="[]",
         )
 
-        restarted = RequiredPlaybookReconciler(
-            config=reconciler._config, db=db, handler=reconciler._handler
-        )
-        result = await restarted.reconcile()
+        result, _diagnostic, _bundles, ctx = await _read_only_restart(tmp_path, db)
 
         after = next(
             activation
@@ -339,6 +542,10 @@ async def test_a_default_playbook_the_operator_disabled_stays_disabled(tmp_path)
         )
         assert after["enabled"] is False
         assert result["defaults"]["supervisor-failure-triage"]["activated"] is False
+        assert (await _fix_required(ctx)).severity is Severity.OK
+        assert await _system_row(db, "supervisor-failure-triage") == after
+        assert not any(row["playbook_id"] == "morning-report"
+                       for row in await db.list_playbook_activations())
     finally:
         await db.close()
 
@@ -751,12 +958,26 @@ def _widen(handler, profile_id="playbook-compiler"):
 
 async def test_an_unimportable_bundle_names_the_moved_fingerprint(tmp_path):
     """The diagnostic used to stop at 'does not validate against the live registries'."""
+    from src.doctor.models import DoctorContext, Severity
+    from src.doctor.playbook_v2_checks import _fix_required
+
     db, handler, reconciler = await _reconciler(tmp_path)
     try:
         assert (await reconciler.reconcile())["ok"]
         _widen(handler)
+        handler.orchestrator = SimpleNamespace(reconcile_required_playbooks=reconciler.reconcile)
+        before = _policy_bytes(tmp_path)
+        activations = await db.list_playbook_activations(enabled_only=False)
 
-        result = await reconciler.reconcile(repair=True)
+        with patch.object(db, "set_playbook_activation", wraps=db.set_playbook_activation) as activate:
+            fixed = await _fix_required(DoctorContext(config=handler.config, db=db, handler=handler))
+            activate.assert_not_awaited()
+        assert fixed.severity is Severity.ERROR
+        assert fixed.fix_applied
+        assert not fixed.data["ok"]
+        assert _policy_bytes(tmp_path) == before
+        assert await db.list_playbook_activations(enabled_only=False) == activations
+        result = fixed.data
 
         diagnostic = result["required"]["default-assignment-routing"]["diagnostic"]
         assert diagnostic.startswith(
