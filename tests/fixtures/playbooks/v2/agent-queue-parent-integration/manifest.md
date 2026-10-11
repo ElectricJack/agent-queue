@@ -1,6 +1,6 @@
 ---
 playbook_id: agent-queue-parent-integration
-artifact_sha256: sha256:8e235e267fa5eab04aeb84567c37a84a689dbf66f448dc7ace89339357d92c6e
+artifact_sha256: sha256:6b0d8f4ad2432eec5a09934ce89cd37f115e1f41f0e9cb7616bc5b96ff2b60ec
 source_sha256: sha256:a9a971a014a9409f5a21b602ed23df8126551b480a44f6d104a70bce2e677ec4
 contract_fingerprint: sha256:38729405995357c816ceaa7c46825b437ec99ff83a57b3f8bd8f10897505f442
 questions_resolved: 0
