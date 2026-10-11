@@ -208,7 +208,7 @@ async def test_gate_resolved_while_review_still_in_review_is_warn(ctx):
     assert not result.fixable
 
 
-async def test_approved_review_with_gate_still_open_fix_resolves_gate(ctx):
+async def test_legacy_approved_review_without_receipts_stays_held(ctx):
     db = ctx.db
     root = vault_root_of(ctx.config)
     rid = await new_review(db, state="approved", with_gate=True)
@@ -221,11 +221,10 @@ async def test_approved_review_with_gate_still_open_fix_resolves_gate(ctx):
     assert result.fixable
 
     fixed = await _fix(ctx)
-    assert fixed.fix_applied
-    assert rid in fixed.data.get("resolved", [])
-
-    assert (await db.get_gate(gate_id))["status"] == "resolved"
-    assert (await _check(ctx)).severity == Severity.OK
+    assert not fixed.fix_applied
+    assert rid in fixed.data["held"]
+    assert (await db.get_gate(gate_id))["status"] == "open"
+    assert (await _check(ctx)).severity == Severity.WARN
 
 
 async def test_missing_vault_file_fix_rewrites_file(ctx):
@@ -298,7 +297,6 @@ async def test_fix_is_idempotent(ctx):
 
     first = await _fix(ctx)
     second = await _fix(ctx)
-    assert first.fix_applied
-    assert not second.fix_applied
-    assert first.data.get("resolved") == [rid]
-    assert "resolved" not in second.data
+    assert not first.fix_applied and not second.fix_applied
+    assert rid in first.data["held"] and rid in second.data["held"]
+    assert (await db.get_gate((await db.get_review(rid))["gate_id"]))["status"] == "open"

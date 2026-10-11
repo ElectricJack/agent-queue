@@ -161,6 +161,7 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "review_withdraw",
         "review_reopen",
         "review_comment",
+        "review_feedback_complete",
         "report_get",
         "report_list",
         "morning_report_preview",

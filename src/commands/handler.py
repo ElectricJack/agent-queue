@@ -104,6 +104,7 @@ from src.commands.dashboard_state_commands import DashboardStateCommandsMixin
 from src.commands.escalation_commands import EscalationCommandsMixin
 from src.commands.conversation_commands import ConversationCommandsMixin
 from src.commands.review_commands import ReviewCommandsMixin
+from src.commands.ask_commands import AskCommandsMixin
 from src.commands.github_issue_commands import GitHubIssueCommandsMixin
 
 # -- dv2 phase 6 mixins ---------------------------------------------------
@@ -408,6 +409,7 @@ class CommandHandler(
     EscalationCommandsMixin,
     ConversationCommandsMixin,
     ReviewCommandsMixin,
+    AskCommandsMixin,
     GitHubIssueCommandsMixin,
     # -- dv2 phase 6 mixins -----------------------------------------------
     TaskProposalCommandsMixin,

@@ -1,7 +1,7 @@
 """Foundation for CommandHandler-owned ask publication and packet reservation.
 
-This package enables no entry points or external sends. Domain adapters added by
-subsequent packages own approval, gates, feedback operations and finalization.
+Domain adapters own approval, gates, feedback operations and finalization.
+CommandHandler exposes preparation and accepted decisions through this boundary.
 Every method takes the caller's connection; snapshot() locks the source before
 publication takes an ask lock. A reservation is never an applied decision.
 """
@@ -291,6 +291,16 @@ class AskService:
             },
             conn=conn,
         )
+
+    async def decide(self, source, actor, intent, *, conn, **kwargs) -> tuple[dict, bool]:
+        """Reserve a complete domain decision; never report reservation as application."""
+        adapter = self.adapters.get(source.kind, kwargs.get("policy", ""))
+        if not callable(getattr(adapter, "reserve_on", None)):
+            raise AskError("ask.unsupported_source", "Source has no decision application boundary")
+        decision, created = await self.reserve_decision(source, actor, intent, conn=conn, **kwargs)
+        if created:
+            await adapter.reserve_on(decision, conn=conn)
+        return decision, created
 
     async def reserve_decision(
         self,

@@ -352,7 +352,9 @@ class ReviewQueriesMixin:
     # -- revisions ---------------------------------------------------------
 
     async def insert_review_attachment(self, attachment: dict, *, conn) -> None:
+        await self._lock_review_feedback(attachment["review_id"], conn)
         await conn.execute(insert(doc_review_attachments).values(**attachment))
+        await self.bump_review_feedback(attachment["review_id"], conn=conn)
 
     async def list_review_attachments(self, review_id: str, revision: int, *, conn=None) -> list[dict]:
         stmt = (
@@ -434,13 +436,43 @@ class ReviewQueriesMixin:
             async with self._engine.begin() as owned:
                 await self.insert_review_comment(comment, conn=owned)
             return
-        await self.lock_review_for_mutation(comment["review_id"], conn)
+        await self._lock_review_feedback(comment["review_id"], conn)
         values = dict(comment)
         if values.get("created_seq") is None:
             values["created_seq"] = (await conn.execute(select(
                 func.coalesce(func.max(doc_review_comments.c.created_seq), 0) + 1
             ).where(doc_review_comments.c.review_id == comment["review_id"]))).scalar_one()
         await conn.execute(insert(doc_review_comments).values(**values))
+        await self.bump_review_feedback(comment["review_id"], conn=conn)
+
+    async def _lock_review_feedback(self, review_id: str, conn) -> dict:
+        from src.reviews.service import ReviewError
+
+        review = await self.lock_review_for_mutation(review_id, conn)
+        if review is None or review["state"] != "in_review" or review["pending_decision_id"]:
+            raise ReviewError(
+                "review_closed", "Formal feedback is frozen; use a returned revision or an "
+                "amendment review. Discuss remains available.",
+            )
+        return review
+
+    async def bump_review_feedback(self, review_id: str, *, conn) -> None:
+        await conn.execute(update(doc_reviews).where(doc_reviews.c.id == review_id).values(
+            feedback_version=doc_reviews.c.feedback_version + 1,
+        ))
+
+    async def set_review_comment_disposition(
+        self, review_id: str, comment_id: str, evidence: dict, *, conn,
+    ) -> bool:
+        """A proposed responder disposition; only a decider packet accepts it."""
+        await self._lock_review_feedback(review_id, conn)
+        result = await conn.execute(update(doc_review_comments).where(
+            doc_review_comments.c.review_id == review_id,
+            doc_review_comments.c.id == comment_id,
+        ).values(responder_disposition={**evidence, "accepted": False}))
+        if result.rowcount:
+            await self.bump_review_feedback(review_id, conn=conn)
+        return bool(result.rowcount)
 
     async def list_review_comments(self, review_id: str, *, conn=None) -> list[dict]:
         """Every comment on *review_id*, in the order they were made.
@@ -472,6 +504,7 @@ class ReviewQueriesMixin:
         """
         if not comment_ids:
             return 0
+        await self._lock_review_feedback(review_id, conn)
         result = await conn.execute(
             update(doc_review_comments)
             .where(
@@ -481,8 +514,12 @@ class ReviewQueriesMixin:
                     doc_review_comments.c.resolved_in_revision.is_(None),
                 )
             )
-            .values(resolved_in_revision=revision)
+            .values(resolved_in_revision=revision, responder_disposition={
+                "proposed": "applied", "revision": revision, "accepted": False,
+            })
         )
+        if result.rowcount:
+            await self.bump_review_feedback(review_id, conn=conn)
         return result.rowcount
 
     # -- Discord outbox (spec §9) ------------------------------------------

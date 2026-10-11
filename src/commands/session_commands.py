@@ -1193,6 +1193,8 @@ class SessionCommandsMixin:
         # the last refusal point (see ``skip_open_subtasks_at_close`` below).
         skip_open_subtasks_at_close = False
         if outcome == "pass":
+            if feedback_error := await self._review_feedback_close_error(task_id):
+                return feedback_error
             subtasks = await self.db.list_task_subtasks(task_id)
             open_subtasks = [item for item in subtasks if item["status"] in OPEN_SUBTASK_STATUSES]
             if open_subtasks:
