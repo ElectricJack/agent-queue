@@ -1,4 +1,4 @@
-"""A18: revision 91 on fresh metadata and the actual pre-91 shape, disposable PostgreSQL only."""
+"""Human ask migrations on fresh and historical shapes, disposable PostgreSQL only."""
 
 import importlib.util
 from pathlib import Path
@@ -29,9 +29,9 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE = "a00000000091_human_ask_decisions"
 
 
-def migration():
+def migration(module=MODULE):
     spec = importlib.util.spec_from_file_location(
-        MODULE, ROOT / "migrations" / "versions" / f"{MODULE}.py"
+        module, ROOT / "migrations" / "versions" / f"{module}.py"
     )
     result = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(result)
@@ -54,6 +54,7 @@ async def upgrade_from_90(db):
     async with db._engine.connect() as conn:
         trans = await conn.begin()
         try:
+            await conn.execute(sa.text("ALTER TABLE conversation_inputs DROP COLUMN ask_id"))
             await conn.run_sync(run("downgrade"))
             assert not await conn.run_sync(lambda c: sa.inspect(c).has_table("human_asks"))
             assert "feedback_version" not in await conn.run_sync(
@@ -204,7 +205,9 @@ async def test_standalone_bytes_and_approval_provenance_are_immutable(db):
 
 def test_revision_is_single_head_with_named_checks_jsonb_and_bare_defaults():
     script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    assert script.get_heads() == ["a00000000091"]
+    assert script.get_heads() == ["a00000000093"]
+    assert script.get_revision("a00000000093").down_revision == "a00000000092"
+    assert script.get_revision("a00000000092").down_revision == "a00000000091"
     assert script.get_revision("a00000000091").down_revision == "a00000000090"
     revision = migration()
     for table in revision.NEW_TABLES:
@@ -214,3 +217,76 @@ def test_revision_is_single_head_with_named_checks_jsonb_and_bare_defaults():
                 assert isinstance(column.type, JSONB)
             if column.server_default is not None and isinstance(column.server_default.arg, str):
                 assert not column.server_default.arg.startswith("'")
+
+
+async def test_source_fences_upgrade_historical_answers_and_replay(db):
+    revision = migration("a00000000092_ask_source_fences")
+
+    def upgrade(conn):
+        with Operations.context(MigrationContext.configure(conn)):
+            revision.upgrade()
+
+    async with db._engine.connect() as conn:
+        trans = await conn.begin()
+        try:
+            await conn.execute(sa.text("ALTER TABLE gates DROP COLUMN human_request"))
+            await conn.execute(sa.text("ALTER TABLE agent_questions DROP COLUMN ask_decision_id"))
+            await conn.execute(sa.text("ALTER TABLE agent_questions DROP COLUMN submission_state"))
+            for ident, state, delivered in (
+                ("pending", "human", None), ("ambiguous", "answered", None),
+                ("sent", "delivered", 2), ("resumed", "resolved", 2),
+            ):
+                await conn.execute(sa.text("""
+                    INSERT INTO agent_questions
+                    (id, session_id, session_name, instance_token, task_id, project_id,
+                     agent_id, turn_id, claim_epoch, question, requires_human, state,
+                     created_at, updated_at, source_ts, delivered_at)
+                    VALUES (:id, 's', 'worker', 'instance', 't', 'p-ask', 'a', :id, 1,
+                            'Proceed?', true, :state, 1, 1, 1, :delivered)
+                """), {"id": ident, "state": state, "delivered": delivered})
+            await conn.run_sync(upgrade)
+            assert dict((await conn.execute(sa.text(
+                "SELECT id, submission_state FROM agent_questions"
+            ))).all()) == {
+                "pending": "pending", "ambiguous": "unknown", "sent": "delivered",
+                "resumed": "delivered",
+            }
+            # Re-running a guarded revision cannot mark newly accepted work ambiguous.
+            await conn.execute(sa.text(
+                "UPDATE agent_questions SET state = 'answered' WHERE id = 'pending'"
+            ))
+            await conn.run_sync(upgrade)
+            assert await conn.scalar(sa.text(
+                "SELECT submission_state FROM agent_questions WHERE id = 'pending'"
+            )) == "pending"
+            with pytest.raises(IntegrityError, match="ck_agent_question_submission_state"):
+                async with conn.begin_nested():
+                    await conn.execute(sa.text(
+                        "UPDATE agent_questions SET submission_state = 'unchecked'"
+                    ))
+        finally:
+            await trans.rollback()
+
+
+async def test_input_upgrade_replays_and_preserves_historical_text(db):
+    revision = migration("a00000000093_human_ask_transport")
+    def upgrade(conn):
+        with Operations.context(MigrationContext.configure(conn)):
+            revision.upgrade()
+    async with db._engine.begin() as conn:
+        await conn.execute(sa.text("ALTER TABLE conversation_inputs DROP COLUMN ask_id"))
+        await conn.execute(sa.text("ALTER TABLE conversation_inputs DROP COLUMN source_version"))
+        await conn.run_sync(upgrade)
+        await conn.run_sync(upgrade)
+        await conn.execute(sa.text("""
+            INSERT INTO conversation_inputs
+            (id, transport, external_message_id, verified_actor, author_id, channel_id,
+             text, text_sha256, char_count, source, received_at, created_at)
+            VALUES ('historical', 'discord', 'message', 'human:discord:1', '1', 'channel',
+                    :body, :hash, 16000, 'legacy', 1, 1)
+        """), {"body": "x" * 16000, "hash": "a" * 64})
+        assert await conn.scalar(sa.text("SELECT length(text) FROM conversation_inputs WHERE id='historical'")) == 16000
+        assert await conn.scalar(sa.text("SELECT conversation_id FROM conversation_inputs WHERE id='historical'")) is None
+        with pytest.raises(IntegrityError):
+            async with conn.begin_nested():
+                await conn.execute(sa.text("UPDATE conversation_inputs SET routing_state='guessed'"))

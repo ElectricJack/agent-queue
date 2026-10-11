@@ -6,70 +6,57 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..types import UNSET, Unset
-
 if TYPE_CHECKING:
-    from ..models.ask_decision_preview import AskDecisionPreview
-    from ..models.ask_source_version import AskSourceVersion
+    from ..models.ask_update_context_request_expected import AskUpdateContextRequestExpected
 
 
-T = TypeVar("T", bound="AskPrepareDecisionResponse")
+T = TypeVar("T", bound="AskUpdateContextRequest")
 
 
 @_attrs_define
-class AskPrepareDecisionResponse:
+class AskUpdateContextRequest:
     """
     Attributes:
-        preview (AskDecisionPreview):
-        expected (AskSourceVersion):
-        success (bool | Unset):  Default: True.
+        ask_id (str):
+        expected (AskUpdateContextRequestExpected):
     """
 
-    preview: AskDecisionPreview
-    expected: AskSourceVersion
-    success: bool | Unset = True
+    ask_id: str
+    expected: AskUpdateContextRequestExpected
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        preview = self.preview.to_dict()
+        ask_id = self.ask_id
 
         expected = self.expected.to_dict()
-
-        success = self.success
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "preview": preview,
+                "ask_id": ask_id,
                 "expected": expected,
             }
         )
-        if success is not UNSET:
-            field_dict["success"] = success
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.ask_decision_preview import AskDecisionPreview
-        from ..models.ask_source_version import AskSourceVersion
+        from ..models.ask_update_context_request_expected import AskUpdateContextRequestExpected
 
         d = dict(src_dict)
-        preview = AskDecisionPreview.from_dict(d.pop("preview"))
+        ask_id = d.pop("ask_id")
 
-        expected = AskSourceVersion.from_dict(d.pop("expected"))
+        expected = AskUpdateContextRequestExpected.from_dict(d.pop("expected"))
 
-        success = d.pop("success", UNSET)
-
-        ask_prepare_decision_response = cls(
-            preview=preview,
+        ask_update_context_request = cls(
+            ask_id=ask_id,
             expected=expected,
-            success=success,
         )
 
-        ask_prepare_decision_response.additional_properties = d
-        return ask_prepare_decision_response
+        ask_update_context_request.additional_properties = d
+        return ask_update_context_request
 
     @property
     def additional_keys(self) -> list[str]:

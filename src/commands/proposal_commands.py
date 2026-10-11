@@ -399,7 +399,7 @@ class TaskProposalCommandsMixin:
         return {"success": True}
 
     async def _proposal_approval_error(
-        self, row: dict, *, gate_id: str | None, project_id: str | None
+        self, row: dict, *, gate_id: str | None, project_id: str | None, conn=None
     ) -> str | None:
         """Why this proposal lacks approval authority, or ``None``.
 
@@ -420,12 +420,13 @@ class TaskProposalCommandsMixin:
         if row["payload"].get(SPEC_INGEST_META):
             return None
         if gate_id:
-            gate = await self.db.get_gate(str(gate_id))
+            gate = await self.db.get_gate(str(gate_id), conn=conn, lock=conn is not None)
             if gate is None:
                 return f"approval gate '{gate_id}' not found"
         else:
             candidates = await self.db.list_gates(
-                project_id=owner, gate_type="human", await_id=proposal_id
+                project_id=owner, gate_type="human", await_id=proposal_id,
+                conn=conn, lock=conn is not None
             )
             if not candidates:
                 return f"proposal '{proposal_id}' has no human approval gate"
@@ -518,7 +519,7 @@ class TaskProposalCommandsMixin:
         if current["status"] == "discarded":
             raise task_changes.ChangeSetError("proposal was discarded")
         approval_error = await self._proposal_approval_error(
-            current, gate_id=gate_id, project_id=project_id
+            current, gate_id=gate_id, project_id=project_id, conn=conn
         )
         if approval_error:
             return {"success": False, "not_approved": True, "error": approval_error}, None

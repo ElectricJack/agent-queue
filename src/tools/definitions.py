@@ -377,6 +377,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "gate_create": "task",
     "gate_list": "task",
     "gate_show": "task",
+    "gate_reopen": "task",
     "gate_resolve": "task",
     # explain + ready frontier — work-graph WG-4.  The frontier is a
     # project-scoped query, so it belongs to the ``project`` group: that is
@@ -4152,6 +4153,10 @@ _ALL_TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "expected": {"type": "object"},
+                "preview_id": {"type": "string"},
+                "idempotency_key": {"type": "string"},
+                "overall_note": {"type": "string"},
                 "run_id": {
                     "type": "string",
                     "description": "The playbook run ID to resume",
@@ -7288,8 +7293,12 @@ _ALL_TOOL_DEFINITIONS.extend(
                 "additionalProperties": False,
             },
         },
+        {"name": "gate_reopen", "description": "Operator reopens a declined approval as a new generation.",
+         "input_schema": {"type": "object", "properties": {
+             "gate_id": {"type": "string"}, "expected": {"type": "object"}},
+             "required": ["gate_id", "expected"], "additionalProperties": False}},
         {'name': 'ask_prepare_decision',
-         'description': 'Prepare a ten-minute review packet preview without applying its decision.',
+         'description': 'Prepare a ten-minute source decision packet preview without applying its decision.',
          'input_schema': {'type': 'object',
                           'properties': {'ask_id': {'type': 'string'},
                                          'expected': {'type': 'object',
@@ -7309,7 +7318,7 @@ _ALL_TOOL_DEFINITIONS.extend(
                           'required': ['ask_id', 'expected', 'option_key'],
                           'additionalProperties': False}},
         {'name': 'ask_decide',
-         'description': 'Accept the exact prepared review packet and report durable application state.',
+         'description': 'Accept the exact prepared source packet and report durable application state.',
          'input_schema': {'type': 'object',
                           'properties': {'ask_id': {'type': 'string'},
                                          'expected': {'type': 'object',
@@ -7390,6 +7399,7 @@ _ALL_TOOL_DEFINITIONS.extend(
                 "type": "object",
                 "properties": {
                     "review_id": {"type": "string"},
+                    "source_discussion_id": {"type": "string"},
                     "revision": {"type": "integer", "minimum": 1},
                     "quote": {"type": "string"},
                     "heading_path": {"type": "array", "items": {"type": "string"}},
@@ -7729,6 +7739,10 @@ _ALL_TOOL_DEFINITIONS.extend(
             "input_schema": {
                 "type": "object",
                 "properties": {
+                    "expected": {"type": "object", "additionalProperties": True},
+                    "preview_id": {"type": "string"},
+                    "option_key": {"type": "string"},
+                    "prepare": {"type": "boolean"},
                     "escalation_id": {"type": "string"},
                     "reply_id": {"type": "string"},
                     "expected_revision": {"type": "integer", "minimum": 0},
@@ -9037,3 +9051,16 @@ _ALL_TOOL_DEFINITIONS.extend([
                                      "after_id": {"type": "string"}},
                       "required": ["project_id"]}},
 ])
+
+
+from src.api.models.ask import ASK_ARGS as _ASK_ARGS  # noqa: E402
+
+for _name, _args in _ASK_ARGS.items():
+    _TOOL_CATEGORIES[_name] = "review"
+    _existing = next((d for d in _ALL_TOOL_DEFINITIONS if d["name"] == _name), None)
+    if _existing is not None:
+        _existing["input_schema"] = _args.model_json_schema()
+    else:
+        _ALL_TOOL_DEFINITIONS.append({"name": _name,
+            "description": "Scoped human request communication and decision evidence.",
+            "input_schema": _args.model_json_schema()})

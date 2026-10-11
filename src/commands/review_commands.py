@@ -170,6 +170,7 @@ class ReviewCommandsMixin:
                 file_feedback=self._file_review_feedback,
                 record_playbook=self._record_review_decision_playbook,
             ),
+            input_config=self.config,
         )
 
     async def _review_attachment_access(
@@ -1049,6 +1050,11 @@ class ReviewCommandsMixin:
             return _error(error.code, error.message)
 
     async def _cmd_review_comment(self, args: dict) -> dict:
+        if (
+            args.get("source_discussion_id")
+            and (current_principal() or TRUSTED_LOCAL).kind is not PrincipalKind.LOCAL
+        ):
+            return _error("human_only", "Only a human can promote discussion into formal feedback")
         review, error = await self._review_for_caller(args.get("review_id"))
         if error:
             return error
@@ -1075,6 +1081,7 @@ class ReviewCommandsMixin:
                     heading_path=list(args.get("heading_path") or []),
                     body=str(args.get("body") or ""),
                     author=label,
+                    source_discussion_id=args.get("source_discussion_id"),
                 ),
             }
         except ReviewError as error:

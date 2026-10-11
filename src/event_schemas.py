@@ -1999,6 +1999,14 @@ _DASHBOARD_STATE_SCHEMAS: dict[str, EventSchema] = {
 }
 
 EVENT_SCHEMAS: dict[str, EventSchema] = {
+    "ask.input_received": {
+        "required": ["ask_id", "project_id", "input_id"], "optional": [],
+        "types": {"ask_id": str, "project_id": str, "input_id": str},
+    },
+    "ask.discussion_replied": {
+        "required": ["ask_id", "project_id", "input_id"], "optional": [],
+        "types": {"ask_id": str, "project_id": str, "input_id": str},
+    },
     "conversation.reply_queued.v1": {
         "required": ["conversation_id", "input_id", "reply_message_id", "delivery_dedup_key", "created"],
         "optional": [],

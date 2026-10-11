@@ -297,12 +297,23 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     ``args`` is mutated in place (same object /api/execute forwards to
     ``ch.execute``).
     """
+    from src.commands.contracts.ask import ASK_ARGS, GATEWAY_COMMANDS, OPERATOR_COMMANDS
+    if command in GATEWAY_COMMANDS:
+        return "out of scope: ask intake requires the authenticated daemon gateway"
     if scope.kind == "local":
         return None
+    if command in OPERATOR_COMMANDS:
+        return "out of scope: ask gateway and operator controls are daemon/local only"
+    if command in ASK_ARGS and not scope.elevated:
+        return "out of scope: workers have no human ask authority"
+    if command == "ask_reply":
+        return "out of scope: human discussion requires an authenticated human"
     if command == "supervisor_inbox_post":
         return "out of scope: conversation intake is daemon-internal"
-    if command == "supervisor_inbox_reply" and not (scope.elevated and scope.project_id is None):
-        return "out of scope: conversation replies require local operator or global supervisor"
+    # The command verifies the live launch and exact stored message recipient.
+    # Project supervisors already own conversations selected by the named router.
+    if command == "supervisor_inbox_reply" and not scope.elevated:
+        return "out of scope: conversation replies require local operator or supervisor"
     if command in {"supervisor_inbox_status", "supervisor_inbox_history"} and not (
         scope.elevated and scope.project_id is None
     ):

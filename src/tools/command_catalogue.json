@@ -3264,6 +3264,18 @@
       "input_schema": {
         "type": "object",
         "properties": {
+          "expected": {
+            "type": "object"
+          },
+          "preview_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "overall_note": {
+            "type": "string"
+          },
           "run_id": {
             "type": "string",
             "description": "The playbook run ID to resume"
@@ -6517,50 +6529,94 @@
       }
     },
     {
-      "name": "ask_prepare_decision",
-      "description": "Prepare a ten-minute review packet preview without applying its decision.",
+      "name": "gate_reopen",
+      "description": "Operator reopens a declined approval as a new generation.",
       "input_schema": {
         "type": "object",
         "properties": {
-          "ask_id": {
+          "gate_id": {
             "type": "string"
           },
           "expected": {
-            "type": "object",
+            "type": "object"
+          }
+        },
+        "required": [
+          "gate_id",
+          "expected"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ask_prepare_decision",
+      "description": "Prepare a ten-minute source decision packet preview without applying its decision.",
+      "input_schema": {
+        "$defs": {
+          "AskVersion": {
+            "additionalProperties": false,
             "properties": {
               "decision_generation": {
-                "type": "integer",
-                "minimum": 1
-              },
-              "feedback_version": {
-                "type": "integer",
-                "minimum": 0
+                "title": "Decision Generation",
+                "type": "integer"
               },
               "source_fingerprint": {
+                "title": "Source Fingerprint",
                 "type": "string"
+              },
+              "feedback_version": {
+                "title": "Feedback Version",
+                "type": "integer"
               }
             },
             "required": [
               "decision_generation",
-              "feedback_version",
-              "source_fingerprint"
+              "source_fingerprint",
+              "feedback_version"
             ],
-            "additionalProperties": false
+            "title": "AskVersion",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "ask_id": {
+            "minLength": 1,
+            "title": "Ask Id",
+            "type": "string"
+          },
+          "expected": {
+            "$ref": "#/$defs/AskVersion"
           },
           "option_key": {
+            "minLength": 1,
+            "title": "Option Key",
             "type": "string"
           },
           "overall_note": {
+            "default": "",
+            "title": "Overall Note",
             "type": "string"
           },
           "dispositions": {
-            "type": "array",
             "items": {
+              "additionalProperties": true,
               "type": "object"
-            }
+            },
+            "title": "Dispositions",
+            "type": "array"
           },
           "responder_class": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Responder Class"
           }
         },
         "required": [
@@ -6568,59 +6624,89 @@
           "expected",
           "option_key"
         ],
-        "additionalProperties": false
+        "title": "AskPrepareArgs",
+        "type": "object"
       }
     },
     {
       "name": "ask_decide",
-      "description": "Accept the exact prepared review packet and report durable application state.",
+      "description": "Accept the exact prepared source packet and report durable application state.",
       "input_schema": {
-        "type": "object",
-        "properties": {
-          "ask_id": {
-            "type": "string"
-          },
-          "expected": {
-            "type": "object",
+        "$defs": {
+          "AskVersion": {
+            "additionalProperties": false,
             "properties": {
               "decision_generation": {
-                "type": "integer",
-                "minimum": 1
-              },
-              "feedback_version": {
-                "type": "integer",
-                "minimum": 0
+                "title": "Decision Generation",
+                "type": "integer"
               },
               "source_fingerprint": {
+                "title": "Source Fingerprint",
                 "type": "string"
+              },
+              "feedback_version": {
+                "title": "Feedback Version",
+                "type": "integer"
               }
             },
             "required": [
               "decision_generation",
-              "feedback_version",
-              "source_fingerprint"
+              "source_fingerprint",
+              "feedback_version"
             ],
-            "additionalProperties": false
+            "title": "AskVersion",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "ask_id": {
+            "minLength": 1,
+            "title": "Ask Id",
+            "type": "string"
+          },
+          "expected": {
+            "$ref": "#/$defs/AskVersion"
           },
           "option_key": {
+            "minLength": 1,
+            "title": "Option Key",
             "type": "string"
           },
           "overall_note": {
+            "default": "",
+            "title": "Overall Note",
             "type": "string"
           },
           "dispositions": {
-            "type": "array",
             "items": {
+              "additionalProperties": true,
               "type": "object"
-            }
+            },
+            "title": "Dispositions",
+            "type": "array"
           },
           "responder_class": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Responder Class"
           },
           "preview_id": {
+            "minLength": 1,
+            "title": "Preview Id",
             "type": "string"
           },
           "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
             "type": "string"
           }
         },
@@ -6631,23 +6717,27 @@
           "preview_id",
           "idempotency_key"
         ],
-        "additionalProperties": false
+        "title": "AskDecideArgs",
+        "type": "object"
       }
     },
     {
       "name": "ask_retry_operation",
       "description": "Operator reconciliation of an already accepted decision; never creates approval.",
       "input_schema": {
-        "type": "object",
+        "additionalProperties": false,
         "properties": {
           "decision_id": {
+            "minLength": 1,
+            "title": "Decision Id",
             "type": "string"
           }
         },
         "required": [
           "decision_id"
         ],
-        "additionalProperties": false
+        "title": "AskRetryOperationArgs",
+        "type": "object"
       }
     },
     {
@@ -6756,6 +6846,9 @@
         "type": "object",
         "properties": {
           "review_id": {
+            "type": "string"
+          },
+          "source_discussion_id": {
             "type": "string"
           },
           "revision": {
@@ -7283,6 +7376,19 @@
       "input_schema": {
         "type": "object",
         "properties": {
+          "expected": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "preview_id": {
+            "type": "string"
+          },
+          "option_key": {
+            "type": "string"
+          },
+          "prepare": {
+            "type": "boolean"
+          },
           "escalation_id": {
             "type": "string"
           },
@@ -10886,6 +10992,627 @@
           "project_id"
         ]
       }
+    },
+    {
+      "name": "ask_list",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "view": {
+            "default": "needs_you",
+            "enum": [
+              "needs_you",
+              "waiting",
+              "history"
+            ],
+            "title": "View",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          }
+        },
+        "title": "AskListArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_show",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "ask_id": {
+            "minLength": 1,
+            "title": "Ask Id",
+            "type": "string"
+          },
+          "input_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Input Id"
+          }
+        },
+        "required": [
+          "ask_id"
+        ],
+        "title": "AskShowArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_history",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "ask_id": {
+            "minLength": 1,
+            "title": "Ask Id",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          }
+        },
+        "required": [
+          "ask_id"
+        ],
+        "title": "AskHistoryArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_reply",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "$defs": {
+          "AskVersion": {
+            "additionalProperties": false,
+            "properties": {
+              "decision_generation": {
+                "title": "Decision Generation",
+                "type": "integer"
+              },
+              "source_fingerprint": {
+                "title": "Source Fingerprint",
+                "type": "string"
+              },
+              "feedback_version": {
+                "title": "Feedback Version",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "decision_generation",
+              "source_fingerprint",
+              "feedback_version"
+            ],
+            "title": "AskVersion",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "ask_id": {
+            "minLength": 1,
+            "title": "Ask Id",
+            "type": "string"
+          },
+          "intent": {
+            "const": "discuss",
+            "default": "discuss",
+            "title": "Intent",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "expected": {
+            "$ref": "#/$defs/AskVersion"
+          },
+          "post_decision": {
+            "default": false,
+            "title": "Post Decision",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ask_id",
+          "text",
+          "idempotency_key",
+          "expected"
+        ],
+        "title": "AskReplyArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_apply_input",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "$defs": {
+          "AskVersion": {
+            "additionalProperties": false,
+            "properties": {
+              "decision_generation": {
+                "title": "Decision Generation",
+                "type": "integer"
+              },
+              "source_fingerprint": {
+                "title": "Source Fingerprint",
+                "type": "string"
+              },
+              "feedback_version": {
+                "title": "Feedback Version",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "decision_generation",
+              "source_fingerprint",
+              "feedback_version"
+            ],
+            "title": "AskVersion",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "ask_id": {
+            "minLength": 1,
+            "title": "Ask Id",
+            "type": "string"
+          },
+          "input_id": {
+            "minLength": 1,
+            "title": "Input Id",
+            "type": "string"
+          },
+          "expected": {
+            "$ref": "#/$defs/AskVersion"
+          },
+          "option_key": {
+            "minLength": 1,
+            "title": "Option Key",
+            "type": "string"
+          },
+          "interpretation": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Interpretation",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ask_id",
+          "input_id",
+          "expected",
+          "option_key",
+          "interpretation",
+          "idempotency_key"
+        ],
+        "title": "AskApplyInputArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_discussion_reply",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "ask_id": {
+            "minLength": 1,
+            "title": "Ask Id",
+            "type": "string"
+          },
+          "input_id": {
+            "minLength": 1,
+            "title": "Input Id",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 15000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ask_id",
+          "input_id",
+          "text",
+          "idempotency_key"
+        ],
+        "title": "AskDiscussionReplyArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_update_context",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "$defs": {
+          "AskVersion": {
+            "additionalProperties": false,
+            "properties": {
+              "decision_generation": {
+                "title": "Decision Generation",
+                "type": "integer"
+              },
+              "source_fingerprint": {
+                "title": "Source Fingerprint",
+                "type": "string"
+              },
+              "feedback_version": {
+                "title": "Feedback Version",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "decision_generation",
+              "source_fingerprint",
+              "feedback_version"
+            ],
+            "title": "AskVersion",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "ask_id": {
+            "minLength": 1,
+            "title": "Ask Id",
+            "type": "string"
+          },
+          "expected": {
+            "$ref": "#/$defs/AskVersion"
+          }
+        },
+        "required": [
+          "ask_id",
+          "expected"
+        ],
+        "title": "AskUpdateContextArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_reconcile",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "apply": {
+            "default": false,
+            "title": "Apply",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "AskReconcileArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_cutover",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "legacy",
+              "shadow",
+              "dashboard",
+              "transferring",
+              "channel",
+              "delivery_disabled"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "expected_generation": {
+            "minimum": 0,
+            "title": "Expected Generation",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "mode",
+          "expected_generation"
+        ],
+        "title": "AskCutoverArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_repair_delivery",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "delivery_id": {
+            "title": "Delivery Id",
+            "type": "string"
+          },
+          "expected_generation": {
+            "minimum": 0,
+            "title": "Expected Generation",
+            "type": "integer"
+          },
+          "disposition": {
+            "enum": [
+              "confirmed_sent",
+              "confirmed_absent",
+              "cancel"
+            ],
+            "title": "Disposition",
+            "type": "string"
+          },
+          "evidence": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Evidence",
+            "type": "string"
+          }
+        },
+        "required": [
+          "delivery_id",
+          "expected_generation",
+          "disposition",
+          "evidence"
+        ],
+        "title": "AskRepairDeliveryArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_intake",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "$defs": {
+          "AskEnvelope": {
+            "additionalProperties": false,
+            "properties": {
+              "transport": {
+                "const": "discord",
+                "title": "Transport",
+                "type": "string"
+              },
+              "guild_id": {
+                "title": "Guild Id",
+                "type": "string"
+              },
+              "channel_id": {
+                "title": "Channel Id",
+                "type": "string"
+              },
+              "external_message_id": {
+                "title": "External Message Id",
+                "type": "string"
+              },
+              "external_root_message_id": {
+                "title": "External Root Message Id",
+                "type": "string"
+              },
+              "external_thread_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "External Thread Id"
+              },
+              "author_id": {
+                "title": "Author Id",
+                "type": "string"
+              },
+              "text": {
+                "title": "Text",
+                "type": "string"
+              },
+              "received_at": {
+                "title": "Received At",
+                "type": "number"
+              },
+              "mentions_bot": {
+                "title": "Mentions Bot",
+                "type": "boolean"
+              },
+              "tag": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Tag"
+              },
+              "reference_message_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Reference Message Id"
+              }
+            },
+            "required": [
+              "transport",
+              "guild_id",
+              "channel_id",
+              "external_message_id",
+              "external_root_message_id",
+              "author_id",
+              "text",
+              "received_at",
+              "mentions_bot"
+            ],
+            "title": "AskEnvelope",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "envelope": {
+            "$ref": "#/$defs/AskEnvelope"
+          },
+          "source": {
+            "default": "gateway",
+            "enum": [
+              "gateway",
+              "backfill"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "envelope"
+        ],
+        "title": "AskIntakeArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_button",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "interaction_id": {
+            "title": "Interaction Id",
+            "type": "string"
+          },
+          "custom_id": {
+            "title": "Custom Id",
+            "type": "string"
+          },
+          "guild_id": {
+            "title": "Guild Id",
+            "type": "string"
+          },
+          "channel_id": {
+            "title": "Channel Id",
+            "type": "string"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "author_id": {
+            "title": "Author Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "interaction_id",
+          "custom_id",
+          "guild_id",
+          "channel_id",
+          "message_id",
+          "author_id"
+        ],
+        "title": "AskButtonArgs",
+        "type": "object"
+      }
     }
   ],
   "fallback": {
@@ -11130,6 +11857,19 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "human_request": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Human Request"
+          },
           "project_id": {
             "title": "Project Id",
             "type": "string"
@@ -11250,13 +11990,82 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "expected": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected"
+          },
+          "preview_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preview Id"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Idempotency Key"
+          },
+          "option_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Option Key"
+          },
+          "overall_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Overall Note"
+          },
           "gate_id": {
             "title": "Gate Id",
             "type": "string"
           },
           "resolved_by": {
-            "title": "Resolved By",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resolved By"
           },
           "resolution": {
             "anyOf": [
@@ -11272,8 +12081,7 @@
           }
         },
         "required": [
-          "gate_id",
-          "resolved_by"
+          "gate_id"
         ],
         "title": "GateResolveArgs",
         "type": "object"
@@ -17469,6 +18277,7 @@
     "gate_create": "task",
     "gate_list": "task",
     "gate_show": "task",
+    "gate_reopen": "task",
     "gate_resolve": "task",
     "explain_task": "task",
     "project_ready": "project",
@@ -17515,7 +18324,19 @@
     "ensure_spec_ingest": "task",
     "approved_spec_packet": "task",
     "spec_ingest_reconcile": "task",
-    "spec_ingest_legacy_inventory": "task"
+    "spec_ingest_legacy_inventory": "task",
+    "ask_list": "review",
+    "ask_show": "review",
+    "ask_history": "review",
+    "ask_reply": "review",
+    "ask_apply_input": "review",
+    "ask_discussion_reply": "review",
+    "ask_update_context": "review",
+    "ask_reconcile": "review",
+    "ask_cutover": "review",
+    "ask_repair_delivery": "review",
+    "ask_intake": "review",
+    "ask_button": "review"
   },
   "cli_category_overrides": {
     "create_task": "task",

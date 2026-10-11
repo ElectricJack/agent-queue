@@ -749,6 +749,8 @@ gates = Table(
     Column("gate_type", Text, nullable=False),  # one of GATE_TYPES
     Column("title", Text, nullable=False),
     Column("question", Text, nullable=False, server_default=""),
+    # Producer-owned semantics and source receipt; never supplied by a decider.
+    Column("human_request", JSONB, nullable=True),
     Column("await_id", Text, nullable=True),
     Column("timeout_at", Float, nullable=True),
     Column("status", Text, nullable=False, server_default="open"),
@@ -1955,9 +1957,20 @@ conversation_inputs = Table(
     Column(
         "conversation_id",
         Text,
-        ForeignKey("supervisor_conversations.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("supervisor_conversations.id", name="fk_conversation_inputs_conversation",
+                   ondelete="SET NULL"),
+        nullable=True,
     ),
+    Column("ask_id", Text, ForeignKey("human_asks.id", ondelete="RESTRICT"), nullable=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=True),
+    Column("routing_state", Text, nullable=False, server_default="conversation"),
+    Column("routing_evidence", JSONB, nullable=False, server_default="{}"),
+    Column("receipt", JSONB, nullable=False, server_default="{}"),
+    Column("guild_id", Text, nullable=True),
+    Column("reference_message_id", Text, nullable=True),
+    Column("external_thread_id", Text, nullable=True),
+    Column("source_version", JSONB, nullable=True),
+    Column("retention_entry_id", Text, nullable=True),
     Column("transport", Text, nullable=False),
     Column("external_message_id", Text, nullable=False),
     Column("verified_actor", Text, nullable=False),
@@ -1979,14 +1992,21 @@ conversation_inputs = Table(
         "state IN ('accepted','answered','expired','revoked')",
         name="ck_conversation_inputs_state",
     ),
-    CheckConstraint("char_count BETWEEN 1 AND 4000", name="ck_conversation_inputs_char_count"),
+    CheckConstraint("char_count BETWEEN 1 AND 16000", name="ck_conversation_inputs_char_count"),
     CheckConstraint(
-        "source IN ('gateway','backfill','replay','test')",
+        "routing_state IN ('queued','conversation','discussion','interpretation',"
+        "'clarification','receipt','applied','quarantined')",
+        name="ck_conversation_inputs_routing_state",
+    ),
+    CheckConstraint(
+        "source IN ('gateway','backfill','replay','test','local','legacy','interaction')",
         name="ck_conversation_inputs_source",
     ),
     Index("idx_conversation_inputs_history", "conversation_id", "received_at", "id"),
     Index("idx_conversation_inputs_author_window", "author_id", "received_at"),
     Index("idx_conversation_inputs_channel_window", "channel_id", "received_at"),
+    Index("idx_conversation_inputs_ask", "ask_id", "received_at", "id"),
+    Index("idx_conversation_inputs_routing", "routing_state", "created_at", "id"),
 )
 
 # Reconnect backfill position per configured channel or bound thread.  The
@@ -2713,6 +2733,8 @@ agent_questions = Table(
     Column("state", Text, nullable=False),
     Column("answer", Text),
     Column("answered_by", Text),
+    Column("ask_decision_id", Text),
+    Column("submission_state", Text, nullable=False, server_default="pending"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("source_ts", Float, nullable=False),
@@ -2737,6 +2759,8 @@ agent_questions = Table(
         "state IN ('supervisor','human','answered','delivered','resolved','stale')",
         name="ck_agent_question_state",
     ),
+    CheckConstraint("submission_state IN ('pending','unknown','delivered')",
+                    name="ck_agent_question_submission_state"),
     Index("idx_agent_questions_pending", "state", "created_at"),
     Index("idx_agent_questions_session", "session_id", "instance_token"),
 )

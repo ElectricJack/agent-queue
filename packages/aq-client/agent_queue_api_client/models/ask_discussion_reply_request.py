@@ -6,37 +6,42 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="AskSourceVersion")
+T = TypeVar("T", bound="AskDiscussionReplyRequest")
 
 
 @_attrs_define
-class AskSourceVersion:
+class AskDiscussionReplyRequest:
     """
     Attributes:
-        decision_generation (int):
-        source_fingerprint (str):
-        feedback_version (int):
+        ask_id (str):
+        input_id (str):
+        text (str):
+        idempotency_key (str):
     """
 
-    decision_generation: int
-    source_fingerprint: str
-    feedback_version: int
+    ask_id: str
+    input_id: str
+    text: str
+    idempotency_key: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        decision_generation = self.decision_generation
+        ask_id = self.ask_id
 
-        source_fingerprint = self.source_fingerprint
+        input_id = self.input_id
 
-        feedback_version = self.feedback_version
+        text = self.text
+
+        idempotency_key = self.idempotency_key
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "decision_generation": decision_generation,
-                "source_fingerprint": source_fingerprint,
-                "feedback_version": feedback_version,
+                "ask_id": ask_id,
+                "input_id": input_id,
+                "text": text,
+                "idempotency_key": idempotency_key,
             }
         )
 
@@ -45,20 +50,23 @@ class AskSourceVersion:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        decision_generation = d.pop("decision_generation")
+        ask_id = d.pop("ask_id")
 
-        source_fingerprint = d.pop("source_fingerprint")
+        input_id = d.pop("input_id")
 
-        feedback_version = d.pop("feedback_version")
+        text = d.pop("text")
 
-        ask_source_version = cls(
-            decision_generation=decision_generation,
-            source_fingerprint=source_fingerprint,
-            feedback_version=feedback_version,
+        idempotency_key = d.pop("idempotency_key")
+
+        ask_discussion_reply_request = cls(
+            ask_id=ask_id,
+            input_id=input_id,
+            text=text,
+            idempotency_key=idempotency_key,
         )
 
-        ask_source_version.additional_properties = d
-        return ask_source_version
+        ask_discussion_reply_request.additional_properties = d
+        return ask_discussion_reply_request
 
     @property
     def additional_keys(self) -> list[str]:

@@ -629,3 +629,38 @@ async def test_explicit_policy_skip_keeps_the_member_repair_link(db):
         if row["key"].startswith("integration_ejection:")
     ]
     assert len(links) == 1 and '"repair_task_id": "repair"' in links[0]["value"]
+
+
+@pytest.mark.parametrize("move_head", [False, True])
+async def test_ask_integration_decision_pins_current_head_and_journal(db, move_head):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from src.asks.models import SourceIdentity
+    from src.commands.handler import CommandHandler
+    from src.config import AppConfig
+    subject, _, gate_id = await open_gate(db)
+    handler = CommandHandler(SimpleNamespace(db=db, bus=SimpleNamespace(emit=AsyncMock())), AppConfig())
+    source = SourceIdentity("p", "integration", gate_id, {"subject_id": subject.id, "gate_id": gate_id})
+    ask = await handler._publish_source_ask(source)
+    args = {"ask_id": ask["id"], "expected": {k: ask[k] for k in (
+        "decision_generation", "source_fingerprint", "feedback_version")},
+        "option_key": "approve", "idempotency_key": "integration-approve"}
+    preview = await handler._cmd_ask_prepare_decision(args)
+    assert preview["success"], preview
+    if move_head:
+        async with db.immediate() as conn:
+            await db.update_integration_subject_on(conn, subject_id=subject.id,
+                expected_version=subject.version, values={"head_sha": OTHER}, now=NOW + 1)
+    args["preview_id"] = preview["preview"]["id"]
+    result = await handler._cmd_ask_decide(args)
+    answers = [row for row in await rows(db, integration_subject_journal) if row["outcome"] == "answered"]
+    if move_head:
+        assert result["error_code"] == "ask.stale_source", result
+        assert answers == []
+    else:
+        assert result["success"], result
+        replay = await handler._cmd_ask_decide(args)
+        assert replay["success"] and replay["decision_id"] == result["decision_id"], replay
+        assert len(answers) == 1
+        assert answers[0]["payload"]["decision_id"] == result["decision_id"]
+        assert answers[0]["payload"]["evidence_entry_id"]

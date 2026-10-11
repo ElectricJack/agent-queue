@@ -66,20 +66,47 @@ from .artifact_ref_dto import ArtifactRefDTO
 from .artifact_verify_request import ArtifactVerifyRequest
 from .artifact_verify_response import ArtifactVerifyResponse
 from .artifact_verify_response_422 import ArtifactVerifyResponse422
+from .ask_apply_input_request import AskApplyInputRequest
+from .ask_apply_input_request_expected import AskApplyInputRequestExpected
+from .ask_control_response import AskControlResponse
+from .ask_control_response_result import AskControlResponseResult
+from .ask_cutover_request import AskCutoverRequest
 from .ask_decide_request import AskDecideRequest
 from .ask_decide_request_expected import AskDecideRequestExpected
-from .ask_decide_response import AskDecideResponse
-from .ask_decide_response_422 import AskDecideResponse422
-from .ask_decide_response_playbook_type_0 import AskDecideResponsePlaybookType0
-from .ask_decision_preview import AskDecisionPreview
-from .ask_decision_preview_packet import AskDecisionPreviewPacket
+from .ask_decision_response import AskDecisionResponse
+from .ask_decision_response_receipt_type_0 import AskDecisionResponseReceiptType0
+from .ask_discussion_reply_request import AskDiscussionReplyRequest
+from .ask_discussion_response import AskDiscussionResponse
+from .ask_discussion_response_version import AskDiscussionResponseVersion
+from .ask_error_response import AskErrorResponse
+from .ask_error_response_fields import AskErrorResponseFields
+from .ask_history_request import AskHistoryRequest
+from .ask_history_response import AskHistoryResponse
+from .ask_history_response_items_item import AskHistoryResponseItemsItem
+from .ask_input_response import AskInputResponse
+from .ask_input_response_receipt import AskInputResponseReceipt
+from .ask_list_request import AskListRequest
+from .ask_list_response import AskListResponse
 from .ask_prepare_decision_request import AskPrepareDecisionRequest
 from .ask_prepare_decision_request_expected import AskPrepareDecisionRequestExpected
-from .ask_prepare_decision_response import AskPrepareDecisionResponse
-from .ask_prepare_decision_response_422 import AskPrepareDecisionResponse422
+from .ask_prepare_response import AskPrepareResponse
+from .ask_preview import AskPreview
+from .ask_preview_packet import AskPreviewPacket
+from .ask_reconcile_request import AskReconcileRequest
+from .ask_repair_delivery_request import AskRepairDeliveryRequest
+from .ask_reply_request import AskReplyRequest
+from .ask_reply_request_expected import AskReplyRequestExpected
 from .ask_retry_operation_request import AskRetryOperationRequest
-from .ask_retry_operation_response_422 import AskRetryOperationResponse422
-from .ask_source_version import AskSourceVersion
+from .ask_show_request import AskShowRequest
+from .ask_show_response import AskShowResponse
+from .ask_show_response_actions_item import AskShowResponseActionsItem
+from .ask_show_response_document_type_0 import AskShowResponseDocumentType0
+from .ask_show_response_inputs_item import AskShowResponseInputsItem
+from .ask_source_record import AskSourceRecord
+from .ask_source_record_context import AskSourceRecordContext
+from .ask_update_context_request import AskUpdateContextRequest
+from .ask_update_context_request_expected import AskUpdateContextRequestExpected
+from .ask_version import AskVersion
 from .assignment_route_detail import AssignmentRouteDetail
 from .assignment_route_detail_override_type_0 import AssignmentRouteDetailOverrideType0
 from .benchmark_stage_record_request import BenchmarkStageRecordRequest
@@ -365,8 +392,9 @@ from .escalation_action import EscalationAction
 from .escalation_action_parameters import EscalationActionParameters
 from .escalation_action_result_type_0 import EscalationActionResultType0
 from .escalation_apply_reply_request import EscalationApplyReplyRequest
+from .escalation_apply_reply_request_expected_type_0 import EscalationApplyReplyRequestExpectedType0
 from .escalation_apply_reply_response import EscalationApplyReplyResponse
-from .escalation_apply_reply_response_action_result_type_0 import EscalationApplyReplyResponseActionResultType0
+from .escalation_apply_reply_response_receipt_type_0 import EscalationApplyReplyResponseReceiptType0
 from .escalation_create_request import EscalationCreateRequest
 from .escalation_create_response import EscalationCreateResponse
 from .escalation_delivery import EscalationDelivery
@@ -447,14 +475,21 @@ from .formula_summary import FormulaSummary
 from .formula_summary_vars import FormulaSummaryVars
 from .gate_create_payload import GateCreatePayload
 from .gate_create_request import GateCreateRequest
+from .gate_create_request_human_request_type_0 import GateCreateRequestHumanRequestType0
 from .gate_create_response import GateCreateResponse
 from .gate_create_response_422 import GateCreateResponse422
 from .gate_list_request import GateListRequest
 from .gate_list_response import GateListResponse
 from .gate_list_response_422 import GateListResponse422
+from .gate_reopen_request import GateReopenRequest
+from .gate_reopen_request_expected import GateReopenRequestExpected
+from .gate_reopen_response import GateReopenResponse
+from .gate_reopen_response_422 import GateReopenResponse422
 from .gate_resolve_request import GateResolveRequest
+from .gate_resolve_request_expected_type_0 import GateResolveRequestExpectedType0
 from .gate_resolve_response import GateResolveResponse
 from .gate_resolve_response_422 import GateResolveResponse422
+from .gate_resolve_response_receipt_type_0 import GateResolveResponseReceiptType0
 from .gate_show_request import GateShowRequest
 from .gate_show_response import GateShowResponse
 from .gate_show_response_422 import GateShowResponse422
@@ -1475,8 +1510,10 @@ from .restart_task_request import RestartTaskRequest
 from .restart_task_response import RestartTaskResponse
 from .restart_task_response_422 import RestartTaskResponse422
 from .resume_playbook_request import ResumePlaybookRequest
+from .resume_playbook_request_expected_type_0 import ResumePlaybookRequestExpectedType0
 from .resume_playbook_response import ResumePlaybookResponse
 from .resume_playbook_response_422 import ResumePlaybookResponse422
+from .resume_playbook_response_receipt_type_0 import ResumePlaybookResponseReceiptType0
 from .resume_project_request import ResumeProjectRequest
 from .resume_project_response import ResumeProjectResponse
 from .resume_project_response_422 import ResumeProjectResponse422
@@ -2009,20 +2046,47 @@ __all__ = (
     "ArtifactVerifyRequest",
     "ArtifactVerifyResponse",
     "ArtifactVerifyResponse422",
+    "AskApplyInputRequest",
+    "AskApplyInputRequestExpected",
+    "AskControlResponse",
+    "AskControlResponseResult",
+    "AskCutoverRequest",
     "AskDecideRequest",
     "AskDecideRequestExpected",
-    "AskDecideResponse",
-    "AskDecideResponse422",
-    "AskDecideResponsePlaybookType0",
-    "AskDecisionPreview",
-    "AskDecisionPreviewPacket",
+    "AskDecisionResponse",
+    "AskDecisionResponseReceiptType0",
+    "AskDiscussionReplyRequest",
+    "AskDiscussionResponse",
+    "AskDiscussionResponseVersion",
+    "AskErrorResponse",
+    "AskErrorResponseFields",
+    "AskHistoryRequest",
+    "AskHistoryResponse",
+    "AskHistoryResponseItemsItem",
+    "AskInputResponse",
+    "AskInputResponseReceipt",
+    "AskListRequest",
+    "AskListResponse",
     "AskPrepareDecisionRequest",
     "AskPrepareDecisionRequestExpected",
-    "AskPrepareDecisionResponse",
-    "AskPrepareDecisionResponse422",
+    "AskPrepareResponse",
+    "AskPreview",
+    "AskPreviewPacket",
+    "AskReconcileRequest",
+    "AskRepairDeliveryRequest",
+    "AskReplyRequest",
+    "AskReplyRequestExpected",
     "AskRetryOperationRequest",
-    "AskRetryOperationResponse422",
-    "AskSourceVersion",
+    "AskShowRequest",
+    "AskShowResponse",
+    "AskShowResponseActionsItem",
+    "AskShowResponseDocumentType0",
+    "AskShowResponseInputsItem",
+    "AskSourceRecord",
+    "AskSourceRecordContext",
+    "AskUpdateContextRequest",
+    "AskUpdateContextRequestExpected",
+    "AskVersion",
     "AssignmentRouteDetail",
     "AssignmentRouteDetailOverrideType0",
     "BenchmarkStageRecordRequest",
@@ -2306,8 +2370,9 @@ __all__ = (
     "EscalationActionParameters",
     "EscalationActionResultType0",
     "EscalationApplyReplyRequest",
+    "EscalationApplyReplyRequestExpectedType0",
     "EscalationApplyReplyResponse",
-    "EscalationApplyReplyResponseActionResultType0",
+    "EscalationApplyReplyResponseReceiptType0",
     "EscalationCreateRequest",
     "EscalationCreateResponse",
     "EscalationDelivery",
@@ -2388,14 +2453,21 @@ __all__ = (
     "FormulaSummaryVars",
     "GateCreatePayload",
     "GateCreateRequest",
+    "GateCreateRequestHumanRequestType0",
     "GateCreateResponse",
     "GateCreateResponse422",
     "GateListRequest",
     "GateListResponse",
     "GateListResponse422",
+    "GateReopenRequest",
+    "GateReopenRequestExpected",
+    "GateReopenResponse",
+    "GateReopenResponse422",
     "GateResolveRequest",
+    "GateResolveRequestExpectedType0",
     "GateResolveResponse",
     "GateResolveResponse422",
+    "GateResolveResponseReceiptType0",
     "GateShowRequest",
     "GateShowResponse",
     "GateShowResponse422",
@@ -3406,8 +3478,10 @@ __all__ = (
     "RestartTaskResponse",
     "RestartTaskResponse422",
     "ResumePlaybookRequest",
+    "ResumePlaybookRequestExpectedType0",
     "ResumePlaybookResponse",
     "ResumePlaybookResponse422",
+    "ResumePlaybookResponseReceiptType0",
     "ResumeProjectRequest",
     "ResumeProjectResponse",
     "ResumeProjectResponse422",

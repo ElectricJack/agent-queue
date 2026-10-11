@@ -217,6 +217,7 @@ class AddDependencyValue(CommandValue):
 
 
 class GateCreateArgs(CommandArgs):
+    human_request: dict[str, Any] | None = None
     project_id: str
     gate_type: str
     title: str
@@ -236,8 +237,13 @@ class GateCreateValue(CommandValue):
 
 
 class GateResolveArgs(CommandArgs):
+    expected: dict[str, Any] | None = None
+    preview_id: str | None = None
+    idempotency_key: str | None = None
+    option_key: str | None = None
+    overall_note: str | None = None
     gate_id: str
-    resolved_by: str
+    resolved_by: str | None = None
     resolution: str | None = None
 
 
@@ -2020,3 +2026,6 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
     from src.commands.contracts.inventory import register_inventory_contracts
 
     register_inventory_contracts(registry)
+
+    from src.commands.contracts.ask import register_ask_contracts
+    register_ask_contracts(registry)
