@@ -5,6 +5,7 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.ask_decision_response import AskDecisionResponse
 from ...models.ask_retry_operation_request import AskRetryOperationRequest
 from ...models.ask_retry_operation_response_422 import AskRetryOperationResponse422
 from ...types import Response
@@ -31,9 +32,10 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | AskRetryOperationResponse422 | None:
+) -> AskDecisionResponse | AskRetryOperationResponse422 | None:
     if response.status_code == 200:
-        response_200 = response.json()
+        response_200 = AskDecisionResponse.from_dict(response.json())
+
         return response_200
 
     if response.status_code == 422:
@@ -49,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | AskRetryOperationResponse422]:
+) -> Response[AskDecisionResponse | AskRetryOperationResponse422]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,7 +64,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: AskRetryOperationRequest,
-) -> Response[Any | AskRetryOperationResponse422]:
+) -> Response[AskDecisionResponse | AskRetryOperationResponse422]:
     """Operator reconciliation of an already accepted decision; never creates approval.
 
      Operator reconciliation of an already accepted decision; never creates approval.
@@ -75,7 +77,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | AskRetryOperationResponse422]
+        Response[AskDecisionResponse | AskRetryOperationResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -93,7 +95,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: AskRetryOperationRequest,
-) -> Any | AskRetryOperationResponse422 | None:
+) -> AskDecisionResponse | AskRetryOperationResponse422 | None:
     """Operator reconciliation of an already accepted decision; never creates approval.
 
      Operator reconciliation of an already accepted decision; never creates approval.
@@ -106,7 +108,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | AskRetryOperationResponse422
+        AskDecisionResponse | AskRetryOperationResponse422
     """
 
     return sync_detailed(
@@ -119,7 +121,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: AskRetryOperationRequest,
-) -> Response[Any | AskRetryOperationResponse422]:
+) -> Response[AskDecisionResponse | AskRetryOperationResponse422]:
     """Operator reconciliation of an already accepted decision; never creates approval.
 
      Operator reconciliation of an already accepted decision; never creates approval.
@@ -132,7 +134,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | AskRetryOperationResponse422]
+        Response[AskDecisionResponse | AskRetryOperationResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -148,7 +150,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: AskRetryOperationRequest,
-) -> Any | AskRetryOperationResponse422 | None:
+) -> AskDecisionResponse | AskRetryOperationResponse422 | None:
     """Operator reconciliation of an already accepted decision; never creates approval.
 
      Operator reconciliation of an already accepted decision; never creates approval.
@@ -161,7 +163,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | AskRetryOperationResponse422
+        AskDecisionResponse | AskRetryOperationResponse422
     """
 
     return (

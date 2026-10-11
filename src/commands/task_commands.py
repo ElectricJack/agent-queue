@@ -4332,7 +4332,7 @@ class TaskCommandsMixin:
             return {"error": "The old worker may still be running; recovery was not accepted"}
         return {"id": row.id, "instance_token": row.instance_token}
 
-    async def _cmd_task_recover(self, args: dict) -> dict:
+    async def _cmd_task_recover(self, args: dict, *, ask_decision=None) -> dict:
         task_id = args.get("task_id")
         error = await self._task_control_scope_error(task_id)
         if error:
@@ -4398,6 +4398,9 @@ class TaskCommandsMixin:
             stopped_session=stopped_session,
             expected_hold_at=expected_hold_at,
             operator_handoff=operator_handoff,
+            ask_decision_id=ask_decision["id"] if ask_decision else None,
+            ask_evidence_entry_id=ask_decision["evidence_entry_id"] if ask_decision else None,
+            ask_expected_meaning=ask_decision["packet"]["domain"]["meaning"] if ask_decision else None,
         )
         await self._emit_task_graph_change("task.updated", await self.db.get_task(task_id))
         return result

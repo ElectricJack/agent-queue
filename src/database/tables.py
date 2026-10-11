@@ -749,6 +749,8 @@ gates = Table(
     Column("gate_type", Text, nullable=False),  # one of GATE_TYPES
     Column("title", Text, nullable=False),
     Column("question", Text, nullable=False, server_default=""),
+    # Producer-owned semantics and source receipt; never supplied by a decider.
+    Column("human_request", JSONB, nullable=True),
     Column("await_id", Text, nullable=True),
     Column("timeout_at", Float, nullable=True),
     Column("status", Text, nullable=False, server_default="open"),
@@ -2713,6 +2715,8 @@ agent_questions = Table(
     Column("state", Text, nullable=False),
     Column("answer", Text),
     Column("answered_by", Text),
+    Column("ask_decision_id", Text),
+    Column("submission_state", Text, nullable=False, server_default="pending"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("source_ts", Float, nullable=False),
@@ -2737,6 +2741,8 @@ agent_questions = Table(
         "state IN ('supervisor','human','answered','delivered','resolved','stale')",
         name="ck_agent_question_state",
     ),
+    CheckConstraint("submission_state IN ('pending','unknown','delivered')",
+                    name="ck_agent_question_submission_state"),
     Index("idx_agent_questions_pending", "state", "created_at"),
     Index("idx_agent_questions_session", "session_id", "instance_token"),
 )

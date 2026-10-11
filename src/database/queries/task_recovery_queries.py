@@ -32,6 +32,18 @@ from src.database.tables import (
 )
 from src.models import TaskStatus
 
+def recovery_ask_meaning(task, incident, attempt, owner):
+    """Authority and attempt identity that a human recovery packet must pin."""
+    return {
+        "incident": {k: v for k, v in incident.items() if k not in {
+            "decision", "decision_reason", "decided_at", "decided_by", "ask_decision_id",
+            "ask_evidence_entry_id", "retry_allowed", "next_action", "decision_history",
+        }},
+        "attempt": dict(attempt) if attempt else None,
+        "owner": owner, "claim_epoch": task["claim_epoch"],
+    }
+
+
 logger = logging.getLogger(__name__)
 INCIDENT_KEY = "supervisor_recovery_incident"
 COUNT_KEY = "supervisor_recovery_attempts"
@@ -693,6 +705,9 @@ class TaskRecoveryQueryMixin:
         stopped_session=None,
         expected_hold_at=None,
         operator_handoff=False,
+        ask_decision_id=None,
+        ask_evidence_entry_id=None,
+        ask_expected_meaning=None,
     ):
         """Atomically fence, record and optionally requeue one failed attempt."""
         result = None
@@ -712,6 +727,18 @@ class TaskRecoveryQueryMixin:
                 raise ValueError("Task not found or out of scope")
             meta, attempt = await self._recovery_context(conn, task)
             incident = meta.get(INCIDENT_KEY) or {}
+            if (ask_decision_id and incident.get("id") == incident_id
+                    and incident.get("ask_decision_id") == ask_decision_id):
+                return {"task_id": task_id, "incident_id": incident_id,
+                        "decision": incident["decision"], "status": task["status"],
+                        "decision_id": ask_decision_id, "replayed": True}
+            if ask_decision_id:
+                from src.asks.models import digest
+                owner = await self._recovery_owner(conn, task)
+                if digest(recovery_ask_meaning(task, incident, attempt, owner)) != ask_expected_meaning:
+                    raise ValueError("Recovery source meaning or owner changed since the human decision")
+                if owner["kind"] in {"integration_operation", "retired"}:
+                    raise ValueError("Recovery is no longer owned by this supervisor")
             releasing_hold = (
                 decision == "retry"
                 and expected_hold_at is not None
@@ -800,6 +827,8 @@ class TaskRecoveryQueryMixin:
                     "decided_at": now,
                     "decided_by": author_id,
                     "decision_history": history,
+                    "ask_decision_id": ask_decision_id,
+                    "ask_evidence_entry_id": ask_evidence_entry_id,
                     "retry_allowed": False,
                     "next_action": (
                         "Recovery decision recorded; a hold requires an explicit fenced release."

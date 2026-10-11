@@ -7,6 +7,7 @@ from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.ask_prepare_decision_request import AskPrepareDecisionRequest
 from ...models.ask_prepare_decision_response_422 import AskPrepareDecisionResponse422
+from ...models.ask_prepare_response import AskPrepareResponse
 from ...types import Response
 
 
@@ -31,9 +32,10 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | AskPrepareDecisionResponse422 | None:
+) -> AskPrepareDecisionResponse422 | AskPrepareResponse | None:
     if response.status_code == 200:
-        response_200 = response.json()
+        response_200 = AskPrepareResponse.from_dict(response.json())
+
         return response_200
 
     if response.status_code == 422:
@@ -49,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | AskPrepareDecisionResponse422]:
+) -> Response[AskPrepareDecisionResponse422 | AskPrepareResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,10 +64,10 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: AskPrepareDecisionRequest,
-) -> Response[Any | AskPrepareDecisionResponse422]:
-    """Prepare a ten-minute review packet preview without applying its decision.
+) -> Response[AskPrepareDecisionResponse422 | AskPrepareResponse]:
+    """Prepare a ten-minute source decision packet preview without applying its decision.
 
-     Prepare a ten-minute review packet preview without applying its decision.
+     Prepare a ten-minute source decision packet preview without applying its decision.
 
     Args:
         body (AskPrepareDecisionRequest):
@@ -75,7 +77,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | AskPrepareDecisionResponse422]
+        Response[AskPrepareDecisionResponse422 | AskPrepareResponse]
     """
 
     kwargs = _get_kwargs(
@@ -93,10 +95,10 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: AskPrepareDecisionRequest,
-) -> Any | AskPrepareDecisionResponse422 | None:
-    """Prepare a ten-minute review packet preview without applying its decision.
+) -> AskPrepareDecisionResponse422 | AskPrepareResponse | None:
+    """Prepare a ten-minute source decision packet preview without applying its decision.
 
-     Prepare a ten-minute review packet preview without applying its decision.
+     Prepare a ten-minute source decision packet preview without applying its decision.
 
     Args:
         body (AskPrepareDecisionRequest):
@@ -106,7 +108,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | AskPrepareDecisionResponse422
+        AskPrepareDecisionResponse422 | AskPrepareResponse
     """
 
     return sync_detailed(
@@ -119,10 +121,10 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: AskPrepareDecisionRequest,
-) -> Response[Any | AskPrepareDecisionResponse422]:
-    """Prepare a ten-minute review packet preview without applying its decision.
+) -> Response[AskPrepareDecisionResponse422 | AskPrepareResponse]:
+    """Prepare a ten-minute source decision packet preview without applying its decision.
 
-     Prepare a ten-minute review packet preview without applying its decision.
+     Prepare a ten-minute source decision packet preview without applying its decision.
 
     Args:
         body (AskPrepareDecisionRequest):
@@ -132,7 +134,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | AskPrepareDecisionResponse422]
+        Response[AskPrepareDecisionResponse422 | AskPrepareResponse]
     """
 
     kwargs = _get_kwargs(
@@ -148,10 +150,10 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: AskPrepareDecisionRequest,
-) -> Any | AskPrepareDecisionResponse422 | None:
-    """Prepare a ten-minute review packet preview without applying its decision.
+) -> AskPrepareDecisionResponse422 | AskPrepareResponse | None:
+    """Prepare a ten-minute source decision packet preview without applying its decision.
 
-     Prepare a ten-minute review packet preview without applying its decision.
+     Prepare a ten-minute source decision packet preview without applying its decision.
 
     Args:
         body (AskPrepareDecisionRequest):
@@ -161,7 +163,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | AskPrepareDecisionResponse422
+        AskPrepareDecisionResponse422 | AskPrepareResponse
     """
 
     return (

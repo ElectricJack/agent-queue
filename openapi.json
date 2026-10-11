@@ -14246,8 +14246,8 @@
         "tags": [
           "review"
         ],
-        "summary": "Accept the exact prepared review packet and report durable application state.",
-        "description": "Accept the exact prepared review packet and report durable application state.",
+        "summary": "Accept the exact prepared source packet and report durable application state.",
+        "description": "Accept the exact prepared source packet and report durable application state.",
         "operationId": "ask_decide",
         "requestBody": {
           "content": {
@@ -14264,7 +14264,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AskDecisionResponse"
+                }
               }
             }
           },
@@ -14291,8 +14293,8 @@
         "tags": [
           "review"
         ],
-        "summary": "Prepare a ten-minute review packet preview without applying its decision.",
-        "description": "Prepare a ten-minute review packet preview without applying its decision.",
+        "summary": "Prepare a ten-minute source decision packet preview without applying its decision.",
+        "description": "Prepare a ten-minute source decision packet preview without applying its decision.",
         "operationId": "ask_prepare_decision",
         "requestBody": {
           "content": {
@@ -14309,7 +14311,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AskPrepareResponse"
+                }
               }
             }
           },
@@ -14354,7 +14358,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AskDecisionResponse"
+                }
               }
             }
           },
@@ -18056,6 +18062,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GateListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/gate-reopen": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Operator reopens a declined approval as a new generation.",
+        "description": "Operator reopens a declined approval as a new generation.",
+        "operationId": "gate_reopen",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GateReopenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GateReopenResponse"
                 }
               }
             }
@@ -23562,6 +23615,53 @@
         ],
         "title": "AskDecideRequest"
       },
+      "AskDecisionResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "decision_id": {
+            "type": "string",
+            "title": "Decision Id"
+          },
+          "application_state": {
+            "type": "string",
+            "title": "Application State"
+          },
+          "created": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created"
+          },
+          "receipt": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Receipt"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "success",
+          "decision_id",
+          "application_state"
+        ],
+        "title": "AskDecisionResponse"
+      },
       "AskPrepareDecisionRequest": {
         "properties": {
           "ask_id": {
@@ -23626,6 +23726,57 @@
         ],
         "title": "AskPrepareDecisionRequest"
       },
+      "AskPrepareResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "preview": {
+            "$ref": "#/components/schemas/AskPreview"
+          },
+          "expected": {
+            "$ref": "#/components/schemas/AskVersion"
+          }
+        },
+        "type": "object",
+        "required": [
+          "preview",
+          "expected"
+        ],
+        "title": "AskPrepareResponse"
+      },
+      "AskPreview": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "packet": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Packet"
+          },
+          "packet_sha256": {
+            "type": "string",
+            "title": "Packet Sha256"
+          },
+          "expires_at": {
+            "type": "number",
+            "title": "Expires At"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id",
+          "packet",
+          "packet_sha256",
+          "expires_at"
+        ],
+        "title": "AskPreview"
+      },
       "AskRetryOperationRequest": {
         "properties": {
           "decision_id": {
@@ -23639,6 +23790,79 @@
           "decision_id"
         ],
         "title": "AskRetryOperationRequest"
+      },
+      "AskSourceRecord": {
+        "properties": {
+          "decision_generation": {
+            "type": "integer",
+            "title": "Decision Generation"
+          },
+          "source_fingerprint": {
+            "type": "string",
+            "title": "Source Fingerprint"
+          },
+          "feedback_version": {
+            "type": "integer",
+            "title": "Feedback Version"
+          },
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "context_state": {
+            "type": "string",
+            "title": "Context State"
+          },
+          "context": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Context"
+          },
+          "application_state": {
+            "type": "string",
+            "title": "Application State"
+          },
+          "decision_state": {
+            "type": "string",
+            "title": "Decision State"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "decision_generation",
+          "source_fingerprint",
+          "feedback_version",
+          "id",
+          "context_state",
+          "context",
+          "application_state",
+          "decision_state"
+        ],
+        "title": "AskSourceRecord"
+      },
+      "AskVersion": {
+        "properties": {
+          "decision_generation": {
+            "type": "integer",
+            "title": "Decision Generation"
+          },
+          "source_fingerprint": {
+            "type": "string",
+            "title": "Source Fingerprint"
+          },
+          "feedback_version": {
+            "type": "integer",
+            "title": "Feedback Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "decision_generation",
+          "source_fingerprint",
+          "feedback_version"
+        ],
+        "title": "AskVersion"
       },
       "AssignmentRouteDetail": {
         "properties": {
@@ -32675,6 +32899,55 @@
       },
       "EscalationApplyReplyRequest": {
         "properties": {
+          "expected": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected",
+            "description": ""
+          },
+          "preview_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Id",
+            "description": ""
+          },
+          "option_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Option Key",
+            "description": ""
+          },
+          "prepare": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prepare",
+            "description": ""
+          },
           "escalation_id": {
             "type": "string",
             "title": "Escalation Id",
@@ -32738,19 +33011,72 @@
           },
           "applied": {
             "type": "boolean",
-            "title": "Applied"
+            "title": "Applied",
+            "default": false
           },
           "replayed": {
             "type": "boolean",
-            "title": "Replayed"
+            "title": "Replayed",
+            "default": false
           },
-          "action": {
-            "$ref": "#/components/schemas/EscalationAction"
+          "ask_id": {
+            "type": "string",
+            "title": "Ask Id"
           },
-          "escalation": {
-            "$ref": "#/components/schemas/EscalationRecord"
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskPreview"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
-          "action_result": {
+          "expected": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskVersion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Id"
+          },
+          "application_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application State"
+          },
+          "created": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created"
+          },
+          "receipt": {
             "anyOf": [
               {
                 "additionalProperties": true,
@@ -32760,15 +33086,22 @@
                 "type": "null"
               }
             ],
-            "title": "Action Result"
+            "title": "Receipt"
+          },
+          "escalation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EscalationRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
         "required": [
-          "applied",
-          "replayed",
-          "action",
-          "escalation"
+          "ask_id"
         ],
         "title": "EscalationApplyReplyResponse"
       },
@@ -35142,6 +35475,19 @@
       },
       "GateCreateRequest": {
         "properties": {
+          "human_request": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Human Request",
+            "description": ""
+          },
           "project_id": {
             "type": "string",
             "title": "Project Id",
@@ -35315,15 +35661,126 @@
         "type": "object",
         "title": "GateListResponse"
       },
-      "GateResolveRequest": {
+      "GateReopenRequest": {
         "properties": {
           "gate_id": {
             "type": "string",
             "title": "Gate Id",
             "description": ""
           },
-          "resolved_by": {
+          "expected": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Expected",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "gate_id",
+          "expected"
+        ],
+        "title": "GateReopenRequest"
+      },
+      "GateReopenResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "gate_id": {
             "type": "string",
+            "title": "Gate Id"
+          },
+          "ask": {
+            "$ref": "#/components/schemas/AskSourceRecord"
+          }
+        },
+        "type": "object",
+        "required": [
+          "gate_id",
+          "ask"
+        ],
+        "title": "GateReopenResponse"
+      },
+      "GateResolveRequest": {
+        "properties": {
+          "expected": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected",
+            "description": ""
+          },
+          "preview_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Id",
+            "description": ""
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "option_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Option Key",
+            "description": ""
+          },
+          "overall_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overall Note",
+            "description": ""
+          },
+          "gate_id": {
+            "type": "string",
+            "title": "Gate Id",
+            "description": ""
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Resolved By",
             "description": ""
           },
@@ -35342,8 +35799,7 @@
         },
         "type": "object",
         "required": [
-          "gate_id",
-          "resolved_by"
+          "gate_id"
         ],
         "title": "GateResolveRequest"
       },
@@ -35365,6 +35821,51 @@
             "type": "array",
             "title": "Unblocked Task Ids",
             "default": []
+          },
+          "decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Id"
+          },
+          "application_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application State"
+          },
+          "created": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created"
+          },
+          "receipt": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Receipt"
           }
         },
         "type": "object",
@@ -35414,6 +35915,16 @@
       },
       "GateSummary": {
         "properties": {
+          "ask": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskSourceRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -63895,6 +64406,55 @@
       },
       "ResumePlaybookRequest": {
         "properties": {
+          "expected": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected",
+            "description": ""
+          },
+          "preview_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Id",
+            "description": ""
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "overall_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overall Note",
+            "description": ""
+          },
           "run_id": {
             "type": "string",
             "title": "Run Id",
@@ -63915,31 +64475,51 @@
       },
       "ResumePlaybookResponse": {
         "properties": {
-          "resumed": {
-            "type": "string",
-            "title": "Resumed"
+          "success": {
+            "type": "boolean",
+            "title": "Success"
           },
-          "playbook_id": {
+          "decision_id": {
             "type": "string",
-            "title": "Playbook Id"
+            "title": "Decision Id"
           },
-          "status": {
+          "application_state": {
             "type": "string",
-            "title": "Status"
+            "title": "Application State"
           },
-          "tokens_used": {
-            "type": "integer",
-            "title": "Tokens Used",
-            "default": 0
+          "created": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created"
+          },
+          "receipt": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Receipt"
           }
         },
+        "additionalProperties": true,
         "type": "object",
         "required": [
-          "resumed",
-          "playbook_id",
-          "status"
+          "success",
+          "decision_id",
+          "application_state"
         ],
-        "title": "ResumePlaybookResponse"
+        "title": "ResumePlaybookResponse",
+        "description": "The exact human wait decision and its durable application state."
       },
       "ResumeProjectRequest": {
         "properties": {

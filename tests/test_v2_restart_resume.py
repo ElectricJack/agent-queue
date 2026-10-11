@@ -543,7 +543,9 @@ class TestRestartAtTheWaitBoundary:
             "wait-kinds.artifact.json", runs=runs, waits=waits
         )
         resumed = await restarted.resume(
-            outcome.run_id, HumanDecision(decision="approve"), TRUSTED_LOCAL
+            outcome.run_id, HumanDecision(decision="approve", expected_wait_id=outcome.snapshot.wait.wait_id,
+                          expected_artifact_sha256=outcome.snapshot.artifact_sha256,
+                          decision_id="decision-approve"), TRUSTED_LOCAL
         )
         assert resumed.lifecycle is RunLifecycle.COMPLETED
         assert resumed.snapshot.current_step_id == "gate-done"
@@ -565,7 +567,9 @@ class TestRestartAtTheWaitBoundary:
             ref, "gate", event("task-completed-code"), TRUSTED_LOCAL
         )
         await engine.resume(
-            outcome.run_id, HumanDecision(decision="approve"), TRUSTED_LOCAL
+            outcome.run_id, HumanDecision(decision="approve", expected_wait_id=outcome.snapshot.wait.wait_id,
+                          expected_artifact_sha256=outcome.snapshot.artifact_sha256,
+                          decision_id="decision-approve"), TRUSTED_LOCAL
         )
         settled = len(runs.receipts)
 
@@ -573,9 +577,11 @@ class TestRestartAtTheWaitBoundary:
             "wait-kinds.artifact.json", runs=runs, waits=waits
         )
         again = await restarted.resume(
-            outcome.run_id, HumanDecision(decision="approve"), TRUSTED_LOCAL
+            outcome.run_id, HumanDecision(decision="approve", expected_wait_id=outcome.snapshot.wait.wait_id,
+                          expected_artifact_sha256=outcome.snapshot.artifact_sha256,
+                          decision_id="decision-approve"), TRUSTED_LOCAL
         )
-        assert again.outcome == "already_terminal"
+        assert again.outcome == "decision_replayed"
         assert len(runs.receipts) == settled
 
 
