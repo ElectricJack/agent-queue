@@ -5235,6 +5235,7 @@
         ],
         "optional": [
           "--policy",
+          "--hosted-check-policy",
           "--repository-id",
           "--write",
           "--check",

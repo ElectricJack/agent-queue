@@ -1257,20 +1257,17 @@ class IntegrationCommandsMixin:
 
 
     async def _integration_app_inputs(
-        self, args: dict
+        self, args: dict, *, allow_hosted_check_policy: bool = False
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-        """``(refusal, inputs)`` shared by the read-only App-mode commands.
+        """Resolve supplied/bound policy and supplied/designated repository.
 
-        The policy is the caller's ``policy`` when given, so the anchors can be
-        prepared before the policy is bound, else the project's bound policy.
-        The repository is ``repository_id`` when given, else the designated
-        one.  Every identity comes from the daemon: the binding from the
-        authenticated resolver and the credential from the GitHub client.
+        Identities come only from the authenticated resolver and daemon client.
+        Return ``(refusal, inputs)`` for the read-only App-mode commands.
         """
         from pydantic import ValidationError
 
         from src.git.github_contracts import credential_identity_from_client
-        from src.integration.models import HierarchicalIntegrationPolicy
+        from src.integration.models import HierarchicalIntegrationPolicy, HostedCheckPolicy
 
         project_id = str(args.get("project_id") or "")
         if not project_id:
@@ -1283,13 +1280,22 @@ class IntegrationCommandsMixin:
             return _failure("not_found", f"project {project_id} does not exist"), {}
 
         supplied = args.get("policy")
-        raw_policy = supplied if supplied is not None else project.hierarchical_integration_policy
+        hosted = args.get("hosted_check_policy")
+        if hosted is not None and (not allow_hosted_check_policy or supplied is not None):
+            return _failure(
+                "policy_invalid", "hosted_check_policy is only supported for trust-manifest "
+                "and is mutually exclusive with policy",
+            ), {}
+        raw_policy = (hosted if hosted is not None else supplied if supplied is not None
+                      else project.hierarchical_integration_policy)
         if raw_policy is None:
             return _failure(
                 "policy_missing", f"{project_id} has no bound integration policy; pass --policy FILE"
+                + (" or --hosted-check-policy FILE" if allow_hosted_check_policy else ""),
             ), {}
         try:
-            policy = HierarchicalIntegrationPolicy.model_validate(raw_policy)
+            policy_model = HostedCheckPolicy if hosted is not None else HierarchicalIntegrationPolicy
+            policy = policy_model.model_validate(raw_policy)
         except (ValidationError, TypeError, ValueError) as exc:
             # Development settings share this column but contain local
             # commands/budgets, not the hosted check and producer identities
@@ -1360,7 +1366,8 @@ class IntegrationCommandsMixin:
             "project": project,
             "project_id": project_id,
             "policy": policy,
-            "policy_source": "argument" if supplied is not None else "bound",
+            "policy_source": ("hosted_check_policy" if hosted is not None
+                              else "argument" if supplied is not None else "bound"),
             "repository_id": repository_id,
             "repository": repository,
             "binding": binding,
@@ -1369,20 +1376,16 @@ class IntegrationCommandsMixin:
         }
 
     async def _cmd_integration_trust_manifest(self, args: dict) -> dict:
-        """Render the App-mode trust manifest and compare the default-branch copy.
+        """Render from authenticated App inputs; compare the exact default-branch SHA.
 
-        Read-only (App-mode integration train spec §6.1), on the inputs
-        :meth:`_integration_app_inputs` resolves: ``repository_id`` and
-        ``full_name`` from the authenticated binding, ``attestation_app_id``
-        from the App client, and the committed copy read through the App at
-        the default branch's exact SHA.
+        Read-only (App-mode integration train spec §6.1).
         """
         from src.git.github_contracts import GitHubAccessError, GitHubCredentialMode
         from src.integration import trust_manifest
         from src.integration.preflight import read_committed_trust_manifest
         from src.integration.promotion_steps import read_stored_promotion_flow
 
-        refusal, inputs = await self._integration_app_inputs(args)
+        refusal, inputs = await self._integration_app_inputs(args, allow_hosted_check_policy=True)
         if refusal is not None:
             return refusal
         binding, identity = inputs["binding"], inputs["identity"]
@@ -1439,7 +1442,9 @@ class IntegrationCommandsMixin:
                 else:
                     if committed_trust.check_sets:
                         manifest["check_sets"] = {
-                            name: list(checks) for name, checks in committed_trust.check_sets.items()
+                            **{name: list(checks)
+                               for name, checks in committed_trust.check_sets.items()},
+                            **manifest.get("check_sets", {}),
                         }
                         text = trust_manifest.canonical_text(manifest)
             committed.update(sha=sha, **trust_manifest.compare(manifest, raw).as_dict())
@@ -1624,10 +1629,6 @@ class IntegrationCommandsMixin:
             )
 
 
-
-
-
-
     async def _cmd_integration_reevaluate_repair(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationReevaluateRepairArgs
 
@@ -1656,9 +1657,6 @@ class IntegrationCommandsMixin:
         return _with_reason(result["outcome"] in {
             "would_reevaluate", "reevaluated", "already_settled",
         }, result)
-
-
-
 
 
     async def _cmd_integration_recover_candidate_member(self, args: dict) -> dict:
@@ -2110,7 +2108,6 @@ class IntegrationCommandsMixin:
             "success": result["outcome"] in {"would_rebind", "rebound", "already_rebound"},
             **result,
         }
-
 
 
     async def _cmd_integration_close_delivered_pr(self, args: dict) -> dict:

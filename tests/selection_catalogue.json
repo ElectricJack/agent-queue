@@ -9660,7 +9660,7 @@
         "integration-controls"
       ],
       "default_arm": true,
-      "digest": "sha256:1b7e7bd42268b4ca1c6f207d6cc94de2ac2d0ad8b97d8a51e74786d70e10e599",
+      "digest": "sha256:406c9b13f90e0fc0fd2201920c9d7c90e3fd6c98bb5cc521a68555e2f59f6f1b",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -9675,6 +9675,7 @@
         "src.git.github_contracts",
         "src.integration",
         "src.integration.ci",
+        "src.integration.models",
         "src.integration.trust_manifest",
         "src.models",
         "src.profiles.capabilities"

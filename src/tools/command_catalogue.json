@@ -13792,8 +13792,51 @@
     },
     "integration_trust_manifest": {
       "name": "integration_trust_manifest",
-      "description": "Render the App-mode trust manifest from the policy, the authenticated binding and the daemon's App, and compare the default-branch copy.",
+      "description": "Render the App-mode trust manifest from a full or hosted-check policy, the authenticated binding and the daemon's App, and compare the default-branch copy.",
       "input_schema": {
+        "$defs": {
+          "HostedCheckPolicy": {
+            "additionalProperties": false,
+            "description": "CI inputs for trust bootstrap, independent of hierarchical routing.",
+            "properties": {
+              "version": {
+                "minLength": 1,
+                "title": "Version",
+                "type": "string"
+              },
+              "names": {
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "title": "Names",
+                "type": "array"
+              },
+              "producer_id": {
+                "pattern": "^[1-9][0-9]*$",
+                "title": "Producer Id",
+                "type": "string"
+              },
+              "check_sets": {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "title": "Check Sets",
+                "type": "object"
+              }
+            },
+            "required": [
+              "version",
+              "names",
+              "producer_id"
+            ],
+            "title": "HostedCheckPolicy",
+            "type": "object"
+          }
+        },
         "additionalProperties": false,
         "properties": {
           "project_id": {
@@ -13826,6 +13869,17 @@
             ],
             "default": null,
             "title": "Repository Id"
+          },
+          "hosted_check_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/HostedCheckPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [

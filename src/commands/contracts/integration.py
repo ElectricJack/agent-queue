@@ -25,7 +25,7 @@ from src.commands.contracts.models import (
 )
 from src.commands.contracts.registry import CommandContext, CommandRegistration, ContractRegistry
 from src.commands.principal import principal_context
-from src.integration.models import AWAITING_TRUSTED_VERIFICATION, BranchKey, Fence
+from src.integration.models import AWAITING_TRUSTED_VERIFICATION, BranchKey, Fence, HostedCheckPolicy
 from src.git.manager import is_valid_git_oid
 
 
@@ -228,7 +228,7 @@ class IntegrationStatusReadArgs(IntegrationStatusArgs):
     control_only: bool = False
 
 
-class IntegrationTrustManifestArgs(CommandArgs):
+class IntegrationAppInputsArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     #: A policy document to build from instead of the bound one (``--policy FILE``).
     policy: dict[str, Any] | None = None
@@ -236,10 +236,21 @@ class IntegrationTrustManifestArgs(CommandArgs):
     repository_id: str | None = Field(default=None, min_length=1)
 
 
+class IntegrationTrustManifestArgs(IntegrationAppInputsArgs):
+    #: CI-only bootstrap document (``--hosted-check-policy FILE``).
+    hosted_check_policy: HostedCheckPolicy | None = None
+
+    @model_validator(mode="after")
+    def exclusive_policy_inputs(self) -> IntegrationTrustManifestArgs:
+        if self.policy is not None and self.hosted_check_policy is not None:
+            raise ValueError("policy and hosted_check_policy are mutually exclusive")
+        return self
+
+
 class IntegrationTrustManifestValue(CommandValue):
     project_id: str | None = None
     repository_id: str | None = None
-    policy_source: Literal["argument", "bound"] | None = None
+    policy_source: Literal["argument", "bound", "hosted_check_policy"] | None = None
     github_repository_id: int | None = None
     full_name: str | None = None
     attestation_app_id: int | None = None
@@ -250,7 +261,7 @@ class IntegrationTrustManifestValue(CommandValue):
     committed: dict[str, Any] | None = None
 
 
-class IntegrationAppVerifyArgs(IntegrationTrustManifestArgs):
+class IntegrationAppVerifyArgs(IntegrationAppInputsArgs):
     repository_access_only: bool = False
     #: Where the caller read ``policy`` from; only repeated in fix commands.
     policy_path: str | None = Field(default=None, min_length=1)
@@ -337,8 +348,6 @@ class IntegrationRedriveRootArgs(CommandArgs):
         return self
 
 
-
-
 class IntegrationAuthorizeRootArgs(IntegrationRedriveRootArgs):
     """Dry run by default; applying names the dry run's exact head and a reason."""
 
@@ -368,10 +377,6 @@ class IntegrationRedriveChildArgs(CommandArgs):
 
 class IntegrationReopenCollectionArgs(IntegrationRedriveChildArgs):
     """Dry run by default; applying names the parent branch head the dry run reported."""
-
-
-
-
 
 
 class IntegrationRebindRepairArgs(CommandArgs):
@@ -653,8 +658,6 @@ class IntegrationRedriveRootValue(CommandValue):
     checkpoint: dict[str, Any] | None = None
     owner: dict[str, Any] | None = None
     reason: str | None = None
-
-
 
 
 class IntegrationCloseDeliveredPrValue(CommandValue):
@@ -1401,7 +1404,7 @@ INTEGRATION_TRUST_MANIFEST = _operational_contract(
 INTEGRATION_TRUST_MANIFEST = INTEGRATION_TRUST_MANIFEST.model_copy(update={
     "presentation": INTEGRATION_TRUST_MANIFEST.presentation.model_copy(update={
         "summary": (
-            "Render the App-mode trust manifest from the policy, the authenticated "
+            "Render the App-mode trust manifest from a full or hosted-check policy, the authenticated "
             "binding and the daemon's App, and compare the default-branch copy."
         ),
     }),
@@ -1609,7 +1612,6 @@ INTEGRATION_REOPEN_COLLECTION = _operational_contract(
     side_effect=SideEffectClass.COMPOSITE,
     result_model=IntegrationReopenCollectionValue,
 )
-
 
 
 INTEGRATION_REBIND_REPAIR = _operational_contract(
@@ -3058,8 +3060,6 @@ async def _redrive_root_adapter(args: IntegrationRedriveRootArgs, ctx: CommandCo
     )
 
 
-
-
 async def _authorize_root_adapter(
     args: IntegrationAuthorizeRootArgs, ctx: CommandContext | None
 ):
@@ -3089,8 +3089,6 @@ async def _reopen_collection_adapter(
         IntegrationReopenCollectionValue,
         set(REOPEN_COLLECTION_OUTCOMES),
     )
-
-
 
 
 async def _rebind_repair_adapter(args: IntegrationRebindRepairArgs, ctx: CommandContext | None):
