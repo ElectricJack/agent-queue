@@ -407,9 +407,15 @@ class GitProvenance:
 
 async def record_worker_completion(
     db, git, task, project, checkout, generation, *, commit="", no_code_intent=False,
-    allow_unpublished_no_change=False,
+    allow_unpublished_no_change=False, no_code_proven=False,
 ):
-    """Verify and publish completion evidence before the task can become terminal."""
+    """Verify and publish completion evidence before the task can become terminal.
+
+    *no_code_proven* is the pipeline's proof that a no-code task's slot holds
+    no work (``GitOpsMixin._task_proves_no_work``). Such a task need not have
+    published its branch: its HEAD must instead be contained in the target
+    tip, re-checked here, and its completion records no artifact.
+    """
     from src.integration.hierarchy import resolve_workspace_checkpoint
     from sqlalchemy import select
 
@@ -422,11 +428,29 @@ async def record_worker_completion(
         unchanged_base = origin.get("base_sha") if origin else None
         if not is_valid_git_oid(unchanged_base):
             raise ValueError("no-change completion requires its exact recorded origin base")
+    store = GitProvenance(git, checkout, repository_url=repo.url)
+
+    async def target_tip():
+        from src.database.tables import projects
+        from src.integration.promotion_routing import promotion_origin_target
+
+        async with db._engine.connect() as conn:
+            flow, cutover = (await conn.execute(select(projects.c.promotion_flow,
+                projects.c.default_branch_cutover).where(projects.c.id == project.id))).one()
+        target = promotion_origin_target(repo.default_branch, flow, origin, repo.id, cutover)
+        return await store.run("rev-parse", "--verify", "refs/remotes/origin/" + target)
+
+    # A proven no-code source need not be published, only contained in the
+    # target tip, so that tip resolves before the source; the final recheck
+    # below holds it to the same containment.
+    base = await target_tip() if no_code_proven else None
+    contained_in = base
     subject = {"id": task.id, "repo_id": repo.id, "branch_name": task.branch_name}
-    source = await resolve_workspace_checkpoint(db, git, subject, repo, unchanged_base=unchanged_base)
+    source = await resolve_workspace_checkpoint(
+        db, git, subject, repo, unchanged_base=unchanged_base, contained_in=contained_in,
+    )
     if commit and commit != source:
         raise ValueError("--commit must identify the exact final source, not an earlier commit")
-    store = GitProvenance(git, checkout, repository_url=repo.url)
     from src.integration.batches import BatchStore
     from src.integration.repair import OrdinaryRepairService
 
@@ -443,19 +467,13 @@ async def record_worker_completion(
                 "ordinary repair does not contain every frozen source; still to merge: "
                 + ", ".join(missing)
             )
-    from src.database.tables import projects
-    from src.integration.promotion_routing import promotion_origin_target
-
-    async with db._engine.connect() as conn:
-        flow, cutover = (await conn.execute(select(projects.c.promotion_flow,
-            projects.c.default_branch_cutover).where(projects.c.id == project.id))).one()
-    target = promotion_origin_target(repo.default_branch, flow, origin, repo.id, cutover)
-    base = await store.run("rev-parse", "--verify", "refs/remotes/origin/" + target)
+    if base is None:
+        base = await target_tip()
     await store.exact(base)
     identity = CompletionIdentity(project.id, repo.id, task.id, generation)
     await store.write_completion(CompletedSource(identity, source),
                                  claim_epoch=task.claim_epoch,
-                                 artifact=not (no_code_intent and source == base))
+                                 artifact=not (no_code_proven or (no_code_intent and source == base)))
     contract = await db.get_task_meta(task.id, "development_repair_sources")
     if contract:
         # No inference from repair-looking names or copied trailers. The
@@ -503,7 +521,7 @@ async def record_worker_completion(
                     raise ValueError("an empty repair cannot replace a source it does not contain")
     # A concurrent local commit or source push must not close an older snapshot.
     if await resolve_workspace_checkpoint(
-        db, git, subject, repo, unchanged_base=unchanged_base,
+        db, git, subject, repo, unchanged_base=unchanged_base, contained_in=contained_in,
     ) != source or await db.get_task_branch_origin_for_promotion(task.id, repo.id) != origin:
         raise ValueError("final source changed while recording completion provenance")
     return source

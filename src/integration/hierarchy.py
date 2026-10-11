@@ -159,11 +159,16 @@ def _workspace_precondition(precondition: str, detail: str, **context) -> Hierar
 
 async def resolve_workspace_checkpoint(
     db, git, task: dict, repo: RepoConfig, *, unchanged_base: str | None = None,
+    contained_in: str | None = None,
 ) -> str:
     """Return an owned writer workspace's clean, exactly-pushed current HEAD.
 
     A no-change completion may instead supply its recorded exact origin base:
     equality proves no task commits need publishing, without borrowing a ref.
+    A proven no-code completion with no origin row supplies its target tip as
+    *contained_in*: a HEAD already contained in it owes nothing to publish,
+    so an unpublished task ref is accepted. A published one must still equal
+    HEAD, so work pushed elsewhere on the task branch is never skipped.
     """
     workspace = await db.get_workspace_for_task(task["id"])
     if workspace is None:
@@ -215,9 +220,17 @@ async def resolve_workspace_checkpoint(
     from src.git.manager import RemoteRefState
 
     remote = await git.als_remote_ref(checkout, task["branch_name"].removeprefix("refs/heads/"))
-    if remote.state is not RemoteRefState.PRESENT or remote.oid != actual_head:
-        raise HierarchyError("dirty", "workspace HEAD is not exactly pushed")
-    return actual_head
+    if remote.state is RemoteRefState.PRESENT and remote.oid == actual_head:
+        return actual_head
+    if contained_in is not None and remote.state is RemoteRefState.ABSENT:
+        if (
+            not is_valid_git_oid(contained_in)
+            or await git.ais_ancestor(checkout, actual_head, contained_in, strict=True)
+            is not True
+        ):
+            raise HierarchyError("dirty", "no-code workspace HEAD is not contained in its target")
+        return actual_head
+    raise HierarchyError("dirty", "workspace HEAD is not exactly pushed")
 
 
 async def resolve_repair_commit_proof(

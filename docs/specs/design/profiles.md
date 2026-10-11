@@ -304,7 +304,7 @@ load-bearing rather than cosmetic:
 | `read_only` | `GitOpsMixin._task_produces_no_code()` (`src/orchestrator/git_ops.py`) reads it to decide whether a task must push a branch and open a PR. A vault `reviewer` still saying `read_only: false` re-arms the require-a-PR close gate for a session that is told never to push. |
 | `harness` | selects which CLI actually runs the agent. |
 | `lifecycle` | push (`task`) vs pull (`pool`) vs `named`. |
-| `needs_workspace` | whether the orchestrator acquires a worktree. |
+| `needs_workspace` | whether the orchestrator acquires a worktree. `false` also marks the role no-code for `_task_produces_no_code()`, so a proven-clean development-mode close records no artifact instead of requiring the slot branch to be pushed. |
 
 Section renames drift the same way — a copy predating the `## Tools` →
 `## Capabilities` rename routes through the legacy `allowed_tools` adapter

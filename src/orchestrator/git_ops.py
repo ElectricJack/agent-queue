@@ -769,12 +769,15 @@ class GitOpsMixin:
     async def _task_produces_no_code(self, ctx: PipelineContext) -> bool:
         """Return whether task metadata declares no code was intended.
 
-        Two signals, either is enough:
+        Three signals, any is enough:
 
         * the agent closed with ``--work-outcome no-op`` — its own statement
           that nothing was produced;
         * its effective profile declares ``read_only: true``: such profiles
-          do not commit, push, or open a PR on their own task branch.
+          do not commit, push, or open a PR on their own task branch;
+        * its effective profile declares ``needs_workspace: false``: a role
+          such as ``spec-ingest`` or ``triage`` writes database rows, not
+          source, and holds no ``git_push`` grant to publish its slot branch.
 
         Profile resolution follows the regular task path, including a
         project-scoped override.  The legacy review ids are retained only
@@ -794,7 +797,7 @@ class GitOpsMixin:
             )
             profile = None
         if profile is not None:
-            return bool(profile.read_only)
+            return bool(profile.read_only) or not profile.needs_workspace
         return (ctx.task.profile_id or "") in NO_CODE_PROFILE_IDS
 
     async def _task_uses_git(self, ctx: PipelineContext) -> bool:
@@ -1137,6 +1140,11 @@ class GitOpsMixin:
                 )
                 return (ctx.pr_url, False)
             if not ctx.workspace_path or not await self._task_uses_git(ctx):
+                return (ctx.pr_url, True)
+            if await self._task_produces_no_code(ctx) and await self._task_proves_no_work(ctx):
+                # A no-code role never publishes its slot branch and has no
+                # origin row here. Completion provenance re-proves its HEAD is
+                # contained in the target before recording no artifact.
                 return (ctx.pr_url, True)
             try:
                 from src.integration.hierarchy import resolve_workspace_checkpoint

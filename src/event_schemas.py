@@ -189,9 +189,10 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
     "task.completed": {
         "required": ["task_id", "project_id", "title"],
         # ``no_code``: set by the session close path when the task left no
-        # commits behind — by construction (``read_only`` profile or
-        # ``--work-outcome no-op``) or in fact (the task branch carried no
-        # commits ahead of its base when the completion pipeline asked).
+        # commits behind — by construction (``read_only`` or
+        # ``needs_workspace: false`` profile, or ``--work-outcome no-op``)
+        # or in fact (the task branch carried no commits ahead of its base
+        # when the completion pipeline asked).
         # The default pipeline's review rules skip such tasks; emitters that
         # omit it are treated as code-bearing.
         # ``review_task``: set by every emitter when either the task's dedup
