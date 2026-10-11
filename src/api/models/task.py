@@ -925,6 +925,38 @@ class TaskRouteOverrideResponse(BaseModel):
 
 class SpecApproveResponse(BaseModel):
     success: bool = True
+    decision_id: str
+    packet_sha256: str
+    snapshot_id: str
+
+
+class ApprovedSpecPacketResponse(BaseModel):
+    success: bool = True
+    project_id: str
+    decision_id: str
+    packet_sha256: str
+    review_id: str | None
+    revision: int | None
+    snapshot_id: str | None
+    spec_kind: str
+    spec_path: str
+    content_sha256: str
+    body: str
+    packet: dict[str, Any]
+    feedback: list[dict[str, Any]]
+
+
+class SpecIngestReconcileResponse(BaseModel):
+    success: bool = True
+    dispatched: int
+    errors: list[dict[str, str]]
+
+
+class SpecIngestLegacyInventoryResponse(BaseModel):
+    success: bool = True
+    assignments: list[dict[str, Any]]
+    next_after_id: str | None
+    policy: str
 
 
 class TaskBatchProposeResponse(BaseModel):
@@ -940,6 +972,7 @@ class TaskBatchProposeResponse(BaseModel):
     proposal_id: str | None = None
     dry_run: bool = False
     committed: bool = False
+    already_committed: bool = False
     task_ids: list[str] | None = None
     diff: dict[str, Any] | None = None
 
@@ -1296,6 +1329,10 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "explain_task": ExplainTaskResponse,
     "project_ready": ProjectReadyResponse,
     "ensure_task": EnsureTaskResponse,
+    "ensure_spec_ingest": EnsureTaskResponse,
+    "approved_spec_packet": ApprovedSpecPacketResponse,
+    "spec_ingest_reconcile": SpecIngestReconcileResponse,
+    "spec_ingest_legacy_inventory": SpecIngestLegacyInventoryResponse,
     "get_downstream_tasks": GetDownstreamTasksResponse,
     "task_route": TaskRouteResponse,
     "task_route_override": TaskRouteOverrideResponse,

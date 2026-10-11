@@ -350,3 +350,66 @@ async def test_legacy_preview_retry_reconciles_same_accepted_decision(env, monke
     assert retry.get("success") and retry["decision_id"] == first["decision_id"], retry
     again = await handler.execute("review_decide", accepted)
     assert again.get("success") and again["decision_id"] == first["decision_id"], again
+
+
+@pytest.mark.parametrize("damage", [None, "cycle", "missing", "cross-project", "container"])
+async def test_external_coverage_precedes_review_gate_release(env, monkeypatch, damage):
+    from src.models import Task, TaskStatus
+    from src.database.queries.proposal_queries import existing_graph_edges
+
+    handler, db = env
+    result = await handler.execute("review_submit", {
+        "project_id": "p", "kind": "spec", "title": "Implementation prerequisites",
+        "content": "---\nspec_kind: implementation\n---\n# Implementation\nPinned requirements.",
+    })
+    assert result["success"], result
+    rid = result["review_id"]
+    review = await db.get_review(rid)
+    for tid in ("waiting-a", "waiting-b"):
+        await db.create_task(Task(id=tid, project_id="p", title=tid, description="", status=TaskStatus.DEFINED))
+    async with db.immediate() as conn:
+        await db.attach_gate_waiters(review["gate_id"], ["waiting-a", "waiting-b"], conn=conn)
+    cid = await comment(handler, rid, "Required external implementation prerequisite")
+    args, preview = await prepared(handler, rid, dispositions=[{
+        "feedback_key": cid, "disposition": "follow_up", "required_before_release": True,
+        "external_prerequisite": True, "reason": "Separate implementation; no document edits",
+    }])
+    original = ReviewOperations.finalize
+
+    async def inspect_before_release(self, decision):
+        async with db._engine.connect() as conn:
+            filing = await get_operation(conn, decision["id"], "file_task")
+        target = filing["receipt"]["task_id"]
+        assert (await db.get_gate(review["gate_id"]))["status"] == "open"
+        assert all([(await db.get_task(tid)).is_blocked for tid in ("waiting-a", "waiting-b")])
+        if damage == "cycle":
+            await db.add_dependency(target, "waiting-a")
+        elif damage == "missing":
+            await db.update_task(target, status=TaskStatus.COMPLETED)
+            assert await db.archive_task(target)
+        elif damage == "cross-project":
+            await db.update_task(target, project_id="other")
+        elif damage == "container":
+            await db.create_task(Task(id="waiter-child", project_id="p", title="Child", description="",
+                                      parent_task_id="waiting-a"))
+            async with db.immediate() as conn:
+                await db.mark_container("waiting-a", conn=conn)
+        return await original(self, decision)
+
+    monkeypatch.setattr(ReviewOperations, "finalize", inspect_before_release)
+    applied = await accept(handler, args, preview)
+    if damage:
+        assert not applied["success"] and applied["application_state"] == "failed", applied
+        assert (await db.get_gate(review["gate_id"]))["status"] == "open"
+        assert all([(await db.get_task(tid)).is_blocked for tid in ("waiting-a", "waiting-b")])
+        assert (await db.get_review(rid))["state"] == "in_review"
+    else:
+        assert applied["success"], applied
+        assert (await db.get_gate(review["gate_id"]))["status"] == "resolved"
+        async with db._engine.connect() as conn:
+            [obligation] = await db.list_review_feedback_obligations(applied["decision_id"], conn=conn)
+        edges = await existing_graph_edges(db, "p")
+        assert {(f, t) for f, t, k in edges if k == "blocks"} == {
+            ("waiting-a", obligation["task_id"]), ("waiting-b", obligation["task_id"]),
+        }
+        assert all([(await db.get_task(tid)).is_blocked for tid in ("waiting-a", "waiting-b")])

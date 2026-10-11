@@ -10802,6 +10802,90 @@
         "title": "OperatorPreflightArgs",
         "type": "object"
       }
+    },
+    {
+      "name": "ensure_spec_ingest",
+      "description": "Ensure one role task per applied approval decision, including archived receipts.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "decision_id": {
+            "title": "Decision Id",
+            "type": "string"
+          },
+          "packet_sha256": {
+            "title": "Packet Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "decision_id",
+          "packet_sha256"
+        ],
+        "title": "EnsureSpecIngestArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "approved_spec_packet",
+      "description": "Read the immutable document and feedback of the live held ingestion role.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "decision_id": {
+            "title": "Decision Id",
+            "type": "string"
+          },
+          "packet_sha256": {
+            "title": "Packet Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "decision_id",
+          "packet_sha256"
+        ],
+        "title": "EnsureSpecIngestArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "spec_ingest_reconcile",
+      "description": "Replay at most twenty pending approved-spec dispatches; operator/service only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "spec_ingest_legacy_inventory",
+      "description": "Inventory path-only ingestion assignments for explicit operator reconciliation.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "after_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
     }
   ],
   "fallback": {
@@ -17427,7 +17511,11 @@
     "knowledge_share": "knowledge",
     "knowledge_redact": "knowledge",
     "knowledge_generation_tick": "knowledge",
-    "knowledge_generation_status": "knowledge"
+    "knowledge_generation_status": "knowledge",
+    "ensure_spec_ingest": "task",
+    "approved_spec_packet": "task",
+    "spec_ingest_reconcile": "task",
+    "spec_ingest_legacy_inventory": "task"
   },
   "cli_category_overrides": {
     "create_task": "task",
