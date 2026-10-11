@@ -301,7 +301,8 @@ class GatePrimitives:
             )
 
     async def answer_on(
-        self, conn, subject, gate_id, *, choice, answered_by, verified_human
+        self, conn, subject, gate_id, *, choice, answered_by, verified_human,
+        decision_id=None, evidence_entry_id=None,
     ) -> PrimitiveOutcome:
         current = await lock_current_on(self.db, conn, subject)
         if current is None:
@@ -313,11 +314,12 @@ class GatePrimitives:
             choice=choice,
             answered_by=answered_by,
             verified_human=verified_human,
-            defaulted=False,
+            defaulted=False, decision_id=decision_id, evidence_entry_id=evidence_entry_id,
         )
 
     async def _answer_on(
-        self, conn, subject, gate_id, *, choice, answered_by, verified_human, defaulted
+        self, conn, subject, gate_id, *, choice, answered_by, verified_human, defaulted,
+        decision_id=None, evidence_entry_id=None,
     ) -> PrimitiveOutcome:
         primitive = Primitive.GATE
         if subject.schedule.gate_id != gate_id:
@@ -334,6 +336,8 @@ class GatePrimitives:
         if not defaulted and timeout_at is not None and now >= timeout_at:
             return PrimitiveOutcome.unknown(primitive, "approval_expired")
         if previous:
+            if decision_id and previous["payload"].get("decision_id") != decision_id:
+                return PrimitiveOutcome.unknown(primitive, "answer_immutable")
             if choice != previous["payload"]["choice"]:
                 return PrimitiveOutcome.unknown(primitive, "answer_immutable")
             return PrimitiveOutcome(
@@ -360,6 +364,8 @@ class GatePrimitives:
             "answered_by": answered_by,
             "answered_at": now,
             "defaulted": defaulted,
+            **({"decision_id": decision_id, "evidence_entry_id": evidence_entry_id}
+               if decision_id else {}),
         }
         await append_record_on(
             self.db,

@@ -3255,6 +3255,16 @@ class Orchestrator(
             # rows remain. Delay notices go through the currently bound outbox.
             await self._maintain_conversations(now=now)
 
+            # Only replay persisted approval intents; policy still creates the role task.
+            if self._command_handler is not None:
+                try:
+                    from src.commands.principal import ExecutionPrincipal, principal_context
+
+                    with principal_context(ExecutionPrincipal.service("spec-ingest-reconcile")):
+                        await self._command_handler.execute("spec_ingest_reconcile", {})
+                except Exception:
+                    logger.warning("Spec ingestion dispatch retry failed", exc_info=True)
+
             # 10. Auto-archive stale terminal tasks (~once per hour).
             await self._auto_archive_tasks()
 

@@ -48,6 +48,11 @@ from .approve_pull_request_api_reviews_pull_requests_task_id_approve_post_respon
 )
 from .approve_pull_request_request import ApprovePullRequestRequest
 from .approve_pull_request_response_422 import ApprovePullRequestResponse422
+from .approved_spec_packet_request import ApprovedSpecPacketRequest
+from .approved_spec_packet_response import ApprovedSpecPacketResponse
+from .approved_spec_packet_response_422 import ApprovedSpecPacketResponse422
+from .approved_spec_packet_response_feedback_item import ApprovedSpecPacketResponseFeedbackItem
+from .approved_spec_packet_response_packet import ApprovedSpecPacketResponsePacket
 from .archive_settings_request import ArchiveSettingsRequest
 from .archive_settings_response import ArchiveSettingsResponse
 from .archive_settings_response_422 import ArchiveSettingsResponse422
@@ -61,6 +66,22 @@ from .artifact_ref_dto import ArtifactRefDTO
 from .artifact_verify_request import ArtifactVerifyRequest
 from .artifact_verify_response import ArtifactVerifyResponse
 from .artifact_verify_response_422 import ArtifactVerifyResponse422
+from .ask_decide_request import AskDecideRequest
+from .ask_decide_request_expected import AskDecideRequestExpected
+from .ask_decide_response_422 import AskDecideResponse422
+from .ask_decision_response import AskDecisionResponse
+from .ask_decision_response_receipt_type_0 import AskDecisionResponseReceiptType0
+from .ask_prepare_decision_request import AskPrepareDecisionRequest
+from .ask_prepare_decision_request_expected import AskPrepareDecisionRequestExpected
+from .ask_prepare_decision_response_422 import AskPrepareDecisionResponse422
+from .ask_prepare_response import AskPrepareResponse
+from .ask_preview import AskPreview
+from .ask_preview_packet import AskPreviewPacket
+from .ask_retry_operation_request import AskRetryOperationRequest
+from .ask_retry_operation_response_422 import AskRetryOperationResponse422
+from .ask_source_record import AskSourceRecord
+from .ask_source_record_context import AskSourceRecordContext
+from .ask_version import AskVersion
 from .assignment_route_detail import AssignmentRouteDetail
 from .assignment_route_detail_override_type_0 import AssignmentRouteDetailOverrideType0
 from .benchmark_stage_record_request import BenchmarkStageRecordRequest
@@ -330,6 +351,8 @@ from .effect_clause_dto import EffectClauseDTO
 from .effect_clause_dto_kind import EffectClauseDTOKind
 from .effective_git_identity import EffectiveGitIdentity
 from .effective_git_identity_source import EffectiveGitIdentitySource
+from .ensure_spec_ingest_request import EnsureSpecIngestRequest
+from .ensure_spec_ingest_response_422 import EnsureSpecIngestResponse422
 from .ensure_task_request import EnsureTaskRequest
 from .ensure_task_response import EnsureTaskResponse
 from .ensure_task_response_422 import EnsureTaskResponse422
@@ -344,8 +367,9 @@ from .escalation_action import EscalationAction
 from .escalation_action_parameters import EscalationActionParameters
 from .escalation_action_result_type_0 import EscalationActionResultType0
 from .escalation_apply_reply_request import EscalationApplyReplyRequest
+from .escalation_apply_reply_request_expected_type_0 import EscalationApplyReplyRequestExpectedType0
 from .escalation_apply_reply_response import EscalationApplyReplyResponse
-from .escalation_apply_reply_response_action_result_type_0 import EscalationApplyReplyResponseActionResultType0
+from .escalation_apply_reply_response_receipt_type_0 import EscalationApplyReplyResponseReceiptType0
 from .escalation_create_request import EscalationCreateRequest
 from .escalation_create_response import EscalationCreateResponse
 from .escalation_delivery import EscalationDelivery
@@ -426,14 +450,21 @@ from .formula_summary import FormulaSummary
 from .formula_summary_vars import FormulaSummaryVars
 from .gate_create_payload import GateCreatePayload
 from .gate_create_request import GateCreateRequest
+from .gate_create_request_human_request_type_0 import GateCreateRequestHumanRequestType0
 from .gate_create_response import GateCreateResponse
 from .gate_create_response_422 import GateCreateResponse422
 from .gate_list_request import GateListRequest
 from .gate_list_response import GateListResponse
 from .gate_list_response_422 import GateListResponse422
+from .gate_reopen_request import GateReopenRequest
+from .gate_reopen_request_expected import GateReopenRequestExpected
+from .gate_reopen_response import GateReopenResponse
+from .gate_reopen_response_422 import GateReopenResponse422
 from .gate_resolve_request import GateResolveRequest
+from .gate_resolve_request_expected_type_0 import GateResolveRequestExpectedType0
 from .gate_resolve_response import GateResolveResponse
 from .gate_resolve_response_422 import GateResolveResponse422
+from .gate_resolve_response_receipt_type_0 import GateResolveResponseReceiptType0
 from .gate_show_request import GateShowRequest
 from .gate_show_response import GateShowResponse
 from .gate_show_response_422 import GateShowResponse422
@@ -1454,8 +1485,10 @@ from .restart_task_request import RestartTaskRequest
 from .restart_task_response import RestartTaskResponse
 from .restart_task_response_422 import RestartTaskResponse422
 from .resume_playbook_request import ResumePlaybookRequest
+from .resume_playbook_request_expected_type_0 import ResumePlaybookRequestExpectedType0
 from .resume_playbook_response import ResumePlaybookResponse
 from .resume_playbook_response_422 import ResumePlaybookResponse422
+from .resume_playbook_response_receipt_type_0 import ResumePlaybookResponseReceiptType0
 from .resume_project_request import ResumeProjectRequest
 from .resume_project_response import ResumeProjectResponse
 from .resume_project_response_422 import ResumeProjectResponse422
@@ -1474,6 +1507,7 @@ from .review_comment_request import ReviewCommentRequest
 from .review_comment_response import ReviewCommentResponse
 from .review_comment_response_422 import ReviewCommentResponse422
 from .review_decide_request import ReviewDecideRequest
+from .review_decide_request_expected_type_0 import ReviewDecideRequestExpectedType0
 from .review_decide_response import ReviewDecideResponse
 from .review_decide_response_422 import ReviewDecideResponse422
 from .review_decide_response_playbook_type_0 import ReviewDecideResponsePlaybookType0
@@ -1484,6 +1518,9 @@ from .review_dispatch_request import ReviewDispatchRequest
 from .review_dispatch_response import ReviewDispatchResponse
 from .review_dispatch_response_422 import ReviewDispatchResponse422
 from .review_dispatch_response_dispatches_item import ReviewDispatchResponseDispatchesItem
+from .review_feedback_complete_request import ReviewFeedbackCompleteRequest
+from .review_feedback_complete_response import ReviewFeedbackCompleteResponse
+from .review_feedback_complete_response_422 import ReviewFeedbackCompleteResponse422
 from .review_import_edits_request import ReviewImportEditsRequest
 from .review_import_edits_response import ReviewImportEditsResponse
 from .review_import_edits_response_422 import ReviewImportEditsResponse422
@@ -1643,6 +1680,14 @@ from .source_scan import SourceScan
 from .spec_approve_request import SpecApproveRequest
 from .spec_approve_response import SpecApproveResponse
 from .spec_approve_response_422 import SpecApproveResponse422
+from .spec_ingest_legacy_inventory_request import SpecIngestLegacyInventoryRequest
+from .spec_ingest_legacy_inventory_response import SpecIngestLegacyInventoryResponse
+from .spec_ingest_legacy_inventory_response_422 import SpecIngestLegacyInventoryResponse422
+from .spec_ingest_legacy_inventory_response_assignments_item import SpecIngestLegacyInventoryResponseAssignmentsItem
+from .spec_ingest_reconcile_request import SpecIngestReconcileRequest
+from .spec_ingest_reconcile_response import SpecIngestReconcileResponse
+from .spec_ingest_reconcile_response_422 import SpecIngestReconcileResponse422
+from .spec_ingest_reconcile_response_errors_item import SpecIngestReconcileResponseErrorsItem
 from .stall_metrics import StallMetrics
 from .start_agent_terminal_request import StartAgentTerminalRequest
 from .start_agent_terminal_response_422 import StartAgentTerminalResponse422
@@ -1954,6 +1999,11 @@ __all__ = (
     "AppendNoteRequest",
     "AppendNoteResponse",
     "AppendNoteResponse422",
+    "ApprovedSpecPacketRequest",
+    "ApprovedSpecPacketResponse",
+    "ApprovedSpecPacketResponse422",
+    "ApprovedSpecPacketResponseFeedbackItem",
+    "ApprovedSpecPacketResponsePacket",
     "ApprovePendingPullRequestRequest",
     "ApprovePullRequestApiReviewsPullRequestsTaskIdApprovePostResponseApprovePullRequestApiReviewsPullRequestsTaskIdApprovePost",
     "ApprovePullRequestRequest",
@@ -1971,6 +2021,22 @@ __all__ = (
     "ArtifactVerifyRequest",
     "ArtifactVerifyResponse",
     "ArtifactVerifyResponse422",
+    "AskDecideRequest",
+    "AskDecideRequestExpected",
+    "AskDecideResponse422",
+    "AskDecisionResponse",
+    "AskDecisionResponseReceiptType0",
+    "AskPrepareDecisionRequest",
+    "AskPrepareDecisionRequestExpected",
+    "AskPrepareDecisionResponse422",
+    "AskPrepareResponse",
+    "AskPreview",
+    "AskPreviewPacket",
+    "AskRetryOperationRequest",
+    "AskRetryOperationResponse422",
+    "AskSourceRecord",
+    "AskSourceRecordContext",
+    "AskVersion",
     "AssignmentRouteDetail",
     "AssignmentRouteDetailOverrideType0",
     "BenchmarkStageRecordRequest",
@@ -2238,6 +2304,8 @@ __all__ = (
     "EffectClauseDTOKind",
     "EffectiveGitIdentity",
     "EffectiveGitIdentitySource",
+    "EnsureSpecIngestRequest",
+    "EnsureSpecIngestResponse422",
     "EnsureTaskRequest",
     "EnsureTaskResponse",
     "EnsureTaskResponse422",
@@ -2252,8 +2320,9 @@ __all__ = (
     "EscalationActionParameters",
     "EscalationActionResultType0",
     "EscalationApplyReplyRequest",
+    "EscalationApplyReplyRequestExpectedType0",
     "EscalationApplyReplyResponse",
-    "EscalationApplyReplyResponseActionResultType0",
+    "EscalationApplyReplyResponseReceiptType0",
     "EscalationCreateRequest",
     "EscalationCreateResponse",
     "EscalationDelivery",
@@ -2334,14 +2403,21 @@ __all__ = (
     "FormulaSummaryVars",
     "GateCreatePayload",
     "GateCreateRequest",
+    "GateCreateRequestHumanRequestType0",
     "GateCreateResponse",
     "GateCreateResponse422",
     "GateListRequest",
     "GateListResponse",
     "GateListResponse422",
+    "GateReopenRequest",
+    "GateReopenRequestExpected",
+    "GateReopenResponse",
+    "GateReopenResponse422",
     "GateResolveRequest",
+    "GateResolveRequestExpectedType0",
     "GateResolveResponse",
     "GateResolveResponse422",
+    "GateResolveResponseReceiptType0",
     "GateShowRequest",
     "GateShowResponse",
     "GateShowResponse422",
@@ -3352,8 +3428,10 @@ __all__ = (
     "RestartTaskResponse",
     "RestartTaskResponse422",
     "ResumePlaybookRequest",
+    "ResumePlaybookRequestExpectedType0",
     "ResumePlaybookResponse",
     "ResumePlaybookResponse422",
+    "ResumePlaybookResponseReceiptType0",
     "ResumeProjectRequest",
     "ResumeProjectResponse",
     "ResumeProjectResponse422",
@@ -3372,6 +3450,7 @@ __all__ = (
     "ReviewCommentResponse",
     "ReviewCommentResponse422",
     "ReviewDecideRequest",
+    "ReviewDecideRequestExpectedType0",
     "ReviewDecideResponse",
     "ReviewDecideResponse422",
     "ReviewDecideResponsePlaybookType0",
@@ -3382,6 +3461,9 @@ __all__ = (
     "ReviewDispatchResponse",
     "ReviewDispatchResponse422",
     "ReviewDispatchResponseDispatchesItem",
+    "ReviewFeedbackCompleteRequest",
+    "ReviewFeedbackCompleteResponse",
+    "ReviewFeedbackCompleteResponse422",
     "ReviewImportEditsRequest",
     "ReviewImportEditsResponse",
     "ReviewImportEditsResponse422",
@@ -3541,6 +3623,14 @@ __all__ = (
     "SpecApproveRequest",
     "SpecApproveResponse",
     "SpecApproveResponse422",
+    "SpecIngestLegacyInventoryRequest",
+    "SpecIngestLegacyInventoryResponse",
+    "SpecIngestLegacyInventoryResponse422",
+    "SpecIngestLegacyInventoryResponseAssignmentsItem",
+    "SpecIngestReconcileRequest",
+    "SpecIngestReconcileResponse",
+    "SpecIngestReconcileResponse422",
+    "SpecIngestReconcileResponseErrorsItem",
     "StallMetrics",
     "StartAgentTerminalRequest",
     "StartAgentTerminalResponse422",

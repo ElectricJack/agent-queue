@@ -117,6 +117,8 @@ EXPECTED_AGENT_COMMANDS = {
     "review_withdraw",
     "review_reopen",
     "review_comment",
+    # Workers record completion evidence for feedback on their held task.
+    "review_feedback_complete",
     "review_attachment_add",
     "review_attachment_list",
     "report_get",

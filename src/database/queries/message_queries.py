@@ -77,6 +77,7 @@ class MessageQueriesMixin:
         reply_to_id: str | None = None,
         body_kind: str | None = None,
         pane_open: str | None = None,
+        conn=None,
     ) -> Message:
         """Insert one message row and return the materialised dataclass."""
         msg = Message(
@@ -96,7 +97,7 @@ class MessageQueriesMixin:
             body_kind=body_kind,
             pane_open=pane_open,
         )
-        async with self._engine.begin() as conn:
+        async def write(conn):
             result = await conn.execute(
                 insert(messages).values(
                     id=msg.id,
@@ -121,6 +122,11 @@ class MessageQueriesMixin:
                 ).returning(messages.c.created_seq)
             )
             msg.created_seq = result.scalar_one()
+        if conn is None:
+            async with self._engine.begin() as owned:
+                await write(owned)
+        else:
+            await write(conn)
         return msg
 
     async def get_message(self, message_id: str) -> Message | None:

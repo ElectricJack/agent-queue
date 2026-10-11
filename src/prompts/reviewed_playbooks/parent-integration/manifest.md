@@ -1,8 +1,8 @@
 ---
 playbook_id: parent-integration
-artifact_sha256: sha256:a7455b7c3a2d2bdca62365e6d1d7f4ebe158a47aa0db5009812b8294349ddacd
+artifact_sha256: sha256:11c271c5d8c5db84ea43bf61dd5609ce702d39eaadcfc2ff70b4db03cf7da992
 source_sha256: sha256:7dcad46a111fc4f0c9eae94ca3b57ed44252212c236f934aafa2957e7d4de13c
-contract_fingerprint: sha256:a4b6e09f12c8c3111b1987f4d09fd86c45b973a1cc83b9d689f566d4e937b4c0
+contract_fingerprint: sha256:38729405995357c816ceaa7c46825b437ec99ff83a57b3f8bd8f10897505f442
 questions_resolved: 0
 capabilities_granted:
   aq_commands:

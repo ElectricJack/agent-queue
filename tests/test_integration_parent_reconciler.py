@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import delete, insert, select, update
 
-from src.commands.gate_commands import GateCommandsMixin
-from src.commands.integration_commands import IntegrationCommandsMixin
+from src.commands.handler import CommandHandler
+from src.config import AppConfig
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database import tables as t
 from src.git.manager import GitManager
@@ -79,16 +79,21 @@ class ContainerSweep(MonitoringMixin):
         self.db = db
 
 
-class Commands(IntegrationCommandsMixin, GateCommandsMixin):
+class Commands(CommandHandler):
     """Real command bodies with deterministic, explicitly authorized test dispatch."""
 
     def __init__(self, db, hierarchy, promotion=None):
-        self.db, self.hierarchy, self.promotion = db, hierarchy, promotion
-        self.orchestrator = SimpleNamespace(parent_subject_runtime=None)
+        super().__init__(
+            SimpleNamespace(db=db, parent_subject_runtime=None, bus=SimpleNamespace(emit=AsyncMock())),
+            AppConfig(),
+        )
+        self.hierarchy, self.promotion = hierarchy, promotion
         self.calls = []
 
     async def execute(self, name, args):
         self.calls.append(name)
+        if name.startswith(("gate_", "ask_")):
+            return await super().execute(name, args)
         return await getattr(self, "_cmd_" + name)(args)
 
     async def _integration_delivery_authorized(self, *args, **kwargs):
@@ -102,6 +107,18 @@ class Commands(IntegrationCommandsMixin, GateCommandsMixin):
 
     def _integration_repair_service(self):
         return SimpleNamespace(dispatch=AsyncMock())
+
+
+async def gate_decision(commands, gate_id, choice):
+    gate = await commands.db.get_gate(gate_id)
+    ask = await commands._publish_source_ask(await commands._gate_ask_source(gate))
+    intent = {"ask_id": ask["id"], "option_key": choice, "expected": {
+        key: ask[key] for key in ("decision_generation", "source_fingerprint", "feedback_version")
+    }}
+    prepared = await commands.execute("ask_prepare_decision", intent)
+    assert prepared["success"], prepared
+    return {"gate_id": gate_id, "option_key": choice, "expected": intent["expected"],
+            "preview_id": prepared["preview"]["id"], "idempotency_key": f"{gate_id}:{choice}"}
 
 
 async def setup(
@@ -393,10 +410,12 @@ async def test_human_gate_hold_is_durable_and_agent_cannot_spoof_resolution(db):
     env = await setup(db, hierarchy)
     await visit(env)
     gate_id = (await db.get_integration_subject(env.subject.id))["gate_id"]
-    args = {"gate_id": gate_id, "resolved_by": "human:spoof", "resolution": "hold"}
+    args = await gate_decision(env.commands, gate_id, "hold")
     with principal_context(ExecutionPrincipal(kind=PrincipalKind.SERVICE, policy=DENY_ALL)):
         rejected = await env.commands.execute("gate_resolve", args)
     assert not rejected["success"]
+    spoof = await env.commands.execute("gate_resolve", {**args, "resolved_by": "human:spoof"})
+    assert spoof["error_code"] == "ask.not_decider"
     answer = await env.commands.execute("gate_resolve", args)
     assert answer["success"]
     # The failure can disappear without clearing the human's hold.
@@ -1266,7 +1285,7 @@ async def held_parent(db, *, answer="hold"):
     gate_id = row["gate_id"]
     if answer:
         result = await env.commands.execute(
-            "gate_resolve", {"gate_id": gate_id, "resolution": answer, "resolved_by": "fixture"},
+            "gate_resolve", await gate_decision(env.commands, gate_id, answer),
         )
         assert result["success"], result
     row = await db.get_integration_subject(env.subject.id)
@@ -1287,7 +1306,7 @@ async def test_release_held_gate_resumes_after_restart_without_rewriting_answer(
     # Ordinary resolution still cannot revise a hold into approval.
     assert (await env.commands.execute("gate_resolve", {
         "gate_id": request["gate_id"], "resolution": "retry", "resolved_by": "fixture",
-    }))["reason"] == "answer_immutable"
+    }))["error_code"] == "ask.context_missing"
     preview = await env.commands.execute(
         "integration_release_held_gate", {**request, "dry_run": True},
     )
@@ -1320,7 +1339,8 @@ async def test_release_held_gate_resumes_after_restart_without_rewriting_answer(
     old_answer = await env.commands.execute("gate_resolve", {
         "gate_id": request["gate_id"], "resolution": "retry", "resolved_by": "fixture",
     })
-    assert old_answer["reason"] == "gate_not_current"
+    assert not old_answer["success"]
+    assert old_answer["error_code"] in {"ask.stale_source", "ask.context_missing"}
 
 
 
@@ -1392,9 +1412,9 @@ async def test_release_held_gate_cannot_lift_a_rejection(db, choice):
                               no_default=True),
     )
     gate_id = gate.detail["gate_id"]
-    assert (await env.commands.execute("gate_resolve", {
-        "gate_id": gate_id, "resolution": choice, "resolved_by": "fixture",
-    }))["success"]
+    assert (await env.commands.execute(
+        "gate_resolve", await gate_decision(env.commands, gate_id, choice),
+    ))["success"]
     row = await db.get_integration_subject(env.subject.id)
     result = await env.commands.execute("integration_release_held_gate", {
         "subject_id": row["id"], "gate_id": gate_id, "expected_version": row["version"],
