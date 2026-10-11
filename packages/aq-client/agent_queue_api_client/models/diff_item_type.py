@@ -4,6 +4,7 @@ from enum import Enum
 class DiffItemType(str, Enum):
     AGENT_SETTINGS = "agent_settings"
     CI_TEST = "ci_test"
+    INTEGRATION_SETTINGS = "integration_settings"
     PLAYBOOK = "playbook"
     PROMOTION_FLOW = "promotion_flow"
     ROUTING = "routing"

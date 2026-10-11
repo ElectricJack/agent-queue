@@ -1505,9 +1505,8 @@ def ensure_default_playbooks(data_dir: str) -> dict:
     first use by the :class:`~src.playbooks.compiler.PlaybookCompiler`.
 
     The bundled set includes the default review and assignment policies, the
-    blocked-task escalation (a ``task.failed`` with ``status: BLOCKED``
-    messages the project supervisor to read the session log tail), and the
-    provider-usage probe. Retired playbooks are deliberately absent, so a
+    supervisor failure triage and the provider-usage probe. Retired sources
+    may remain in the package for audit but are excluded from seeding, so a
     restart cannot reseed them after their catalog entry is deleted. The
     directory is discovered mechanically so adding a reviewed source does not
     require a second production inventory.
@@ -1537,6 +1536,10 @@ def ensure_default_playbooks(data_dir: str) -> dict:
 
     for filename in sorted(os.listdir(defaults_dir)):
         if not filename.endswith(".md"):
+            continue
+        if filename in {
+            "blocked-task-escalation.md", "supervisor-digest.md", "supervisor-hourly-report.md",
+        }:
             continue
         src_path = os.path.join(defaults_dir, filename)
         dst_path = os.path.join(playbooks_dir, filename)

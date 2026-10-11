@@ -12,7 +12,7 @@ class PolicyFilePreview(BaseModel):
 
 class PolicyExportWarning(BaseModel):
     item_id: str
-    playbook_id: str
+    playbook_id: str | None = None
     message: str
 
 
@@ -45,6 +45,7 @@ class PolicyApplyResponse(BaseModel):
     applied: list[str]
     reviews: list[PolicyReviewReceipt] = []
     pending_configuration: list[str] = []
+    configured_integration: list[str] = []
     activated: bool = False
     items: list[DiffItem]
 

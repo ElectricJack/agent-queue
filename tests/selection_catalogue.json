@@ -12945,7 +12945,7 @@
         "policy-profiles"
       ],
       "default_arm": true,
-      "digest": "sha256:c2fdc3f46f019471cf0bbbfeb7f9a00f2d3f3e2415bbd047b8e36e1ccb63ae62",
+      "digest": "sha256:62171f0055eb71ec7377e4656bc21bbf303ef574161d1b6d42d58cd9993b080d",
       "imports": [
         "src.api",
         "src.api.app",
@@ -12956,6 +12956,7 @@
         "src.doctor.models",
         "src.doctor.playbook_v2_checks",
         "src.event_bus",
+        "src.integration.models",
         "src.integration.promotion_steps",
         "src.models",
         "src.playbooks.artifact_store",
@@ -17993,14 +17994,16 @@
         "vault"
       ],
       "default_arm": true,
-      "digest": "sha256:df5132555656da1440e1f1bb7080a0a39117fd92927be745294ad2c48f07c46f",
+      "digest": "sha256:e0896cc27ebc4f12015e4dc2b014111e9685578bdc5887088f0d7e6c1888a08e",
       "imports": [
         "src.playbooks.required",
         "src.profiles.capabilities",
         "src.profiles.parser",
         "src.vault"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Tests for vault directory structure initialization (vault spec §2)"
     },
     "tests/test_vault_glossary.py": {

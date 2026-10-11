@@ -203,8 +203,11 @@ inside the 600-character digest budget and appends the needs-you link to. A
 window with no new facts and nothing waiting on Jack is skipped; after
 `quiet_line_after_skips` such windows one line is posted per local day, so
 silence stays distinguishable from a dead bot. Authoring also requires the
-`supervisor-digest` playbook, which is shipped disabled and activated by the
-operator; without it every window falls back.
+`supervisor-digest` playbook, whose historical reviewed bundle remains available
+for explicit operator import and activation; without it every window falls back.
+Its retired source is no longer seeded into `system/playbooks`, nor are
+`supervisor-hourly-report` and `blocked-task-escalation`. Startup preserves existing
+operator copies and does not recreate deleted sources.
 `escalation.mention_user_ids`, `mention_role_ids`, and `channel_id` use
 numeric Discord IDs.
 

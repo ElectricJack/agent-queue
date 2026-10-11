@@ -8,6 +8,8 @@ import hashlib
 from pathlib import Path
 import time
 
+import pytest
+
 import src.vault as vault_module
 from src.vault import (
     SUPERVISOR_PROFILE,
@@ -935,10 +937,8 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     """A clean install creates the minimal default playbook set.
 
     The control-plane `default-pipeline.md` and `default-assignment-routing.md`,
-    blocked-task escalation, provider failover, provider usage, and supervisor
-    failure triage ship installed by default, as do the optional, disabled
-    `morning-report.md`, `supervisor-hourly-report.md` and `supervisor-digest.md`
-    report sources (docs/specs/config.md, docs/guides/supervisor-hourly-reports.md).
+    provider failover, provider usage, and supervisor failure triage ship installed
+    by default, as does the optional, disabled `morning-report.md` source.
     Retired
     playbooks must stay absent so bootstrap cannot recreate a catalog entry that
     an operator deleted.
@@ -947,15 +947,12 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
 
     playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
     expected_files = [
-        "blocked-task-escalation.md",
         "default-assignment-routing.md",
         "default-pipeline.md",
         "morning-report.md",
         "provider-failover.md",
         "provider-usage-probe.md",
-        "supervisor-digest.md",
         "supervisor-failure-triage.md",
-        "supervisor-hourly-report.md",
     ]
 
     # All expected files must exist on disk
@@ -974,7 +971,7 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
 def test_ensure_default_playbooks_installs_report_playbooks_disabled(tmp_path):
     """The report playbooks install as disabled sources and are never auto-activated.
 
-    Both are optional policies the operator imports and activates explicitly
+    Reports are optional policies the operator imports and activates explicitly
     (docs/specs/config.md, docs/guides/supervisor-hourly-reports.md), so the
     shipped source says ``enabled: false`` and neither id is a required or
     first-start default activation.
@@ -989,13 +986,28 @@ def test_ensure_default_playbooks_installs_report_playbooks_disabled(tmp_path):
     ensure_default_playbooks(str(tmp_path))
 
     playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
-    for playbook_id in ("morning-report", "supervisor-hourly-report"):
+    for playbook_id in ("morning-report",):
         content = (playbooks_dir / f"{playbook_id}.md").read_text(encoding="utf-8")
         frontmatter = yaml.safe_load(content.split("---", 2)[1])
         assert frontmatter["id"] == playbook_id
         assert frontmatter["enabled"] is False, f"{playbook_id} must ship disabled"
         assert playbook_id not in REQUIRED_SYSTEM_PLAYBOOK_IDS
         assert playbook_id not in DEFAULT_SYSTEM_PLAYBOOK_IDS
+
+
+@pytest.mark.parametrize("identifier", [
+    "blocked-task-escalation", "supervisor-digest", "supervisor-hourly-report",
+])
+def test_retired_playbook_sources_are_preserved_but_never_reseeded(tmp_path, identifier):
+    path = tmp_path / "vault/system/playbooks" / f"{identifier}.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("operator custom source")
+    ensure_default_playbooks(str(tmp_path))
+    assert path.read_text() == "operator custom source"
+    path.unlink()
+    ensure_default_playbooks(str(tmp_path))
+    ensure_default_playbooks(str(tmp_path))
+    assert not path.exists()
 
 
 def test_ensure_default_playbooks_idempotent(tmp_path):

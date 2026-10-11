@@ -29163,7 +29163,8 @@
               "promotion_flow",
               "ci_test",
               "routing",
-              "template"
+              "template",
+              "integration_settings"
             ],
             "title": "Type"
           },
@@ -29231,7 +29232,8 @@
               "copy",
               "pending review",
               "pending configuration",
-              "system template"
+              "system template",
+              "configure integration"
             ],
             "title": "State",
             "default": "copy"
@@ -40039,6 +40041,97 @@
         ],
         "title": "InstallProfileResponse"
       },
+      "IntegrationSettings": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "integration_settings",
+            "title": "Type",
+            "default": "integration_settings"
+          },
+          "version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Version",
+            "default": 1
+          },
+          "engine": {
+            "type": "string",
+            "enum": [
+              "shadow",
+              "active"
+            ],
+            "title": "Engine"
+          },
+          "integration_mode": {
+            "type": "string",
+            "const": "pull_request",
+            "title": "Integration Mode",
+            "default": "pull_request"
+          },
+          "hierarchical_integration_mode": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "observe",
+              "hierarchy",
+              "train"
+            ],
+            "title": "Hierarchical Integration Mode"
+          },
+          "integration_repository_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Repository Id"
+          },
+          "default_branch": {
+            "type": "string",
+            "title": "Default Branch"
+          },
+          "policy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy"
+          },
+          "promotion_flow": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promotion Flow"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "engine",
+          "hierarchical_integration_mode",
+          "default_branch"
+        ],
+        "title": "IntegrationSettings",
+        "description": "Portable inputs, never a source installation's activation identities."
+      },
       "IntelligenceClassModel": {
         "properties": {
           "id": {
@@ -40205,7 +40298,8 @@
               "promotion_flow",
               "ci_test",
               "routing",
-              "template"
+              "template",
+              "integration_settings"
             ],
             "title": "Type"
           },
@@ -40241,6 +40335,9 @@
               },
               {
                 "$ref": "#/components/schemas/TemplatePolicy"
+              },
+              {
+                "$ref": "#/components/schemas/IntegrationSettings"
               }
             ],
             "title": "Payload",
@@ -40249,6 +40346,7 @@
               "mapping": {
                 "agent_settings": "#/components/schemas/PolicyAgentSettings",
                 "ci_test": "#/components/schemas/CITestPolicy",
+                "integration_settings": "#/components/schemas/IntegrationSettings",
                 "playbook": "#/components/schemas/PlaybookPolicy",
                 "promotion_flow": "#/components/schemas/PromotionPolicy",
                 "routing": "#/components/schemas/RoutingPreferences",
@@ -53736,6 +53834,14 @@
             "title": "Pending Configuration",
             "default": []
           },
+          "configured_integration": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Configured Integration",
+            "default": []
+          },
           "activated": {
             "type": "boolean",
             "title": "Activated",
@@ -53861,7 +53967,14 @@
             "title": "Item Id"
           },
           "playbook_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Playbook Id"
           },
           "message": {
@@ -53872,7 +53985,6 @@
         "type": "object",
         "required": [
           "item_id",
-          "playbook_id",
           "message"
         ],
         "title": "PolicyExportWarning"

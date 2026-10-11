@@ -663,6 +663,11 @@ from .inspect_playbook_run_response_trigger_event import InspectPlaybookRunRespo
 from .install_profile_request import InstallProfileRequest
 from .install_profile_response import InstallProfileResponse
 from .install_profile_response_422 import InstallProfileResponse422
+from .integration_settings import IntegrationSettings
+from .integration_settings_engine import IntegrationSettingsEngine
+from .integration_settings_hierarchical_integration_mode import IntegrationSettingsHierarchicalIntegrationMode
+from .integration_settings_policy_type_0 import IntegrationSettingsPolicyType0
+from .integration_settings_promotion_flow_type_0_item import IntegrationSettingsPromotionFlowType0Item
 from .intelligence_class_model import IntelligenceClassModel
 from .intelligence_class_model_mapping import IntelligenceClassModelMapping
 from .intelligence_class_reference import IntelligenceClassReference
@@ -2567,6 +2572,11 @@ __all__ = (
     "InstallProfileRequest",
     "InstallProfileResponse",
     "InstallProfileResponse422",
+    "IntegrationSettings",
+    "IntegrationSettingsEngine",
+    "IntegrationSettingsHierarchicalIntegrationMode",
+    "IntegrationSettingsPolicyType0",
+    "IntegrationSettingsPromotionFlowType0Item",
     "IntelligenceClassModel",
     "IntelligenceClassModelMapping",
     "IntelligenceClassReference",

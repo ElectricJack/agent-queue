@@ -47,7 +47,15 @@ export function PolicyDialog({ projectId, mode = "import", onClose }: {
 
   async function run(action: () => Promise<void>) {
     setError(null);
-    try { await action(); } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    try { await action(); } catch (err) {
+      let message = err instanceof Error ? err.message : String(err);
+      const payload = (err as { payload?: { configured_integration?: string[] } })?.payload;
+      if (payload?.configured_integration?.length) {
+        message += ` ${payload.configured_integration.length} integration settings already applied. Update the preview before retrying.`;
+        setDirty(true);
+      }
+      setError(message);
+    }
   }
 
   async function refresh(next: ImportRequest) {
@@ -72,7 +80,7 @@ export function PolicyDialog({ projectId, mode = "import", onClose }: {
       expected_checksum: row.current_checksum,
     }]));
     const result = await applyPolicy.mutateAsync({ ...request, selections });
-    setReceipt(`Imported ${result.applied.length} items. ${result.reviews?.length ?? 0} pending review; ${result.pending_configuration?.length ?? 0} pending configuration. No playbooks activated.`);
+    setReceipt(`Imported ${result.applied.length} items. ${result.reviews?.length ?? 0} pending review; ${result.pending_configuration?.length ?? 0} pending configuration. ${result.configured_integration?.length ?? 0} integration settings applied. No playbooks activated.`);
   }
 
   function download() {
@@ -123,7 +131,7 @@ export function PolicyDialog({ projectId, mode = "import", onClose }: {
               setRequest({ ...request, values: { ...request.values, [placeholder.name]: event.target.value } }); setDirty(true);
             }} />
           </label>)}
-          <p className="text-sm text-gray-400">System items need an explicit placement. Select overwrites after reviewing their diff. Project agent settings, promotion flows and routing bindings remain inactive drafts; configure profiles globally and flows through project configuration when ready; playbooks require review and activation.</p>
+          <p className="text-sm text-gray-400">System items need an explicit placement. Select overwrites after reviewing their diff. Integration settings placed in the project configure its active train and promotion flow after validation; global placement saves a template. Skip this item to keep the current integration settings. Other agent settings, promotion flows and routing bindings remain inactive drafts; playbooks require review and activation.</p>
           {[...new Set(preview.items.map(row => row.type))].sort().map(type => <fieldset key={type} className="space-y-3 rounded border border-gray-700 p-3">
             <legend className="px-1 font-medium">{type.replace(/_/g, " ")}</legend>
             {preview.items.filter(row => row.type === type).map(row => <div key={row.id} className="space-y-2">
