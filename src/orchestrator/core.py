@@ -92,6 +92,7 @@ from src.messaging.types import (
     ThreadSendCallback as _ThreadSendCallbackType,
 )
 from src.models import (
+    DAEMON_AUTHORED_TASK_TYPES,
     AgentProfile,
     AgentState,
     RepoSourceType,
@@ -2675,6 +2676,17 @@ class Orchestrator(
         for t in tasks:
             if t.id in skip_task_ids:
                 logger.info("Recovery: task '%s' kept IN_PROGRESS — its session was adopted", t.id)
+                continue
+            if getattr(t.task_type, "value", t.task_type) in DAEMON_AUTHORED_TASK_TYPES:
+                # Promotion/backmerge intents are daemon-authored: no agent
+                # ever holds them, the train drives them, and StepAdmission
+                # requires them IN_PROGRESS with no profile.  Resetting one
+                # to READY hands it to the router and strands the promotion.
+                logger.info(
+                    "Recovery: leaving daemon-authored %s task '%s' IN_PROGRESS",
+                    getattr(t.task_type, "value", t.task_type),
+                    t.id,
+                )
                 continue
             if await self.db.get_subtasks(t.id):
                 logger.info(
