@@ -24,6 +24,7 @@ from sqlalchemy import (
     Identity,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     PrimaryKeyConstraint,
     SmallInteger,
@@ -37,6 +38,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 
+from src.asks.schema import register_ask_schema_events
 from src.records.schema import register_record_schema_events
 
 metadata = MetaData()
@@ -747,6 +749,8 @@ gates = Table(
     Column("gate_type", Text, nullable=False),  # one of GATE_TYPES
     Column("title", Text, nullable=False),
     Column("question", Text, nullable=False, server_default=""),
+    # Producer-owned semantics and source receipt; never supplied by a decider.
+    Column("human_request", JSONB, nullable=True),
     Column("await_id", Text, nullable=True),
     Column("timeout_at", Float, nullable=True),
     Column("status", Text, nullable=False, server_default="open"),
@@ -837,6 +841,12 @@ doc_reviews = Table(
     Column("title", Text, nullable=False),
     Column("vault_path", Text, nullable=False),  # relative to the vault root
     Column("current_revision", Integer, nullable=False, server_default="1"),
+    Column("feedback_version", Integer, nullable=False, server_default="0"),
+    Column("decision_generation", Integer, nullable=False, server_default="1"),
+    Column("pending_decision_id", Text, ForeignKey(
+        "ask_decisions.id", name="fk_doc_reviews_pending_decision",
+        ondelete="RESTRICT", use_alter=True,
+    ), nullable=True),
     Column("state", Text, nullable=False),
     Column("gate_id", Text, nullable=True),
     Column("decider", Text, nullable=False, server_default="user"),
@@ -856,6 +866,8 @@ doc_reviews = Table(
     CheckConstraint(_in("state", DOC_REVIEW_STATES), name="ck_doc_reviews_state"),
     CheckConstraint(_in("decider", DOC_REVIEW_DECIDERS), name="ck_doc_reviews_decider"),
     CheckConstraint("current_revision >= 1", name="ck_doc_reviews_revision"),
+    CheckConstraint("feedback_version >= 0", name="ck_doc_reviews_feedback_version"),
+    CheckConstraint("decision_generation >= 1", name="ck_doc_reviews_decision_generation"),
     UniqueConstraint("vault_path", name="uq_doc_reviews_vault_path"),
     Index("idx_doc_reviews_project_state", "project_id", "state"),
     Index("idx_doc_reviews_author_task", "author_task_id"),
@@ -927,6 +939,10 @@ doc_review_comments = Table(
     Column("body", Text, nullable=False),
     Column("author", Text, nullable=False),  # principal label
     Column("resolved_in_revision", Integer, nullable=True),
+    Column("source_discussion_id", Text, ForeignKey(
+        "escalation_messages.id", name="fk_doc_review_comments_discussion", ondelete="RESTRICT",
+    ), nullable=True),
+    Column("responder_disposition", JSONB, nullable=True),
     Column("created_at", Float, nullable=False),
     # 1-based position within this review's comments, assigned at insert;
     # the creation order that survived a clock that hands out equal stamps.
@@ -1698,9 +1714,15 @@ escalation_messages = Table(
     Column(
         "escalation_id",
         Text,
-        ForeignKey("escalations.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("escalations.id", name="fk_escalation_messages_incident", ondelete="SET NULL"),
+        nullable=True,
     ),
+    Column("ask_id", Text, ForeignKey("human_asks.id", ondelete="RESTRICT"), nullable=True),
+    Column("input_id", Text, nullable=True),  # durable input identity; transport owns migration 92
+    Column("source_version", JSONB, nullable=True),
+    Column("entry_kind", Text, nullable=False, server_default="discussion"),
+    Column("reply_to_entry_id", Text, ForeignKey("escalation_messages.id", ondelete="RESTRICT"),
+           nullable=True),
     Column("direction", Text, nullable=False),
     Column("transport", Text, nullable=False),
     Column("verified_actor", Text, nullable=False),
@@ -1723,6 +1745,11 @@ escalation_messages = Table(
         "length(text) BETWEEN 1 AND 16000",
         name="ck_escalation_messages_text_length",
     ),
+    CheckConstraint(
+        "entry_kind IN ('discussion','formal_comment','decision_evidence',"
+        "'system_outcome','interpretation')", name="ck_escalation_messages_entry_kind",
+    ),
+    Index("idx_escalation_messages_ask", "ask_id", "created_at", "id"),
     Index(
         "idx_escalation_messages_history",
         "escalation_id",
@@ -1744,15 +1771,25 @@ escalation_actions = Table(
     Column(
         "escalation_id",
         Text,
-        ForeignKey("escalations.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("escalations.id", name="fk_escalation_actions_incident", ondelete="SET NULL"),
+        nullable=True,
     ),
     Column(
         "reply_id",
         Text,
         ForeignKey("escalation_messages.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
     ),
+    Column("ask_id", Text, ForeignKey("human_asks.id", ondelete="RESTRICT"), nullable=True),
+    Column("decision_id", Text, ForeignKey("ask_decisions.id", ondelete="RESTRICT"), nullable=True),
+    Column("operation_kind", Text, nullable=True),
+    Column("operation_key", Text, nullable=True),
+    Column("dependency_keys", JSONB, nullable=False, server_default="[]"),
+    Column("lease_owner", Text, nullable=True),
+    Column("lease_expires_at", Float, nullable=True),
+    Column("lease_generation", Integer, nullable=False, server_default="0"),
+    Column("retry_at", Float, nullable=True),
+    Column("receipt", JSONB, nullable=True),
     Column("idempotency_key", Text, nullable=False),
     Column("action_kind", Text, nullable=False),
     Column("target_id", Text, nullable=False),
@@ -1771,19 +1808,31 @@ escalation_actions = Table(
         name="uq_escalation_actions_idempotency",
     ),
     CheckConstraint(
-        "action_kind IN ('question_answer','gate_resolve','task_recover')",
+        "action_kind IN ('question_answer','gate_resolve','task_recover','ask_operation')",
         name="ck_escalation_actions_kind",
     ),
     CheckConstraint(
-        "status IN ('processing','succeeded','failed')",
+        "status IN ('pending','processing','succeeded','failed','unknown','cancelled')",
         name="ck_escalation_actions_status",
     ),
     CheckConstraint("started_revision >= 0", name="ck_escalation_actions_revision"),
     CheckConstraint(
-        "(status = 'processing' AND completed_at IS NULL AND outcome IS NULL) OR "
-        "(status <> 'processing' AND completed_at IS NOT NULL AND outcome IS NOT NULL)",
+        "(status IN ('pending','processing') AND completed_at IS NULL AND outcome IS NULL) OR "
+        "(status IN ('succeeded','failed','unknown','cancelled') "
+        "AND completed_at IS NOT NULL AND outcome IS NOT NULL)",
         name="ck_escalation_actions_completion",
     ),
+    UniqueConstraint("ask_id", "operation_key", name="uq_escalation_actions_operation"),
+    CheckConstraint(
+        "operation_kind IS NULL OR (ask_id IS NOT NULL AND operation_key IS NOT NULL)",
+        name="ck_escalation_actions_ask_operation",
+    ),
+    CheckConstraint("lease_generation >= 0", name="ck_escalation_actions_lease_generation"),
+    CheckConstraint(
+        "(lease_owner IS NULL) = (lease_expires_at IS NULL)",
+        name="ck_escalation_actions_lease",
+    ),
+    Index("idx_escalation_actions_ready", "status", "retry_at", "created_at"),
     Index("idx_escalation_actions_history", "escalation_id", "created_at", "id"),
 )
 
@@ -2666,6 +2715,8 @@ agent_questions = Table(
     Column("state", Text, nullable=False),
     Column("answer", Text),
     Column("answered_by", Text),
+    Column("ask_decision_id", Text),
+    Column("submission_state", Text, nullable=False, server_default="pending"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("source_ts", Float, nullable=False),
@@ -2690,6 +2741,8 @@ agent_questions = Table(
         "state IN ('supervisor','human','answered','delivered','resolved','stale')",
         name="ck_agent_question_state",
     ),
+    CheckConstraint("submission_state IN ('pending','unknown','delivered')",
+                    name="ck_agent_question_submission_state"),
     Index("idx_agent_questions_pending", "state", "created_at"),
     Index("idx_agent_questions_session", "session_id", "instance_token"),
 )
@@ -6715,3 +6768,215 @@ operator_decisions = Table(
     UniqueConstraint("releases", name="uq_operator_decisions_release"),
     Index("ix_operator_decisions_object", "project_id", "object_kind", "object_id"),
 )
+
+
+# Human communication ledgers (implementation specification, 2026-10-11 §3.1).
+# Source task/session ids remain soft references. Audit owners never cascade.
+human_asks = Table(
+    "human_asks", metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False),
+    Column("source_kind", Text, nullable=False),
+    Column("source_key", Text, nullable=False),
+    Column("source_identity", JSONB, nullable=False),
+    Column("source_fingerprint", Text, nullable=False),
+    Column("generation_fingerprint", Text, nullable=False),
+    Column("feedback_version", Integer, nullable=False, server_default="0"),
+    Column("decision_generation", Integer, nullable=False, server_default="1"),
+    Column("display_version", Integer, nullable=False, server_default="1"),
+    Column("context", JSONB, nullable=False),
+    Column("audience", JSONB, nullable=False),
+    Column("logical_owner", Text, nullable=False),
+    Column("decider", JSONB, nullable=False),
+    Column("next_actor", Text, nullable=False, server_default="human"),
+    Column("decision_state", Text, nullable=False, server_default="pending"),
+    Column("application_state", Text, nullable=False, server_default="not_started"),
+    Column("context_state", Text, nullable=False, server_default="complete"),
+    Column("severity", Text, nullable=False, server_default="medium"),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(
+        "context_state <> 'complete' OR coalesce(("
+        "length(context->>'title') BETWEEN 1 AND 200 AND "
+        "length(context->>'why') BETWEEN 1 AND 2000 AND "
+        "length(context->>'waiting_effect') BETWEEN 1 AND 2000 AND "
+        "jsonb_typeof(context->'choices') = 'array' AND "
+        "jsonb_array_length(context->'choices') BETWEEN 1 AND 20), false)",
+        name="ck_human_asks_complete_context",
+    ),
+    UniqueConstraint("project_id", "source_kind", "source_key", name="uq_human_asks_source"),
+    UniqueConstraint("project_id", "id", name="uq_human_asks_project_id"),
+    CheckConstraint("decision_generation >= 1 AND display_version >= 1 AND feedback_version >= 0",
+                    name="ck_human_asks_versions"),
+    CheckConstraint("length(source_kind) BETWEEN 1 AND 128 AND length(source_key) BETWEEN 1 AND 512",
+                    name="ck_human_asks_identity"),
+    CheckConstraint("length(logical_owner) BETWEEN 1 AND 512", name="ck_human_asks_owner"),
+    CheckConstraint("next_actor IN ('human','agent','none')", name="ck_human_asks_next_actor"),
+    CheckConstraint("context_state IN ('complete','context_needed','quarantined')",
+                    name="ck_human_asks_context_state"),
+    CheckConstraint("decision_state IN ('pending','approved','changes_requested','declined',"
+                    "'withdrawn','superseded','answered')", name="ck_human_asks_decision_state"),
+    CheckConstraint("application_state IN ('not_started','applying','applied','failed','unknown')",
+                    name="ck_human_asks_application_state"),
+    CheckConstraint("severity IN ('critical','high','medium','low')", name="ck_human_asks_severity"),
+    CheckConstraint("jsonb_typeof(context) = 'object' AND octet_length(context::text) <= 65536",
+                    name="ck_human_asks_context"),
+    Index("idx_human_asks_pending", "project_id", "next_actor", "decision_state", "created_at", "id"),
+)
+
+ask_source_aliases = Table(
+    "ask_source_aliases", metadata,
+    Column("project_id", Text, primary_key=True),
+    Column("legacy_kind", Text, primary_key=True),
+    Column("legacy_id", Text, primary_key=True),
+    Column("ask_id", Text, nullable=False),
+    Column("source_generation", Integer, nullable=False),
+    Column("source_reference", JSONB, nullable=False),
+    Column("provenance", JSONB, nullable=False),
+    Column("created_at", Float, nullable=False),
+    ForeignKeyConstraint(["project_id", "ask_id"], ["human_asks.project_id", "human_asks.id"],
+                         name="fk_ask_source_aliases_ask", ondelete="RESTRICT"),
+    CheckConstraint("source_generation >= 1", name="ck_ask_source_aliases_generation"),
+    Index("idx_ask_source_aliases_ask", "ask_id"),
+)
+
+ask_decision_previews = Table(
+    "ask_decision_previews", metadata,
+    Column("id", Text, primary_key=True),
+    Column("ask_id", Text, ForeignKey("human_asks.id", ondelete="RESTRICT"), nullable=False),
+    Column("decision_generation", Integer, nullable=False),
+    Column("actor_id", Text, nullable=False),
+    Column("input_id", Text, nullable=True),
+    Column("source_fingerprint", Text, nullable=False),
+    Column("feedback_version", Integer, nullable=False),
+    Column("packet", JSONB, nullable=False),
+    Column("packet_sha256", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("expires_at", Float, nullable=False),
+    Column("consumed_at", Float, nullable=True),
+    CheckConstraint("expires_at > created_at AND expires_at <= created_at + 600",
+                    name="ck_ask_decision_previews_expiry"),
+    CheckConstraint("decision_generation >= 1 AND feedback_version >= 0",
+                    name="ck_ask_decision_previews_versions"),
+    Index("idx_ask_decision_previews_expiry", "expires_at"),
+)
+
+approved_document_snapshots = Table(
+    "approved_document_snapshots", metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False),
+    Column("source_path", Text, nullable=False),
+    Column("title", Text, nullable=False),
+    Column("body", LargeBinary, nullable=False),
+    Column("body_sha256", Text, nullable=False),
+    Column("spec_kind", Text, nullable=False),
+    Column("approval_provenance", JSONB, nullable=False),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint("spec_kind IN ('design','implementation')",
+                    name="ck_approved_document_snapshots_spec_kind"),
+    CheckConstraint("length(title) BETWEEN 1 AND 200 AND octet_length(body) <= 262144",
+                    name="ck_approved_document_snapshots_content"),
+)
+
+ask_decisions = Table(
+    "ask_decisions", metadata,
+    Column("id", Text, primary_key=True),
+    Column("ask_id", Text, ForeignKey("human_asks.id", ondelete="RESTRICT"), nullable=False),
+    Column("decision_generation", Integer, nullable=False),
+    Column("option_key", Text, nullable=False),
+    Column("adapter", Text, nullable=False),
+    Column("adapter_version", Text, nullable=False),
+    Column("actor_id", Text, nullable=False),
+    Column("actor", JSONB, nullable=False),
+    Column("evidence_entry_id", Text, ForeignKey("escalation_messages.id", ondelete="RESTRICT"),
+           nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("request_sha256", Text, nullable=False),
+    Column("source_fingerprint", Text, nullable=False),
+    Column("review_id", Text, nullable=True),
+    Column("review_revision", Integer, nullable=True),
+    Column("content_sha256", Text, nullable=True),
+    Column("attachment_manifest_sha256", Text, nullable=True),
+    Column("snapshot_id", Text, ForeignKey("approved_document_snapshots.id", ondelete="RESTRICT"),
+           nullable=True),
+    Column("feedback_version", Integer, nullable=False),
+    Column("overall_note", Text, nullable=False, server_default=""),
+    Column("accepted_dispositions", JSONB, nullable=False, server_default="[]"),
+    Column("packet", JSONB, nullable=False),
+    Column("packet_sha256", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    ForeignKeyConstraint(["review_id", "review_revision"],
+                         ["doc_review_revisions.review_id", "doc_review_revisions.revision"],
+                         name="fk_ask_decisions_revision", ondelete="RESTRICT"),
+    UniqueConstraint("ask_id", "decision_generation", name="uq_ask_decisions_generation"),
+    UniqueConstraint("ask_id", "actor_id", "idempotency_key", name="uq_ask_decisions_request"),
+    CheckConstraint("decision_generation >= 1 AND feedback_version >= 0",
+                    name="ck_ask_decisions_versions"),
+    CheckConstraint("length(overall_note) <= 16000 AND length(idempotency_key) BETWEEN 1 AND 512",
+                    name="ck_ask_decisions_text"),
+    CheckConstraint("(review_id IS NULL) = (review_revision IS NULL) AND "
+                    "(review_id IS NULL OR snapshot_id IS NULL)", name="ck_ask_decisions_document"),
+    Index("idx_ask_decisions_history", "ask_id", "created_at", "id"),
+)
+
+review_feedback_obligations = Table(
+    "review_feedback_obligations", metadata,
+    Column("id", Text, primary_key=True),
+    Column("decision_id", Text, ForeignKey("ask_decisions.id", ondelete="RESTRICT"), nullable=False),
+    Column("feedback_key", Text, nullable=False),
+    Column("comment_id", Text, ForeignKey("doc_review_comments.id", ondelete="RESTRICT"),
+           nullable=True),
+    Column("original_text", Text, nullable=False),
+    Column("original_anchor", JSONB, nullable=False),
+    Column("original_author", Text, nullable=False),
+    Column("original_revision", Integer, nullable=True),
+    Column("disposition", Text, nullable=False),
+    Column("accepted_by", JSONB, nullable=False),
+    Column("logical_owner", Text, nullable=False),
+    Column("required_before_release", Boolean, nullable=False, server_default=false()),
+    Column("operation_id", Text, ForeignKey("escalation_actions.id", ondelete="RESTRICT"),
+           nullable=True),
+    Column("task_id", Text, nullable=True),
+    Column("acceptance_text", Text, nullable=False),
+    Column("progress", Text, nullable=False, server_default="pending"),
+    Column("completion_evidence", JSONB, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("decision_id", "feedback_key", name="uq_review_feedback_obligations_item"),
+    CheckConstraint("disposition IN ('follow_up','fold_in','applied','no_change','withdrawn')",
+                    name="ck_review_feedback_obligations_disposition"),
+    CheckConstraint("progress IN ('pending','filed','in_progress','completed','failed')",
+                    name="ck_review_feedback_obligations_progress"),
+    CheckConstraint("progress <> 'completed' OR completion_evidence IS NOT NULL",
+                    name="ck_review_feedback_obligations_evidence"),
+    CheckConstraint("length(original_text) BETWEEN 1 AND 16000 AND "
+                    "length(acceptance_text) BETWEEN 1 AND 16000",
+                    name="ck_review_feedback_obligations_text"),
+    Index("idx_review_feedback_obligations_owner", "logical_owner", "progress"),
+)
+
+ask_reconciliation_cases = Table(
+    "ask_reconciliation_cases", metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False),
+    Column("conflict_key", Text, nullable=False),
+    Column("source_evidence", JSONB, nullable=False),
+    Column("affected_aliases", JSONB, nullable=False, server_default="[]"),
+    Column("affected_deliveries", JSONB, nullable=False, server_default="[]"),
+    Column("logical_owner", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("status", Text, nullable=False, server_default="open"),
+    Column("repair_receipt", JSONB, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("project_id", "conflict_key", name="uq_ask_reconciliation_cases_conflict"),
+    CheckConstraint("status IN ('open','resolved')", name="ck_ask_reconciliation_cases_status"),
+    CheckConstraint("status <> 'resolved' OR repair_receipt IS NOT NULL",
+                    name="ck_ask_reconciliation_cases_receipt"),
+    Index("idx_ask_reconciliation_cases_owner", "project_id", "logical_owner", "status"),
+)
+
+
+# Fresh metadata must enforce the same append-only audit boundary as Alembic.
+
+register_ask_schema_events(metadata)

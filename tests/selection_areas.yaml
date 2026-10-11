@@ -816,6 +816,7 @@ areas:
   - id: document-reviews
     description: "Document reviews: the review service, schema and queries, revision block diffs, vault review files, review gates on downstream tasks, the reopen cascade, dedup keys, the review notifier, commands, doctor checks and spec approval."
     match:
+      - tests/test_ask_*.py
       - tests/test_review_*.py
       - tests/test_spec_approve_command.py
       - tests/test_reviewer_api_scope.py

@@ -96,6 +96,10 @@ class ReviewWithdrawResponse(BaseModel):
 
 
 class ReviewDecideResponse(BaseModel):
+    model_config = {"extra": "allow"}
+
+    application_state: str = "not_started"
+    decision_id: str | None = None
     success: bool = True
     review_id: str
     state: str

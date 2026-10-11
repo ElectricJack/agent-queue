@@ -62,6 +62,9 @@ def _review(review_id="rev-bright-harbor", **overrides) -> dict:
         "title": "Document review",
         "vault_path": f"projects/{PROJECT}/specs/2026-09-21-{review_id}.md",
         "current_revision": 1,
+        "feedback_version": 0,
+        "decision_generation": 1,
+        "pending_decision_id": None,
         "state": "in_review",
         "gate_id": None,
         "decider": "user",
@@ -333,6 +336,8 @@ def _comment(cid, *, created_at, **overrides) -> dict:
         "body": f"comment {cid}",
         "author": "human:local-operator",
         "resolved_in_revision": None,
+        "source_discussion_id": None,
+        "responder_disposition": None,
         "created_at": created_at,
     }
     row.update(overrides)
@@ -573,7 +578,7 @@ class TestNoTaskForeignKey:
                     )
                 ).scalars()
             )
-        assert targets == {"doc_reviews"}
+        assert targets == {"doc_reviews", "ask_decisions", "escalation_messages"}
 
 
 # ── ids ────────────────────────────────────────────────────────────────────
@@ -767,6 +772,7 @@ class TestMigration:
         async with db._engine.connect() as conn:
             trans = await conn.begin()
             try:
+                await conn.run_sync(_run(_load_migration("a00000000091_human_ask_decisions"), "downgrade"))
                 # Rewind to a00000000013: no review tables, no delegation
                 # column, and a gate-type CHECK without 'review'.
                 await conn.execute(
@@ -825,6 +831,7 @@ class TestMigration:
         async with db._engine.connect() as conn:
             trans = await conn.begin()
             try:
+                await conn.run_sync(_run(_load_migration("a00000000091_human_ask_decisions"), "downgrade"))
                 # Alembic downgrades the later attachment revision before
                 # revision 14; its foreign key must be removed in that order.
                 attachments = _load_migration("a00000000046_review_attachments")
@@ -848,3 +855,46 @@ class TestMigration:
                 assert await _shape(conn) == _HEAD
             finally:
                 await trans.rollback()
+
+
+async def test_review_lock_serializes_sequence_on_two_postgres_connections(db):
+    """A comment competing with a decision's source lock waits, then allocates seq 2."""
+    import asyncio
+
+    await _submit(db)
+    async with db._engine.connect() as first, db._engine.connect() as second:
+        transaction = await first.begin()
+        await db.lock_review_for_mutation("rev-bright-harbor", first)
+        await db.insert_review_comment(_comment("first", created_at=1), conn=first)
+        second_pid = (await second.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+        await second.commit()
+        started = asyncio.Event()
+
+        async def insert_second():
+            async with second.begin():
+                started.set()
+                await db.insert_review_comment(_comment("second", created_at=1), conn=second)
+        pending = asyncio.create_task(insert_second())
+        try:
+            await started.wait()
+            # PostgreSQL itself proves the second connection is blocked on the
+            # first, avoiding scheduler-delay assertions disguised as races.
+            async def blocked():
+                while True:
+                    if (await first.execute(text("SELECT cardinality(pg_blocking_pids(:pid))"),
+                                            {"pid": second_pid})).scalar_one():
+                        return
+                    await asyncio.sleep(0.01)
+            await asyncio.wait_for(blocked(), timeout=5)
+            assert not pending.done()
+            await transaction.commit()
+            await asyncio.wait_for(pending, timeout=5)
+        finally:
+            if transaction.is_active:
+                await transaction.rollback()
+            if not pending.done():
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+    assert [(row["id"], row["created_seq"]) for row in await db.list_review_comments(
+        "rev-bright-harbor",
+    )] == [("first", 1), ("second", 2)]

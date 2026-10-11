@@ -104,11 +104,13 @@ from src.commands.dashboard_state_commands import DashboardStateCommandsMixin
 from src.commands.escalation_commands import EscalationCommandsMixin
 from src.commands.conversation_commands import ConversationCommandsMixin
 from src.commands.review_commands import ReviewCommandsMixin
+from src.commands.ask_commands import AskCommandsMixin
 from src.commands.github_issue_commands import GitHubIssueCommandsMixin
 
 # -- dv2 phase 6 mixins ---------------------------------------------------
 from src.commands.proposal_commands import TaskProposalCommandsMixin
 from src.commands.spec_commands import SpecCommandsMixin
+from src.commands.spec_ingest_commands import SpecIngestCommandsMixin
 from src.routing.filing import GUARDED_COMMANDS, routing_choice_refusal, without_inert_choices
 
 if TYPE_CHECKING:
@@ -408,10 +410,12 @@ class CommandHandler(
     EscalationCommandsMixin,
     ConversationCommandsMixin,
     ReviewCommandsMixin,
+    AskCommandsMixin,
     GitHubIssueCommandsMixin,
     # -- dv2 phase 6 mixins -----------------------------------------------
     TaskProposalCommandsMixin,
     SpecCommandsMixin,
+    SpecIngestCommandsMixin,
 ):
     """Unified command execution layer for AgentQueue (Command Pattern).
 
