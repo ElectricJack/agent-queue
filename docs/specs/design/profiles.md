@@ -36,6 +36,13 @@ project's own `max_concurrent_agents` (see [guides/worker-pools](../../guides/wo
 still carries into its system profile — automatically at startup, or on demand
 via `aq doctor --check profiles.project_overrides --fix`.
 
+New non-pool agents created for task demand use their profile's display
+`name`. If an enabled agent of the same profile already uses that name,
+append the lowest available numeric suffix starting at `2` (for example,
+`Review Spec Ingest 2`). Disabled agents and agents of other profiles do not
+reserve names. Existing agent names remain operator-owned; a profile rename
+does not rename them or require another agent when one already serves demand.
+
 ---
 
 ## 2. Hybrid Format
@@ -347,8 +354,11 @@ the full reseed below) or when the merged text would not parse.
 
 Without `--grants-only`, `profile-reseed` copies the old file to
 `profile.md.bak-<epoch>` (pass `--no-backup` to skip) before overwriting it
-wholesale with the shipped default, then syncs the new text straight to the
-DB. There is deliberately no `aq doctor --fix` for either shape: overwriting
+with the shipped default while preserving a nonempty display `name` from
+valid vault frontmatter, then syncs the new text straight to the DB. Missing
+or unreadable frontmatter uses the shipped name. Neither installer refresh
+nor profile reseeding creates agent rows. There is deliberately no
+`aq doctor --fix` for either shape: overwriting
 or merging into an operator-owned vault file automatically would violate the
 `--fix` safety rules (trust-and-ops §5.4) — the operator always invokes the
 repair explicitly. The supervisor's grants are the one exception, below.

@@ -97,6 +97,72 @@ async def test_creates_one_agent_for_one_ready_task(db):
     assert report.created == [("p", "claude-opus")]
 
 
+@pytest.mark.parametrize(
+    ("existing", "expected_name"),
+    [
+        ([], "Review Spec Ingest"),
+        ([("spec-ingest", "Review Spec Ingest", True)], "Review Spec Ingest 2"),
+        (
+            [
+                ("spec-ingest", "Review Spec Ingest", True),
+                ("spec-ingest", "Review Spec Ingest 2", True),
+            ],
+            "Review Spec Ingest 3",
+        ),
+        ([("spec-ingest", "Review Spec Ingest 2", True)], "Review Spec Ingest"),
+        ([("spec-ingest", "Review Spec Ingest", False)], "Review Spec Ingest"),
+        ([("other-profile", "Review Spec Ingest", True)], "Review Spec Ingest"),
+        ([("spec-ingest", "Operator Name", True)], "Review Spec Ingest"),
+    ],
+)
+async def test_new_agent_uses_display_name_with_only_needed_suffix(db, existing, expected_name):
+    await _seed_project_with_profile(db, project_id="p", profile_id="spec-ingest")
+    await db.update_profile("spec-ingest", name="Review Spec Ingest")
+    await _seed_ready_task(db, task_id="t-1", project_id="p", profile_id="spec-ingest")
+    # These unavailable identities do not serve demand, but enabled agents of
+    # the same profile still reserve their names. Other roster entries do not.
+    for index, (profile_id, name, enabled) in enumerate(existing):
+        await db.create_agent(Agent(
+            id=f"existing-{index}", name=name, profile_id=profile_id,
+            state=AgentState.ERROR, enabled=enabled,
+        ))
+
+    reconciler = AgentReconciler(db)
+    report = await reconciler.reconcile()
+    agents = await db.list_agents()
+    created = [agent for agent in agents if not agent.id.startswith("existing-")]
+
+    assert report.created == [("p", "spec-ingest")]
+    assert len(created) == 1
+    assert created[0].name == expected_name
+    assert (await reconciler.reconcile()).created == []
+    assert len(await db.list_agents()) == len(existing) + 1
+    for index, (_, name, _) in enumerate(existing):
+        assert (await db.get_agent(f"existing-{index}")).name == name
+
+
+async def test_profile_rename_reuses_existing_agent_without_renaming_or_duplicating(db):
+    await _seed_project_with_profile(db, project_id="p", profile_id="spec-ingest")
+    await db.create_agent(Agent(
+        id="existing", name="spec-ingest-111", profile_id="spec-ingest",
+    ))
+    await db.update_profile("spec-ingest", name="Review Spec Ingest")
+    await _seed_ready_task(db, task_id="t-1", project_id="p", profile_id="spec-ingest")
+
+    assert (await AgentReconciler(db).reconcile()).created == []
+    agents = await db.list_agents()
+    assert [(agent.id, agent.name) for agent in agents] == [("existing", "spec-ingest-111")]
+
+
+async def test_pool_profile_demand_creates_no_task_agent(db):
+    await _seed_project_with_profile(db, project_id="p", profile_id="pool-profile")
+    await db.update_profile("pool-profile", lifecycle="pool", name="Pool Display Name")
+    await _seed_ready_task(db, task_id="t-1", project_id="p", profile_id="pool-profile")
+
+    assert (await AgentReconciler(db).reconcile()).created == []
+    assert await db.list_agents() == []
+
+
 async def _seed_bare_project(db, *, project_id="p", max_agents=1):
     """A project with a workspace and no profiles."""
     await db.create_project(Project(

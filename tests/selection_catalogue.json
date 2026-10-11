@@ -2286,13 +2286,15 @@
         "agent-roster"
       ],
       "default_arm": true,
-      "digest": "sha256:84f1d1d15381bc8c1fdc9a51718dc15010643b1eb4e271758f56ae4bd5a80143",
+      "digest": "sha256:070a4a5eb0e36eaa83ad8848b32df20010d7db9237e133efa04cfd8b8ad67e11",
       "imports": [
         "src.database",
         "src.models",
         "src.orchestrator.agent_reconciler"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Unit tests for AgentReconciler — see"
     },
     "tests/test_agent_soft_delete.py": {
@@ -13369,12 +13371,13 @@
         "profiles"
       ],
       "default_arm": true,
-      "digest": "sha256:c9698c055fba3df5385b4420443bf971c5988f052c830b0419cfd35c1d2733d7",
+      "digest": "sha256:3cab581203141806797ad6223a77bc81b66844b6c395a25fd3b74ab897cf6428",
       "imports": [
         "src.commands.handler",
         "src.config",
         "src.doctor",
         "src.doctor.models",
+        "src.models",
         "src.orchestrator",
         "src.profiles.drift",
         "src.profiles.parser",

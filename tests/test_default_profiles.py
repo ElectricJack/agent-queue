@@ -64,6 +64,18 @@ def test_seeded_profiles_parse_without_errors(tmp_path):
         assert parsed.frontmatter.id == pid
 
 
+def test_spec_ingest_display_name_is_seeded_and_operator_rename_survives(tmp_path):
+    ensure_default_profiles(str(tmp_path))
+    path = _vault_profile_path(tmp_path, "spec-ingest")
+    shipped = path.read_text(encoding="utf-8")
+    assert parse_profile(shipped).frontmatter.name == "Review Spec Ingest"
+    renamed = shipped.replace("name: Review Spec Ingest", "name: My Spec Review")
+    path.write_text(renamed, encoding="utf-8")
+
+    assert "spec-ingest" in ensure_default_profiles(str(tmp_path))["skipped"]
+    assert path.read_text(encoding="utf-8") == renamed
+
+
 def test_seeded_worker_profiles_require_material_progress_notes(tmp_path):
     """Shipped worker instructions must make in-progress enrichment explicit."""
     ensure_default_profiles(str(tmp_path))

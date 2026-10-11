@@ -1,6 +1,6 @@
 ---
 id: spec-ingest
-name: Spec Ingest Agent
+name: Review Spec Ingest
 tags: [system, ingest, dv2-phase6]
 ---
 
