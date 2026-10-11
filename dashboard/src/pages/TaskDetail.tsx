@@ -5,6 +5,8 @@ import { ArrowLeftIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/ou
 import { useTask, type TaskRef } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
 import { EpicDeliveryPanel, EpicStatus } from "../components/EpicDelivery";
+import TaskDisplayStatus, { EpicActivitySummary } from "../components/TaskDisplayStatus";
+import { rolledState } from "../components/epicActivityFormat";
 import TaskActions from "../components/TaskActions";
 import TaskCollaboration from "../components/TaskCollaboration";
 import TaskComments from "../components/TaskComments";
@@ -48,9 +50,9 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
         <div className="min-w-0 flex-1">
           <h1 className="text-2xl font-bold">{task.title}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-3">
-            {task.delivery_status
+            {task.delivery_status && !rolledState(task, task.delivery_status)
               ? <EpicStatus delivery={task.delivery_status} status={task.status} />
-              : <StatusBadge status={task.status} />}
+              : <TaskDisplayStatus task={task} />}
             {task.project_id && (
               <Link to={workspaceHref(task.project_id, "tasks-knowledge")} className="text-sm text-indigo-400 hover:underline">{task.project_id}</Link>
             )}
@@ -71,6 +73,7 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
               </span>
             )}
           </div>
+          <EpicActivitySummary task={task} />
         </div>
       </div>
 

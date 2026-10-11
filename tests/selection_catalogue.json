@@ -1213,11 +1213,12 @@
       ]
     },
     "task-graph-creation": {
-      "description": "Task-graph documents: the aq-graph parser, validator and creator, create_task_graph, dotted ids and parents in the creator, and live graph events after commands.",
+      "description": "Task-graph documents: the aq-graph parser, validator and creator, create_task_graph, dotted ids and parents in the creator, live graph events after commands, and containers' display activity rolled up from their descendants.",
       "modules": [
         "tests/test_create_task_graph_command.py",
         "tests/test_hierarchy_graph_creator.py",
         "tests/test_task_graph.py",
+        "tests/test_task_graph_activity.py",
         "tests/test_task_graph_live_events.py"
       ]
     },
@@ -4787,7 +4788,7 @@
         "task-graph-creation"
       ],
       "default_arm": true,
-      "digest": "sha256:683e43c6e693f9e0ab63fb7c40383c53ffdaf97e65a73aae8ddc94210482ead6",
+      "digest": "sha256:eb3d48511330f06a337e6b858cbad6134ff96ded766b422e2753defd1770cef3",
       "imports": [
         "src.commands.handler",
         "src.database",
@@ -7323,7 +7324,7 @@
         "task-hierarchy"
       ],
       "default_arm": true,
-      "digest": "sha256:d397357d65e4705ca5caa0e6b32c9724a8256590bd0b584a24580fc54885c274",
+      "digest": "sha256:b6ee99a936224c6b7b8d9b5f2d5c44f585176a637aac0de32cdcd01655147dd9",
       "imports": [
         "src.database",
         "src.database.queries.hierarchy_queries",
@@ -16906,7 +16907,7 @@
         "task-graph-creation"
       ],
       "default_arm": true,
-      "digest": "sha256:df3f3dfd003e5d4b9fd99b1236473a0030cebe29326a1287cc1ebc4164bc8ad2",
+      "digest": "sha256:d640cb06c2a4a67442b812f60f102f07824e99650b68887dda83bc3f5e7287aa",
       "imports": [
         "src.commands",
         "src.commands.task_subtask_commands",
@@ -16925,12 +16926,28 @@
       ],
       "summary": "Task-graph parser/validator/creator — supervisor-agent §8 and §12."
     },
+    "tests/test_task_graph_activity.py": {
+      "areas": [
+        "task-graph-creation"
+      ],
+      "default_arm": true,
+      "digest": "sha256:f17f4b18b489d983bec87c1c7a65251599047b865ccd818ec71a711cc7d5cb25",
+      "imports": [
+        "src.commands.handler",
+        "src.models",
+        "src.task_graph.activity"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "A container's displayed activity, rolled up from its descendants (bright-nexus-99)."
+    },
     "tests/test_task_graph_live_events.py": {
       "areas": [
         "task-graph-creation"
       ],
       "default_arm": true,
-      "digest": "sha256:16653e5d5544dab0cdb31959eb3f8033b694e00e0d3e7ecf7ca58c859764a288",
+      "digest": "sha256:662089df8f9c94df06d4149fed8822201a531857dfe8967041f39a5d19139db6",
       "imports": [
         "src.api.websocket",
         "src.commands.handler",

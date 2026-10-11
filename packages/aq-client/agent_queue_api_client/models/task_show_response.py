@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.task_show_response_display_state_type_0 import TaskShowResponseDisplayStateType0
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -15,9 +16,11 @@ if TYPE_CHECKING:
     from ..models.task_completion_detail import TaskCompletionDetail
     from ..models.task_ref import TaskRef
     from ..models.task_reroute import TaskReroute
+    from ..models.task_show_response_child_state_counts_type_0 import TaskShowResponseChildStateCountsType0
     from ..models.task_show_response_children_type_0 import TaskShowResponseChildrenType0
     from ..models.task_show_response_context_item import TaskShowResponseContextItem
     from ..models.task_show_response_deliverables_item import TaskShowResponseDeliverablesItem
+    from ..models.task_show_response_descendant_state_counts_type_0 import TaskShowResponseDescendantStateCountsType0
     from ..models.task_show_response_parent_type_0 import TaskShowResponseParentType0
     from ..models.task_show_response_provenance_item import TaskShowResponseProvenanceItem
     from ..models.task_show_response_route_type_0 import TaskShowResponseRouteType0
@@ -36,6 +39,10 @@ class TaskShowResponse:
             id (str):
             project_id (str):
             title (str):
+            display_state (None | TaskShowResponseDisplayStateType0 | Unset):
+            display_reason (None | str | Unset):
+            child_state_counts (None | TaskShowResponseChildStateCountsType0 | Unset):
+            descendant_state_counts (None | TaskShowResponseDescendantStateCountsType0 | Unset):
             description (str | Unset):  Default: ''.
             status (str | Unset):  Default: ''.
             priority (int | Unset):  Default: 0.
@@ -83,6 +90,10 @@ class TaskShowResponse:
     id: str
     project_id: str
     title: str
+    display_state: None | TaskShowResponseDisplayStateType0 | Unset = UNSET
+    display_reason: None | str | Unset = UNSET
+    child_state_counts: None | TaskShowResponseChildStateCountsType0 | Unset = UNSET
+    descendant_state_counts: None | TaskShowResponseDescendantStateCountsType0 | Unset = UNSET
     description: str | Unset = ""
     status: str | Unset = ""
     priority: int | Unset = 0
@@ -133,7 +144,11 @@ class TaskShowResponse:
         from ..models.provider_hold_detail import ProviderHoldDetail
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_reroute import TaskReroute
+        from ..models.task_show_response_child_state_counts_type_0 import TaskShowResponseChildStateCountsType0
         from ..models.task_show_response_children_type_0 import TaskShowResponseChildrenType0
+        from ..models.task_show_response_descendant_state_counts_type_0 import (
+            TaskShowResponseDescendantStateCountsType0,
+        )
         from ..models.task_show_response_parent_type_0 import TaskShowResponseParentType0
         from ..models.task_show_response_route_type_0 import TaskShowResponseRouteType0
 
@@ -142,6 +157,36 @@ class TaskShowResponse:
         project_id = self.project_id
 
         title = self.title
+
+        display_state: None | str | Unset
+        if isinstance(self.display_state, Unset):
+            display_state = UNSET
+        elif isinstance(self.display_state, TaskShowResponseDisplayStateType0):
+            display_state = self.display_state.value
+        else:
+            display_state = self.display_state
+
+        display_reason: None | str | Unset
+        if isinstance(self.display_reason, Unset):
+            display_reason = UNSET
+        else:
+            display_reason = self.display_reason
+
+        child_state_counts: dict[str, Any] | None | Unset
+        if isinstance(self.child_state_counts, Unset):
+            child_state_counts = UNSET
+        elif isinstance(self.child_state_counts, TaskShowResponseChildStateCountsType0):
+            child_state_counts = self.child_state_counts.to_dict()
+        else:
+            child_state_counts = self.child_state_counts
+
+        descendant_state_counts: dict[str, Any] | None | Unset
+        if isinstance(self.descendant_state_counts, Unset):
+            descendant_state_counts = UNSET
+        elif isinstance(self.descendant_state_counts, TaskShowResponseDescendantStateCountsType0):
+            descendant_state_counts = self.descendant_state_counts.to_dict()
+        else:
+            descendant_state_counts = self.descendant_state_counts
 
         description = self.description
 
@@ -378,6 +423,14 @@ class TaskShowResponse:
                 "title": title,
             }
         )
+        if display_state is not UNSET:
+            field_dict["display_state"] = display_state
+        if display_reason is not UNSET:
+            field_dict["display_reason"] = display_reason
+        if child_state_counts is not UNSET:
+            field_dict["child_state_counts"] = child_state_counts
+        if descendant_state_counts is not UNSET:
+            field_dict["descendant_state_counts"] = descendant_state_counts
         if description is not UNSET:
             field_dict["description"] = description
         if status is not UNSET:
@@ -473,9 +526,13 @@ class TaskShowResponse:
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_ref import TaskRef
         from ..models.task_reroute import TaskReroute
+        from ..models.task_show_response_child_state_counts_type_0 import TaskShowResponseChildStateCountsType0
         from ..models.task_show_response_children_type_0 import TaskShowResponseChildrenType0
         from ..models.task_show_response_context_item import TaskShowResponseContextItem
         from ..models.task_show_response_deliverables_item import TaskShowResponseDeliverablesItem
+        from ..models.task_show_response_descendant_state_counts_type_0 import (
+            TaskShowResponseDescendantStateCountsType0,
+        )
         from ..models.task_show_response_parent_type_0 import TaskShowResponseParentType0
         from ..models.task_show_response_provenance_item import TaskShowResponseProvenanceItem
         from ..models.task_show_response_route_type_0 import TaskShowResponseRouteType0
@@ -486,6 +543,66 @@ class TaskShowResponse:
         project_id = d.pop("project_id")
 
         title = d.pop("title")
+
+        def _parse_display_state(data: object) -> None | TaskShowResponseDisplayStateType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                display_state_type_0 = TaskShowResponseDisplayStateType0(data)
+
+                return display_state_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskShowResponseDisplayStateType0 | Unset, data)
+
+        display_state = _parse_display_state(d.pop("display_state", UNSET))
+
+        def _parse_display_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        display_reason = _parse_display_reason(d.pop("display_reason", UNSET))
+
+        def _parse_child_state_counts(data: object) -> None | TaskShowResponseChildStateCountsType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                child_state_counts_type_0 = TaskShowResponseChildStateCountsType0.from_dict(data)
+
+                return child_state_counts_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskShowResponseChildStateCountsType0 | Unset, data)
+
+        child_state_counts = _parse_child_state_counts(d.pop("child_state_counts", UNSET))
+
+        def _parse_descendant_state_counts(data: object) -> None | TaskShowResponseDescendantStateCountsType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                descendant_state_counts_type_0 = TaskShowResponseDescendantStateCountsType0.from_dict(data)
+
+                return descendant_state_counts_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskShowResponseDescendantStateCountsType0 | Unset, data)
+
+        descendant_state_counts = _parse_descendant_state_counts(d.pop("descendant_state_counts", UNSET))
 
         description = d.pop("description", UNSET)
 
@@ -842,6 +959,10 @@ class TaskShowResponse:
             id=id,
             project_id=project_id,
             title=title,
+            display_state=display_state,
+            display_reason=display_reason,
+            child_state_counts=child_state_counts,
+            descendant_state_counts=descendant_state_counts,
             description=description,
             status=status,
             priority=priority,

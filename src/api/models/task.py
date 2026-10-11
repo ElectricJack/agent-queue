@@ -167,7 +167,20 @@ class EpicDeliveryStatus(BaseModel):
     implementation_total: int = 0
 
 
-class TaskDetail(BaseModel):
+class TaskDisplayFields(BaseModel):
+    """A container's rollup of its descendants (``src/task_graph/activity.py``).
+
+    Computed on read and never stored: the lifecycle ``status`` is unchanged.
+    ``display_state`` is set only while some descendant is unfinished.
+    """
+
+    display_state: Literal["active", "waiting", "blocked"] | None = None
+    display_reason: str | None = None
+    child_state_counts: dict[str, int] | None = None
+    descendant_state_counts: dict[str, int] | None = None
+
+
+class TaskDetail(TaskDisplayFields):
     id: str
     project_id: str
     title: str
@@ -676,7 +689,7 @@ class TaskChildrenResponse(BaseModel):
     children: list[TaskDict]
 
 
-class TaskProgressResponse(BaseModel):
+class TaskProgressResponse(TaskDisplayFields):
     success: bool
     parent_id: str
     total: int

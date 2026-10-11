@@ -59,6 +59,22 @@ describe("card anatomy (§3.1)", () => {
     expect(ready.container.querySelector(".aq-pulse")).toBeNull();
   });
 
+  it.each(["waiting", "blocked", "active"] as const)("uses the epic's computed %s state for animation and counts", (state) => {
+    const data = card("IN_PROGRESS", { runningCount: 2 }, {
+      task: { id: "task-one", title: "Ship it", status: "IN_PROGRESS", priority: 100,
+        display_state: state, display_reason: "Waiting on foundation", child_state_counts: { [state]: 2 },
+        descendant_state_counts: { DEFINED: 4 } },
+    });
+    const { container } = render(<TaskCard data={data} />);
+    const cardElement = container.querySelector("[data-task-card]")!;
+    expect(cardElement.classList.contains("aq-stripe")).toBe(state === "active");
+    expect(container.querySelector(".aq-pulse") !== null).toBe(state === "active");
+    expect(screen.getByText(state === "active" ? "Active" : state === "blocked" ? "Blocked" : "Waiting")).toBeInTheDocument();
+    expect(container.querySelector("[data-child-state-counts]")).toHaveTextContent(`2 ${state}`);
+    expect(screen.getByText("Waiting on foundation")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "0 of 4 tasks done" }).querySelector('[data-segment="running"]')).toHaveStyle({ width: "0%" });
+  });
+
   it("writes one reason sentence from the loaded neighbours", () => {
     render(<TaskCard data={card("DEFINED", { childCount: 0, descendantCount: 0 }, {
       relations: { blockerCount: 2, blockerTitle: "Schema", dependentTitle: null, readyAhead: null },

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import StatusBadge from "./StatusBadge";
+import TaskDisplayStatus, { EpicActivitySummary } from "./TaskDisplayStatus";
 import type { Task } from "../api/hooks";
 import { rememberTaskPreview } from "../panes/task-detail/preview";
 
@@ -30,12 +30,13 @@ export default function TaskCard({ task, projectName, note, selected = false, to
     <>
       <span className="line-clamp-2 font-medium text-indigo-300 [overflow-wrap:anywhere]">{task.title || task.id}</span>
       <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-400">
-        <StatusBadge status={task.status} />
+        <TaskDisplayStatus task={task} />
         {task.priority != null && <span>P{task.priority}</span>}
         <span className="min-w-0 truncate">{task.assigned_agent || "Unassigned"}</span>
         {projectName && <span className="min-w-0 truncate">{projectName}</span>}
       </span>
       <span className="mt-0.5 block truncate font-mono text-[10px] text-gray-500">{task.id}</span>
+      <EpicActivitySummary task={task} />
       {note}
     </>
   );
