@@ -10,6 +10,7 @@ from src.commands.handler import CommandHandler
 from src.integration.hierarchy import HierarchyIntegration
 from src.models import (
     AgentProfile,
+    TaskType,
     DepType,
     Project,
     Task,
@@ -1530,6 +1531,39 @@ class TestRecoverStaleState:
         task = await orch.db.get_task("t-1")
         assert task.status == TaskStatus.READY
         assert task.assigned_agent_id is None
+
+    @pytest.mark.parametrize("task_type", [TaskType.PROMOTION, TaskType.BACKMERGE])
+    async def test_daemon_authored_intent_is_left_in_progress(self, orch, task_type):
+        """A promotion intent has no agent; StepAdmission needs it IN_PROGRESS
+        with no profile, so a restart must not hand it to the router."""
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_task(
+            Task(
+                id="promote-1",
+                project_id="p-1",
+                title="Promote staging",
+                description="Daemon-authored step intent.",
+                status=TaskStatus.IN_PROGRESS,
+                task_type=task_type,
+            )
+        )
+
+        await orch._recover_stale_state()
+
+        assert (await orch.db.get_task("promote-1")).status == TaskStatus.IN_PROGRESS
+
+    async def test_router_never_sees_daemon_authored_intents(self, orch):
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        for task_id, task_type in (("promote-1", TaskType.PROMOTION),
+                                   ("backmerge-1", TaskType.BACKMERGE),
+                                   ("work-1", TaskType.FEATURE)):
+            await orch.db.create_task(Task(id=task_id, project_id="p-1", title=task_id,
+                                           description="d", status=TaskStatus.READY,
+                                           task_type=task_type))
+
+        candidates = {task.id for task in await orch._route_needed_candidates()}
+
+        assert candidates == {"work-1"}
 
     async def test_container_task_still_auto_completes(self, orch):
         """Event-driven settlement (spec §7) keys off the container flag, so

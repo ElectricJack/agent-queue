@@ -114,6 +114,12 @@ class TaskType(Enum):
     ART = "art"
 
 
+#: Task types the daemon authors and drives itself (the train owns them).
+#: No agent ever holds one, so recovery must not reset one to READY and the
+#: router must never route one to a worker pool.
+DAEMON_AUTHORED_TASK_TYPES = frozenset({TaskType.PROMOTION.value, TaskType.BACKMERGE.value})
+
+
 # Convenience set for validation without constructing enum members.
 TASK_TYPE_VALUES = frozenset(t.value for t in TaskType)
 
