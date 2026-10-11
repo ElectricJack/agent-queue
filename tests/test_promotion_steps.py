@@ -22,7 +22,7 @@ from src.integration.promotion_steps import (
     PROMOTION_PUBLISH, FlowSchema, PromotionChecks, PromotionIntentInvalid, PromotionVisit,
     StepAdmission,
     StepPullRequestGate,
-    frozen_required_checks, promotion_ref, settle_promotion,
+    frozen_required_checks, promotion_ref, promotion_task_defect, settle_promotion,
 )
 from tests.test_integration_gitops import commit, git, setup as setup
 from tests.test_integration_train_sources import HostedGitHub
@@ -831,10 +831,39 @@ async def test_admission_refuses_changed_or_unretained_inputs(promotion, change)
                 {"profile_id": "worker", "route_source": "override"}
                 if change == "profile" else {"status": "CANCELLED"}
             )))
-    with pytest.raises(PromotionIntentInvalid):
+    with pytest.raises(PromotionIntentInvalid) as refused:
         await e.admission.load(e.batch, (e.member,))
-    assert (await visit(e)).state == "held"
+    held = await visit(e)
+    assert held.state == "held" and held.detail["reason"] == "promotion_intent_invalid"
     assert git(e.ops.git.remote_path, "rev-parse", "main") == e.base
+    if change in {"profile", "status"}:
+        defect = {"profile": "is routed to profile 'worker'", "status": "is a CANCELLED"}[change]
+        repair = f"aq promote repair {e.meta['request_id']} --project {e.batch.project_id}"
+        assert defect in str(refused.value) and repair in str(refused.value)
+        assert defect in held.detail["error"] and repair in held.detail["error"]
+
+
+async def test_restart_stranded_promotion_task_names_its_repair(promotion):
+    """A restart's READY reset plus a worker route was the 2026-10-11 stranding."""
+    e = promotion
+    async with e.db._engine.begin() as conn:
+        await conn.execute(insert(agent_profiles).values(
+            id="worker", name="Worker", description="", model="test",
+            created_at=1, updated_at=1,
+        ))
+        await conn.execute(update(tasks).values(
+            status="READY", profile_id="worker", route_source="override"))
+        task = (await conn.execute(select(tasks))).mappings().one()
+    assert "READY promotion task, not an IN_PROGRESS" in promotion_task_defect(task)
+    held = await visit(e)
+    assert held.detail["reason"] == "promotion_intent_invalid"
+    assert "aq promote repair" in held.detail["error"]
+    async with e.db._engine.begin() as conn:
+        await conn.execute(update(tasks).values(
+            status="IN_PROGRESS", profile_id=None, route_source="unrouted", route=None))
+        task = (await conn.execute(select(tasks))).mappings().one()
+    assert promotion_task_defect(task) is None
+    assert (await visit(e)).state == "delivered"
 
 
 async def test_hold_after_attestation_withdraws_both_publications(promotion):

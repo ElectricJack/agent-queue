@@ -45,6 +45,7 @@ HANDCRAFTED_COVERAGE = {
     "promote_hotfix",
     "promote_approve",
     "promote_cancel",
+    "promote_repair",
     "promote_status",
     "promote_list",
     # pool_provider.py mounts schema-generated status/apply in a nested group

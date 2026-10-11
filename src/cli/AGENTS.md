@@ -54,7 +54,7 @@ pool_provider.py   `aq pool provider` — generated status/apply and structured 
 plugins.py         `aq plugin {list,info,install,remove,enable,disable,update,config,logs,...}`
 projects.py        Hand-crafted `aq project` commands needing composite logic or UX sugar
 policy.py          `aq policy export|diff|apply` and the shared per-item import selection
-promote.py         `aq promote {schema,validate,prepare,request,hotfix,approve,cancel,status,list}` — flow
+promote.py         `aq promote {schema,validate,prepare,request,hotfix,approve,cancel,repair,status,list}` — flow
                    validation, pinned step PRs, and cached promotion history
 promote_rulesets.py `aq promote rulesets` — print chain/tag rulesets and workflow triggers
 questions.py       `aq question {list,answer,escalate}` — identity-based worker questions

@@ -166,6 +166,16 @@ def promote_cancel(ctx, request_id, project_id):
     _execute_intent(ctx, "promote_cancel", {"project_id": project_id, "request_id": request_id})
 
 
+@promote.command("repair")
+@click.argument("request_id")
+@click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
+@click.pass_context
+@_handle_errors
+def promote_repair(ctx, request_id, project_id):
+    """Back up and restore a stranded intent's task (IN_PROGRESS, unrouted)."""
+    _execute_intent(ctx, "promote_repair", {"project_id": project_id, "request_id": request_id})
+
+
 @promote.command("status")
 @click.option("--project", "project_id", envvar="AQ_PROJECT_ID", required=True)
 @click.option("--step", "step_id")

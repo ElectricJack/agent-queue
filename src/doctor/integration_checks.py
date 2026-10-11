@@ -457,6 +457,34 @@ async def _check_ci_source(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_promotion_stranded(ctx: DoctorContext) -> CheckResult:
+    """Open promotion intents whose task StepAdmission refuses idle on every train visit."""
+    from src.database.tables import integration_batch_members, integration_batches, tasks
+    from src.integration.promotion_steps import promotion_task_defect
+
+    check_id = "integration.promotion_stranded"
+    if ctx.db is None:
+        return _unavailable(check_id)
+    batch, member = integration_batches.c, integration_batch_members.c
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(select(
+            batch.id.label("batch_id"), batch.project_id, batch.request_id, tasks.c.id,
+            tasks.c.task_type, tasks.c.status, tasks.c.profile_id,
+        ).select_from(integration_batches.join(
+            integration_batch_members, member.batch_id == batch.id,
+        ).join(tasks, tasks.c.id == member.task_id)).where(
+            batch.trigger == "promotion", batch.target_ref.is_not(None), batch.intent != "aborted",
+            batch.lifecycle.not_in(("promoted", "aborted", "failed", "empty")),
+        ).order_by(batch.id))).mappings().all()
+    stranded = [{"batch_id": row["batch_id"], "project_id": row["project_id"],
+                 "request_id": row["request_id"], "task_id": row["id"], "reason": reason}
+                for row in rows if (reason := promotion_task_defect(row, allow_completed=True))]
+    return CheckResult(check_id, Severity.ERROR if stranded else Severity.OK, "; ".join(
+        f"batch {entry['batch_id']}: {entry['reason']}; back up and restore it with `aq promote "
+        f"repair {entry['request_id']} --project {entry['project_id']}`" for entry in stranded)
+        or "every open promotion intent has an admissible task", data={"stranded": stranded})
+
+
 def integration_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(id=f"integration.{name}", run=run, fix=fix, timeout_s=timeout, owner=OWNER)
@@ -470,6 +498,7 @@ def integration_checks() -> list[DoctorCheck]:
             ("subjects_held", _check_subjects_held, 5.0, None),
             ("trust", _check_trust, 60.0, None),
             ("promotion_flow", _check_promotion_flow, 60.0, None),
+            ("promotion_stranded", _check_promotion_stranded, 30.0, None),
             ("ci_source", _check_ci_source, 30.0, None),
         )
     ]

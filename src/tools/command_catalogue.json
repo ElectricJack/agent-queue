@@ -15703,6 +15703,57 @@
         "type": "object"
       }
     },
+    "promote_repair": {
+      "name": "promote_repair",
+      "description": "Back up and restore a stranded promotion task the train refuses.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "request_id": {
+            "description": "Promotion request identity returned by request.",
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "request_id"
+        ],
+        "title": "PromoteIntentArgs",
+        "type": "object"
+      }
+    },
     "promote_request": {
       "name": "promote_request",
       "description": "Open an idempotent promotion intent and a PR pinned to its source commit.",

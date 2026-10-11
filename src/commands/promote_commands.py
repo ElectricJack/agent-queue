@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -49,7 +50,9 @@ from src.integration.promotion_steps import (
     PromotionSourceRefusal,
     check_source_green,
     promotion_ref,
+    promotion_task_defect,
 )
+from src.routing.sources import UNROUTED
 
 
 class PromoteCommandsMixin:
@@ -928,19 +931,11 @@ class PromoteCommandsMixin:
 
     async def _promotion_intent(self, project_id, request_id):
         async with self.db._engine.connect() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        select(integration_batches).where(
-                            integration_batches.c.project_id == project_id,
-                            integration_batches.c.request_id == request_id,
-                            integration_batches.c.trigger == "promotion",
-                        )
-                    )
-                )
-                .mappings()
-                .first()
-            )
+            row = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.project_id == project_id,
+                integration_batches.c.request_id == request_id,
+                integration_batches.c.trigger == "promotion",
+            ))).mappings().first()
         if row is None:
             raise PromotionRefusal("not_found", "Promotion request does not exist.")
         meta = row["policy_snapshot"].get(PROMOTION_CONTEXT)
@@ -1000,19 +995,8 @@ class PromoteCommandsMixin:
                 )
             # Serialize with cancel and publication; a review never opens a local gate.
             async with self.db.immediate() as conn:
-                locked = (
-                    (
-                        await conn.execute(
-                            select(integration_batches)
-                            .where(
-                                integration_batches.c.id == row["id"],
-                            )
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one()
-                )
+                locked = (await conn.execute(select(integration_batches).where(
+                    integration_batches.c.id == row["id"]).with_for_update())).mappings().one()
                 if locked["intent"] != "open" or locked["lifecycle"] == "promoted":
                     raise PromotionRefusal("promotion_not_open", "Request is no longer open.")
                 await _check_pull(client, repo.binding, meta)
@@ -1104,19 +1088,8 @@ class PromoteCommandsMixin:
                 project, repository, meta["step"]
             )
             async with self.db.immediate() as conn:
-                locked = (
-                    (
-                        await conn.execute(
-                            select(integration_batches)
-                            .where(
-                                integration_batches.c.id == row["id"],
-                            )
-                            .with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .one()
-                )
+                locked = (await conn.execute(select(integration_batches).where(
+                    integration_batches.c.id == row["id"]).with_for_update())).mappings().one()
                 if locked["intent"] == "aborted":
                     return _intent_response("already_cancelled", locked)
                 if locked["lifecycle"] == "promoted":
@@ -1146,35 +1119,67 @@ class PromoteCommandsMixin:
                 await client.close_pull_request(number=meta["pr_number"])
                 members = await lane.service.store.members(row["id"])
                 now = time.time()
-                await conn.execute(
-                    update(integration_batches)
-                    .where(
-                        integration_batches.c.id == row["id"],
-                    )
-                    .values(
-                        intent="aborted",
-                        lifecycle="aborted",
-                        cleanup_state="pending",
-                        human_abort_reason=f"Cancelled by {_requester_identity(principal)}",
-                        updated_at=now,
-                    )
-                )
+                await conn.execute(update(integration_batches).where(
+                    integration_batches.c.id == row["id"]).values(
+                    intent="aborted", lifecycle="aborted", cleanup_state="pending",
+                    human_abort_reason=f"Cancelled by {_requester_identity(principal)}",
+                    updated_at=now))
                 await conn.execute(
                     update(tasks)
                     .where(tasks.c.id == members[0].task_id, tasks.c.status == "IN_PROGRESS")
                     .values(status="FAILED", updated_at=now)
                 )
             return self._woken({
-                "success": True,
-                "outcome": "cancelled",
-                "project_id": project.id,
-                "request_id": request.request_id,
-                "batch_id": row["id"],
-                "pr_url": meta["pr_url"],
+                "success": True, "outcome": "cancelled", "project_id": project.id,
+                "request_id": request.request_id, "batch_id": row["id"], "pr_url": meta["pr_url"],
             }, project.id, row["repository_id"], row["target_ref"])
         except PromotionRefusal as exc:
             return exc.response()
         except (GitError, GitHubAccessError, OSError, ValueError) as exc:
+            return _unavailable(exc)
+
+    async def _cmd_promote_repair(self, args):
+        """Back up, then restore a stranded promotion task to the row StepAdmission admits."""
+        from src.commands.contracts.promote import PromoteIntentArgs
+
+        request = PromoteIntentArgs.model_validate(args)
+        try:
+            project, _, _, _ = await self._promotion_inputs(
+                request.project_id, command="promote_repair")
+            row, _ = await self._promotion_intent(project.id, request.request_id)
+            async with self.db.immediate() as conn:
+                row = (await conn.execute(select(integration_batches).where(
+                    integration_batches.c.id == row["id"]).with_for_update())).mappings().one()
+                if row["intent"] == "aborted" or row["lifecycle"] in {
+                        "promoted", "aborted", "failed", "empty"}:
+                    raise PromotionRefusal("promotion_not_open", "Promotion intent is closed.")
+                members = (await conn.execute(select(tasks).join(
+                    integration_batch_members, integration_batch_members.c.task_id == tasks.c.id,
+                ).where(integration_batch_members.c.batch_id == row["id"]))).mappings().all()
+                if len(members) != 1 or (task := members[0])["task_type"] != "promotion":
+                    raise PromotionRefusal("promotion_intent_invalid",
+                                           "Intent has no single promotion task.")
+                result = {"success": True, "outcome": "already_healthy", "project_id": project.id,
+                          "request_id": row["request_id"], "batch_id": row["id"],
+                          "task_id": task["id"]}
+                if promotion_task_defect(task, allow_completed=True) is None:
+                    return result
+                backup = Path(self.config.data_dir, "backups", "promotion",
+                              f"{task['id']}-{time.time_ns()}.json")
+                def write_backup():  # before the row changes; a failed write changes nothing
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    backup.write_text(json.dumps(dict(task), default=str, indent=2, sort_keys=True))
+                await asyncio.to_thread(write_backup)
+                await conn.execute(update(tasks).where(tasks.c.id == task["id"]).values(
+                    status="IN_PROGRESS", profile_id=None, route_source=UNROUTED, route=None,
+                    updated_at=time.time()))
+            return self._woken(result | {"outcome": "repaired", "backup_path": str(backup),
+                                         "previous": {key: task[key] for key in (
+                                             "status", "profile_id", "route_source", "route")}},
+                               project.id, row["repository_id"], row["target_ref"])
+        except PromotionRefusal as exc:
+            return exc.response()
+        except (OSError, ValueError) as exc:
             return _unavailable(exc)
 
     async def _cmd_promote_status(self, args):

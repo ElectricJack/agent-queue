@@ -115,8 +115,6 @@ def ordered_development_members(frontier: DevelopmentFrontier, limit: int) -> tu
     return tuple(ordered)
 
 
-
-
 PolicyLoader = Callable[[str], Awaitable[PinnedDevelopmentPolicy]]
 FrontierReader = Callable[[Subject], Awaitable[DevelopmentFrontier]]
 RepositoryResolver = Callable[[Subject], Awaitable[RetainedRepository]]

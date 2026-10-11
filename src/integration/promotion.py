@@ -51,26 +51,6 @@ _IDENTITY_NAMESPACE = uuid.UUID("44f3c614-4c2c-4a03-a76d-33575d722b8d")
 _MAX_CONFLICT_BYTES = 65536
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 CrashHook = Callable[[str], Awaitable[None] | None]
 
 
@@ -1083,10 +1063,6 @@ class PromotionService(RepositoryGit):
         if review is None:
             raise PromotionSourceMoved("trusted review evidence is absent or superseded")
         return dict(route) | {"review_evidence": review}
-
-
-
-
 
     async def _assert_remote_source(self, store: Path, branch: str, expected: str) -> None:
         result = await self.git.als_remote_ref(str(store), branch)

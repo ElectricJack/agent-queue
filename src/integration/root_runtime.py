@@ -338,8 +338,6 @@ class RootObserver(IntegrationObserver):
         )
 
 
-
-
 class _RootObservationReader:
     def __init__(self, db, *, open_prs=None):
         self.db, self.open_prs = db, open_prs
@@ -399,8 +397,6 @@ class _RootObservationReader:
                 # before its subject writer mirror has been committed.
                 changes["writer"] = WriterLease()
         return replace(snapshot, subject=subject.model_copy(update=changes))
-
-
 
 
 class RootSubjectRuntime:
