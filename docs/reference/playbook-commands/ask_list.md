@@ -14,12 +14,13 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/api/models/ask.py`](../../../src/api/models/ask.py) |
-| Contract fingerprint | `sha256:3103c45b9f36f1960f11a44a912e0089822dc15e9e57f09e7ecef6564453c124` |
+| Contract fingerprint | `sha256:03a56eeedbca4e7ea3d93a6052b7756780accaa7a155cfc3035196dbaa1d45d0` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `source_kind` | `string \| null` | no | `null` | — |
 | `project_id` | `string \| null` | no | `null` | — |
 | `view` | `"needs_you" \| "waiting" \| "history"` | no | `"needs_you"` | — |
 | `limit` | `integer` | no | `50` | — |

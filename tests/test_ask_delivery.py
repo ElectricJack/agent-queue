@@ -131,6 +131,22 @@ async def test_pause_before_claim_and_immediately_before_send_consumes_no_attemp
     assert len(env.sink.messages) == 1
 
 
+async def test_legacy_alias_returns_canonical_delivery_receipt(delivery_env):
+    env = delivery_env
+    await settle(env)
+    root = await binding(env)
+    canonical = await env.handler.execute("ask_show", {"ask_id": env.ask["id"]})
+    alias = await env.handler.execute(
+        "ask_show", {"ask_id": env.gate["id"], "alias_kind": "gate"}
+    )
+
+    assert canonical["success"] and alias["success"], (canonical, alias)
+    assert alias["ask"]["id"] == canonical["ask"]["id"] == env.ask["id"]
+    assert alias["ask"]["delivery"] == canonical["ask"]["delivery"]
+    assert alias["ask"]["delivery"]["status"] == "Confirmed"
+    assert alias["ask"]["delivery"]["bindings"][0]["external_root_id"] == root["external_root_id"]
+
+
 async def test_unknown_create_survives_restart_without_repost(delivery_env):
     env = delivery_env
     env.sink.faults.append(("post_root", TransportAmbiguous("receipt lost")))

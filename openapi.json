@@ -24360,6 +24360,18 @@
       },
       "AskListRequest": {
         "properties": {
+          "source_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Kind",
+            "description": ""
+          },
           "project_id": {
             "anyOf": [
               {
@@ -24402,6 +24414,15 @@
       },
       "AskListResponse": {
         "properties": {
+          "view": {
+            "type": "string",
+            "title": "View",
+            "default": "needs_you"
+          },
+          "identity_hash": {
+            "type": "string",
+            "title": "Identity Hash"
+          },
           "success": {
             "type": "boolean",
             "title": "Success",
@@ -24440,6 +24461,7 @@
         },
         "type": "object",
         "required": [
+          "identity_hash",
           "items",
           "count",
           "snapshot_at",
@@ -24667,6 +24689,18 @@
       },
       "AskShowRequest": {
         "properties": {
+          "alias_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias Kind",
+            "description": ""
+          },
           "ask_id": {
             "type": "string",
             "title": "Ask Id",
@@ -24731,6 +24765,47 @@
             },
             "type": "array",
             "title": "Actions"
+          },
+          "history": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "History"
+          },
+          "obligations": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Obligations"
+          },
+          "operations": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Operations"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "source_health": {
+            "type": "string",
+            "title": "Source Health",
+            "default": "healthy"
           }
         },
         "type": "object",
@@ -24760,6 +24835,48 @@
             "type": "string",
             "title": "Id"
           },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "source_kind": {
+            "type": "string",
+            "title": "Source Kind"
+          },
+          "source_key": {
+            "type": "string",
+            "title": "Source Key"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity"
+          },
+          "next_actor": {
+            "type": "string",
+            "title": "Next Actor"
+          },
+          "display_version": {
+            "type": "integer",
+            "title": "Display Version"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "number",
+            "title": "Updated At"
+          },
+          "answer_pending": {
+            "type": "boolean",
+            "title": "Answer Pending",
+            "default": false
+          },
+          "held_while_paused": {
+            "type": "boolean",
+            "title": "Held While Paused",
+            "default": false
+          },
           "context_state": {
             "type": "string",
             "title": "Context State"
@@ -24785,6 +24902,14 @@
           "source_fingerprint",
           "feedback_version",
           "id",
+          "project_id",
+          "source_kind",
+          "source_key",
+          "severity",
+          "next_actor",
+          "display_version",
+          "created_at",
+          "updated_at",
           "context_state",
           "context",
           "application_state",
@@ -34261,6 +34386,39 @@
       },
       "EscalationGetResponse": {
         "properties": {
+          "ask_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ask Id"
+          },
+          "ask_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ask Url"
+          },
+          "deprecation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deprecation"
+          },
           "success": {
             "type": "boolean",
             "title": "Success",

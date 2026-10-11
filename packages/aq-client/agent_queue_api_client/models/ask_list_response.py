@@ -19,23 +19,29 @@ T = TypeVar("T", bound="AskListResponse")
 class AskListResponse:
     """
     Attributes:
+        identity_hash (str):
         items (list[AskSourceRecord]):
         count (int):
         snapshot_at (float):
         source_health (str):
+        view (str | Unset):  Default: 'needs_you'.
         success (bool | Unset):  Default: True.
         next_cursor (None | str | Unset):
     """
 
+    identity_hash: str
     items: list[AskSourceRecord]
     count: int
     snapshot_at: float
     source_health: str
+    view: str | Unset = "needs_you"
     success: bool | Unset = True
     next_cursor: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        identity_hash = self.identity_hash
+
         items = []
         for items_item_data in self.items:
             items_item = items_item_data.to_dict()
@@ -46,6 +52,8 @@ class AskListResponse:
         snapshot_at = self.snapshot_at
 
         source_health = self.source_health
+
+        view = self.view
 
         success = self.success
 
@@ -59,12 +67,15 @@ class AskListResponse:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
+                "identity_hash": identity_hash,
                 "items": items,
                 "count": count,
                 "snapshot_at": snapshot_at,
                 "source_health": source_health,
             }
         )
+        if view is not UNSET:
+            field_dict["view"] = view
         if success is not UNSET:
             field_dict["success"] = success
         if next_cursor is not UNSET:
@@ -77,6 +88,8 @@ class AskListResponse:
         from ..models.ask_source_record import AskSourceRecord
 
         d = dict(src_dict)
+        identity_hash = d.pop("identity_hash")
+
         items = []
         _items = d.pop("items")
         for items_item_data in _items:
@@ -90,6 +103,8 @@ class AskListResponse:
 
         source_health = d.pop("source_health")
 
+        view = d.pop("view", UNSET)
+
         success = d.pop("success", UNSET)
 
         def _parse_next_cursor(data: object) -> None | str | Unset:
@@ -102,10 +117,12 @@ class AskListResponse:
         next_cursor = _parse_next_cursor(d.pop("next_cursor", UNSET))
 
         ask_list_response = cls(
+            identity_hash=identity_hash,
             items=items,
             count=count,
             snapshot_at=snapshot_at,
             source_health=source_health,
+            view=view,
             success=success,
             next_cursor=next_cursor,
         )

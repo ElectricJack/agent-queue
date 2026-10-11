@@ -21,7 +21,8 @@ from src.database.tables import (
     escalations,
     metadata,
 )
-from tests.ask_helpers import db as db_fixture, service as service_fixture  # noqa: F401
+from tests.ask_helpers import db as db_fixture  # noqa: F401
+from tests.ask_helpers import service as service_fixture  # noqa: F401
 from tests.test_ask_decisions import reserve
 
 pytestmark = pytest.mark.migration

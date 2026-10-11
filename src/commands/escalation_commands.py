@@ -310,8 +310,17 @@ class EscalationCommandsMixin:
         incident, _, error = await self._escalation_for_caller(args.get("escalation_id"))
         if error:
             return error
+        canonical = await self._cmd_ask_show({
+            "ask_id": incident["id"], "alias_kind": "escalation",
+        })
+        alias = ({"ask_id": canonical["ask"]["id"],
+                  "ask_url": f"/focus/asks/{canonical['ask']['id']}",
+                  "deprecation": "Use aq ask show/reply/prepare/decide for human decisions; "
+                                 "escalation get remains incident diagnostics"}
+                 if canonical.get("success") else {})
         return {
             "success": True,
+            **alias,
             "escalation": incident,
             "messages": await self.db.list_escalation_messages(incident["id"]),
             "deliveries": await self.db.list_escalation_deliveries(incident["id"]),

@@ -9,10 +9,13 @@ source reconciliation receipt before retry, never an expired-lease takeover.
 from __future__ import annotations
 
 import hashlib
+import base64
+import json
+import math
 from typing import Any
 
-from sqlalchemy import and_, insert, or_, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import and_, case, false, func, insert, literal, or_, select, true, tuple_, update
+from sqlalchemy.dialects.postgresql import aggregate_order_by, insert as pg_insert
 
 from src.asks.models import AskError, digest
 from src.database.tables import (
@@ -21,12 +24,14 @@ from src.database.tables import (
     ask_decisions,
     ask_reconciliation_cases,
     ask_source_aliases,
+    conversation_inputs,
     doc_review_comments,
     doc_review_revisions,
     doc_reviews,
     escalation_actions,
     escalation_messages,
     human_asks,
+    projects,
     review_feedback_obligations,
 )
 
@@ -35,7 +40,162 @@ def _dict(row):
     return dict(row) if row is not None else None
 
 
+def ask_audience_predicate(*, actor_id, project_ids=None, public=False, channel_id=None):
+    """Shared audience boundary, applied in SQL before counting or paging."""
+    audience = human_asks.c.audience
+    allowed = or_(
+        audience["principals"].astext.is_(None),
+        audience["principals"] == [],
+        audience["principals"].contains([actor_id]),
+    )
+    if public:
+        allowed = and_(
+            allowed,
+            func.coalesce(audience["private"].as_boolean(), false()) == false(),
+            func.coalesce(audience["kind"].astext, "") != "private",
+            or_(audience["principals"].astext.is_(None), audience["principals"] == []),
+        )
+    if public:
+        channels = audience["channel_ids"]
+        allowed = and_(allowed, or_(
+            channels.astext.is_(None), channels == [],
+            channels.contains([str(channel_id)]) if channel_id is not None else false(),
+        ))
+    if project_ids is not None:
+        allowed = and_(allowed, human_asks.c.project_id.in_(project_ids))
+    return allowed
+
+
+def ask_view_predicate(view="needs_you", *, actor_id="human:local-operator"):
+    """Needs you is a decision count. Discussion and obligations never add rows."""
+    review_decider = human_asks.c.decider["review_decider"].astext
+    can_decide = or_(
+        and_(review_decider.is_(None),
+             or_(human_asks.c.decider["principal"].astext == actor_id,
+                 and_(human_asks.c.decider["principal"].astext.is_(None),
+                      true() if actor_id.startswith("human:") else false()))),
+        review_decider.in_(("user", "user_or_supervisor"))
+        if actor_id.startswith("human:") else review_decider == "user_or_supervisor",
+    )
+    pending = human_asks.c.decision_state == "pending"
+    needs = and_(
+        pending, human_asks.c.next_actor == "human",
+        human_asks.c.context_state == "complete",
+        human_asks.c.application_state == "not_started", can_decide,
+    )
+    waiting = or_(
+        human_asks.c.application_state.in_(("applying", "failed", "unknown")),
+        human_asks.c.decision_state == "changes_requested",
+        and_(pending, ~needs),
+    )
+    return needs if view == "needs_you" else waiting if view == "waiting" else ~or_(needs, waiting)
+
+
+def _ask_rank():
+    return case(
+        (human_asks.c.severity == "critical", 0), (human_asks.c.severity == "high", 1),
+        (human_asks.c.severity == "medium", 2), (human_asks.c.severity == "low", 3),
+        else_=4,
+    )
+
+
+def _cursor_decode(cursor, scope):
+    try:
+        value = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+        rank, created, identity = value["after"]
+        if (value["scope"] != scope or type(rank) is not int or not 0 <= rank <= 4
+                or type(created) not in (int, float) or not math.isfinite(created)
+                or not isinstance(identity, str) or not identity):
+            raise ValueError()
+        return rank, created, identity
+    except (ValueError, TypeError, KeyError, UnicodeError):
+        raise AskError("ask.invalid_cursor", "List cursor is invalid for these filters; refresh") from None
+
+
 class AskQueriesMixin:
+    async def list_asks_snapshot(
+        self, *, conn, actor_id="human:local-operator", project_ids=None,
+        view="needs_you", source_kind=None, limit=50, cursor=None, public=False, channel_id=None,
+    ):
+        """Count, health, and page use one PostgreSQL statement/read snapshot.
+
+        The cursor carries sort values rather than requiring a still-pending row.
+        Finishing the last item on a page cannot strand the remaining pages.
+        """
+        if not 1 <= limit <= 100:
+            raise AskError("ask.invalid_input", "Page size must be between 1 and 100")
+        scope = digest([actor_id, sorted(project_ids) if project_ids is not None else None,
+                        view, source_kind, public, channel_id])
+        audience = ask_audience_predicate(
+            actor_id=actor_id, project_ids=project_ids, public=public, channel_id=channel_id,
+        )
+        visible = select(human_asks).where(audience).cte("visible_asks")
+        filtered = select(human_asks, _ask_rank().label("sort_rank")).where(
+            audience, ask_view_predicate(view, actor_id=actor_id),
+        )
+        if source_kind:
+            filtered = filtered.where(human_asks.c.source_kind == source_kind)
+        filtered = filtered.cte("matching_asks")
+        page = select(filtered)
+        if cursor:
+            page = page.where(tuple_(filtered.c.sort_rank, filtered.c.created_at, filtered.c.id)
+                              > _cursor_decode(cursor, scope))
+        page = page.order_by(filtered.c.sort_rank, filtered.c.created_at, filtered.c.id).limit(
+            limit + 1).subquery()
+        projected = select(human_asks.c.id).where(
+            human_asks.c.source_kind == "review", human_asks.c.source_key == doc_reviews.c.id,
+            human_asks.c.project_id == doc_reviews.c.project_id,
+        ).exists()
+        missing = select(doc_reviews.c.id).where(
+            doc_reviews.c.state == "in_review",
+            doc_reviews.c.decider.in_(("user", "user_or_supervisor")), ~projected,
+            doc_reviews.c.project_id.in_(project_ids) if project_ids is not None else true(),
+        ).exists()
+        unavailable = select(visible.c.id).where(
+            visible.c.source_kind == "review",
+            ~select(doc_reviews.c.id).where(doc_reviews.c.id == visible.c.source_key).exists(),
+        ).exists()
+        stale = select(doc_reviews.c.id).join(
+            visible, and_(visible.c.source_kind == "review", visible.c.source_key == doc_reviews.c.id)
+        ).where(or_(doc_reviews.c.feedback_version != visible.c.feedback_version,
+                    doc_reviews.c.updated_at > visible.c.updated_at)).exists()
+        degraded = select(visible.c.id).where(
+            visible.c.context_state.in_(("quarantined", "context_needed"))
+        ).exists()
+        summary = select(
+            select(func.count()).select_from(filtered).scalar_subquery().label("count"),
+            select(func.md5(func.coalesce(func.string_agg(
+                filtered.c.id, aggregate_order_by(literal(","), filtered.c.id)), "")))
+            .select_from(filtered).scalar_subquery().label("identity_hash"),
+            func.extract("epoch", func.statement_timestamp()).label("snapshot_at"),
+            case((or_(degraded, unavailable), "degraded"),
+                 (or_(stale, missing), "refreshing"), else_="healthy").label("source_health"),
+        ).subquery()
+        answering = select(conversation_inputs.c.id).where(
+            conversation_inputs.c.ask_id == page.c.id,
+            conversation_inputs.c.routing_state == "discussion",
+            conversation_inputs.c.reply_message_id.is_(None),
+            conversation_inputs.c.state.not_in(("expired", "revoked")),
+        ).exists()
+        rows = (await conn.execute(
+            select(summary, page, answering.label("answer_pending"),
+                   (projects.c.status == "PAUSED").label("held_while_paused"))
+            .select_from(summary.outerjoin(page, true()).outerjoin(
+                projects, projects.c.id == page.c.project_id))
+            .order_by(page.c.sort_rank, page.c.created_at, page.c.id)
+        )).mappings().all()
+        items = [{k: row[k] for k in (*human_asks.c.keys(), "held_while_paused", "answer_pending")}
+                 for row in rows if row["id"] is not None]
+        next_cursor = None
+        if len(items) > limit:
+            last = rows[limit - 1]
+            next_cursor = base64.urlsafe_b64encode(json.dumps({
+                "scope": scope, "after": [last["sort_rank"], last["created_at"], last["id"]],
+            }).encode()).decode()
+        return {"view": view, "items": items[:limit], "count": rows[0]["count"],
+                "snapshot_at": float(rows[0]["snapshot_at"]), "next_cursor": next_cursor,
+                "source_health": rows[0]["source_health"], "identity_hash": rows[0]["identity_hash"]}
+
     async def get_ask(self, ask_id: str, *, conn, lock: bool = False) -> dict | None:
         stmt = select(human_asks).where(human_asks.c.id == ask_id)
         if lock:
