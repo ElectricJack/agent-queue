@@ -876,6 +876,8 @@ async def test_comment_stores_its_anchor_and_emits(svc, db, hooks, clock):
         "resolved_in_revision": None,
         "created_at": NOW + 3,
         "created_seq": 1,
+        "source_discussion_id": None,
+        "responder_disposition": None,
     }
     [event] = hooks.of("review.commented")
     assert event["comment_id"] == made["comment_id"]

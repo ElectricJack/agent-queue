@@ -308,6 +308,9 @@
     "document-reviews": {
       "description": "Document reviews: the review service, schema and queries, revision block diffs, vault review files, review gates on downstream tasks, the reopen cascade, dedup keys, the review notifier, commands, doctor checks and spec approval.",
       "modules": [
+        "tests/test_ask_decisions.py",
+        "tests/test_ask_migration.py",
+        "tests/test_ask_sources.py",
         "tests/test_proposal_api.py",
         "tests/test_review_commands.py",
         "tests/test_review_diff.py",
@@ -826,6 +829,7 @@
         "tests/test_migration_guard.py",
         "tests/test_migration_guard_restoration.py",
         "tests/test_migration_handoff.py",
+        "tests/test_migration_human_asks.py",
         "tests/test_migration_integration_cleanup.py",
         "tests/test_migration_integration_cleanup_hardening.py",
         "tests/test_migration_integration_controls.py",
@@ -2860,6 +2864,52 @@
         "parametrize"
       ],
       "summary": "Tests for the task archiving feature."
+    },
+    "tests/test_ask_decisions.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:29e5bbde5a974874bdc6f8a9c95f2e47849fad6d472ea5f7b9d602ffb933e6c3",
+      "imports": [
+        "src.asks.models",
+        "src.asks.service",
+        "src.database.tables",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Foundational packet/idempotency, durable audit and operation lease invariants."
+    },
+    "tests/test_ask_migration.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:4aba84e23784ee46b62158442b630bce60e6fe8923857277303beee1981607fb",
+      "imports": [
+        "src.asks.models",
+        "src.database.tables"
+      ],
+      "markers": [],
+      "summary": "A02: canonical identity/aliases and replayable quarantine without title merging."
+    },
+    "tests/test_ask_sources.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:5084c9ef970ea054592f50cd90751e5b4e58bbf7fe94fdbf28970ea73c0244bc",
+      "imports": [
+        "src.asks.adapters",
+        "src.asks.models",
+        "src.database.tables"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "A01: bounded complete context, safe legacy projection and static source contracts."
     },
     "tests/test_assignment_routing.py": {
       "areas": [
@@ -11473,6 +11523,20 @@
         "migration"
       ],
       "summary": "Upgrade legacy handoffs in a disposable database, not the operator database."
+    },
+    "tests/test_migration_human_asks.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "digest": "sha256:489b4466cf95b67d0a917615aab996d6ea6b99c967fed2300a0e0673a2cf9130",
+      "imports": [
+        "src.database.tables"
+      ],
+      "markers": [
+        "migration"
+      ],
+      "summary": "A18: revision 91 on fresh metadata and the actual pre-91 shape, disposable PostgreSQL only."
     },
     "tests/test_migration_integration_cleanup.py": {
       "areas": [
