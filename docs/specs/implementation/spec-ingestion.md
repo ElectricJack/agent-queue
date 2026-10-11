@@ -14,9 +14,9 @@ The role launches on the enabled global `spec-ingest` agent definition, retainin
 its saved name, id and execution overrides. Generic pool definitions cannot take
 this assignment, the ingestion agent cannot take ordinary implementation tasks,
 and busy or disabled role definitions do not create duplicates.
-The shipped profile grants `knowledge_show` and `knowledge_search` for prime's
-project knowledge context, plus `record_search` and `record_capabilities` for
-explicit scoped discovery. Existing installs receive these grants through the
+The shipped profile grants `knowledge_show` and `record_search` for prime's
+project knowledge context and scoped discovery, plus `record_capabilities` for
+inspecting available record operations. Existing installs receive these grants through the
 operator's `aq agent profile-reseed --profile-id spec-ingest --grants-only`;
 the shipped file remains write-if-absent.
 

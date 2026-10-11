@@ -63,7 +63,7 @@ def context_bundle_commands(config, query=""):
     rather than restated, so a caller that is refused a read can be told which
     grant is missing without a second copy of the rules drifting. Reading any
     scope always needs ``knowledge_show``; lexical discovery additionally needs
-    ``knowledge_search``, and only when the request actually reaches it (a
+    ``record_search``, and only when the request actually reaches it (a
     query to search with and a non-zero discovery budget).
 
     Names only — an operator reads this to find the missing grant, so it never
@@ -71,7 +71,7 @@ def context_bundle_commands(config, query=""):
     """
     commands = ["knowledge_show"]
     if query and ContextBudget.from_config(config).discovery_items:
-        commands.append("knowledge_search")
+        commands.append("record_search")
     return tuple(commands)
 
 
@@ -283,7 +283,7 @@ class ContextService(KnowledgeService):
                 seen.add(key)
         if query and budget.discovery_items:
             for access in accesses:
-                if not principal.policy.allows_aq_command("knowledge_search"):
+                if not principal.policy.allows_aq_command("record_search"):
                     raise RecordError("record.forbidden")
                 rows = await lexical_search_on(conn, access=access, query=query,
                                                 limit=budget.discovery_items)

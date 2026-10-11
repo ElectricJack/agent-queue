@@ -34,7 +34,7 @@ async def context_setup(reuse_database):
     config.knowledge.context.discovery_max_tokens = 4000
     await seed_project(db)
     service = ContextService(db, config)
-    grants = ["knowledge_show", "knowledge_search", "knowledge_cite", "knowledge_context_deliver"]
+    grants = ["knowledge_show", "record_search", "knowledge_cite", "knowledge_context_deliver"]
     worker = await worker_principal(db, grants=grants)
     supervisor = await worker_principal(db, "supervisor", elevated=True, grants=grants)
     created = await KnowledgeService(db, config.knowledge).create(
@@ -76,6 +76,16 @@ async def test_shipped_spec_ingest_grants_prepare_project_knowledge_context(cont
     assert any(item.record_id == created["record_id"] for item in bundle.items)
     assert policy.allows_aq_command("record_search")
     assert policy.allows_aq_command("record_capabilities")
+
+
+@pytest.mark.parametrize("search_grants", [[], ["knowledge_search"]])
+async def test_context_discovery_requires_canonical_record_search(context_setup, search_grants):
+    _, _, service, worker, _, _ = context_setup
+    reader = replace(worker, policy=CapabilityPolicy.from_namespaces(
+        aq_commands=["knowledge_show", *search_grants],
+    ))
+    with pytest.raises(RecordError, match="record.forbidden"):
+        await prepare(service, reader)
 
 
 async def test_repeated_prime_inputs_reuse_but_refresh_and_scope_changes_do_not(context_setup):
@@ -186,7 +196,7 @@ async def test_redaction_scrubs_stored_excerpt_and_refuses_delivery(context_setu
 async def test_bootstrap_is_narrow_and_global_has_no_default_private_scan(context_setup):
     db, _, service, worker, _, _ = context_setup
     profile = AgentProfile(id="supervisor", name="Supervisor",
-                               aq_commands=["knowledge_show", "knowledge_search", "knowledge_share",
+                               aq_commands=["knowledge_show", "record_search", "knowledge_share",
                                             "knowledge_context_deliver"])
     global_boot = supervisor_bootstrap_principal(
         profile, project_id=None, session_id="new-global", instance_token="global-instance",
@@ -305,7 +315,7 @@ async def test_named_supervisor_launch_injects_worker_selection_only_after_succe
     config.sessions.provider = "fake"
     config.knowledge.context.supervisor_query = "incident"
     profile = AgentProfile(id="supervisor", name="Supervisor", harness="codex", lifecycle="named",
-                           aq_commands=["knowledge_show", "knowledge_search",
+                           aq_commands=["knowledge_show", "record_search",
                                         "knowledge_context_deliver"])
     async def load_profile(_):
         return profile
@@ -351,7 +361,8 @@ async def test_prime_command_returns_prepared_bundle_and_delivery_command_record
     config.knowledge.context.discovery_max_tokens = 4000
     worker = await worker_principal(db)
     worker = replace(worker, task_id=None, policy=CapabilityPolicy.from_namespaces(
-        aq_commands=[*worker.policy.aq_commands, "prime", "knowledge_context_deliver"],
+        aq_commands=[*worker.policy.aq_commands, "prime", "record_search",
+                     "knowledge_context_deliver"],
     ))
     await KnowledgeService(db, config.knowledge).create(
         principal=TRUSTED_LOCAL, project_id="p", idempotency_key="prime-record",
@@ -430,7 +441,7 @@ async def test_prime_degrades_when_the_principal_lacks_the_knowledge_show_grant(
         assert await conn.scalar(select(func.count()).select_from(knowledge_citations)) == 0
 
     granted = replace(worker, policy=CapabilityPolicy.from_namespaces(
-        aq_commands=["prime", "knowledge_show", "knowledge_search"],
+        aq_commands=["prime", "knowledge_show", "record_search"],
     ))
     with principal_context(granted):
         delivered = await handler.execute("prime", {"_scope": scope})
@@ -501,14 +512,14 @@ async def test_prime_degradation_logs_one_warning_naming_the_missing_grant(
     assert f"task={worker.task_id or 'task-worker'}" in message
     assert "project=p" in message
     assert f"profile={worker.profile_id}" in message
-    assert "knowledge_show" in message and "knowledge_search" in message
+    assert "knowledge_show" in message and "record_search" in message
     # The refusal the document reports, and no corpus content in the log.
     assert "Common retained knowledge" not in message
     assert "prime-record" not in message
 
     # A prepared prime logs nothing: the warning is about the degradation.
     granted = replace(worker, policy=CapabilityPolicy.from_namespaces(
-        aq_commands=["prime", "knowledge_show", "knowledge_search"],
+        aq_commands=["prime", "knowledge_show", "record_search"],
     ))
     caplog.clear()
     with (caplog.at_level(logging.WARNING, logger="src.commands.surface_commands"),
@@ -521,7 +532,7 @@ async def test_prime_degradation_logs_one_warning_naming_the_missing_grant(
 def test_context_bundle_commands_names_only_the_grants_a_bundle_actually_needs():
     """The log line's grant list must not drift from the checks it describes.
 
-    ``prepare_on`` refuses ``knowledge_search`` only when a query is supplied
+    ``prepare_on`` refuses ``record_search`` only when a query is supplied
     and the discovery budget is non-zero, so a no-query or zero-budget caller
     needs ``knowledge_show`` alone. The helper is the single source both read.
     """
@@ -532,7 +543,7 @@ def test_context_bundle_commands_names_only_the_grants_a_bundle_actually_needs()
     config.knowledge = knowledge_config()
     config.memory.enabled = True
     assert context_bundle_commands(config, "incident") == (
-        "knowledge_show", "knowledge_search")
+        "knowledge_show", "record_search")
     # No query, so lexical discovery is never reached.
     assert context_bundle_commands(config, "") == ("knowledge_show",)
     config.knowledge.context.discovery_max_items = 0
@@ -564,7 +575,7 @@ async def test_prime_keeps_surfacing_a_missing_attempt_rather_than_degrading(
     config.knowledge = knowledge_config()
     config.knowledge.context.enabled = config.memory.enabled = True
     worker = replace(await worker_principal(db, grants=[
-        "prime", "knowledge_show", "knowledge_search",
+        "prime", "knowledge_show", "record_search",
     ]), task_id=None)
     scope = dict(kind="session", session_id=worker.session_id, project_id="p",
                  session_instance_token=worker.session_instance_token, task_id=None, elevated=False)

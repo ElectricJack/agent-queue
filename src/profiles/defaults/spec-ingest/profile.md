@@ -91,7 +91,6 @@ current code and live project graph (`list_tasks`, `get_downstream_tasks`).
     "get_downstream_tasks",
     "get_schema",
     "knowledge_show",
-    "knowledge_search",
     "list_tasks",
     "message_inbox",
     "message_reply",
