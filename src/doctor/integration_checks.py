@@ -14,39 +14,49 @@ _DEVELOPMENT_APP_ITEMS = frozenset({"credential", "repository", "protection"})
 _APP_MODE_SEVERITY = {"fail": Severity.ERROR, "warn": Severity.WARN}
 
 
+def _unavailable(check_id, detail="database unavailable"):
+    return CheckResult(check_id, Severity.INFO, detail)
+
+
+def _read_error(check_id, detail, exc):
+    return CheckResult(check_id, Severity.ERROR, detail,
+                       data={"errors": [{"error": f"{type(exc).__name__}: {exc}"}]})
+
+
+async def _check_delivery_engine(ctx: DoctorContext) -> CheckResult:
+    from src.integration.delivery_engine import project_delivery_issues
+
+    check_id = "integration.delivery_engine"
+    if ctx.db is None:
+        return _unavailable(check_id)
+    issues = await project_delivery_issues(
+        ctx.db, await ctx.db.list_projects(), ctx.config,
+        orchestrator=getattr(ctx.handler, "orchestrator", None),
+    )
+    return CheckResult(
+        check_id, Severity.ERROR if issues else Severity.OK,
+        "\n".join(issue["detail"] for issue in issues) if issues
+        else "every delivery mode has an engine and designated repository",
+        data={"projects": issues},
+    )
+
+
 async def _subjects(ctx, *, held):
     check_id = "integration.subjects_held" if held else "integration.subjects_overdue"
     if ctx.db is None:
-        return CheckResult(
-            id=check_id, severity=Severity.INFO, detail="database unavailable"
-        )
+        return _unavailable(check_id)
     now = time.time()
     table = integration_subjects.c
     condition = table.next_due_at.is_(None) if held else table.next_due_at < now - 60
     async with ctx.db._engine.connect() as conn:
-        rows = [
-            dict(row)
-            for row in (
-                await conn.execute(
-                    select(
-                        table.id,
-                        table.project_id,
-                        table.kind,
-                        table.phase,
-                        table.next_due_at,
-                        table.wait_reason,
-                        table.gate_id,
-                        table.due_set_at,
-                    )
-                    .where(table.phase != "done", condition)
-                    .order_by(table.id)
-                )
-            ).mappings()
-        ]
+        result = await conn.execute(select(
+            table.id, table.project_id, table.kind, table.phase, table.next_due_at,
+            table.wait_reason, table.gate_id, table.due_set_at,
+        ).where(table.phase != "done", condition).order_by(table.id))
+        rows = [dict(row) for row in result.mappings()]
     return CheckResult(
-        id=check_id,
-        severity=Severity.WARN if rows else Severity.OK,
-        detail=f"{len(rows)} subject(s) {'held for a human' if held else 'overdue for a visit'}",
+        check_id, Severity.WARN if rows else Severity.OK,
+        f"{len(rows)} subject(s) {'held for a human' if held else 'overdue for a visit'}",
         data={"subjects": rows, "observed_at": now},
     )
 
@@ -62,24 +72,19 @@ async def _check_subjects_held(ctx):
 async def _check_legacy_deliveries(ctx: DoctorContext) -> CheckResult:
     """Expose historical SHA claims which today's default branch cannot reach."""
     from src.database.tables import integration_legacy_deliveries, repos
-    from src.git.github import GitHubAccess
-    from src.git.manager import GitError, GitManager
-    from src.integration.delivery_observer import DeliveryObserver, DeliveryTarget
+    from src.git.manager import GitError
+    from src.integration.delivery_observer import DeliveryTarget
 
     check_id = "integration.legacy_deliveries"
     if ctx.db is None:
-        return CheckResult(id=check_id, severity=Severity.INFO, detail="database unavailable")
+        return _unavailable(check_id)
     async with ctx.db._engine.connect() as conn:
         rows = (await conn.execute(select(integration_legacy_deliveries).order_by(
             integration_legacy_deliveries.c.repository_id,
             integration_legacy_deliveries.c.task_id,
         ))).mappings().all()
         repositories = {row["id"]: row for row in (await conn.execute(select(repos))).mappings()}
-    observer = getattr(ctx.db, "_delivery_observer", None)
-    if observer is None and rows:
-        integration = getattr(ctx.config, "integration", None)
-        observer = DeliveryObserver(ctx.db, git=GitManager(GitHubAccess.from_config(
-            getattr(integration, "github_app", None))), data_dir=ctx.config.data_dir)
+    observer = _doctor_observer(ctx, prerequisite=False) if rows else None
     snapshots, findings, unknown = {}, [], []
     for row in rows:
         repo = repositories.get(row["repository_id"])
@@ -112,13 +117,14 @@ async def _check_legacy_deliveries(ctx: DoctorContext) -> CheckResult:
         data={"unreachable": findings, "unknown": unknown, "checked": len(rows)})
 
 
-def _doctor_observer(ctx: DoctorContext):
+def _doctor_observer(ctx: DoctorContext, *, prerequisite=True):
     """The daemon's delivery observer, or a fresh one for an offline doctor run."""
     from src.git.github import GitHubAccess
     from src.git.manager import GitManager
     from src.integration.delivery_observer import DeliveryObserver, prerequisite_observer
 
-    observer = prerequisite_observer(ctx.db) or getattr(ctx.db, "_delivery_observer", None)
+    observer = (prerequisite_observer(ctx.db) if prerequisite else None)
+    observer = observer or getattr(ctx.db, "_delivery_observer", None)
     if observer is None:
         integration = getattr(ctx.config, "integration", None)
         observer = DeliveryObserver(ctx.db, git=GitManager(GitHubAccess.from_config(
@@ -148,7 +154,7 @@ async def _check_completed_undelivered(ctx: DoctorContext) -> CheckResult:
     """List COMPLETED tasks whose branch holds work the default branch cannot reach."""
     check_id = "integration.completed_undelivered"
     if ctx.db is None:
-        return CheckResult(id=check_id, severity=Severity.INFO, detail="database unavailable")
+        return _unavailable(check_id)
     inventory = await completed_undelivered(ctx)
     entries = inventory["entries"]
     stranded = [e for e in entries if not e["accounted"] and e["rule"] != "unknown"]
@@ -187,40 +193,25 @@ async def _check_completed_undelivered(ctx: DoctorContext) -> CheckResult:
 async def _check_trust(ctx: DoctorContext) -> CheckResult:
     """Run ``aq integration app-verify`` for every App-mode project not disabled.
 
-    App-mode integration train spec §9.6: each ``fail`` item is an ERROR and each
-    ``warn`` item a WARN.  A project counts when the install configures
-    ``integration.github_app`` and its repository is on github.com; a local
-    remote never uses the App.  A development project is judged on the items
-    its publisher needs (credential, repository, protection); the train's
-    anchors are listed but not judged until the cutover.  A project the command
-    refuses (no binding, no designated repository) is an ERROR: App mode cannot
-    run it.  Read-only: the command only reads GitHub through the App.
+    Spec §9.6: fail/warn items become ERROR/WARN; refused commands are ERROR.
+    Only configured App-mode GitHub repositories count. Development judges
+    credential, repository and protection, listing train anchors without judging
+    them until cutover. This only reads GitHub through the App.
     """
     from src.projects.github import GitHubError, parse_github_repository
 
     check_id = "integration.trust"
     if ctx.db is None or ctx.handler is None:
-        return CheckResult(
-            id=check_id,
-            severity=Severity.INFO,
-            detail="App-mode readiness unavailable without database and command handler",
-        )
+        return _unavailable(check_id,
+                            "App-mode readiness unavailable without database and command handler")
     integration = getattr(ctx.config, "integration", None)
     if getattr(integration, "github_app", None) is None:
-        return CheckResult(
-            id=check_id,
-            severity=Severity.INFO,
-            detail="App credential mode is not configured (integration.github_app)",
-        )
+        return _unavailable(check_id,
+                            "App credential mode is not configured (integration.github_app)")
     try:
         projects = sorted(await ctx.db.list_projects(), key=lambda project: project.id)
     except Exception as exc:  # noqa: BLE001 - any read failure is the named finding
-        return CheckResult(
-            id=check_id,
-            severity=Severity.ERROR,
-            detail="could not enumerate projects; check db.migrations",
-            data={"errors": [{"error": f"{type(exc).__name__}: {exc}"}]},
-        )
+        return _read_error(check_id, "could not enumerate projects; check db.migrations", exc)
 
     reports: list[dict] = []
     findings: list[dict] = []
@@ -237,103 +228,54 @@ async def _check_trust(ctx: DoctorContext) -> CheckResult:
         except GitHubError:
             continue
         try:
-            result = await ctx.handler.execute(
-                "integration_app_verify", {"project_id": project.id}
-            )
+            result = await ctx.handler.execute("integration_app_verify", {"project_id": project.id})
         except Exception as exc:  # noqa: BLE001 - a crashed read is a finding, not a crash
-            result = {
-                "success": False,
-                "outcome": "error",
-                "error": f"{type(exc).__name__}: {exc}",
-            }
+            result = {"success": False, "outcome": "error",
+                      "error": f"{type(exc).__name__}: {exc}"}
         if not isinstance(result, dict) or not result.get("success"):
             refusal = result if isinstance(result, dict) else {}
             code = str(refusal.get("outcome") or "invalid_result")
-            entry = {
-                "project_id": project.id,
-                "mode": mode,
-                "code": code,
-                "error": refusal.get("error"),
-            }
+            entry = {"project_id": project.id, "mode": mode,
+                     "code": code, "error": refusal.get("error")}
             if code == "policy_missing" and mode == "development":
                 # The command needs a policy; a development project may have none yet.
                 unverified.append(entry)
             else:
-                findings.append(
-                    {
-                        **entry,
-                        "item": "app_verify",
-                        "status": "fail",
-                        "codes": [code],
-                        "fix": refusal.get("error"),
-                    }
-                )
+                findings.append({**entry, "item": "app_verify", "status": "fail",
+                                 "codes": [code], "fix": refusal.get("error")})
             continue
         judged = _DEVELOPMENT_APP_ITEMS if mode == "development" else None
         items = []
         for item in result.get("items") or []:
             status = item.get("status")
             counted = judged is None or item.get("id") in judged
-            items.append(
-                {
-                    "id": item.get("id"),
-                    "status": status,
-                    "codes": list(item.get("codes") or []),
-                    "judged": counted,
-                }
-            )
+            codes = list(item.get("codes") or [])
+            items.append({"id": item.get("id"), "status": status,
+                          "codes": codes, "judged": counted})
             if counted and status in _APP_MODE_SEVERITY:
-                findings.append(
-                    {
-                        "project_id": project.id,
-                        "mode": mode,
-                        "item": item.get("id"),
-                        "status": status,
-                        "codes": list(item.get("codes") or []),
-                        "fix": item.get("fix"),
-                    }
-                )
-        reports.append(
-            {
-                "project_id": project.id,
-                "mode": mode,
-                "ready": bool(result.get("ready")),
-                "items": items,
-            }
-        )
+                findings.append({"project_id": project.id, "mode": mode, "item": item.get("id"),
+                                 "status": status, "codes": codes, "fix": item.get("fix")})
+        reports.append({"project_id": project.id, "mode": mode,
+                        "ready": bool(result.get("ready")), "items": items})
 
     data = {"projects": reports, "findings": findings, "unverified": unverified}
     if findings:
-        severity = (
-            Severity.ERROR
-            if any(f["status"] == "fail" for f in findings)
-            else Severity.WARN
-        )
-        return CheckResult(
-            id=check_id,
-            severity=severity,
-            detail="; ".join(
-                f"{f['project_id']}: {f['item']} {f['status']} ({', '.join(f['codes'])})"
-                for f in findings
+        severity = Severity.ERROR if any(f["status"] == "fail" for f in findings) else Severity.WARN
+        detail = "; ".join(
+            f"{f['project_id']}: {f['item']} {f['status']} ({', '.join(f['codes'])})"
+            for f in findings
+        ) + "; run `aq integration app-verify PROJECT` for each fix"
+    elif not reports and not unverified:
+        severity = Severity.INFO
+        detail = "no enabled GitHub project to verify for App credential mode"
+    else:
+        severity = Severity.OK if reports else Severity.INFO
+        detail = f"{len(reports)} App-mode project(s) verified"
+        if unverified:
+            detail += "; not verified (development, no bound policy): " + ", ".join(
+                entry["project_id"] for entry in unverified
             )
-            + "; run `aq integration app-verify PROJECT` for each fix",
-            data=data,
-        )
-    if not reports and not unverified:
-        return CheckResult(
-            id=check_id,
-            severity=Severity.INFO,
-            detail="no enabled GitHub project to verify for App credential mode",
-            data=data,
-        )
-    detail = f"{len(reports)} App-mode project(s) verified"
-    if unverified:
-        detail += "; not verified (development, no bound policy): " + ", ".join(
-            entry["project_id"] for entry in unverified
-        )
-    severity = Severity.OK if reports else Severity.INFO
     return CheckResult(id=check_id, severity=severity, detail=detail, data=data)
-
 
 
 def _stop_confirmer(ctx: DoctorContext):
@@ -350,40 +292,25 @@ def _describe_owner(finding: dict) -> str:
 
 
 async def _check_finished_branch_owners(ctx: DoctorContext) -> CheckResult:
+    check_id = "integration.finished_branch_owners"
     if ctx.db is None:
-        return CheckResult(
-            id="integration.finished_branch_owners",
-            severity=Severity.INFO,
-            detail="database not initialised — branch ownership state unknown",
-        )
+        return _unavailable(check_id, "database not initialised — branch ownership state unknown")
     from src.integration.finished_owners import finished_branch_owners
 
     findings = await finished_branch_owners(ctx.db, confirm_stopped=_stop_confirmer(ctx))
     releasable = [f for f in findings if f["blocker"] is None]
     kept = [f for f in findings if f["blocker"] is not None]
-    data = {
-        "count": len(releasable),
-        "kept_count": len(kept),
-        "releasable": releasable[:50],
-        "kept": kept[:50],
-    }
+    data = {"count": len(releasable), "kept_count": len(kept),
+            "releasable": releasable[:50], "kept": kept[:50]}
     if not findings:
-        return CheckResult(
-            id="integration.finished_branch_owners",
-            severity=Severity.OK,
-            detail="no branch owner row is held for a task that finished or is gone",
-        )
+        return CheckResult(check_id, Severity.OK,
+                           "no branch owner row is held for a task that finished or is gone")
     if not releasable:
         first = kept[0]
         return CheckResult(
-            id="integration.finished_branch_owners",
-            severity=Severity.INFO,
-            detail=(
-                f"{len(kept)} branch owner row(s) held for a finished or deleted task are "
-                f"kept on purpose — e.g. {_describe_owner(first)}: {first['blocker']}"
-            ),
-            data=data,
-        )
+            check_id, Severity.INFO,
+            f"{len(kept)} branch owner row(s) held for a finished or deleted task "
+            f"are kept on purpose — e.g. {_describe_owner(first)}: {first['blocker']}", data=data)
     first = releasable[0]
     detail = (
         f"{len(releasable)} branch owner row(s) are still held for a task that finished or "
@@ -397,57 +324,37 @@ async def _check_finished_branch_owners(ctx: DoctorContext) -> CheckResult:
         detail += (
             f"; {len(kept)} more are kept — e.g. {_describe_owner(kept[0])}: {kept[0]['blocker']}"
         )
-    return CheckResult(
-        id="integration.finished_branch_owners",
-        severity=Severity.WARN,
-        detail=detail,
-        fixable=True,
-        data=data,
-    )
+    return CheckResult(check_id, Severity.WARN, detail, fixable=True, data=data)
 
 
 async def _fix_finished_branch_owners(ctx: DoctorContext) -> CheckResult:
-    """Release each owner row the check clears, re-proving it under lock.
-
-    Safe to repeat: a released row is never selected again, so a second run
-    reports clean rather than writing a second event.
-    """
+    """Release cleared owners under lock; repeats neither select them nor write more events."""
     from src.integration.finished_owners import release_finished_branch_owners
 
     released = await release_finished_branch_owners(
         ctx.db, confirm_stopped=_stop_confirmer(ctx), released_by="doctor"
     )
     return CheckResult(
-        id="integration.finished_branch_owners",
-        severity=Severity.OK,
-        detail=(
-            f"released {len(released)} branch owner row(s) held for a finished or deleted "
-            "task; each is recorded as an integration.branch_owner_released event"
-        ),
-        fixable=True,
-        fix_applied=True,
+        "integration.finished_branch_owners", Severity.OK,
+        f"released {len(released)} branch owner row(s) held for a finished or deleted "
+        "task; each is recorded as an integration.branch_owner_released event",
+        fixable=True, fix_applied=True,
         data={"count": len(released), "released": released[:50]},
     )
 
 
 async def _check_promotion_flow(ctx: DoctorContext) -> CheckResult:
-    """Re-run layers 1-3 on every stored promotion flow (R17, spec §3.11).
+    """Revalidate stored flows (layers 1-3, R17, spec §3.11), naming the first failure.
 
-    A flow that stopped validating (a manifest change, a default-branch rename,
-    a tightened schema) leaves its targets ``misconfigured`` and the train
-    promoting to the default branch; this names the first failing pointer per
-    project. Read-only: the flow is operator configuration, so nothing is
-    fixed here.
+    Invalid flows leave targets ``misconfigured`` and the train promoting to
+    the default branch. Read-only: flows are operator configuration.
     """
     from src.integration.promotion_steps import recheck_stored_flows
 
     check_id = "integration.promotion_flow"
     if ctx.db is None or ctx.handler is None:
-        return CheckResult(
-            id=check_id,
-            severity=Severity.INFO,
-            detail="promotion flow re-validation unavailable without database and command handler",
-        )
+        detail = "promotion flow re-validation unavailable without database and command handler"
+        return _unavailable(check_id, detail)
     handler = ctx.handler
     try:
         found = await recheck_stored_flows(
@@ -455,24 +362,16 @@ async def _check_promotion_flow(ctx: DoctorContext) -> CheckResult:
             lambda project_id: handler.execute("promote_validate", {"project_id": project_id}),
         )
     except Exception as exc:  # noqa: BLE001 - any read failure is the named finding
-        return CheckResult(
-            id=check_id,
-            severity=Severity.ERROR,
-            detail="could not read stored promotion flows; check db.migrations",
-            data={"errors": [{"error": f"{type(exc).__name__}: {exc}"}]},
+        return _read_error(
+            check_id, "could not read stored promotion flows; check db.migrations", exc,
         )
     if not found:
         return CheckResult(
             id=check_id, severity=Severity.OK, detail="every stored promotion flow validates"
         )
     projects = [
-        {
-            "project_id": project_id,
-            "code": problems[0].get("code"),
-            "pointer": problems[0].get("pointer"),
-            "message": problems[0].get("message"),
-            "problems": problems,
-        }
+        {"project_id": project_id, "problems": problems,
+         **{key: problems[0].get(key) for key in ("code", "pointer", "message")}}
         for project_id, problems in sorted(found.items())
     ]
     named = "; ".join(
@@ -505,10 +404,7 @@ async def _check_ci_source(ctx: DoctorContext) -> CheckResult:
 
     check_id = "integration.ci_source"
     if ctx.db is None:
-        return CheckResult(
-            id=check_id, severity=Severity.INFO,
-            detail="CI source report unavailable without database",
-        )
+        return _unavailable(check_id, "CI source report unavailable without database")
     async with ctx.db._engine.connect() as conn:
         rows = (await conn.execute(select(
             projects.c.id, projects.c.hierarchical_integration_policy,
@@ -563,30 +459,19 @@ async def _check_ci_source(ctx: DoctorContext) -> CheckResult:
 
 def integration_checks() -> list[DoctorCheck]:
     return [
-        DoctorCheck(id="integration.legacy_deliveries", run=_check_legacy_deliveries,
-                    owner=OWNER, timeout_s=300.0),
-        DoctorCheck(id="integration.completed_undelivered", run=_check_completed_undelivered,
-                    owner=OWNER, timeout_s=300.0),
-        DoctorCheck(
-            id="integration.finished_branch_owners", run=_check_finished_branch_owners,
-            fix=_fix_finished_branch_owners, owner=OWNER, timeout_s=30.0,
-        ),
-        DoctorCheck(
-            id="integration.subjects_overdue", run=_check_subjects_overdue, owner=OWNER
-        ),
-        DoctorCheck(
-            id="integration.subjects_held", run=_check_subjects_held, owner=OWNER
-        ),
-        DoctorCheck(
-            id="integration.trust", run=_check_trust, owner=OWNER, timeout_s=60.0
-        ),
-        DoctorCheck(
-            id="integration.promotion_flow", run=_check_promotion_flow, owner=OWNER,
-            timeout_s=60.0,
-        ),
-        DoctorCheck(
-            id="integration.ci_source", run=_check_ci_source, owner=OWNER, timeout_s=30.0
-        ),
+        DoctorCheck(id=f"integration.{name}", run=run, fix=fix, timeout_s=timeout, owner=OWNER)
+        for name, run, timeout, fix in (
+            ("delivery_engine", _check_delivery_engine, 30.0, None),
+            ("legacy_deliveries", _check_legacy_deliveries, 300.0, None),
+            ("completed_undelivered", _check_completed_undelivered, 300.0, None),
+            ("finished_branch_owners", _check_finished_branch_owners,
+             30.0, _fix_finished_branch_owners),
+            ("subjects_overdue", _check_subjects_overdue, 5.0, None),
+            ("subjects_held", _check_subjects_held, 5.0, None),
+            ("trust", _check_trust, 60.0, None),
+            ("promotion_flow", _check_promotion_flow, 60.0, None),
+            ("ci_source", _check_ci_source, 30.0, None),
+        )
     ]
 
 

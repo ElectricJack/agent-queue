@@ -5534,7 +5534,36 @@ class TaskCommandsMixin:
         admission = await observe_admission(
             self.db, [str(task_id)], self._development_integration(), cached_only=True,
         )
-        reasons.extend(admission.reasons.get(str(task_id), []))
+        from src.integration.delivery_engine import project_delivery_issue
+
+        delivery_issues = {}
+        project = await self.db.get_project(task.project_id)
+        if project is not None:
+            delivery_issues[project.id] = await project_delivery_issue(
+                self.db, project, self.config, orchestrator=self.orchestrator,
+            )
+        for delivery_reason in admission.reasons.get(str(task_id), []):
+            prerequisite = await self.db.get_task(delivery_reason["ref"])
+            prerequisite_project_id = prerequisite.project_id if prerequisite else None
+            if prerequisite is None:
+                archived = await self.db.get_archived_task(delivery_reason["ref"])
+                prerequisite_project_id = archived["project_id"] if archived else None
+            if prerequisite_project_id and prerequisite_project_id not in delivery_issues:
+                prerequisite_project = await self.db.get_project(prerequisite_project_id)
+                delivery_issues[prerequisite_project_id] = (
+                    await project_delivery_issue(
+                        self.db, prerequisite_project, self.config, orchestrator=self.orchestrator,
+                    ) if prerequisite_project is not None else None
+                )
+            issue = delivery_issues.get(prerequisite_project_id)
+            reasons.append(
+                Reason(code="delivery_engine_unavailable", detail=issue["detail"],
+                       ref=delivery_reason["ref"]) if issue else delivery_reason
+            )
+        issue = delivery_issues.get(task.project_id)
+        if issue and not any(reason.get("code") == "delivery_engine_unavailable" for reason in reasons):
+            reasons.append(Reason(code="delivery_engine_unavailable", detail=issue["detail"],
+                                  ref=task.project_id))
         if str(task_id) not in admission.allowed and not admission.reasons.get(str(task_id)):
             reasons.append(Reason(
                 code="development_snapshot_changed",

@@ -107,6 +107,21 @@ class IntegrationService:
         self._unwinding = {}
         self._skip_reported = set()
 
+    def delivery_modes(self) -> frozenset[str]:
+        """Modes with a selected writer; stopped services cannot deliver."""
+        from src.integration.delivery_engine import DELIVERY_MODES
+
+        if self._stop_event.is_set():
+            return frozenset()
+        if self._train is not None:
+            return DELIVERY_MODES
+        modes = set()
+        if self._subject_runtime is not None and self._parent_subject_runtime is not None:
+            modes.update({"hierarchy", "train"})
+        if self._development_subject_runtime is not None:
+            modes.add("development")
+        return frozenset(modes)
+
     async def tick(self, now, *, background=False):
         if self._tick_lock.locked():
             return

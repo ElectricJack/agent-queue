@@ -5250,7 +5250,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:444c636e0cd1752878369557435a364ca4849c0cad0b5d0e63660b282cf559b3",
+      "digest": "sha256:47e339c61a3d95619256bd0c3211f806ea6d454c529f5943c811d499cb78f8fb",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -5265,6 +5265,7 @@
         "src.integration.git_truth",
         "src.integration.provenance",
         "src.integration.publishable_artifact",
+        "src.integration.service",
         "src.integration.source_trailer",
         "src.integration.status",
         "src.models",
@@ -5855,16 +5856,22 @@
         "integration-controls"
       ],
       "default_arm": true,
-      "digest": "sha256:57e8352dab8b5c733210151c47a3a3555ce2e9064fb392202554e53fd833ebc6",
+      "digest": "sha256:728fda8c522848c371549732c588e6c15138a403b881a2c1d07acb637c5810e0",
       "imports": [
+        "src.commands.project_commands",
+        "src.config",
         "src.database.tables",
         "src.doctor",
         "src.doctor.integration_checks",
         "src.doctor.models",
+        "src.integration.delivery_engine",
+        "src.integration.records",
+        "src.integration.service",
         "src.models"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Subject schedule/hold diagnostics and the retained App trust check."
     },

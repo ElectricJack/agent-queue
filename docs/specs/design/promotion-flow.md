@@ -52,6 +52,20 @@ for legacy operation and recovery; active train startup does not construct them.
 Shared definitions have one retained owner, with compatibility imports for old
 callers until retirement.
 
+Delivery availability is checked against the selected runtime, rather than the
+presence of legacy publisher objects. An active train serves `train`, `hierarchy`
+and `development`; legacy subject delivery requires active reconciler visits.
+`disabled` and `observe` deliberately have no writer. A delivering project whose
+selected engine is unavailable, or whose designated repository is missing or
+belongs to another project, is reported by `integration.delivery_engine` and the
+`stall.sweep` patrol. Offline doctor uses startup configuration; daemon diagnostics
+use the selected service when available. These checks never migrate operator policy.
+Commands refuse enabling a mode with no selected engine, while still allowing an
+operator to disable integration. Task explanations name `delivery_engine_unavailable`
+and say "no delivery engine for this project" for undeliverable prerequisites,
+instead of describing their delivery as ordinary pending work. Git proof remains
+the authority for dependency admission.
+
 The reviewed policies request, gate, publish and backmerge through commands.
 They do not publish GitHub Releases or dispatch deploy hooks. Keep those optional
 `after` settings disabled for this rollout. Release tags and operator deployment

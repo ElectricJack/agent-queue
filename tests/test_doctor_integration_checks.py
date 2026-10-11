@@ -10,6 +10,146 @@ from src.models import Project
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("git_first,reconciler,mode,broken", [
+    ("active", False, "development", False),
+    ("active", False, "hierarchy", False),
+    ("active", False, "train", False),
+    ("shadow", True, "development", False),
+    ("shadow", False, "development", True),
+    ("shadow", False, "hierarchy", True),
+    ("shadow", False, "train", True),
+    ("shadow", False, "disabled", False),
+    ("shadow", False, "observe", False),
+])
+async def test_delivery_engine_matches_startup_selection(git_first, reconciler, mode, broken):
+    from src.config import AppConfig
+    from src.doctor.integration_checks import _BY_ID
+
+    config = AppConfig()
+    config.integration.git_first = git_first
+    config.integration.reconciler_active = reconciler
+    project = _app_project("p", mode, repository_id="r")
+    db = SimpleNamespace(
+        list_projects=AsyncMock(return_value=[project]),
+        get_repo=AsyncMock(return_value=SimpleNamespace(id="r", project_id="p")),
+    )
+    check = _BY_ID["integration.delivery_engine"]
+    result = await check.run(DoctorContext(config=config, db=db))
+    assert result.severity == (Severity.ERROR if broken else Severity.OK)
+    if broken:
+        assert result.data["projects"][0]["mode"] == mode
+        assert "no delivery engine for this project" in result.detail
+        assert "delivery visits are paused" in result.detail
+    if mode in {"disabled", "observe"} or broken:
+        db.get_repo.assert_not_awaited()
+
+
+@pytest.mark.parametrize("repository_id,repository,reason", [
+    (None, None, "repository is missing"),
+    ("gone", None, "repository is missing"),
+    ("wrong", SimpleNamespace(project_id="other"), "belongs to another project"),
+])
+async def test_delivery_engine_names_repository_configuration(repository_id, repository, reason):
+    from src.config import AppConfig
+    from src.doctor.integration_checks import _BY_ID
+
+    db = SimpleNamespace(
+        list_projects=AsyncMock(return_value=[_app_project("p", "development",
+                                                         repository_id=repository_id)]),
+        get_repo=AsyncMock(return_value=repository),
+    )
+    result = await _BY_ID["integration.delivery_engine"].run(
+        DoctorContext(config=AppConfig(), db=db),
+    )
+    assert result.severity == Severity.ERROR
+    assert reason in result.detail
+    assert result.fixable is False
+
+
+@pytest.mark.parametrize("runtime,expected", [
+    ("train", {"development", "hierarchy", "train"}),
+    ("development", {"development"}),
+    ("root", {"hierarchy", "train"}),
+    ("none", set()),
+])
+async def test_delivery_engine_uses_selected_service_and_reports_stops(runtime, expected):
+    from src.config import AppConfig
+    from src.integration.delivery_engine import engine_refusal
+    from src.integration.service import IntegrationService
+
+    config = AppConfig()
+    service = IntegrationService(
+        None, None, train=object() if runtime == "train" else None,
+        development_subject_runtime=object() if runtime == "development" else None,
+        subject_runtime=object() if runtime == "root" else None,
+        parent_subject_runtime=object() if runtime == "root" else None,
+    )
+    orch = SimpleNamespace(integration_service=service)
+    assert service.delivery_modes() == expected
+    for mode in ("development", "hierarchy", "train"):
+        assert (engine_refusal(mode, config, orchestrator=orch) is None) == (mode in expected)
+    # A stopped service overrides even an active-train configuration.
+    service._stop_event.set()
+    config.integration.git_first = "active"
+    assert service.delivery_modes() == set()
+    assert "no engine" in engine_refusal("development", config, orchestrator=orch)
+
+
+async def test_delivery_engine_refuses_mode_activation_before_writing():
+    from unittest.mock import patch
+
+    from src.commands.project_commands import ProjectCommandsMixin
+    from src.config import AppConfig
+    from src.integration.records import PolicyActivation
+
+    config = AppConfig()
+    config.integration.reconciler_active = False
+    db = SimpleNamespace(get_project=AsyncMock(return_value=_app_project("p", "disabled")))
+    handler = SimpleNamespace(db=db, config=config, orchestrator=SimpleNamespace())
+    args = {"project_id": "p", "hierarchical_integration_mode": "development",
+            "expected_integration_generation": 0}
+    with patch.object(PolicyActivation, "configure", new_callable=AsyncMock) as configure:
+        refused = await ProjectCommandsMixin._cmd_edit_project(handler, args)
+        assert refused["success"] is False
+        assert refused["error_code"] == "delivery_engine_unavailable"
+        assert "no delivery engine for this project" in refused["error"]
+        configure.assert_not_awaited()
+        await ProjectCommandsMixin._cmd_edit_project(
+            handler, {**args, "hierarchical_integration_mode": "disabled"},
+        )
+        configure.assert_awaited_once()
+
+
+async def test_delivery_engine_allows_development_mode_on_running_train():
+    from unittest.mock import patch
+
+    from src.commands.project_commands import ProjectCommandsMixin
+    from src.config import AppConfig
+    from src.integration.records import PolicyActivation
+    from src.integration.service import IntegrationService
+
+    config = AppConfig()
+    config.integration.git_first = "active"
+    db = SimpleNamespace(get_project=AsyncMock(return_value=_app_project("p", "disabled")))
+    handler = SimpleNamespace(db=db, config=config, orchestrator=SimpleNamespace(
+        integration_service=IntegrationService(None, None, train=object()),
+    ))
+    with patch.object(PolicyActivation, "configure", new_callable=AsyncMock) as configure:
+        await ProjectCommandsMixin._cmd_edit_project(handler, {
+            "project_id": "p", "hierarchical_integration_mode": "development",
+            "expected_integration_generation": 0,
+        })
+        configure.assert_awaited_once()
+
+
+async def test_delivery_engine_check_is_registered_and_needs_database():
+    from src.doctor.integration_checks import _BY_ID
+
+    assert "integration.delivery_engine" in {c.id for c in default_registry().checks()}
+    result = await _BY_ID["integration.delivery_engine"].run(DoctorContext(config=None))
+    assert result.severity == Severity.INFO
+
+
 def _item(item_id, status="ok", *codes, fix=None):
     return {"id": item_id, "status": status, "codes": list(codes), "fix": fix}
 
