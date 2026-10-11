@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 from src.agents.routing import resolve_agent_profile, resolve_task_profile, task_agent_mismatch
 from src.database import Database
+from src.routing.sources import ROLE
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +201,14 @@ class AgentReconciler:
                 requested = needed[(profile_id, task_class)]
                 profile = profiles.get(profile_id)
                 if not profile or getattr(profile, "lifecycle", "task") == "pool":
+                    continue
+                if requested.route_source == ROLE and any(
+                    agent.profile_id == profile_id for agent in agents
+                ):
+                    # A saved role definition is persistent. Unavailability
+                    # (including an operator disabling it) is not demand for
+                    # a duplicate, even in another project or intelligence class.
+                    report.skipped.append((project.id, f"waiting for role agent {profile_id}"))
                     continue
                 if (
                     active_catalog_ids is not None

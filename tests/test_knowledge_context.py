@@ -63,6 +63,21 @@ async def test_same_worker_supervisor_payload_and_json_markdown_roundtrip(contex
         assert await conn.scalar(select(func.count()).select_from(knowledge_citations)) == 0
 
 
+async def test_shipped_spec_ingest_grants_prepare_project_knowledge_context(context_setup):
+    from pathlib import Path
+    from src.profiles.parser import parse_profile
+
+    _, _, service, worker, _, created = context_setup
+    path = Path(__file__).resolve().parents[1] / "src/profiles/defaults/spec-ingest/profile.md"
+    parsed = parse_profile(path.read_text())
+    assert parsed.is_valid, parsed.errors
+    policy = CapabilityPolicy.from_namespaces(**parsed.capabilities)
+    bundle = await prepare(service, replace(worker, policy=policy))
+    assert any(item.record_id == created["record_id"] for item in bundle.items)
+    assert policy.allows_aq_command("record_search")
+    assert policy.allows_aq_command("record_capabilities")
+
+
 async def test_repeated_prime_inputs_reuse_but_refresh_and_scope_changes_do_not(context_setup):
     _, _, service, worker, _, _ = context_setup
     first = await prepare(service, worker)

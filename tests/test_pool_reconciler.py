@@ -19,6 +19,7 @@ from src.database import Database
 from src.database.tables import integration_branch_owners
 from src.intelligence_classes import IntelligenceClass
 from src.models import (
+    Agent,
     AgentProfile,
     AgentState,
     Project,
@@ -1036,12 +1037,36 @@ async def test_stopped_pool_worker_can_take_push_task_without_reprofile(orch, db
     await orch.wait_for_pool_launches()
     row = (await db.list_sessions(lifecycle="pool"))[0]
     await orch._terminate_pool_session(row, reason="rotate")
-    await db.create_profile(AgentProfile(id="reviewer", name="Review", harness="claude"))
+    # Ordinary task capabilities still reuse idle definitions; role routes
+    # have their own durable identity contract, exercised below.
+    await db.create_profile(AgentProfile(id="specialist", name="Specialist", harness="claude"))
     await ready(
-        db, "push", profile_id="reviewer", intelligence_class="standard-medium"
+        db, "push", profile_id="specialist", intelligence_class="standard-medium"
     )
     actions = await orch._schedule()
     assert [(a.task_id, a.agent_id) for a in actions] == [("push", row.agent_id)]
+    assert (await db.get_agent(row.agent_id)).profile_id == "worker"
+
+
+@pytest.mark.parametrize("existing_role", [False, True])
+async def test_stopped_pool_worker_cannot_take_role_assignment(orch, db, existing_role):
+    await ready(db, "pooled")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    row = (await db.list_sessions(lifecycle="pool"))[0]
+    await orch._terminate_pool_session(row, reason="rotate")
+    await db.create_profile(AgentProfile(id="reviewer", name="Review", harness="claude"))
+    if existing_role:
+        await db.create_agent(Agent(id="role-agent", name="Review Work", profile_id="reviewer"))
+    await ready(db, "push", profile_id="reviewer", intelligence_class="standard-medium")
+    actions = await orch._schedule()
+    assert len(actions) == 1 and actions[0].task_id == "push"
+    assert actions[0].agent_id != row.agent_id
+    role = await db.get_agent(actions[0].agent_id)
+    assert role.profile_id == "reviewer"
+    if existing_role:
+        assert role.id == "role-agent" and role.name == "Review Work"
+    assert len([agent for agent in await db.list_agents() if agent.profile_id == "reviewer"]) == 1
     assert (await db.get_agent(row.agent_id)).profile_id == "worker"
 
 

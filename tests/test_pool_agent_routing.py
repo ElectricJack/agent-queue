@@ -135,6 +135,23 @@ async def test_pool_start_grows_the_roster_rather_than_using_triage(pool_routing
     assert (await db.get_workspace("ws")).locked_by_agent_id == row.agent_id
 
 
+async def test_pool_start_preserves_class_compatible_named_role_definition(pool_routing):
+    orch, db = pool_routing
+    await db.create_profile(AgentProfile(
+        id="spec-ingest", name="Spec ingest", harness="claude", default_class="deep-high",
+    ))
+    await db.create_agent(Agent(
+        id="role-agent", name="Review Spec Ingest", profile_id="spec-ingest",
+        harness="codex", intelligence_class="deep-high",
+    ))
+    before = await db.get_agent("role-agent")
+    row = await db.get_session(await launch(orch, db))
+    assert row.agent_id != "role-agent"
+    assert (row.harness, row.intelligence_class) == ("codex", "deep-high")
+    assert await db.get_agent("role-agent") == before
+    assert await db.get_workspace_for_agent("role-agent") is None
+
+
 async def test_pool_start_waits_rather_than_growing_into_an_unrunnable_worker(pool_routing):
     orch, db = pool_routing
     await db.create_agent(Agent(id="triage", name="Triage", profile_id="triage"))

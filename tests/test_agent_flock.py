@@ -97,6 +97,25 @@ async def test_edit_does_not_mutate_shared_profile(handler):
     assert (await handler.db.get_profile("coder")).default_class == "standard-medium"
 
 
+async def test_rename_role_agent_preserves_id_roster_and_disabled_old_definition(handler):
+    await handler.db.create_profile(AgentProfile(id="spec-ingest", name="Spec ingest"))
+    await handler.db.create_agent(Agent(
+        id="old-role", name="spec-ingest-111", profile_id="spec-ingest", enabled=False,
+    ))
+    await handler.db.create_agent(Agent(
+        id="role-agent", name="Spec ingest", profile_id="spec-ingest", total_tokens_used=42,
+    ))
+    before = await handler.db.get_agent("role-agent")
+    result = await handler._cmd_edit_agent({
+        "agent_id": "role-agent", "name": "Review Spec Ingest",
+    })
+    assert result["id"] == before.id and result["name"] == "Review Spec Ingest"
+    after = await handler.db.get_agent("role-agent")
+    assert after.created_at == before.created_at and after.total_tokens_used == 42
+    assert after.enabled and not (await handler.db.get_agent("old-role")).enabled
+    assert {agent.id for agent in await handler.db.list_agents()} == {"old-role", "role-agent"}
+
+
 @pytest.mark.parametrize("command", ["create_agent", "edit_agent", "delete_agent", "start_agent_terminal"])
 def test_project_supervisor_cannot_change_global_worker_settings(command):
     scope = RequestScope(kind="session", session_id="s", project_id="p", elevated=True)

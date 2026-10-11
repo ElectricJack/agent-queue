@@ -10,6 +10,16 @@ kind `spec` or `plan`, using the absolute vault path after its status rewrite.
 Other documents and rejected or stale decisions do not ingest. The default
 pipeline deduplicates on `spec-ingest:<path>` and runs the role at deep-high.
 
+The role launches on the enabled global `spec-ingest` agent definition, retaining
+its saved name, id and execution overrides. Generic pool definitions cannot take
+this assignment, the ingestion agent cannot take ordinary implementation tasks,
+and busy or disabled role definitions do not create duplicates.
+The shipped profile grants `knowledge_show` and `knowledge_search` for prime's
+project knowledge context, plus `record_search` and `record_capabilities` for
+explicit scoped discovery. Existing installs receive these grants through the
+operator's `aq agent profile-reseed --profile-id spec-ingest --grants-only`;
+the shipped file remains write-if-absent.
+
 Submitted `spec_kind: design | implementation` belongs to each immutable
 review revision and survives vault regeneration. Missing values remain unset
 for legacy documents; the ingest agent reads the content before classifying.

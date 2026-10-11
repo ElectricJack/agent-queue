@@ -2286,13 +2286,15 @@
         "agent-roster"
       ],
       "default_arm": true,
-      "digest": "sha256:84f1d1d15381bc8c1fdc9a51718dc15010643b1eb4e271758f56ae4bd5a80143",
+      "digest": "sha256:070a4a5eb0e36eaa83ad8848b32df20010d7db9237e133efa04cfd8b8ad67e11",
       "imports": [
         "src.database",
         "src.models",
         "src.orchestrator.agent_reconciler"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Unit tests for AgentReconciler — see"
     },
     "tests/test_agent_soft_delete.py": {
@@ -10165,7 +10167,7 @@
         "knowledge-records"
       ],
       "default_arm": true,
-      "digest": "sha256:f35a29bdce85edd0f6ca4c3b19e6a5ffac4b9166dc3434d7484bd0336bb57095",
+      "digest": "sha256:9bae35bba4c1ce0824fe5e7a31ff87b7492ffcc60b93a08a29e81902dc3f4519",
       "imports": [
         "src.commands.principal",
         "src.config",
@@ -10180,6 +10182,7 @@
         "src.prime.renderer",
         "src.prime.sections",
         "src.profiles.capabilities",
+        "src.profiles.parser",
         "src.prompt_builder",
         "src.records.auth",
         "src.records.models",
