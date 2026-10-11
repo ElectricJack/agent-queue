@@ -1592,6 +1592,7 @@ class ProviderAvailabilityService:
             source_identity=f"{provider}:{row.generation}",
             incident_key=f"provider:{provider}:{row.generation}",
             supervisor_owner=f"supervisor-{project_id}",
+            task_title=f"Restore {provider} availability for {project_id}",
             summary=self._escalation_summary(provider, trigger, now)[:4000],
             investigation=self._escalation_investigation(
                 provider, trigger, session, affected, now

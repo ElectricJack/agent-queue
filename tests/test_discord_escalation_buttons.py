@@ -285,6 +285,7 @@ async def incident_with_choices(db, handler, *, choices=("keep the trial", "reve
             "project_id": "p",
             "source_kind": "core",
             "source_identity": "incident-1",
+            "task_title": "Choose the trial outcome",
             "incident_key": "incident-1",
             "summary": "Two release branches claim the fix",
             "investigation": "Both were built from main",

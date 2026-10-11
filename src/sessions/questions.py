@@ -575,7 +575,7 @@ class AgentQuestionService:
             source_identity=q["id"],
             incident_key=f"{kind}:{q['id']}",
             supervisor_owner=f"supervisor-{q['project_id']}",
-            task_title=task.title if task else None,
+            task_title=task.title if task else f"Question about {q['task_id']}",
             task_status=getattr(task.status, "value", str(task.status)) if task else None,
             summary=f"Worker question {q['id']} on task {q['task_id']} is stuck",
             investigation=investigation,

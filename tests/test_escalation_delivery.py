@@ -103,8 +103,46 @@ def make_service(db, transport, config=None, *, clock=None, owner="daemon-a", **
     )
 
 
+async def test_old_incident_is_delivered_even_outside_the_newest_hundred_scan(db):
+    await make_incident(db)
+    async with db.immediate() as conn:
+        for index in range(101):
+            await db.create_escalation(
+                conn=conn, id=f"new-{index}", project_id="p", source_kind="gate",
+                source_identity=f"gate-{index}", incident_key=f"gate:{index}",
+                supervisor_owner="supervisor-p", task_title=f"Approve proposal {index}",
+                summary="Project work is waiting for a proposal decision",
+                investigation="The supervisor reviewed the proposed task batch",
+                decision_requested="Approve the proposed tasks?", severity="medium",
+                now=20.0 + index,
+            )
+    assert "esc-1" not in {row["id"] for row in await db.list_escalations(limit=100)}
+    service = make_service(db, SinkTransport())
+    await service.tick(limit=1)
+    [root] = await db.list_escalation_deliveries("esc-1")
+    assert root["status"] == "sent"
+
+
 def facts_for(row) -> EscalationFacts:
     return EscalationFacts.from_row(row)
+
+
+async def test_terminal_incident_with_an_unattempted_atomic_root_stays_silent(db):
+    incident = await make_incident(db)
+    await db.transition_escalation(
+        incident["id"], expected_revision=incident["revision"], new_state="cancelled",
+        terminal_outcome="Handled in the dashboard", now=20,
+    )
+    sink = SinkTransport()
+    service = make_service(db, sink)
+    await service.tick()
+    await service.tick()
+    assert sink.calls == []
+    [root] = [row for row in await db.list_escalation_deliveries(incident["id"])
+              if row["kind"] == "root"]
+    assert root["status"] == "unknown"
+    assert root["receipt_confirmed_at"] is None
+    assert "never posted" in root["last_error"]
 
 
 @pytest.mark.parametrize("source_kind", ["task_attempt", "gate"])
@@ -831,7 +869,8 @@ async def test_disabling_the_external_surface_sends_nothing_and_says_so(db):
 
     assert report.skipped == "discord.escalation.enabled is false"
     assert sink.calls == []
-    assert await db.list_escalation_deliveries("esc-1") == []
+    [root] = await db.list_escalation_deliveries("esc-1")
+    assert root["status"] == "pending" and root["attempt_count"] == 0
 
 
 async def test_a_persisted_reply_is_acknowledged_once_in_the_thread(db):

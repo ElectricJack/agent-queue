@@ -312,21 +312,19 @@ class OrdinaryRepairService:
         decision = (f"Choose eject for a member of batch {batch_id}, or abort-batch for the "
                     "whole batch. The train still observes the candidate and clears this "
                     "escalation if it becomes green.")
-        incident = (await conn.execute(pg_insert(escalations).values(
+        incident, created = await self.db.create_escalation(conn=conn,
             id=incident_id, project_id=batch["project_id"], source_kind="integration_repair",
             source_identity=batch_id, incident_key=f"repair-exhausted:{batch_id}",
             supervisor_owner=f"supervisor-{batch['project_id']}", summary=summary,
+            task_title=f"Restore delivery of batch {batch_id}",
             investigation=(f"{batch['repair_attempt_count']} ordinary repairs were filed "
                            f"({policy.primary_attempts} primary, {policy.debug_attempts} debug). "
                            f"Candidate: {head_sha}; target: {batch['target_ref']}."),
             decision_requested=decision, choices=["eject", "abort-batch"], severity="high",
-            created_at=now, updated_at=now,
-        ).on_conflict_do_nothing(index_elements=[escalations.c.id])
-          .returning(escalations))).mappings().one_or_none()
-        if incident is None:
-            return dict((await conn.execute(select(escalations).where(
-                escalations.c.id == incident_id,
-            ))).mappings().one())
+            now=now,
+        )
+        if not created:
+            return incident
         await conn.execute(pg_insert(messages).values(
             id="msg-" + incident_id, project_id=batch["project_id"],
             from_kind="system", from_id="integration-train", to_kind="session",
@@ -335,8 +333,7 @@ class OrdinaryRepairService:
             thread_id=incident_id, priority=100, created_at=now, archive_after_inject=1,
             body_kind="integration_repair_exhausted",
         ).on_conflict_do_nothing(index_elements=[messages.c.id]))
-        # The escalation dispatcher reconciles these durable rows, including
-        # recovery, without depending on a notification or playbook consumer.
+        # The initial human delivery is already in the same transaction.
         return dict(incident)
 
     async def _settle_green_on(self, conn, batch_id: str, head_sha: str) -> None:

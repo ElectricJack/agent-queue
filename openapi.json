@@ -32537,6 +32537,17 @@
             ],
             "title": "Task Status"
           },
+          "deep_link": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deep Link"
+          },
           "summary": {
             "type": "string",
             "title": "Summary"

@@ -113,18 +113,13 @@ async def open_escalation(db, escalation_id, *, project_id, with_pending_deliver
         incident_key=f"incident-{escalation_id}",
         supervisor_owner=f"supervisor-{project_id}",
         summary="Blocked",
+        task_title="Restore project work",
         investigation="looked",
         decision_requested="retry or hold?",
         severity="high",
     )
     if with_pending_delivery:
-        await db.enqueue_escalation_delivery(
-            escalation_id=incident["id"],
-            kind="root",
-            dedup_key=f"{escalation_id}:root",
-            payload={"text": "blocked"},
-            available_at=NOW,
-        )
+        assert len(await db.list_escalation_deliveries(incident["id"])) == 1
     return incident
 
 
@@ -449,17 +444,12 @@ class TestStatus:
             incident_key="incident-1",
             supervisor_owner="supervisor-p",
             summary="Blocked",
+            task_title="Restore project work",
             investigation="looked",
             decision_requested="retry or hold?",
             severity="high",
         )
-        await db.enqueue_escalation_delivery(
-            escalation_id=incident["id"],
-            kind="root",
-            dedup_key="esc-1:root",
-            payload={"text": "blocked"},
-            available_at=NOW,
-        )
+        assert len(await db.list_escalation_deliveries(incident["id"])) == 1
         result = await handler.execute("digest_status", {"now": NOW})
         assert result["open_escalations"] == 1
         assert result["pending_escalation_deliveries"] == 1

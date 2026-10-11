@@ -62,7 +62,7 @@ either ends, files or reuses a repair and records what it owns, or escalates.
    failing set. An `adopted`, `recorded`, or `unchanged` outcome ends the rule;
    a `rejected` or `runtime_error` outcome fails it.
 4. Call `escalation_create` with `project_id` `agent-queue`, source and
-   incident keys `baseline.escalation_key`, `summary`
+   incident keys `baseline.escalation_key`, both `summary` and `task_title`
    `baseline.escalation_title`, and `investigation`
    `baseline.escalation_question`. Its `source_kind` is `core`; both
    `source_identity` and `incident_key` use `baseline.escalation_key`.

@@ -415,6 +415,7 @@ async def test_recovery_resolution_cannot_close_another_producers_incident(env):
         incident_key="question:q-1",
         supervisor_owner="supervisor-alpha",
         summary="s",
+        task_title="Answer the worker question",
         investigation="i",
         decision_requested="d",
         severity="medium",
