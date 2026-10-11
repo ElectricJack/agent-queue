@@ -534,7 +534,8 @@ class ReviewService:
                             return {"review_id": review_id, "state": review["state"],
                                     "application_state": "not_started",
                                     "error_code": "ask.preview_required",
-                                    "error": "Review this packet, then accept with ask_decide",
+                                    "error": "Run aq ask show, then aq ask prepare with its expected version; "
+                                             "review the full packet and pass its preview_id to aq ask decide",
                                     "ask_id": publication.ask["id"],
                                     "expected": asdict(intent.expected), "preview": preview}
                         preview_id = preview["id"]

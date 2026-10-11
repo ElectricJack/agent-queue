@@ -14,12 +14,13 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/api/models/ask.py`](../../../src/api/models/ask.py) |
-| Contract fingerprint | `sha256:933bf7a1cfa750063a7b83a3537a9a447517428cfeea7be4d22cff9079ff27da` |
+| Contract fingerprint | `sha256:d722ac1439287fb6df3ea7e560efcbc59086b9451972483d79f960e30513753c` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `alias_kind` | `"review" \| "escalation" \| null` | no | `null` | — |
 | `ask_id` | `string` | yes | — | — |
 | `input_id` | `string \| null` | no | `null` | — |
 

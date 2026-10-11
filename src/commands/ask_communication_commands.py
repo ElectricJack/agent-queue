@@ -10,11 +10,11 @@ from sqlalchemy import select
 
 from src.api.models.ask import ASK_ARGS
 from src.asks import discussion, intake
-from src.asks.authority import live_supervisor, visible
+from src.asks.authority import live_supervisor
 from src.asks.models import AskError, SourceVersion, digest
 from src.asks.service import check_version, version_of
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
-from src.database.tables import conversation_inputs, escalation_messages, human_asks
+from src.database.tables import conversation_inputs, escalation_messages
 
 
 def checked(name):
@@ -146,8 +146,35 @@ class AskCommunicationCommandsMixin:
     @checked("ask_show")
     async def _cmd_ask_show(self, args):
         async with self.db.immediate() as conn:
-            ask = await discussion.locked_ask(self, args["ask_id"], conn=conn)
-            ask['delivery'] = await self.db.ask_delivery_status(ask['id'], conn=conn)
+            ask_id = args["ask_id"]
+            if args.get("alias_kind"):
+                from sqlalchemy import and_, or_
+                from src.database.queries.ask_queries import ask_audience_predicate
+                from src.database.tables import ask_source_aliases, human_asks
+                principal = current_principal() or TRUSTED_LOCAL
+                if principal.kind not in {PrincipalKind.LOCAL, PrincipalKind.SESSION} or (
+                    principal.kind is PrincipalKind.SESSION and not principal.elevated
+                ):
+                    raise AskError("ask.not_found", "Request was not found")
+                actor = ("human:local-operator" if principal.kind is PrincipalKind.LOCAL
+                         else f"session:{principal.session_id}")
+                alias = select(ask_source_aliases.c.ask_id).where(
+                    ask_source_aliases.c.ask_id == human_asks.c.id,
+                    ask_source_aliases.c.project_id == human_asks.c.project_id,
+                    ask_source_aliases.c.legacy_kind == args["alias_kind"],
+                    ask_source_aliases.c.legacy_id == ask_id,
+                ).exists()
+                matches = (await conn.execute(select(human_asks.c.id).where(
+                    ask_audience_predicate(actor_id=actor,
+                        project_ids=[principal.project_id] if principal.project_id else None),
+                    or_(alias, and_(human_asks.c.source_kind == args["alias_kind"],
+                                   human_asks.c.source_key == ask_id)),
+                ).limit(2))).scalars().all()
+                if len(matches) != 1:
+                    raise AskError("ask.not_found", "Canonical request is unavailable; retain the diagnostic source link")
+                ask_id = matches[0]
+            ask = await discussion.locked_ask(self, ask_id, conn=conn)
+            ask["delivery"] = await self.db.ask_delivery_status(ask["id"], conn=conn)
             inputs = [
                 dict(row)
                 for row in (
@@ -178,15 +205,51 @@ class AskCommunicationCommandsMixin:
                 document = dict(document)
                 if pinned:
                     document["attachments"] = pinned["source_version"]["attachments"]
-            pending = ask["decision_state"] == "pending" and ask["context_state"] == "complete"
+            principal = current_principal() or TRUSTED_LOCAL
+            pending = (ask["decision_state"] == "pending"
+                       and ask["next_actor"] == "human"
+                       and ask["context_state"] == "complete"
+                       and ask["application_state"] == "not_started")
+            allowed = (principal.kind is PrincipalKind.LOCAL
+                       and ask["decider"].get("principal") in {None, "human:local-operator"})
+            review_decider = ask["decider"].get("review_decider")
+            if review_decider:
+                allowed = (review_decider in {"user", "user_or_supervisor"}
+                           if principal.kind is PrincipalKind.LOCAL
+                           else review_decider == "user_or_supervisor")
+            reason = ("Only the current decider can prepare this decision" if not allowed
+                      else "Read the current source receipt" if not pending else None)
             actions = [
-                {"action": "discuss", "enabled": True, "post_decision": not pending},
-                {
-                    "action": "prepare_decision",
-                    "enabled": pending,
-                    "disabled_reason": None if pending else "Read the current source receipt",
-                },
+                {"action": "discuss", "enabled": principal.kind is PrincipalKind.LOCAL,
+                 "post_decision": ask["decision_state"] != "pending",
+                 "disabled_reason": None if principal.kind is PrincipalKind.LOCAL
+                 else "Human discussion requires an authenticated human"},
+                {"action": "prepare_decision", "enabled": pending and allowed,
+                 "disabled_reason": reason},
             ]
+            actions.extend({"action": "decide", "option_key": choice["key"],
+                            "label": choice["label"], "effect": choice["effect"],
+                            "enabled": pending and allowed, "disabled_reason": reason}
+                           for choice in ask["context"].get("choices", []))
+            from src.database.tables import (
+                ask_decisions, escalation_actions, projects, review_feedback_obligations,
+            )
+            ask["held_while_paused"] = await conn.scalar(
+                select(projects.c.status == "PAUSED").where(projects.c.id == ask["project_id"]))
+            decision = (await conn.execute(select(ask_decisions).where(
+                ask_decisions.c.ask_id == ask["id"]).order_by(
+                ask_decisions.c.created_at.desc()).limit(1))).mappings().first()
+            obligations = [dict(row) for row in (await conn.execute(
+                select(review_feedback_obligations).join(ask_decisions,
+                    ask_decisions.c.id == review_feedback_obligations.c.decision_id)
+                .where(ask_decisions.c.ask_id == ask["id"])
+                .order_by(review_feedback_obligations.c.created_at)
+            )).mappings()]
+            operations = [dict(row) for row in (await conn.execute(select(escalation_actions).where(
+                escalation_actions.c.ask_id == ask["id"]).order_by(
+                escalation_actions.c.created_at).limit(100))).mappings()]
+            history = await self.db.list_ask_history(ask["id"], conn=conn, limit=100)
+
         return {
             "success": True,
             "ask": ask,
@@ -194,6 +257,12 @@ class AskCommunicationCommandsMixin:
             "inputs": inputs,
             "document": document,
             "actions": actions,
+            "decision": dict(decision) if decision else None,
+            "obligations": obligations,
+            "operations": operations,
+            "history": history,
+            "source_health": "healthy" if ask["context_state"] == "complete" else "degraded",
+
         }
 
     @checked("ask_history")
@@ -233,46 +302,21 @@ class AskCommunicationCommandsMixin:
 
     @checked("ask_list")
     async def _cmd_ask_list(self, args):
-        # H07 owns richer ordering and source-health presentation; this read uses
-        # one snapshot and audience predicate for both count and page.
-        async with self.db.immediate() as conn:
-            stmt = select(human_asks).order_by(human_asks.c.created_at, human_asks.c.id)
-            if args.get("project_id"):
-                stmt = stmt.where(human_asks.c.project_id == args["project_id"])
-            rows = [dict(r) for r in (await conn.execute(stmt)).mappings() if visible(r)]
-
-            def matches(row):
-                pending = row["decision_state"] == "pending"
-                ready = (
-                    pending and row["next_actor"] == "human" and row["context_state"] == "complete"
-                )
-                return (
-                    ready
-                    if args["view"] == "needs_you"
-                    else pending and not ready
-                    if args["view"] == "waiting"
-                    else not pending
-                )
-
-            rows = [r for r in rows if matches(r)]
-            count = len(rows)
-            if args.get("cursor"):
-                index = next((i for i, r in enumerate(rows) if r["id"] == args["cursor"]), None)
-                if index is None:
-                    raise AskError(
-                        "ask.invalid_cursor", "List cursor is no longer available; refresh"
-                    )
-                rows = rows[index + 1 :]
-            more = len(rows) > args["limit"]
-            rows = rows[: args["limit"]]
-        return {
-            "success": True,
-            "items": rows,
-            "count": count,
-            "snapshot_at": time.time(),
-            "next_cursor": rows[-1]["id"] if more else None,
-            "source_health": "refreshing",
-        }
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind is PrincipalKind.SESSION and not principal.elevated:
+            raise AskError("ask.not_found", "Inbox is not available in worker scope")
+        if principal.kind not in {PrincipalKind.LOCAL, PrincipalKind.SESSION}:
+            raise AskError("ask.not_found", "Inbox is not available to this principal")
+        project = principal.project_id or args.get("project_id")
+        actor = ("human:local-operator" if principal.kind is PrincipalKind.LOCAL
+                 else f"session:{principal.session_id}")
+        async with self.db._engine.connect() as conn:
+            result = await self.db.list_asks_snapshot(
+                conn=conn, actor_id=actor, project_ids=[project] if project else None,
+                view=args["view"], source_kind=args.get("source_kind"),
+                cursor=args.get("cursor"), limit=args["limit"],
+            )
+        return {"success": True, **result}
 
     @checked("ask_reconcile")
     async def _cmd_ask_reconcile(self, args):

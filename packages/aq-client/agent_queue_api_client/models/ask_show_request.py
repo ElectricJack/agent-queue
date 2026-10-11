@@ -16,15 +16,23 @@ class AskShowRequest:
     """
     Attributes:
         ask_id (str):
+        alias_kind (None | str | Unset):
         input_id (None | str | Unset):
     """
 
     ask_id: str
+    alias_kind: None | str | Unset = UNSET
     input_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         ask_id = self.ask_id
+
+        alias_kind: None | str | Unset
+        if isinstance(self.alias_kind, Unset):
+            alias_kind = UNSET
+        else:
+            alias_kind = self.alias_kind
 
         input_id: None | str | Unset
         if isinstance(self.input_id, Unset):
@@ -39,6 +47,8 @@ class AskShowRequest:
                 "ask_id": ask_id,
             }
         )
+        if alias_kind is not UNSET:
+            field_dict["alias_kind"] = alias_kind
         if input_id is not UNSET:
             field_dict["input_id"] = input_id
 
@@ -48,6 +58,15 @@ class AskShowRequest:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
         ask_id = d.pop("ask_id")
+
+        def _parse_alias_kind(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        alias_kind = _parse_alias_kind(d.pop("alias_kind", UNSET))
 
         def _parse_input_id(data: object) -> None | str | Unset:
             if data is None:
@@ -60,6 +79,7 @@ class AskShowRequest:
 
         ask_show_request = cls(
             ask_id=ask_id,
+            alias_kind=alias_kind,
             input_id=input_id,
         )
 

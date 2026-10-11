@@ -100,8 +100,12 @@ from .ask_retry_operation_request import AskRetryOperationRequest
 from .ask_show_request import AskShowRequest
 from .ask_show_response import AskShowResponse
 from .ask_show_response_actions_item import AskShowResponseActionsItem
+from .ask_show_response_decision_type_0 import AskShowResponseDecisionType0
 from .ask_show_response_document_type_0 import AskShowResponseDocumentType0
+from .ask_show_response_history_item import AskShowResponseHistoryItem
 from .ask_show_response_inputs_item import AskShowResponseInputsItem
+from .ask_show_response_obligations_item import AskShowResponseObligationsItem
+from .ask_show_response_operations_item import AskShowResponseOperationsItem
 from .ask_source_record import AskSourceRecord
 from .ask_source_record_context import AskSourceRecordContext
 from .ask_update_context_request import AskUpdateContextRequest
@@ -2080,8 +2084,12 @@ __all__ = (
     "AskShowRequest",
     "AskShowResponse",
     "AskShowResponseActionsItem",
+    "AskShowResponseDecisionType0",
     "AskShowResponseDocumentType0",
+    "AskShowResponseHistoryItem",
     "AskShowResponseInputsItem",
+    "AskShowResponseObligationsItem",
+    "AskShowResponseOperationsItem",
     "AskSourceRecord",
     "AskSourceRecordContext",
     "AskUpdateContextRequest",

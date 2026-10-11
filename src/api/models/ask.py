@@ -18,6 +18,16 @@ class AskVersion(BaseModel):
 class AskSourceRecord(AskVersion):
     model_config = {"extra": "allow"}
     id: str
+    project_id: str
+    source_kind: str
+    source_key: str
+    severity: str
+    next_actor: str
+    display_version: int
+    created_at: float
+    updated_at: float
+    answer_pending: bool = False
+    held_while_paused: bool = False
     context_state: str
     context: dict[str, Any]
     application_state: str
@@ -55,6 +65,7 @@ RESPONSE_MODELS = {
 
 
 class AskListArgs(CommandArgs):
+    source_kind: str | None = None
     project_id: str | None = None
     view: Literal["needs_you", "waiting", "history"] = "needs_you"
     limit: int = Field(default=50, ge=1, le=100)
@@ -62,6 +73,7 @@ class AskListArgs(CommandArgs):
 
 
 class AskShowArgs(CommandArgs):
+    alias_kind: Literal["review", "escalation"] | None = None
     ask_id: str = Field(min_length=1)
     input_id: str | None = None
 
@@ -162,6 +174,8 @@ class AskButtonArgs(CommandArgs):
 
 
 class AskListResponse(BaseModel):
+    view: str = "needs_you"
+    identity_hash: str
     success: bool = True
     items: list[AskSourceRecord]
     count: int
@@ -177,6 +191,11 @@ class AskShowResponse(BaseModel):
     document: dict[str, Any] | None = None
     inputs: list[dict[str, Any]]
     actions: list[dict[str, Any]]
+    history: list[dict[str, Any]] = Field(default_factory=list)
+    obligations: list[dict[str, Any]] = Field(default_factory=list)
+    operations: list[dict[str, Any]] = Field(default_factory=list)
+    decision: dict[str, Any] | None = None
+    source_health: str = "healthy"
 
 
 class AskHistoryResponse(BaseModel):

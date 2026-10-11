@@ -10999,6 +10999,18 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "source_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Kind"
+          },
           "project_id": {
             "anyOf": [
               {
@@ -11051,6 +11063,22 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "alias_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "review",
+                  "escalation"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Alias Kind"
+          },
           "ask_id": {
             "minLength": 1,
             "title": "Ask Id",
@@ -18339,6 +18367,19 @@
     "ask_button": "review"
   },
   "cli_category_overrides": {
+    "ask_list": "ask",
+    "ask_show": "ask",
+    "ask_reply": "ask",
+    "ask_prepare_decision": "ask",
+    "ask_decide": "ask",
+    "ask_history": "ask",
+    "ask_apply_input": "ask",
+    "ask_discussion_reply": "ask",
+    "ask_update_context": "ask",
+    "ask_reconcile": "ask",
+    "ask_cutover": "ask",
+    "ask_retry_operation": "ask",
+    "ask_repair_delivery": "ask",
     "create_task": "task",
     "list_tasks": "task",
     "get_task": "task",
