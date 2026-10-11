@@ -6,8 +6,6 @@ from src.asks.delivery import config_fingerprint, destination
 from src.asks.models import AskError
 from src.database.tables import (
     ask_external_bindings,
-    escalation_deliveries,
-    escalations,
     human_communication_modes,
     outbound_deliveries,
 )
@@ -15,30 +13,62 @@ from src.escalations.transport import TransportMissing
 
 
 async def cutover(handler, args):
-    db, config = handler.db, handler.config
     import time
 
+    from sqlalchemy import func, update
+
+    from src.asks.models import digest
+    from src.asks.reconcile import diagnostics
+    from src.commands.principal import TRUSTED_LOCAL, current_principal
+    from src.database.tables import ask_action_tokens
+
+    db, config = handler.db, handler.config
+    project, dest, target = args["project_id"], destination(handler.config), args["mode"]
     async with db.immediate() as conn:
-        old = await db.get_ask_mode(args["project_id"], destination(config), conn=conn)
-        if args["mode"] == "channel" and not (
-            old and old["mode"] == "transferring" and old["inventory"].get("transfer_verified")
-        ):
-            raise AskError(
-                "ask.transfer_unverified",
-                "Verify the receipt inventory before channel ownership transfer",
+        # The admission fence commits even with unknown writes. Those writes remain
+        # evidence, and block channel ownership until independently reconciled.
+        await conn.execute(
+            select(
+                func.pg_advisory_xact_lock(func.hashtextextended(f"ask-mode:{project}:{dest}", 0))
             )
-        busy = await conn.scalar(
-            select(escalation_deliveries.c.id)
-            .join(escalations, escalations.c.id == escalation_deliveries.c.escalation_id)
-            .where(
-                escalations.c.project_id == args["project_id"],
-                escalation_deliveries.c.status.in_(["sending", "unknown"]),
-            )
-            .limit(1)
         )
-        if busy and args["mode"] in {"transferring", "channel"}:
-            raise AskError("ask.delivery_unknown", "Legacy delivery still has unresolved ownership")
-        # A global config change fences every affected durable project, never just this call's row.
+        old = await db.get_ask_mode(project, dest, conn=conn, lock=True)
+        if old and old["migrated"] and target == "legacy":
+            raise AskError("ask.legacy_retired", "Migrated writers cannot be revived")
+        if target == "channel" and (not old or old["mode"] != "transferring"):
+            raise AskError("ask.transfer_unverified", "Fence both writers before channel transfer")
+        if (old["generation"] if old else 0) != args["expected_generation"]:
+            raise AskError("ask.stale_mode", "Communication ownership changed")
+        allowed = {
+            "legacy": {"shadow", "delivery_disabled"},
+            "shadow": {"dashboard", "delivery_disabled"},
+            "dashboard": {"transferring", "delivery_disabled"},
+            "transferring": {"transferring", "channel", "delivery_disabled"},
+            "channel": {"transferring", "delivery_disabled"},
+            "delivery_disabled": {"transferring", "delivery_disabled"},
+        }
+        if target not in allowed[(old or {}).get("mode", "legacy")]:
+            raise AskError(
+                "ask.invalid_mode_transition", "Follow shadow, dashboard, transfer, channel"
+            )
+        inventory = await diagnostics(conn, project_id=project, destination_id=dest)
+        if target == "channel":
+            blockers = {k: v for k, v in inventory.items() if k != "transfers"}
+            if blockers:
+                raise AskError(
+                    "ask.transfer_unverified", "Reconcile transfer blockers first", fields=blockers
+                )
+            if not (
+                args.get("inventory_sha256") == digest(inventory)
+                and (args.get("evidence") or "").strip()
+                and args.get("legacy_controls_disabled")
+                and args.get("aliases_redirected")
+            ):
+                raise AskError(
+                    "ask.transfer_unverified",
+                    "Record the current inventory hash and controls/redirect evidence",
+                )
+        # Global destination/allowlist changes revoke every old ownership row.
         peers = (
             (
                 await conn.execute(
@@ -51,29 +81,14 @@ async def cutover(handler, args):
                         human_communication_modes.c.project_id,
                         human_communication_modes.c.destination,
                     )
-                    .with_for_update()
                 )
             )
             .mappings()
             .all()
         )
         for peer in peers:
-            if (peer["project_id"], peer["destination"]) == (
-                args["project_id"],
-                destination(config),
-            ):
+            if (peer["project_id"], peer["destination"]) == (project, dest):
                 continue
-            if await conn.scalar(
-                select(ask_external_bindings.c.id)
-                .where(
-                    ask_external_bindings.c.project_id == peer["project_id"],
-                    ask_external_bindings.c.inflight_id.is_not(None),
-                )
-                .limit(1)
-            ):
-                raise AskError(
-                    "ask.delivery_unknown", "Global destination change has unresolved writes"
-                )
             await db.advance_ask_mode(
                 {
                     **dict(peer),
@@ -84,17 +99,63 @@ async def cutover(handler, args):
                 expected_generation=peer["generation"],
                 conn=conn,
             )
+            await conn.execute(
+                update(ask_action_tokens)
+                .where(
+                    ask_action_tokens.c.binding_id.in_(
+                        select(ask_external_bindings.c.id).where(
+                            ask_external_bindings.c.project_id == peer["project_id"],
+                            ask_external_bindings.c.destination == peer["destination"],
+                        )
+                    ),
+                    ask_action_tokens.c.revoked_at.is_(None),
+                )
+                .values(revoked_at=time.time())
+            )
+        recorded = dict((old or {}).get("inventory") or {})
+        recorded.update(
+            last_inventory=inventory,
+            inventory_sha256=digest(inventory),
+            recorded_at=time.time(),
+            principal=(current_principal() or TRUSTED_LOCAL).describe(),
+        )
+        if target == "channel":
+            recorded["transfer_receipt"] = {
+                "evidence": args["evidence"],
+                "legacy_controls_disabled": True,
+                "aliases_redirected": True,
+                "generation": args["expected_generation"],
+                "inventory_sha256": digest(inventory),
+            }
         mode = await db.advance_ask_mode(
             {
-                "project_id": args["project_id"],
-                "destination": destination(config),
-                "mode": args["mode"],
+                "project_id": project,
+                "destination": dest,
+                "mode": target,
                 "config_fingerprint": config_fingerprint(config),
                 "updated_at": time.time(),
+                "inventory": recorded,
+                # Rollback/re-enable never extends the first destination's 30-day window.
+                "compatibility_deadline": (old or {}).get("compatibility_deadline")
+                or (time.time() + 30 * 86400 if target == "channel" else None),
             },
             expected_generation=args["expected_generation"],
             conn=conn,
         )
+        if target in {"transferring", "delivery_disabled"}:
+            await conn.execute(
+                update(ask_action_tokens)
+                .where(
+                    ask_action_tokens.c.binding_id.in_(
+                        select(ask_external_bindings.c.id).where(
+                            ask_external_bindings.c.project_id == project,
+                            ask_external_bindings.c.destination == dest,
+                        )
+                    ),
+                    ask_action_tokens.c.revoked_at.is_(None),
+                )
+                .values(revoked_at=time.time())
+            )
     return {"success": True, "result": mode}
 
 

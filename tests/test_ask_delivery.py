@@ -131,6 +131,35 @@ async def test_pause_before_claim_and_immediately_before_send_consumes_no_attemp
     assert len(env.sink.messages) == 1
 
 
+async def test_legacy_alias_returns_canonical_delivery_receipt(delivery_env):
+    env = delivery_env
+    submitted = await env.handler.execute(
+        "review_submit",
+        {
+            "project_id": env.ask["project_id"],
+            "kind": "spec",
+            "title": "Delivery alias review",
+            "content": "# Design\n\nReview the proposed delivery behavior.\n",
+        },
+    )
+    assert submitted["success"], submitted
+    shown = await env.handler.execute("review_show", {"review_id": submitted["review_id"]})
+    assert shown["success"], shown
+    env.ask = shown["ask"]
+    await settle(env)
+    root = await binding(env)
+    canonical = await env.handler.execute("ask_show", {"ask_id": env.ask["id"]})
+    alias = await env.handler.execute(
+        "ask_show", {"ask_id": submitted["review_id"], "alias_kind": "review"}
+    )
+
+    assert canonical["success"] and alias["success"], (canonical, alias)
+    assert alias["ask"]["id"] == canonical["ask"]["id"] == env.ask["id"]
+    assert alias["ask"]["delivery"] == canonical["ask"]["delivery"]
+    assert alias["ask"]["delivery"]["status"] == "Confirmed"
+    assert alias["ask"]["delivery"]["bindings"][0]["external_root_id"] == root["external_root_id"]
+
+
 async def test_unknown_create_survives_restart_without_repost(delivery_env):
     env = delivery_env
     env.sink.faults.append(("post_root", TransportAmbiguous("receipt lost")))
@@ -415,7 +444,19 @@ async def test_cutover_refuses_unverified_inventory_or_outstanding_http(delivery
     result = await env.handler._cmd_ask_cutover(
         {"project_id": env.ask["project_id"], "mode": "transferring", "expected_generation": 1}
     )
-    assert result["error_code"] == "ask.delivery_unknown", result
+    assert result["success"] and result["result"]["mode"] == "transferring", result
+    assert (await binding(env))["inflight_id"] is not None
+    blocked = await env.handler._cmd_ask_cutover({
+        "project_id": env.ask["project_id"], "mode": "channel", "expected_generation": 2,
+    })
+    assert blocked["error_code"] == "ask.transfer_unverified", blocked
+    rollback = await env.handler._cmd_ask_cutover({
+        "project_id": env.ask["project_id"], "mode": "delivery_disabled", "expected_generation": 2,
+    })
+    assert rollback["success"] and rollback["result"]["generation"] == 3
+    assert (await binding(env))["inflight_id"] is not None
+    await settle(env)
+    assert env.sink.calls.count("post_root") == 1
 
 
 async def test_render_long_or_document_meaning_never_has_partial_approval_controls(delivery_env):

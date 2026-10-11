@@ -866,7 +866,7 @@ class FreeTextAdapter(SourceAdapter):
                 "producer_key": [row["source_kind"], row["source_identity"], row["incident_key"]],
                 "requested": row["decision_requested"],
             },
-            state="pending",
+            state="decided" if row["state"] in {"resolved", "cancelled", "stale"} else "pending",
             context=context_for(
                 source,
                 row["summary"],

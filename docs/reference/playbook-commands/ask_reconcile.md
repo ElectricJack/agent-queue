@@ -14,14 +14,20 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/api/models/ask.py`](../../../src/api/models/ask.py) |
-| Contract fingerprint | `sha256:62941897865fca4a48e231e16455e9e4dc2bab592b69ec7324191889ddb84bcb` |
+| Contract fingerprint | `sha256:10f1539937489140406e77535aff719981e06e7ad08ce1904ecb31b5264e8a38` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `project_id` | `string \| null` | no | `null` | — |
 | `apply` | `boolean` | no | `false` | — |
 | `limit` | `integer` | no | `100` | — |
+| `case_id` | `string \| null` | no | `null` | — |
+| `disposition` | `"mapped_work" \| "reviewed_no_action" \| "retain_unknown" \| null` | no | `null` | — |
+| `evidence` | `string \| null` | no | `null` | — |
+
+Redacted in receipts and explanations: `evidence`.
 
 ## Result
 

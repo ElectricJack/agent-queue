@@ -197,13 +197,14 @@ class AskInputQueriesMixin:
                 )
             )
 
-    async def pending_ask_inputs(self, *, conn, limit=100):
+    async def pending_ask_inputs(self, *, conn, limit=100, project_id=None):
         return [
             dict(row)
             for row in (
                 await conn.execute(
                     select(conversation_inputs)
                     .where(
+                        conversation_inputs.c.project_id == project_id if project_id else True,
                         or_(
                             conversation_inputs.c.routing_state == "queued",
                             and_(

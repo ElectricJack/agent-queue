@@ -129,8 +129,12 @@ class AskUpdateContextArgs(CommandArgs):
 
 
 class AskReconcileArgs(CommandArgs):
+    project_id: str | None = None
     apply: bool = False
     limit: int = Field(default=100, ge=1, le=100)
+    case_id: str | None = None
+    disposition: Literal["mapped_work", "reviewed_no_action", "retain_unknown"] | None = None
+    evidence: str | None = Field(default=None, min_length=1, max_length=4000)
 
 
 class AskRetryOperationArgs(CommandArgs):
@@ -141,6 +145,10 @@ class AskCutoverArgs(CommandArgs):
     project_id: str
     mode: Literal["legacy", "shadow", "dashboard", "transferring", "channel", "delivery_disabled"]
     expected_generation: int = Field(ge=0)
+    inventory_sha256: str | None = None
+    evidence: str | None = Field(default=None, min_length=1, max_length=4000)
+    legacy_controls_disabled: bool = False
+    aliases_redirected: bool = False
 
 
 class AskRepairDeliveryArgs(CommandArgs):
