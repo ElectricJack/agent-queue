@@ -59,6 +59,7 @@ from src.state_machine import (
     validate_dag_with_new_edge,
     validate_waits_for,
 )
+from src.task_graph.activity import attach_activity, load_activity, task_activity
 from src.task_names import (
     MAX_NAMING_DEPTH,
     MAX_STRUCTURAL_DEPTH,
@@ -718,6 +719,7 @@ class TaskCommandsMixin:
         cap = max(0, 200 - len(active))
         capped_tasks = active + finished[:cap]
         task_dicts = [self._task_to_dict(t) for t in capped_tasks]
+        await attach_activity(self.db, task_dicts)
 
         if show_dependencies:
             await self._enrich_with_dependencies(task_dicts, capped_tasks)
@@ -786,9 +788,9 @@ class TaskCommandsMixin:
             }
             if include_project:
                 d["project_id"] = t.project_id
-            return d
+            return {**d, **activity.get(t.id, {})}
 
-        # Group by project_id for readability.
+        activity = await load_activity(self.db, [t.id for t in tasks])
         by_project: dict[str, list[dict]] = {}
         for t in tasks:
             by_project.setdefault(t.project_id, []).append(_entry(t))
@@ -971,6 +973,7 @@ class TaskCommandsMixin:
             # Count root + all its subtasks
             total_tasks += 1 + subtask_total
 
+        await attach_activity(self.db, [entry["root"] for entry in trees])
         # Enrich root task dicts with dependency info when requested.
         if show_dependencies:
             root_dicts = [entry["root"] for entry in trees]
@@ -1264,7 +1267,7 @@ class TaskCommandsMixin:
         )
 
         result: dict = {
-            "root": self._task_to_dict(root_task),
+            "root": {**self._task_to_dict(root_task), **await task_activity(self.db, root_task.id)},
             "formatted": formatted,
             "subtask_completed": completed,
             "subtask_total": subtask_total,
@@ -1314,7 +1317,7 @@ class TaskCommandsMixin:
         if out_of_scope:
             return out_of_scope
         progress = await self.db.get_group_progress(task_id)
-        return {"success": True, **progress}
+        return {"success": True, **progress, **await task_activity(self.db, task_id)}
 
     async def _cmd_reparent_task(self, args: dict) -> dict:
         """Move a task under another container, or to root.  Backs ``aq task reparent``.
@@ -3718,7 +3721,7 @@ class TaskCommandsMixin:
         info["children"] = await self.db.get_children_summary(task.id)
         # Implementation progress kept apart from delivery (a read-only
         # projection; it never changes the stored status shown above).
-        info["delivery_status"] = None
+        info.update(await task_activity(self.db, task.id), delivery_status=None)
         if info["children"]:
             from src.integration.epic_delivery import EpicDeliveryProjection, lease_ttl_from
 

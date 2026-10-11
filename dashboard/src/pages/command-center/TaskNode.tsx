@@ -9,6 +9,7 @@ import { StatusPill } from "./StatusPill";
 import { pillForCard } from "./statusPillModel";
 import { profileTags } from "./taskCardFormat";
 import { taskReason, type Reason } from "./taskReason";
+import { childCountText, epicLeafProgress } from "../../components/epicActivityFormat";
 
 export type { TaskNodeData } from "./types";
 type TaskNodeType = Node<TaskNodeData, "task">;
@@ -40,6 +41,7 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
   const pill = pillForCard(data);
   const { cardStatus, treatment } = pill;
   const epic = hierarchy.childCount > 0;
+  const { progress, stateCounts, displayReason } = cardActivity(data);
   const openGates = gates.filter((gate) => gate.status.toLowerCase() === "open");
 
   const reason = stub ? null : taskReason({
@@ -72,7 +74,7 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
       )}
       <div
         data-task-card
-        data-status={cardStatus}
+        data-status={cardStatus} data-display-state={task.display_state ?? undefined}
         data-review-blocked={reviewBlock ? "" : undefined}
         className={`relative flex h-full flex-col rounded-[10px] border pt-[11px] pr-3 pb-[9px] ${padLeft} font-g text-g-text ${border} ${treatment.fillClass ?? RAISED_FILL} ${treatment.cardClass} ${treatment.stripe ? "aq-stripe" : ""} ${hierarchy.contextOnly ? "border-dashed" : ""} ${selected ? "outline outline-2 outline-offset-2 outline-g-accent" : ""}`}
       >
@@ -97,8 +99,8 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
             }
           }}
         />
-        <div className="pointer-events-none relative flex min-h-0 flex-1 flex-col gap-1.5">
-          <p className="line-clamp-2 text-[13.5px] font-semibold leading-[1.25] [text-wrap:balance]" title={task.title}>
+        <div className={`pointer-events-none relative flex min-h-0 flex-1 flex-col ${stateCounts && displayReason ? "gap-1" : "gap-1.5"}`}>
+          <p className="shrink-0 line-clamp-2 text-[13.5px] font-semibold leading-[1.25] [text-wrap:balance]" title={task.title}>
             <span className={treatment.titleClass}>{task.title}</span>
           </p>
           <div className="flex min-h-5 min-w-0 items-center gap-2">
@@ -118,23 +120,18 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
               </span>
             )}
           </div>
-          {hierarchy.descendantCount > 0 ? (
-            <BarHover label={`${hierarchy.completedCount} of ${hierarchy.descendantCount} tasks done`} onOpen={onOpenTask && (() => onOpenTask(task.id, task))}>
-              <ProgressBar
-                done={hierarchy.completedCount}
-                total={hierarchy.descendantCount}
-                running={hierarchy.runningCount}
-                blocked={hierarchy.blockedCount}
-                label={`${hierarchy.completedCount} of ${hierarchy.descendantCount} tasks done`}
-              />
+          {progress.total > 0 ? (
+            <BarHover label={`${progress.done} of ${progress.total} tasks done`} onOpen={onOpenTask && (() => onOpenTask(task.id, task))}>
+              <ProgressBar {...progress} label={`${progress.done} of ${progress.total} tasks done`} />
             </BarHover>
           ) : subtasks && subtasks.total > 0 ? (
             <BarHover label={`${subtasks.settled} of ${subtasks.total} subtasks settled`} onOpen={onOpenTask && (() => onOpenTask(task.id, task))}>
               <ProgressBar done={subtasks.settled} total={subtasks.total} label={`${subtasks.settled} of ${subtasks.total} subtasks settled`} />
             </BarHover>
           ) : null}
-          <div className="mt-auto flex min-w-0 flex-col gap-1.5">
-            {reason && <ReasonLine reason={reason} className={treatment.reasonClass} />}
+          <div className={`mt-auto flex min-w-0 flex-col ${stateCounts && displayReason ? "gap-1" : "gap-1.5"}`}>
+            {stateCounts ? <ActivityLine counts={stateCounts} /> : reason && <ReasonLine reason={reason} className={treatment.reasonClass} />}
+            {displayReason && <ActivityLine reason={displayReason} />}
             <div className="flex h-6 min-w-0 items-center gap-1.5 border-t border-g-border pt-[7px] text-[10.5px] text-g-muted">
               <span className="w-[10ch] shrink-0 truncate font-g-mono" title={task.id}>{task.id}</span>
               <CopyTaskIdButton
@@ -162,6 +159,26 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
         </div>
       </div>
     </div>
+  );
+}
+
+/** A container's rolled-up activity: child counts by state, the server's
+ *  reason, and progress over leaves (intermediate containers not counted). */
+function cardActivity({ task, hierarchy }: Pick<TaskNodeData, "task" | "hierarchy">) {
+  return {
+    stateCounts: childCountText(task.child_state_counts),
+    displayReason: task.display_reason,
+    progress: epicLeafProgress(task.descendant_state_counts) ?? {
+      done: hierarchy.completedCount, total: hierarchy.descendantCount,
+      running: hierarchy.runningCount, blocked: hierarchy.blockedCount,
+    },
+  };
+}
+
+function ActivityLine({ counts, reason }: { counts?: string; reason?: string }) {
+  return (
+    <p data-child-state-counts={counts ? "" : undefined} data-display-reason={reason ? "" : undefined}
+      title={counts ?? reason} className="truncate text-[11px] leading-4 text-g-muted">{counts ?? reason}</p>
   );
 }
 

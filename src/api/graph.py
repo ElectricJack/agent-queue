@@ -25,6 +25,7 @@ from src.api.models.graph import (
     GraphTaskNode,
     ProjectGraphResponse,
 )
+from src.task_graph.activity import load_activity
 
 __all__ = ["build_graph_router", "router"]
 
@@ -92,6 +93,9 @@ def build_graph_router(*, db) -> APIRouter:
             if a.current_task_id in task_ids
         ]
 
+        # Containers' displayed activity, rolled up from their descendants.
+        activity = await load_activity(db, {r.get("parent_task_id") for r in rows} - {None})
+
         def _run_id(dedup_key: str | None) -> str | None:
             if dedup_key and dedup_key.startswith("playbook-run:"):
                 return dedup_key.removeprefix("playbook-run:")
@@ -111,6 +115,8 @@ def build_graph_router(*, db) -> APIRouter:
                     branch_name=r["branch_name"],
                     pr_url=r["pr_url"],
                     playbook_run_id=_run_id(r["dedup_key"]),
+                    parent_task_id=r.get("parent_task_id"),
+                    **activity.get(r["id"], {}),
                 )
                 for r in rows
             ],

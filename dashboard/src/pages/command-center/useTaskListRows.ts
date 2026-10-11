@@ -5,6 +5,7 @@ import { useRecentActivity, type TaskActivityItem } from "../../api/activity";
 import { useProviderHeldTasks, type ProviderHeldTask } from "../../api/providers";
 import { useTaskWorkspace } from "./TaskWorkspace";
 import { activityWindowHours, matchesTask } from "./taskFilters";
+import { displayedTaskStatus } from "../../components/epicActivityFormat";
 
 /** Render an activity row through the same table as a graph task row. */
 export function activityToTask(item: TaskActivityItem): Task {
@@ -72,7 +73,15 @@ export function useTaskListRows(): TaskListRows {
   const activityById = useMemo(() => new Map(
     (activity.data?.items ?? []).map((item) => [item.task_id, item] as const)), [activity.data]);
   const tasks = useMemo<Task[]>(() => {
-    if (inWindow) return (activity.data?.items ?? []).map(activityToTask);
+    if (inWindow) {
+      const current = new Map(graph.tasks.map((task) => [task.id, task]));
+      return (activity.data?.items ?? []).map((item) => {
+        const task = activityToTask(item);
+        const display = current.get(item.task_id);
+        return display ? { ...task, display_state: display.display_state, display_reason: display.display_reason,
+          child_state_counts: display.child_state_counts, descendant_state_counts: display.descendant_state_counts } : task;
+      });
+    }
     return graph.tasks.map((task) => ({
       ...task, project_id: graph.taskProject[task.id] ?? "",
       assigned_agent: task.assigned_agent_id, priority: task.priority ?? undefined,
@@ -90,13 +99,13 @@ export function useTaskListRows(): TaskListRows {
   const statusCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const task of scopedTasks) {
-      const status = (task.status ?? "").toUpperCase();
+      const status = displayedTaskStatus(task);
       counts[status] = (counts[status] ?? 0) + 1;
     }
     return counts;
   }, [scopedTasks]);
   const rows = useMemo(() => scopedTasks.filter((task) =>
-    !filters.status || (task.status ?? "").toUpperCase() === filters.status),
+    !filters.status || displayedTaskStatus(task) === filters.status),
   [scopedTasks, filters.status]);
   return { rows, statusCounts, isLoading, error: !!error, inWindow, activity, activityById, held, heldById, names };
 }

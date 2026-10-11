@@ -4,10 +4,15 @@
  * click answers at once instead of with a blank "Loading…". Module memory,
  * bounded; the full read replaces it the moment it lands.
  */
+import type { GraphTaskNode } from "@aq/ts-client";
+import { DISPLAY_STATUS } from "../../components/epicActivityFormat";
+
 export interface TaskPreview {
   id: string;
   title?: string | null;
   status?: string | null;
+  display_state?: GraphTaskNode["display_state"];
+  display_reason?: string | null;
   priority?: number | null;
   project_id?: string | null;
 }
@@ -21,6 +26,9 @@ export function rememberTaskPreview(task: { id: string } & Partial<Record<keyof 
     id: task.id,
     title: text(task.title),
     status: text(task.status),
+    display_state: typeof task.display_state === "string" && task.display_state in DISPLAY_STATUS
+      ? task.display_state as GraphTaskNode["display_state"] : null,
+    display_reason: text(task.display_reason),
     priority: typeof task.priority === "number" ? task.priority : null,
     project_id: text(task.project_id),
   };

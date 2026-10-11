@@ -522,8 +522,11 @@ from .get_task_dependencies_response_422 import GetTaskDependenciesResponse422
 from .get_task_request import GetTaskRequest
 from .get_task_response import GetTaskResponse
 from .get_task_response_422 import GetTaskResponse422
+from .get_task_response_child_state_counts_type_0 import GetTaskResponseChildStateCountsType0
 from .get_task_response_children_type_0 import GetTaskResponseChildrenType0
 from .get_task_response_deliverables_item import GetTaskResponseDeliverablesItem
+from .get_task_response_descendant_state_counts_type_0 import GetTaskResponseDescendantStateCountsType0
+from .get_task_response_display_state_type_0 import GetTaskResponseDisplayStateType0
 from .get_task_response_parent_type_0 import GetTaskResponseParentType0
 from .get_task_response_route_type_0 import GetTaskResponseRouteType0
 from .get_task_result_request import GetTaskResultRequest
@@ -624,6 +627,9 @@ from .graph_reflow_status_request import GraphReflowStatusRequest
 from .graph_reflow_status_response import GraphReflowStatusResponse
 from .graph_reflow_status_response_422 import GraphReflowStatusResponse422
 from .graph_task_node import GraphTaskNode
+from .graph_task_node_child_state_counts_type_0 import GraphTaskNodeChildStateCountsType0
+from .graph_task_node_descendant_state_counts_type_0 import GraphTaskNodeDescendantStateCountsType0
+from .graph_task_node_display_state_type_0 import GraphTaskNodeDisplayStateType0
 from .graph_tidy_request import GraphTidyRequest
 from .graph_tidy_response_422 import GraphTidyResponse422
 from .grep_request import GrepRequest
@@ -774,6 +780,9 @@ from .knowledge_verify_response_422 import KnowledgeVerifyResponse422
 from .layout_edge import LayoutEdge
 from .layout_job import LayoutJob
 from .layout_node import LayoutNode
+from .layout_node_child_state_counts_type_0 import LayoutNodeChildStateCountsType0
+from .layout_node_descendant_state_counts_type_0 import LayoutNodeDescendantStateCountsType0
+from .layout_node_display_state_type_0 import LayoutNodeDisplayStateType0
 from .layout_rect import LayoutRect
 from .layout_stub import LayoutStub
 from .layout_worker import LayoutWorker
@@ -1728,8 +1737,11 @@ from .task_deps_request import TaskDepsRequest
 from .task_deps_response import TaskDepsResponse
 from .task_deps_response_422 import TaskDepsResponse422
 from .task_detail import TaskDetail
+from .task_detail_child_state_counts_type_0 import TaskDetailChildStateCountsType0
 from .task_detail_children_type_0 import TaskDetailChildrenType0
 from .task_detail_deliverables_item import TaskDetailDeliverablesItem
+from .task_detail_descendant_state_counts_type_0 import TaskDetailDescendantStateCountsType0
+from .task_detail_display_state_type_0 import TaskDetailDisplayStateType0
 from .task_detail_parent_type_0 import TaskDetailParentType0
 from .task_detail_route_type_0 import TaskDetailRouteType0
 from .task_dict import TaskDict
@@ -1739,6 +1751,9 @@ from .task_metrics import TaskMetrics
 from .task_progress_request import TaskProgressRequest
 from .task_progress_response import TaskProgressResponse
 from .task_progress_response_422 import TaskProgressResponse422
+from .task_progress_response_child_state_counts_type_0 import TaskProgressResponseChildStateCountsType0
+from .task_progress_response_descendant_state_counts_type_0 import TaskProgressResponseDescendantStateCountsType0
+from .task_progress_response_display_state_type_0 import TaskProgressResponseDisplayStateType0
 from .task_recent_activity_request import TaskRecentActivityRequest
 from .task_recent_activity_response import TaskRecentActivityResponse
 from .task_recent_activity_response_422 import TaskRecentActivityResponse422
@@ -1760,18 +1775,24 @@ from .task_set_request import TaskSetRequest
 from .task_set_request_meta_type_0 import TaskSetRequestMetaType0
 from .task_set_response import TaskSetResponse
 from .task_set_response_422 import TaskSetResponse422
+from .task_set_response_child_state_counts_type_0 import TaskSetResponseChildStateCountsType0
 from .task_set_response_children_type_0 import TaskSetResponseChildrenType0
 from .task_set_response_context_item import TaskSetResponseContextItem
 from .task_set_response_deliverables_item import TaskSetResponseDeliverablesItem
+from .task_set_response_descendant_state_counts_type_0 import TaskSetResponseDescendantStateCountsType0
+from .task_set_response_display_state_type_0 import TaskSetResponseDisplayStateType0
 from .task_set_response_parent_type_0 import TaskSetResponseParentType0
 from .task_set_response_provenance_item import TaskSetResponseProvenanceItem
 from .task_set_response_route_type_0 import TaskSetResponseRouteType0
 from .task_show_request import TaskShowRequest
 from .task_show_response import TaskShowResponse
 from .task_show_response_422 import TaskShowResponse422
+from .task_show_response_child_state_counts_type_0 import TaskShowResponseChildStateCountsType0
 from .task_show_response_children_type_0 import TaskShowResponseChildrenType0
 from .task_show_response_context_item import TaskShowResponseContextItem
 from .task_show_response_deliverables_item import TaskShowResponseDeliverablesItem
+from .task_show_response_descendant_state_counts_type_0 import TaskShowResponseDescendantStateCountsType0
+from .task_show_response_display_state_type_0 import TaskShowResponseDisplayStateType0
 from .task_show_response_parent_type_0 import TaskShowResponseParentType0
 from .task_show_response_provenance_item import TaskShowResponseProvenanceItem
 from .task_show_response_route_type_0 import TaskShowResponseRouteType0
@@ -2406,7 +2427,10 @@ __all__ = (
     "GetTaskResponse",
     "GetTaskResponse422",
     "GetTaskResponseChildrenType0",
+    "GetTaskResponseChildStateCountsType0",
     "GetTaskResponseDeliverablesItem",
+    "GetTaskResponseDescendantStateCountsType0",
+    "GetTaskResponseDisplayStateType0",
     "GetTaskResponseParentType0",
     "GetTaskResponseRouteType0",
     "GetTaskResultRequest",
@@ -2507,6 +2531,9 @@ __all__ = (
     "GraphReflowStatusResponse",
     "GraphReflowStatusResponse422",
     "GraphTaskNode",
+    "GraphTaskNodeChildStateCountsType0",
+    "GraphTaskNodeDescendantStateCountsType0",
+    "GraphTaskNodeDisplayStateType0",
     "GraphTidyRequest",
     "GraphTidyResponse422",
     "GrepRequest",
@@ -2657,6 +2684,9 @@ __all__ = (
     "LayoutEdge",
     "LayoutJob",
     "LayoutNode",
+    "LayoutNodeChildStateCountsType0",
+    "LayoutNodeDescendantStateCountsType0",
+    "LayoutNodeDisplayStateType0",
     "LayoutRect",
     "LayoutStub",
     "LayoutWorker",
@@ -3604,7 +3634,10 @@ __all__ = (
     "TaskDepsResponse422",
     "TaskDetail",
     "TaskDetailChildrenType0",
+    "TaskDetailChildStateCountsType0",
     "TaskDetailDeliverablesItem",
+    "TaskDetailDescendantStateCountsType0",
+    "TaskDetailDisplayStateType0",
     "TaskDetailParentType0",
     "TaskDetailRouteType0",
     "TaskDict",
@@ -3614,6 +3647,9 @@ __all__ = (
     "TaskProgressRequest",
     "TaskProgressResponse",
     "TaskProgressResponse422",
+    "TaskProgressResponseChildStateCountsType0",
+    "TaskProgressResponseDescendantStateCountsType0",
+    "TaskProgressResponseDisplayStateType0",
     "TaskRecentActivityRequest",
     "TaskRecentActivityResponse",
     "TaskRecentActivityResponse422",
@@ -3636,8 +3672,11 @@ __all__ = (
     "TaskSetResponse",
     "TaskSetResponse422",
     "TaskSetResponseChildrenType0",
+    "TaskSetResponseChildStateCountsType0",
     "TaskSetResponseContextItem",
     "TaskSetResponseDeliverablesItem",
+    "TaskSetResponseDescendantStateCountsType0",
+    "TaskSetResponseDisplayStateType0",
     "TaskSetResponseParentType0",
     "TaskSetResponseProvenanceItem",
     "TaskSetResponseRouteType0",
@@ -3645,8 +3684,11 @@ __all__ = (
     "TaskShowResponse",
     "TaskShowResponse422",
     "TaskShowResponseChildrenType0",
+    "TaskShowResponseChildStateCountsType0",
     "TaskShowResponseContextItem",
     "TaskShowResponseDeliverablesItem",
+    "TaskShowResponseDescendantStateCountsType0",
+    "TaskShowResponseDisplayStateType0",
     "TaskShowResponseParentType0",
     "TaskShowResponseProvenanceItem",
     "TaskShowResponseRouteType0",

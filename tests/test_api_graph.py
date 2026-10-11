@@ -9,7 +9,7 @@ from sqlalchemy import event
 
 from src.api.graph import build_graph_router
 from src.database import Database
-from src.models import Agent, AgentState, Project, Task
+from src.models import Agent, AgentState, Project, Task, TaskStatus
 from tests.db_fixtures import lease_dsn
 
 
@@ -121,7 +121,7 @@ async def test_list_graph_task_rows_is_a_narrow_projection(db):
     assert [r["id"] for r in rows] == ["t2", "t1"]  # priority asc
     assert set(rows[0]) == {
         "id", "title", "status", "priority", "is_blocked", "profile_id", "intelligence_class",
-        "assigned_agent_id", "branch_name", "pr_url", "dedup_key",
+        "assigned_agent_id", "branch_name", "pr_url", "dedup_key", "parent_task_id",
     }
     assert rows[1]["dedup_key"] == "playbook-run:run-1"
     assert rows[1]["is_blocked"] is False
@@ -155,3 +155,22 @@ async def test_graph_endpoint_statement_count_does_not_grow_with_tasks(db, clien
     assert body["gates"][0]["task_ids"] == sorted(ids[:20])
     # project + tasks + edges + gates + waiters + agents
     assert counter["n"] <= 6, counter["n"]
+
+
+async def test_graph_rolls_up_nested_waiting_work(db, client_factory):
+    for task_id, parent_id in (("epic", None), ("phase", "epic"), ("leaf", "phase")):
+        await db.create_task(Task(id=task_id, project_id="p1", title=task_id, description="",
+                                  status=TaskStatus.DEFINED if task_id == "leaf" else TaskStatus.IN_PROGRESS))
+        if parent_id:
+            async with db._engine.begin() as conn:
+                await db.set_parent(task_id, parent_id, conn=conn)
+    async with client_factory() as ac:
+        response = await ac.get("/api/projects/p1/graph")
+    assert response.status_code == 200
+    nodes = {node["id"]: node for node in response.json()["tasks"]}
+    for task_id in ("epic", "phase"):
+        assert nodes[task_id]["status"] == "IN_PROGRESS"
+        assert nodes[task_id]["display_state"] == "waiting"
+        assert nodes[task_id]["child_state_counts"] == {"waiting": 1}
+        assert nodes[task_id]["descendant_state_counts"] == {"DEFINED": 1}
+    assert nodes["leaf"]["display_state"] is None

@@ -1490,9 +1490,15 @@ async def test_tiles_gate_lookup_is_two_statements_regardless_of_gate_count(db, 
     assert gates == [
         {"id": open_gid, "gate_type": "human", "status": "open", "task_ids": ["hub", "z"]}
     ]
+    # The containers' display-activity rollup reads every visible subtree, its
+    # gates included, in one statement; it is budgeted on its own.
+    activity_reads = [s for s in statements if "activity_subtree" in s]
+    assert len(activity_reads) == 1, activity_reads
     # The epic delivery projection reads open approval gates of the visible
     # epics in one statement of its own (filtered by gate type).
-    approval_reads = [s for s in statements if "gates.gate_type IN" in s]
+    approval_reads = [
+        s for s in statements if "gates.gate_type IN" in s and s not in activity_reads
+    ]
     assert len(approval_reads) <= 1, approval_reads
     # The review-wait read joins gates to ``doc_reviews`` once for the whole
     # response; it is budgeted on its own below, not as a gate lookup.
@@ -1501,6 +1507,7 @@ async def test_tiles_gate_lookup_is_two_statements_regardless_of_gate_count(db, 
     gate_reads = [
         s for s in statements
         if ("FROM gates" in s or "task_gates" in s)
+        and s not in activity_reads
         and s not in approval_reads
         and s not in review_reads
     ]
@@ -2098,6 +2105,27 @@ async def test_tiles_list_and_node_carry_epic_delivery_for_nodes_with_children(d
     assert nodes["z"]["delivery"] is None  # a leaf has no epic answer
     assert {n["id"]: n for n in listed.json()["nodes"]}["e"]["delivery"]["state"] == "implementing"
     assert node.json()["node"]["delivery"]["state"] == "implementing"
+
+
+@pytest.mark.parametrize(("leaf_status", "display_state"), [("DEFINED", "waiting"), ("BLOCKED", "blocked"), ("IN_PROGRESS", "active")])
+async def test_layout_rollup_matches_tiles_list_and_detail(db, client_factory, leaf_status, display_state):
+    await seed(db)
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks_table).where(tasks_table.c.id.in_(["e", "pkg"])).values(status="IN_PROGRESS"))
+        await conn.execute(update(tasks_table).where(tasks_table.c.id.in_(["c0", "g0", "g1"])).values(status=leaf_status))
+    async with client_factory() as ac:
+        tiles = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+        listed = await ac.post("/api/projects/p1/graph/list", json=ALL)
+        node = await ac.get("/api/projects/p1/graph/node/e?variant=all")
+    answers = [
+        next(row for row in response.json()["nodes"] if row["id"] == "e")
+        for response in (tiles, listed)
+    ] + [node.json()["node"]]
+    for answer in answers:
+        assert answer["status"] == "IN_PROGRESS"
+        assert answer["display_state"] == display_state
+        assert answer["child_state_counts"] == {"completed": 1, display_state: 2}
+        assert answer["descendant_state_counts"] == {"COMPLETED": 1, leaf_status: 3}
 
 
 async def test_tiles_survive_a_failed_epic_delivery_read(db, client_factory, monkeypatch):

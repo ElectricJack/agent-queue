@@ -15882,6 +15882,8 @@
     "src/task_graph.py::parse_graph": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/task_graph.py::split_findings": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/task_graph.py::validate_graph": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/activity.py::load_activity": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/task_graph/activity.py::task_activity": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/task_graph/creator.py::GraphFilingError": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/task_graph/creator.py::assign_child_ids": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/task_graph/creator.py::build_report": "Generic dependency; integration-specific definitions in this file are charged independently.",
