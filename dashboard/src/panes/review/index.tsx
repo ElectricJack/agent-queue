@@ -25,6 +25,7 @@ type ReviewRecord = {
   title: string;
   kind: string;
   state: string;
+  held_while_paused?: boolean;
   current_revision: number;
   decider: string;
   withdrawn_by?: string | null;
@@ -290,6 +291,11 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
 
   return (
     <div className="@container/review flex h-full min-h-0 flex-col bg-gray-950 text-gray-100">
+      {response.review.held_while_paused && (
+        <p className="px-4 py-2 text-sm text-gray-400">
+          held while paused — notifications will be released when the project resumes.
+        </p>
+      )}
       {revisedSinceOpen && (
         <div className="border-b border-amber-900 bg-amber-950/50 px-4 py-2 text-sm text-amber-200">
           Revised since you opened it — reload

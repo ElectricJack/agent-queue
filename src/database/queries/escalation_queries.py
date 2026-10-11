@@ -13,7 +13,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
@@ -23,8 +23,24 @@ from src.database.tables import (
     escalation_messages,
     escalations,
     messages,
+    projects,
     supervisor_report_requests,
 )
+
+
+def _project_paused():
+    return exists().where(
+        projects.c.id == escalations.c.project_id,
+        projects.c.status == "PAUSED",
+    )
+
+
+def _delivery_project_paused():
+    return exists().where(
+        escalations.c.id == escalation_deliveries.c.escalation_id,
+        _project_paused(),
+    )
+
 
 OPEN_ESCALATION_STATES = frozenset({"needs_human", "reply_received", "resolving"})
 TERMINAL_ESCALATION_STATES = frozenset({"resolved", "cancelled", "stale"})
@@ -271,7 +287,12 @@ class EscalationQueriesMixin:
             row = (
                 (
                     await conn.execute(
-                        select(escalations).where(escalations.c.id == escalation_id)
+                        select(
+                            escalations,
+                            and_(
+                                _project_paused(), escalations.c.state.in_(OPEN_ESCALATION_STATES)
+                            ).label("held_while_paused"),
+                        ).where(escalations.c.id == escalation_id)
                     )
                 )
                 .mappings()
@@ -299,7 +320,12 @@ class EscalationQueriesMixin:
         """
         if limit <= 0:
             return []
-        statement = select(escalations)
+        statement = select(
+            escalations,
+            and_(
+                _project_paused(), escalations.c.state.in_(OPEN_ESCALATION_STATES)
+            ).label("held_while_paused"),
+        )
         if project_id is not None:
             statement = statement.where(escalations.c.project_id == project_id)
         if project_ids is not None:
@@ -1274,7 +1300,7 @@ class EscalationQueriesMixin:
                 (
                     await conn.execute(
                         select(escalation_deliveries.c.id, escalation_deliveries.c.status)
-                        .where(due)
+                        .where(due, ~_delivery_project_paused())
                         .order_by(
                             escalation_deliveries.c.priority,
                             escalation_deliveries.c.next_attempt_at,
@@ -1314,6 +1340,40 @@ class EscalationQueriesMixin:
             )
         by_id = {row["id"]: {**dict(row), "reclaimed": reclaimed[row["id"]]} for row in rows}
         return [by_id[item_id] for item_id in ids]
+
+    async def defer_escalation_delivery(
+        self,
+        delivery_id: str,
+        *,
+        lease_owner: str,
+        now: float,
+        reclaimed: bool = False,
+        attempted: bool = False,
+    ) -> None:
+        """Release a paused attempt; restore the budget if no write started.
+
+        Keep bindings and any ambiguity from an earlier attempt. A reclaimed
+        lease may have sent before its owner died; persist that uncertainty so
+        the first post after resume still requires marker reconciliation.
+        """
+        values = {
+            "status": "retry",
+            "lease_owner": None,
+            "lease_expires_at": None,
+            "next_attempt_at": now,
+            "updated_at": now,
+            "attempt_count": escalation_deliveries.c.attempt_count - int(not attempted),
+        }
+        if reclaimed:
+            values["last_error"] = "TransportAmbiguous: reclaimed attempt held while paused"
+        async with self.immediate() as conn:
+            await conn.execute(
+                update(escalation_deliveries).where(
+                    escalation_deliveries.c.id == delivery_id,
+                    escalation_deliveries.c.status == "sending",
+                    escalation_deliveries.c.lease_owner == lease_owner,
+                ).values(**values)
+            )
 
     async def note_escalation_delivery_binding(
         self,
@@ -1473,7 +1533,9 @@ class EscalationQueriesMixin:
         )
         async with self._engine.connect() as conn:
             total = await conn.scalar(
-                select(func.count()).select_from(escalation_deliveries).where(due)
+                select(func.count()).select_from(escalation_deliveries).where(
+                    due, ~_delivery_project_paused()
+                )
             )
         return int(total or 0)
 

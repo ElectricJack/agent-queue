@@ -418,6 +418,15 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
     queryClient.invalidateQueries({ queryKey: ["proposal", pid] });
     return;
   }
+  if (type === "project.paused" || type === "project.resumed") {
+    queryClient.invalidateQueries({ queryKey: ["projects"] });
+    queryClient.invalidateQueries({ queryKey: ["project", event.project_id] });
+    queryClient.invalidateQueries({ queryKey: ["reviews"] });
+    queryClient.invalidateQueries({ queryKey: ["review"] });
+    queryClient.invalidateQueries({ queryKey: ["escalations"] });
+    queryClient.invalidateQueries({ queryKey: ["escalation"] });
+    return;
+  }
   if (type.startsWith("review.")) {
     const reviewId = (event as { review_id?: string }).review_id;
     queryClient.invalidateQueries({ queryKey: ["reviews"] });

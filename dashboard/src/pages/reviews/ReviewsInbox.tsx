@@ -18,6 +18,7 @@ type InboxReview = {
   author_task_id?: string | null;
   state: string;
   decider?: string;
+  held_while_paused?: boolean;
   current_revision: number;
   created_at?: unknown;
   updated_at?: unknown;
@@ -196,7 +197,12 @@ export default function ReviewsInbox() {
                       <span className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-200">delegated</span>
                     )}
                   </td>
-                  <td className="px-3 py-2.5"><StateBadge state={review.state} /></td>
+                  <td className="px-3 py-2.5">
+                    <StateBadge state={review.state} />
+                    {review.held_while_paused && OPEN_STATES.has(review.state) && (
+                      <span className="ml-2 text-xs text-gray-400">held while paused</span>
+                    )}
+                  </td>
                   <td className="px-3 py-2.5 text-gray-300">{review.kind}</td>
                   <td className="px-3 py-2.5 font-mono text-xs text-gray-400">{review.project_id}</td>
                   <td className="px-3 py-2.5 font-mono text-xs text-gray-400">{review.author_task_id ?? "—"}</td>

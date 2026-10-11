@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from src.deliverables import resolve_task_deliverables
+from src.models import ProjectStatus
 
 from . import sections as _sections
 from .models import PrimeDocument
@@ -243,4 +244,20 @@ class PrimeRenderer:
                 override_markdown=apply_override(override_template, doc),
             )
 
+        return _with_pause_notice(doc, project)
+
+
+_PAUSED_NOTICE = (
+    "\n\n## Project paused\n\n"
+    "Stop at the next safe point and preserve progress with aq task comment. "
+    "Keep your claim and wait for project resume before continuing work, "
+    "submitting reviews or requesting human decisions. A pending wait "
+    "completing does not authorize continuing while paused.\n"
+)
+
+
+def _with_pause_notice(doc: PrimeDocument, project: Any) -> PrimeDocument:
+    """Append the pause hold after overrides so a local template cannot hide it."""
+    if project is None or project.status != ProjectStatus.PAUSED:
         return doc
+    return replace(doc, override_markdown=doc.to_markdown().rstrip() + _PAUSED_NOTICE)

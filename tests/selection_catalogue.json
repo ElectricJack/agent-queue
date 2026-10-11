@@ -14990,10 +14990,11 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:a03bd25572ecc858f687107cc66d76ffbac0682f1a20071b6fd3f3198e964d85",
+      "digest": "sha256:98d5d13028c6147d1981d2dff108fca6a391d6bb637a04ba0f6f7ae2c6c1a960",
       "imports": [
         "src.config",
         "src.escalations.transport",
+        "src.models",
         "src.remote_links",
         "src.reviews.notifier"
       ],

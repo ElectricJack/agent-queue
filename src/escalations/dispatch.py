@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -76,6 +76,7 @@ from src.escalations.transport import (
     TransportMissing,
     TransportRejected,
 )
+from src.models import ProjectStatus
 from src.remote_links import DashboardLinkSource
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,10 @@ ROOT_EDIT_KINDS = frozenset({KIND_STATE, KIND_RESOLUTION})
 EDIT_RECEIPT_PREFIXES = ("edit|", "current|")
 
 
+class _ProjectPaused(Exception):
+    """Stop between external writes without losing confirmed bindings."""
+
+
 def _written_form(receipt: str | None) -> str | None:
     """The form a sent root-edit receipt recorded, or ``None``."""
     if not receipt:
@@ -128,6 +133,7 @@ class TickReport:
     unknown: int = 0
     edits: int = 0
     coalesced: int = 0
+    held: int = 0
     skipped: str | None = None
     replacements: tuple[str, ...] = field(default_factory=tuple)
 
@@ -312,6 +318,13 @@ class EscalationDeliveryService:
         for row in claimed:
             try:
                 await self._deliver_one(row, report)
+            except _ProjectPaused:
+                await self.db.defer_escalation_delivery(
+                    row["id"], lease_owner=self._lease_owner, now=self._clock(),
+                    reclaimed=bool(row.get("reclaimed")),
+                    attempted=bool(row.get("external_write_started")),
+                )
+                report.held += 1
             except Exception:
                 logger.warning(
                     "escalation delivery %s raised; leaving it leased", row["id"], exc_info=True
@@ -319,6 +332,19 @@ class EscalationDeliveryService:
         return report
 
     # -- one delivery ---------------------------------------------------
+    async def _ensure_project_active(self, row: Mapping[str, Any]) -> None:
+        incident = await self.db.get_escalation(str(row["escalation_id"]))
+        if incident is not None:
+            project = await self.db.get_project(incident["project_id"])
+            if project is not None and project.status == ProjectStatus.PAUSED:
+                raise _ProjectPaused
+
+    async def _before_write(self, row: MutableMapping[str, Any]) -> None:
+        await self._ensure_project_active(row)
+        # A later pause must retain the attempt so resume searches for posts
+        # whose receipt is only recorded once this whole delivery finishes.
+        row["external_write_started"] = True
+
     async def _finish(
         self,
         row: Mapping[str, Any],
@@ -454,7 +480,7 @@ class EscalationDeliveryService:
             logger.debug("marker reconciliation failed", exc_info=True)
             return None
 
-    async def _deliver_one(self, row: Mapping[str, Any], report: TickReport) -> None:
+    async def _deliver_one(self, row: MutableMapping[str, Any], report: TickReport) -> None:
         incident = await self.db.get_escalation(str(row["escalation_id"]))
         if incident is None:
             await self._finish(
@@ -462,6 +488,7 @@ class EscalationDeliveryService:
             )
             return
         facts = EscalationFacts.from_row(incident)
+        await self._ensure_project_active(row)
         if not facts.wants_human_delivery:
             # Also fences rows queued by an older daemon, including retries
             # and follow-ups on a root that was posted before the cutover.
@@ -589,7 +616,7 @@ class EscalationDeliveryService:
 
     async def _deliver_state(
         self,
-        row: Mapping[str, Any],
+        row: MutableMapping[str, Any],
         report: TickReport,
         *,
         facts: EscalationFacts,
@@ -709,6 +736,7 @@ class EscalationDeliveryService:
 
         base_url, dashboard_notice = await self._dashboard()
         answered_at = await self._answered_at(facts.id)
+        await self._before_write(row)
         try:
             await self.transport.edit_root(
                 channel_id=str(binding.channel_id or self._channel_id),
@@ -772,7 +800,7 @@ class EscalationDeliveryService:
 
     async def _deliver_root(
         self,
-        row: Mapping[str, Any],
+        row: MutableMapping[str, Any],
         report: TickReport,
         *,
         facts: EscalationFacts,
@@ -845,6 +873,7 @@ class EscalationDeliveryService:
             generation=generation,
         )
         if root_id is None:
+            await self._before_write(row)
             try:
                 outcome = await self.transport.post_root(
                     channel_id=channel_id,
@@ -876,6 +905,7 @@ class EscalationDeliveryService:
         # landed, and that one must be found rather than repeated.
         opener_may_exist = True
         if thread_id is None:
+            await self._before_write(row)
             try:
                 handle = await self.transport.ensure_thread(
                     channel_id=current.channel_id or channel_id,
@@ -964,7 +994,7 @@ class EscalationDeliveryService:
 
     async def _deliver_thread_text(
         self,
-        row: Mapping[str, Any],
+        row: MutableMapping[str, Any],
         report: TickReport,
         *,
         facts: EscalationFacts,
@@ -1002,6 +1032,7 @@ class EscalationDeliveryService:
             # explicitly).  A closed incident must not be left looking open
             # because somebody replied late, so restore §7's archived state.
             # Best effort: the guidance is already delivered either way.
+            await self._before_write(row)
             try:
                 await self.transport.archive_thread(thread_id=str(binding.thread_id))
             except TransportError as exc:
@@ -1009,7 +1040,7 @@ class EscalationDeliveryService:
 
     async def _post_in_thread(
         self,
-        row: Mapping[str, Any],
+        row: MutableMapping[str, Any],
         report: TickReport,
         *,
         facts: EscalationFacts,
@@ -1053,7 +1084,7 @@ class EscalationDeliveryService:
 
     async def _send_thread_text(
         self,
-        row: Mapping[str, Any],
+        row: MutableMapping[str, Any],
         report: TickReport,
         *,
         binding: TransportBinding,
@@ -1091,6 +1122,7 @@ class EscalationDeliveryService:
                     ),
                 )
                 return None, None
+        await self._before_write(row)
         try:
             return (
                 await self.transport.post_thread_message(
@@ -1103,7 +1135,7 @@ class EscalationDeliveryService:
 
     async def _deliver_resolution(
         self,
-        row: Mapping[str, Any],
+        row: MutableMapping[str, Any],
         report: TickReport,
         *,
         facts: EscalationFacts,
@@ -1159,6 +1191,7 @@ class EscalationDeliveryService:
                 await self._fail(row, report, binding=binding, error=error)
                 return
 
+        await self._before_write(row)
         try:
             # A closed incident carries no buttons: §5.2's collapsed row is the
             # whole post, and a choice row under "Resolved: …" would invite a
@@ -1185,6 +1218,7 @@ class EscalationDeliveryService:
             return
 
         if binding.has_thread:
+            await self._before_write(row)
             try:
                 await self.transport.archive_thread(thread_id=str(binding.thread_id))
             except TransportError as exc:

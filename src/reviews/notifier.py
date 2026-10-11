@@ -13,6 +13,7 @@ from src.escalations.transport import (
     TransportUnavailable,
     bound_content,
 )
+from src.models import ProjectStatus
 from src.remote_links import DashboardLink, DashboardLinkSource
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,14 @@ class ReviewNotifier:
                     continue
                 if (review_id, revision) in self._rejected:
                     continue
+                content = (
+                    await self._content(review, revision)
+                    if self.transport is not None and self.channel_id else None
+                )
+                # Re-check after rendering: a pause can race a tick.
+                project = await self.db.get_project(review["project_id"])
+                if project is not None and project.status == ProjectStatus.PAUSED:
+                    continue
                 if self.transport is None or not self.channel_id:
                     await self.db.mark_review_notified(review_id, revision)
                     handled += 1
@@ -72,7 +81,7 @@ class ReviewNotifier:
 
                 await self.transport.post_root(
                     channel_id=self.channel_id,
-                    content=await self._content(review, revision),
+                    content=content,
                 )
                 await self.db.mark_review_notified(review_id, revision)
                 handled += 1

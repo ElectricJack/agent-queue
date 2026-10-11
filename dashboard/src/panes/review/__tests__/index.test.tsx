@@ -72,6 +72,14 @@ beforeEach(() => {
 });
 
 describe("review pane", () => {
+  it("shows the paused notification hold on the review detail", () => {
+    hooks.useReview.mockReturnValue({ data: {
+      ...response, review: { ...response.review, held_while_paused: true },
+    } });
+    renderPane();
+    expect(screen.getByText(/held while paused/)).toBeInTheDocument();
+  });
+
   it("shows withdrawal audit and dependents and reopens the displayed revision", async () => {
     hooks.useReview.mockReturnValue({ data: { ...response,
       review: { ...response.review, state: "withdrawn", withdrawn_by: "human:local-operator",

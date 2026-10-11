@@ -33,6 +33,7 @@ class EscalationRecord(BaseModel):
     terminal_at: float | None = None
     delivery_statuses: list[str] | None = None
     pending_delivery: bool | None = None
+    held_while_paused: bool = False
 
 
 class EscalationMessage(BaseModel):

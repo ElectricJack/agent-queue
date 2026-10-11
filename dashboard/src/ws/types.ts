@@ -28,6 +28,11 @@ export interface PoolRenamedEvent extends BaseEvent {
   backup_path: string;
 }
 
+export interface ProjectPauseChangedEvent extends BaseEvent {
+  event_type: "project.paused" | "project.resumed";
+  project_id: string;
+}
+
 // --- Task lifecycle ---
 
 export interface TaskStartedEvent extends BaseEvent {
@@ -519,4 +524,5 @@ export type NotifyEvent =
   | ReviewCommentedEvent
   | MetricsTickEvent
   | DashboardStateChangedEvent
+  | ProjectPauseChangedEvent
   | PoolRenamedEvent;
