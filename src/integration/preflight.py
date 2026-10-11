@@ -145,6 +145,9 @@ async def daemon_functional_preflight(
                 required_classes.add(boundary.verifier_intelligence_class)
             if None in required_classes or not required_classes.issubset(class_ids):
                 blockers.append("intelligence_route_unavailable")
+            if boundary.route is None:
+                # Route-free (git-first train) policy: no playbook to check.
+                continue
             try:
                 definition = store.load(boundary.route.artifact.artifact_sha256)
             except Exception:

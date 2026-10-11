@@ -540,7 +540,11 @@ class RootSubjectRuntime:
             )
             if not policy_data:
                 return
-            artifact = policy_data["root"]["route"]["artifact"]
+            route = (policy_data.get("root") or {}).get("route")
+            if not route:
+                # Route-free git-first train policy: no root playbook to pin.
+                return
+            artifact = route["artifact"]
             pin = PolicyArtifactPin(
                 playbook_id=artifact["playbook_id"], artifact_sha256=artifact["artifact_sha256"]
             )
