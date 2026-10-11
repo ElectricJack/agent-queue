@@ -2117,9 +2117,14 @@ class TaskCommandsMixin:
         # never part of a public command schema: only an in-process command
         # can supply a callable, and a non-callable value is refused rather
         # than silently changing a task creation's atomicity.
+        before_create_on = args.pop("_before_create_on", None)
+        if before_create_on is not None and not callable(before_create_on):
+            return {"success": False, "error": "_before_create_on is internal-only"}
         after_create_on = args.pop("_after_create_on", None)
         if after_create_on is not None and not callable(after_create_on):
             return {"success": False, "error": "_after_create_on is internal-only"}
+        if before_create_on is not None and after_create_on is None:
+            return {"success": False, "error": "A pre-create hook requires its atomic receipt writer"}
         if args.get("container"):
             scope = self._current_scope or {}
             if scope.get("kind") == "session" and not scope.get("elevated"):
@@ -2796,6 +2801,8 @@ class TaskCommandsMixin:
         if hierarchy_enabled and filing_session is None:
             try:
                 async with self.db.immediate() as conn:
+                    if before_create_on is not None:
+                        await before_create_on(conn)
                     service = self._hierarchy_integration_service()
                     if parent_id:
                         created = await service.file_prepared_child_on(
@@ -2835,6 +2842,8 @@ class TaskCommandsMixin:
                     "code": f"hierarchy.{exc.code}",
                 }
         elif filing_session is not None:
+            if before_create_on is not None:
+                return {"success": False, "error": "Source-owned filing requires a control-plane principal"}
             try:
                 (
                     task_id,
@@ -2906,6 +2915,8 @@ class TaskCommandsMixin:
                     # that transaction, which is ideal for ordinary calls
                     # but would expose a phase between its filing and gates.
                     async with self.db.immediate() as conn:
+                        if before_create_on is not None:
+                            await before_create_on(conn)
                         await self.db.lock_hierarchy_project(conn, task.project_id)
                         task_id, depth_cap_fallback = await child_task_id(conn, parent_id)
                         task.id = task_id
@@ -2945,6 +2956,8 @@ class TaskCommandsMixin:
                 )
             else:
                 async with self.db.immediate() as conn:
+                    if before_create_on is not None:
+                        await before_create_on(conn)
                     await self.db.lock_hierarchy_project(conn, task.project_id)
                     task_id = await fresh_root_id(conn)
                     task.id = task_id

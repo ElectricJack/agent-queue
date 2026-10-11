@@ -32,7 +32,7 @@ DOC = "# Doc\n\nIntro paragraph.\n\n## Scope\n\nBody.\n"
 
 class RecordingHooks:
     def __init__(self, db):
-        self.db, self.events, self.resolved, self.changes = db, [], [], []
+        self.db, self.events, self.resolved, self.changes, self.filed = db, [], [], [], []
 
     async def emit(self, event_type, payload):
         self.events.append((event_type, payload))
@@ -43,6 +43,17 @@ class RecordingHooks:
 
     async def changes_requested(self, review, revision, feedback):
         self.changes.append((review["id"], revision, feedback))
+
+    async def file_feedback(self, decision, before, after):
+        from src.asks.operations import task_key
+        async with self.db.immediate() as conn:
+            await before(conn)
+            task = Task(id=f"work-{decision['id']}", project_id=PROJECT,
+                        title="Feedback", description="Frozen feedback", status=TaskStatus.READY,
+                        dedup_key=task_key(decision))
+            await self.db.create_task(task, conn=conn)
+            await after(conn, task.id, None)
+        self.filed.append(decision)
 
     def of(self, event_type: str) -> list[dict]:
         return [payload for kind, payload in self.events if kind == event_type]
@@ -84,6 +95,7 @@ def svc(db, hooks, clock, tmp_path):
             emit=hooks.emit,
             resolve_gate=hooks.resolve_gate,
             changes_requested=hooks.changes_requested,
+            file_feedback=hooks.file_feedback,
         ),
         clock=clock,
     )
@@ -142,14 +154,21 @@ async def test_code_whitespace_change_is_substantive(svc):
     assert revised["revision"] == 2
 
 
+async def decided(svc, **args):
+    result = await svc.decide(**args)
+    if result.get("error_code") == "ask.preview_required":
+        result = await svc.decide(**args, preview_id=result["preview"]["id"], expected=result["expected"])
+    return result
+
+
 async def approve(svc, review_id, revision=1, note="ok"):
-    return await svc.decide(
+    return await decided(svc,
         review_id=review_id, revision=revision, decision="approve", note=note, decided_by=OPERATOR
     )
 
 
 async def request_changes(svc, review_id, revision=1, note="Tighten scope."):
-    return await svc.decide(
+    return await decided(svc,
         review_id=review_id, revision=revision, decision="request_changes", note=note,
         decided_by=OPERATOR
     )
@@ -325,7 +344,8 @@ async def test_approve_resolves_the_gate_and_unblocks_waiters(svc, db, hooks, tm
 
     clock.now = NOW + 60
     decided = await approve(svc, review_id, note="Ship it.")
-    assert decided == {"review_id": review_id, "state": "approved", "unblocked_task_ids": ["impl"]}
+    assert decided["state"] == "approved" and decided["application_state"] == "applied"
+    assert decided["unblocked_task_ids"] == ["impl"]
 
     assert (await db.get_task("impl")).is_blocked is False
     gate = await db.get_gate(gate_id)
@@ -334,13 +354,13 @@ async def test_approve_resolves_the_gate_and_unblocks_waiters(svc, db, hooks, tm
         "approved",
         OPERATOR,
     )
-    assert hooks.resolved == [(gate_id, OPERATOR, "approved")]
+    assert hooks.resolved == []  # gate transition and apply receipt now share one transaction
     assert hooks.changes == []
 
     review = await db.get_review(review_id)
     assert review["state"] == "approved"
     assert review["decided_by"] == OPERATOR
-    assert review["decided_at"] == review["updated_at"] == NOW + 60
+    assert review["decided_at"] == NOW + 60
     assert review["decision_note"] == "Ship it."
     assert read_vault(tmp_path, result["vault_path"])[0]["status"] == "approved"
     assert read_vault(tmp_path, result["vault_path"])[1] == DOC
@@ -351,12 +371,13 @@ async def test_approve_resolves_the_gate_and_unblocks_waiters(svc, db, hooks, tm
     assert event["revision"] == 1
     assert event["unblocked_task_ids"] == ["impl"]
     assert event["note"] == "Ship it."
-    assert hooks.of("spec.approved") == [{
-        "project_id": PROJECT,
-        "spec_path": str((svc.vault_root / result["vault_path"]).resolve()),
-    }]
+    [ingestion] = hooks.of("spec.approved")
+    assert ingestion["project_id"] == PROJECT
+    assert ingestion["spec_path"] == str((svc.vault_root / result["vault_path"]).resolve())
+    assert ingestion["decision_id"] == decided["decision_id"]
     assert [kind for kind, _ in hooks.events] == [
-        "review.submitted", "review.decided", "spec.approved",
+        "review.submitted", "review.decided", "spec.approved", "gate.resolved", "gate.resolved",
+        "task.unblocked", "task.unblocked",
     ]
 
 
@@ -368,7 +389,7 @@ async def test_racing_decisions_let_exactly_one_win(svc, db, hooks):
     wins = [o for o in outcomes if isinstance(o, dict)]
     losses = [o for o in outcomes if isinstance(o, ReviewError)]
     assert len(wins) == 1 and len(losses) == 1, outcomes
-    assert losses[0].code in {"review_closed", "not_in_review", "stale_revision"}
+    assert losses[0].code in {"review_closed", "not_in_review", "stale_revision", "ask.stale_source"}
     assert (await db.get_review(review_id))["state"] == wins[0]["state"]
     assert len(hooks.of("review.decided")) == 1
 
@@ -445,24 +466,19 @@ async def test_request_changes_keeps_the_gate_open_and_hands_back_feedback(
     )
 
     decided = await request_changes(svc, review_id, note="Two things.")
-    assert decided == {
-        "review_id": review_id,
-        "state": "changes_requested",
-        "unblocked_task_ids": [],
-    }
+    assert decided["state"] == "changes_requested" and decided["application_state"] == "applied"
     review = await db.get_review(review_id)
     assert review["state"] == "changes_requested"
     assert review["decision_note"] == "Two things."
     assert (await db.get_gate(gate_id))["status"] == "open"
     assert hooks.resolved == []
 
-    [(changed_id, decided_revision, feedback)] = hooks.changes
-    assert changed_id == review_id
-    assert decided_revision["responder_profile_source"] == "router"
-    assert feedback == ReviewService.feedback_text(review, "Two things.", 2)
-    assert f"aq review show --review-id {review_id} --comments" in feedback
-    assert "2 open comment(s)" in feedback
-    assert "Two things." in feedback
+    [frozen] = hooks.filed
+    assert frozen["review_id"] == review_id
+    assert [item["original_text"] for item in frozen["packet"]["domain"]["feedback"]] == [
+        "Too vague.", "Missing a section.", "Two things.",
+    ]
+    assert hooks.changes == []  # live feedback is never reread by a post-commit hook
 
     assert read_vault(tmp_path, result["vault_path"])[0]["status"] == "changes_requested"
     [event] = hooks.of("review.decided")
@@ -482,14 +498,14 @@ def test_feedback_text():
 async def test_response_choice_belongs_to_each_decided_revision(svc, db):
     submitted = await submit(svc)
     review_id = submitted["review_id"]
-    await svc.decide(
+    await decided(svc,
         review_id=review_id, revision=1, decision="request_changes", note="First pass",
         decided_by=OPERATOR,
         responder_class="standard-high", responder_profile="standard-high-codex",
         responder_profile_source="explicit",
     )
     await revise(svc, review_id, DOC + "\nMore detail.\n")
-    await svc.decide(
+    await decided(svc,
         review_id=review_id, revision=2, decision="request_changes", note="Second pass",
         decided_by=OPERATOR,
     )
@@ -497,7 +513,7 @@ async def test_response_choice_belongs_to_each_decided_revision(svc, db):
     second = await db.get_review_revision(review_id, 2)
     assert (first["responder_class"], first["responder_profile"],
             first["responder_profile_source"]) == (
-        "standard-high", "standard-high-codex", "explicit",
+        "standard-high", None, "router",
     )
     assert (second["responder_class"], second["responder_profile"],
             second["responder_profile_source"]) == (None, None, "router")
@@ -924,7 +940,7 @@ async def test_comment_validation_and_closed_reviews(svc):
     await raises("not_found", comment(rid="rev-no-such"))
 
     await request_changes(svc, review_id)
-    await comment()  # still open for comments
+    await raises("review_closed", comment())  # decided feedback is frozen
 
     await svc.withdraw(review_id=review_id, reason="", by=OPERATOR)
     await raises("review_closed", comment())
