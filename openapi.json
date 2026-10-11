@@ -17479,6 +17479,53 @@
         }
       }
     },
+    "/api/task/approved-spec-packet": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Read the immutable document and feedback of the live held ingestion role.",
+        "description": "Read the immutable document and feedback of the live held ingestion role.",
+        "operationId": "approved_spec_packet",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovedSpecPacketRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovedSpecPacketResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/archive-settings": {
       "post": {
         "tags": [
@@ -17774,6 +17821,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EditTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/ensure-spec-ingest": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Ensure one role task per applied approval decision, including archived receipts.",
+        "description": "Ensure one role task per applied approval decision, including archived receipts.",
+        "operationId": "ensure_spec_ingest",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnsureSpecIngestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnsureTaskResponse"
                 }
               }
             }
@@ -19273,6 +19367,100 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SpecApproveResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/spec-ingest-legacy-inventory": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Inventory path-only ingestion assignments for explicit operator reconciliation.",
+        "description": "Inventory path-only ingestion assignments for explicit operator reconciliation.",
+        "operationId": "spec_ingest_legacy_inventory",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpecIngestLegacyInventoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecIngestLegacyInventoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/spec-ingest-reconcile": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Replay at most twenty pending approved-spec dispatches; operator/service only.",
+        "description": "Replay at most twenty pending approved-spec dispatches; operator/service only.",
+        "operationId": "spec_ingest_reconcile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpecIngestReconcileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpecIngestReconcileResponse"
                 }
               }
             }
@@ -22835,6 +23023,131 @@
           "head_sha"
         ],
         "title": "ApprovePullRequestRequest"
+      },
+      "ApprovedSpecPacketRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "decision_id": {
+            "type": "string",
+            "title": "Decision Id",
+            "description": ""
+          },
+          "packet_sha256": {
+            "type": "string",
+            "title": "Packet Sha256",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "decision_id",
+          "packet_sha256"
+        ],
+        "title": "ApprovedSpecPacketRequest"
+      },
+      "ApprovedSpecPacketResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "decision_id": {
+            "type": "string",
+            "title": "Decision Id"
+          },
+          "packet_sha256": {
+            "type": "string",
+            "title": "Packet Sha256"
+          },
+          "review_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Id"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          },
+          "spec_kind": {
+            "type": "string",
+            "title": "Spec Kind"
+          },
+          "spec_path": {
+            "type": "string",
+            "title": "Spec Path"
+          },
+          "content_sha256": {
+            "type": "string",
+            "title": "Content Sha256"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body"
+          },
+          "packet": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Packet"
+          },
+          "feedback": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Feedback"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "decision_id",
+          "packet_sha256",
+          "review_id",
+          "revision",
+          "snapshot_id",
+          "spec_kind",
+          "spec_path",
+          "content_sha256",
+          "body",
+          "packet",
+          "feedback"
+        ],
+        "title": "ApprovedSpecPacketResponse"
       },
       "ArchiveSettingsRequest": {
         "properties": {},
@@ -31865,6 +32178,32 @@
         ],
         "title": "EffectiveGitIdentity",
         "description": "The identity a project's AQ-authored commits use, and where it came from.\n\n``source`` is ``project`` (its override), ``installation`` (the\n``git_identity`` default) or ``fallback`` (no default chosen yet;\n``configured`` is then false)."
+      },
+      "EnsureSpecIngestRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "decision_id": {
+            "type": "string",
+            "title": "Decision Id",
+            "description": ""
+          },
+          "packet_sha256": {
+            "type": "string",
+            "title": "Packet Sha256",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "decision_id",
+          "packet_sha256"
+        ],
+        "title": "EnsureSpecIngestRequest"
       },
       "EnsureTaskRequest": {
         "properties": {
@@ -68292,10 +68631,126 @@
             "type": "boolean",
             "title": "Success",
             "default": true
+          },
+          "decision_id": {
+            "type": "string",
+            "title": "Decision Id"
+          },
+          "packet_sha256": {
+            "type": "string",
+            "title": "Packet Sha256"
+          },
+          "snapshot_id": {
+            "type": "string",
+            "title": "Snapshot Id"
           }
         },
         "type": "object",
+        "required": [
+          "decision_id",
+          "packet_sha256",
+          "snapshot_id"
+        ],
         "title": "SpecApproveResponse"
+      },
+      "SpecIngestLegacyInventoryRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "after_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "SpecIngestLegacyInventoryRequest"
+      },
+      "SpecIngestLegacyInventoryResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "assignments": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Assignments"
+          },
+          "next_after_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next After Id"
+          },
+          "policy": {
+            "type": "string",
+            "title": "Policy"
+          }
+        },
+        "type": "object",
+        "required": [
+          "assignments",
+          "next_after_id",
+          "policy"
+        ],
+        "title": "SpecIngestLegacyInventoryResponse"
+      },
+      "SpecIngestReconcileRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "SpecIngestReconcileRequest"
+      },
+      "SpecIngestReconcileResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "dispatched": {
+            "type": "integer",
+            "title": "Dispatched"
+          },
+          "errors": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Errors"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dispatched",
+          "errors"
+        ],
+        "title": "SpecIngestReconcileResponse"
       },
       "StallMetrics": {
         "properties": {
@@ -70177,6 +70632,11 @@
           "committed": {
             "type": "boolean",
             "title": "Committed",
+            "default": false
+          },
+          "already_committed": {
+            "type": "boolean",
+            "title": "Already Committed",
             "default": false
           },
           "task_ids": {

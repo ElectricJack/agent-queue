@@ -1363,11 +1363,19 @@ _CRON_SCHEMAS: dict[str, EventSchema] = {
 
 _SPEC_SCHEMAS: dict[str, EventSchema] = {
     "spec.approved": {
-        "required": ["project_id", "spec_path"],
-        "optional": [],
+        "required": ["project_id", "decision_id", "packet_sha256", "review_id", "revision",
+                     "spec_kind"],
+        "optional": ["spec_path", "operation_key", "seq"],
         "fields": {
             "project_id": {"type": "string", "description": "project"},
-            "spec_path": {"type": "string", "description": "specification path"},
+            "decision_id": {"type": "string", "description": "immutable approval decision"},
+            "packet_sha256": {"type": "string", "description": "approved packet hash"},
+            "review_id": {"type": "string", "description": "review or null for standalone"},
+            "revision": {"type": "integer", "description": "review revision or null"},
+            "spec_kind": {"type": "string", "description": "design or implementation"},
+            "spec_path": {"type": "string", "description": "display mirror only"},
+            "operation_key": {"type": "string", "description": "durable dispatch identity"},
+            "seq": {"type": "integer", "description": "persisted event sequence"},
         },
     },
     "proposal.ready": {

@@ -126,6 +126,12 @@ class EnsureTaskArgs(CommandArgs):
     discovered_from: str | None = None
 
 
+class EnsureSpecIngestArgs(CommandArgs):
+    project_id: str
+    decision_id: str
+    packet_sha256: str
+
+
 class EnsureTaskValue(CommandValue):
     task_id: str
     created: bool
@@ -825,7 +831,7 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     if name == "ci_repair_adopt":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in {"adopted", "recorded", "unchanged"} else "rejected"
-    if name == "ensure_task":
+    if name in {"ensure_task", "ensure_spec_ingest"}:
         return "created" if raw.get("created") else "reused"
     if name == "github_issue_triage":
         return "swept"
@@ -1101,6 +1107,15 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         outcome_labels={"created": "Created", "reused": "Reused", "rejected": "Rejected"},
         result_labels={"task_id": "Task", "created": "Was created"},
         subject_labels={"task": "a task"},
+    ),
+    "ensure_spec_ingest": CommandPresentation(
+        title="Ensure approved spec ingestion",
+        summary="Create or recover the role task receipt for an immutable approved decision.",
+        arg_labels={"project_id": "Project", "decision_id": "Decision",
+                    "packet_sha256": "Approved packet hash"},
+        outcome_labels={"created": "Created", "reused": "Reused", "rejected": "Rejected"},
+        result_labels={"task_id": "Task", "created": "Was created"},
+        subject_labels={"task": "an approved spec ingestion task"},
     ),
     "github_issue_triage": CommandPresentation(
         title="Triage GitHub issues",
@@ -1675,6 +1690,12 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             (CreateOrReuseClause(subject=EffectSubject.TASK, key_arg="dedup_key"),),
             IdempotencySpec(mode="keyed", key_field="dedup_key"),
             True,
+        ),
+        (
+            "ensure_spec_ingest", EnsureSpecIngestArgs, EnsureTaskValue,
+            _outcomes("created", "reused"), SideEffectClass.CREATE,
+            (CreateOrReuseClause(subject=EffectSubject.TASK, key_arg="decision_id"),),
+            IdempotencySpec(mode="keyed", key_field="decision_id"), True,
         ),
         (
             "github_issue_triage",

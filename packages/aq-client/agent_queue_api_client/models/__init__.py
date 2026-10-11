@@ -48,6 +48,11 @@ from .approve_pull_request_api_reviews_pull_requests_task_id_approve_post_respon
 )
 from .approve_pull_request_request import ApprovePullRequestRequest
 from .approve_pull_request_response_422 import ApprovePullRequestResponse422
+from .approved_spec_packet_request import ApprovedSpecPacketRequest
+from .approved_spec_packet_response import ApprovedSpecPacketResponse
+from .approved_spec_packet_response_422 import ApprovedSpecPacketResponse422
+from .approved_spec_packet_response_feedback_item import ApprovedSpecPacketResponseFeedbackItem
+from .approved_spec_packet_response_packet import ApprovedSpecPacketResponsePacket
 from .archive_settings_request import ArchiveSettingsRequest
 from .archive_settings_response import ArchiveSettingsResponse
 from .archive_settings_response_422 import ArchiveSettingsResponse422
@@ -338,6 +343,8 @@ from .effect_clause_dto import EffectClauseDTO
 from .effect_clause_dto_kind import EffectClauseDTOKind
 from .effective_git_identity import EffectiveGitIdentity
 from .effective_git_identity_source import EffectiveGitIdentitySource
+from .ensure_spec_ingest_request import EnsureSpecIngestRequest
+from .ensure_spec_ingest_response_422 import EnsureSpecIngestResponse422
 from .ensure_task_request import EnsureTaskRequest
 from .ensure_task_response import EnsureTaskResponse
 from .ensure_task_response_422 import EnsureTaskResponse422
@@ -1654,6 +1661,14 @@ from .source_scan import SourceScan
 from .spec_approve_request import SpecApproveRequest
 from .spec_approve_response import SpecApproveResponse
 from .spec_approve_response_422 import SpecApproveResponse422
+from .spec_ingest_legacy_inventory_request import SpecIngestLegacyInventoryRequest
+from .spec_ingest_legacy_inventory_response import SpecIngestLegacyInventoryResponse
+from .spec_ingest_legacy_inventory_response_422 import SpecIngestLegacyInventoryResponse422
+from .spec_ingest_legacy_inventory_response_assignments_item import SpecIngestLegacyInventoryResponseAssignmentsItem
+from .spec_ingest_reconcile_request import SpecIngestReconcileRequest
+from .spec_ingest_reconcile_response import SpecIngestReconcileResponse
+from .spec_ingest_reconcile_response_422 import SpecIngestReconcileResponse422
+from .spec_ingest_reconcile_response_errors_item import SpecIngestReconcileResponseErrorsItem
 from .stall_metrics import StallMetrics
 from .start_agent_terminal_request import StartAgentTerminalRequest
 from .start_agent_terminal_response_422 import StartAgentTerminalResponse422
@@ -1965,6 +1980,11 @@ __all__ = (
     "AppendNoteRequest",
     "AppendNoteResponse",
     "AppendNoteResponse422",
+    "ApprovedSpecPacketRequest",
+    "ApprovedSpecPacketResponse",
+    "ApprovedSpecPacketResponse422",
+    "ApprovedSpecPacketResponseFeedbackItem",
+    "ApprovedSpecPacketResponsePacket",
     "ApprovePendingPullRequestRequest",
     "ApprovePullRequestApiReviewsPullRequestsTaskIdApprovePostResponseApprovePullRequestApiReviewsPullRequestsTaskIdApprovePost",
     "ApprovePullRequestRequest",
@@ -2257,6 +2277,8 @@ __all__ = (
     "EffectClauseDTOKind",
     "EffectiveGitIdentity",
     "EffectiveGitIdentitySource",
+    "EnsureSpecIngestRequest",
+    "EnsureSpecIngestResponse422",
     "EnsureTaskRequest",
     "EnsureTaskResponse",
     "EnsureTaskResponse422",
@@ -3563,6 +3585,14 @@ __all__ = (
     "SpecApproveRequest",
     "SpecApproveResponse",
     "SpecApproveResponse422",
+    "SpecIngestLegacyInventoryRequest",
+    "SpecIngestLegacyInventoryResponse",
+    "SpecIngestLegacyInventoryResponse422",
+    "SpecIngestLegacyInventoryResponseAssignmentsItem",
+    "SpecIngestReconcileRequest",
+    "SpecIngestReconcileResponse",
+    "SpecIngestReconcileResponse422",
+    "SpecIngestReconcileResponseErrorsItem",
     "StallMetrics",
     "StartAgentTerminalRequest",
     "StartAgentTerminalResponse422",
