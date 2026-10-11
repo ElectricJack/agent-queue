@@ -8,6 +8,7 @@ import { StatusPill } from "../StatusPill";
 import { statusPillFor } from "../statusPillModel";
 import { epicCountLine } from "../taskReason";
 import { UNIT_H } from "./units";
+import { childCountText, epicLeafProgress } from "../../../components/epicActivityFormat";
 
 export interface ContainerNodeProps { id: string; data: ContainerNodeData; selected?: boolean }
 
@@ -36,15 +37,19 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
   // (an integration hold reads PAUSED) stays in the pill's tooltip.
   const pill = statusPillFor({
     status: node.status,
+    display_state: node.display_state, display_reason: node.display_reason,
     isBlocked: node.is_blocked,
     delivery: node.delivery ?? null,
     reviewBlock: reviewWaits.find((wait) => wait.blocking) ?? null,
   });
-  const total = node.agg_descendants ?? 0;
-  const count = epicCountLine({
-    done: node.agg_completed ?? 0, total, running: node.agg_running, blocked: node.agg_blocked,
-  });
+  const progress = epicLeafProgress(node.descendant_state_counts ?? node.delivery?.descendant_state_counts) ?? {
+    done: node.agg_completed ?? 0, total: node.agg_descendants ?? 0, running: node.agg_running, blocked: node.agg_blocked,
+  };
+  const total = progress.total;
+  const count = epicCountLine(progress);
   const border = node.depth === 0 ? "border-g-border-strong" : "border-g-border";
+  const stateCounts = childCountText(node.child_state_counts ?? node.delivery?.child_state_counts);
+  const displayReason = node.display_reason ?? node.delivery?.display_reason;
   return (
     <div data-container-id={node.id} className={`h-full w-full rounded-xl border bg-g-panel font-g ${border} ${selected ? "outline-2 outline-offset-2 outline-g-accent" : ""} ${node.context_only ? "border-dashed" : ""}`}>
       <Handle id="in-left" type="target" position={Position.Left} isConnectable={false} />
@@ -84,6 +89,8 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
             ))}
           </span>
         )}
+        {stateCounts && <span data-child-state-counts title={stateCounts} className="min-w-0 shrink truncate text-[11px] text-g-muted">{stateCounts}</span>}
+        {displayReason && <span data-display-reason title={displayReason} className="min-w-0 shrink truncate text-[11px] text-g-muted">{displayReason}</span>}
         {/* §1.2: a phase held on failed work condenses to "N failed" in the
           * count line; it opens the first failed child, and the tooltip
           * names the rest until the frame's hover card carries them. */}
@@ -128,10 +135,10 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
           <div className="absolute inset-x-3.5 bottom-0">
             <ProgressBar
               variant="line"
-              done={node.agg_completed ?? 0}
+              done={progress.done}
               total={total}
-              running={node.agg_running ?? 0}
-              blocked={node.agg_blocked ?? 0}
+              running={progress.running ?? 0}
+              blocked={progress.blocked ?? 0}
             />
           </div>
         )}

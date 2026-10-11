@@ -1,3 +1,5 @@
+import { displayedTaskStatus, type EpicActivity } from "../../components/epicActivityFormat";
+
 export interface TaskFilters {
   query: string;
   status: string;
@@ -32,6 +34,7 @@ export const TASK_STATUSES = [
   "DEFINED", "READY", "ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "PAUSED",
   "BLOCKED", "FAILED", "COMPLETED",
 ];
+export const TASK_FILTER_STATUSES = [...TASK_STATUSES, "WAITING"];
 export const FINISHED_STATUSES = new Set(["COMPLETED", "CANCELED", "CANCELLED", "SKIPPED"]);
 
 export function readTaskFilters(params: URLSearchParams): TaskFilters {
@@ -56,7 +59,7 @@ export function writeTaskFilters(params: URLSearchParams, filters: TaskFilters):
   return next;
 }
 
-interface SearchableTask {
+interface SearchableTask extends EpicActivity {
   id: string;
   title?: string | null;
   status?: string | null;
@@ -69,7 +72,7 @@ interface SearchableTask {
 
 /** Every search word may match a different field, just like a command palette. */
 export function matchesTask(task: SearchableTask, filters: TaskFilters, project = ""): boolean {
-  const status = (task.status ?? "").toUpperCase();
+  const status = displayedTaskStatus(task);
   if (filters.status && status !== filters.status) return false;
   // A time range is a claim about work done in it, so it carries completed
   // tasks whether or not the (implied, disabled) checkbox is ticked.

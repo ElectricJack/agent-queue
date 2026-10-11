@@ -12,6 +12,7 @@ import {
   WrenchScrewdriverIcon,
 } from "@heroicons/react/24/outline";
 import type { EpicDeliveryStatus } from "@aq/ts-client";
+import { DISPLAY_STATUS } from "./epicActivityFormat";
 
 /** Presentation helpers for an epic's delivery projection (see EpicDelivery.tsx). */
 export type EpicDelivery = EpicDeliveryStatus;
@@ -53,6 +54,7 @@ export function styleFor(state: string): StateStyle {
 /** The TaskNode status tone an epic card takes; `fallback` keeps the stored one. */
 export function deliveryCardStatus(delivery: EpicDelivery | null | undefined, fallback: string): string {
   if (!delivery) return fallback;
+  if (delivery.display_state) return DISPLAY_STATUS[delivery.display_state];
   return styleFor(delivery.state).cardStatus ?? fallback;
 }
 

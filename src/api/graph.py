@@ -25,11 +25,12 @@ from src.api.models.graph import (
     GraphTaskNode,
     ProjectGraphResponse,
 )
+from src.integration.epic_delivery import EpicDeliveryProjection, display_fields, lease_ttl_from
 
 __all__ = ["build_graph_router", "router"]
 
 
-def build_graph_router(*, db) -> APIRouter:
+def build_graph_router(*, db, config=None) -> APIRouter:
     router = APIRouter()
 
     @router.get(
@@ -91,6 +92,10 @@ def build_graph_router(*, db) -> APIRouter:
             for a in await db.list_agents()
             if a.current_task_id in task_ids
         ]
+        container_ids = {r.get("parent_task_id") for r in rows} - {None}
+        deliveries = await EpicDeliveryProjection(
+            db, cached_only=True, lease_ttl=lease_ttl_from(config),
+        ).for_tasks(container_ids)
 
         def _run_id(dedup_key: str | None) -> str | None:
             if dedup_key and dedup_key.startswith("playbook-run:"):
@@ -111,6 +116,9 @@ def build_graph_router(*, db) -> APIRouter:
                     branch_name=r["branch_name"],
                     pr_url=r["pr_url"],
                     playbook_run_id=_run_id(r["dedup_key"]),
+                    parent_task_id=r.get("parent_task_id"),
+                    delivery_status=deliveries.get(r["id"]),
+                    **display_fields(deliveries.get(r["id"])),
                 )
                 for r in rows
             ],
@@ -144,7 +152,7 @@ def _build_default_router() -> APIRouter:
         if orch is None:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
         # Delegate to the router-factory implementation for behaviour parity.
-        inner = build_graph_router(db=orch.db)
+        inner = build_graph_router(db=orch.db, config=getattr(orch, "config", None))
         for route in inner.routes:
             if getattr(route, "path", None) == "/api/projects/{project_id}/graph":
                 return await route.endpoint(project_id=project_id)

@@ -272,6 +272,23 @@ describe("toFlowElements", () => {
     expect(byId(second, "a")).not.toBe(byId(first, "a"));
   });
 
+  it("rebuilds a card when descendant activity changes while lifecycle stays IN_PROGRESS", () => {
+    const tiles = {
+      nodes: [n("a", "collapsed", 0, 0, { status: "IN_PROGRESS", display_state: "waiting", child_state_counts: { waiting: 2 } })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    };
+    const wire = (value: unknown) => mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(value)) as never);
+    const first = toFlowElements(wire(tiles), ctx);
+    const changed = { ...tiles, nodes: [n("a", "collapsed", 0, 0, {
+      status: "IN_PROGRESS", display_state: "active", display_reason: "1 descendant working", child_state_counts: { active: 1, waiting: 1 },
+    })] };
+    const next = toFlowElements(wire(changed), ctx, first.cache);
+    expect(next.nodes[0]).not.toBe(first.nodes[0]);
+    expect((next.nodes[0]!.data as { task: unknown }).task).toMatchObject({
+      status: "IN_PROGRESS", display_state: "active", display_reason: "1 descendant working", child_state_counts: { active: 1, waiting: 1 },
+    });
+  });
+
   it("carries a card's review waits in its payload, defaulting to none", () => {
     const store = mergeTiles(emptyStore(), ["0:0"], {
       nodes: [n("w", "card", 0, 0, { review_waits: [REVIEW_WAIT] }), n("z", "card", 1, 0)],

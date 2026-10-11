@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { EpicDeliveryRef } from "@aq/ts-client";
 import { ProgressBar } from "../pages/command-center/ProgressBar";
+import { childCountText, DISPLAY_LABEL } from "./epicActivityFormat";
+import { ClockIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
 import {
   EVIDENCE_TEXT,
   deliveryHeadline,
@@ -32,7 +34,12 @@ export function EpicDeliveryBadge({
   now?: number;
   className?: string;
 }) {
-  const { Icon, tone } = styleFor(delivery.state);
+  const style = styleFor(delivery.state);
+  const implementation = ["implementing", "not_tracked"].includes(delivery.state);
+  const waiting = implementation && delivery.display_state === "waiting";
+  const blocked = implementation && delivery.display_state === "blocked";
+  const Icon = waiting ? ClockIcon : blocked ? ExclamationTriangleIcon : style.Icon;
+  const tone = waiting ? "bg-slate-500/15 text-slate-300" : blocked ? "bg-red-500/15 text-red-200" : style.tone;
   const shown = text ?? deliveryHeadline(delivery);
   return (
     <span
@@ -62,7 +69,7 @@ export function EpicStatus({ delivery, status = "" }: { delivery: EpicDelivery; 
     <span className="inline-flex items-center gap-1.5">
       <EpicDeliveryBadge
         delivery={delivery}
-        text={delivery.display_status}
+        text={["implementing", "not_tracked"].includes(delivery.state) && delivery.display_state ? DISPLAY_LABEL[delivery.display_state] : delivery.display_status}
         className="rounded-full px-2 py-0.5 text-xs font-medium"
       />
       {note && (
@@ -133,6 +140,10 @@ export function EpicDeliveryPanel({
           <span className="block">{done}/{total} tasks complete</span>
           <ProgressBar className="mt-1" done={done} total={total} />
         </Row>
+        {delivery.child_state_counts && <Row term="Children"><span data-child-state-counts>{childCountText(delivery.child_state_counts)}</span></Row>}
+        {delivery.descendant_state_counts && <Row term="Descendants"><span title="Executable descendants; intermediate containers are excluded">
+          {Object.entries(delivery.descendant_state_counts).map(([state, count]) => `${count} ${state.toLowerCase().replace(/_/g, " ")}`).join(" · ")}
+        </span></Row>}
         <Row term="Delivery">
           <EpicDeliveryBadge delivery={delivery} text={delivery.label} now={now} className="py-0.5 text-xs" />
         </Row>

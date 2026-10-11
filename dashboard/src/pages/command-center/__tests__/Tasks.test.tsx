@@ -97,6 +97,24 @@ function windowResponse(items: unknown[], extra: Record<string, unknown> = {}) {
 }
 
 describe("unified task table", () => {
+  it("counts and filters waiting epics using their computed activity", () => {
+    const original = mocks.tasks;
+    mocks.tasks = [Object.assign({ ...original[0]! }, {
+      display_state: "waiting", display_reason: "Paused", child_state_counts: { waiting: 2 },
+    })];
+    try {
+      mocks.filters.status = "WAITING";
+      render(<Tasks />);
+      expect(screen.getByRole("button", { name: "In progress: 0 tasks" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Waiting: 1 task" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getAllByText("2 waiting").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Paused").length).toBeGreaterThan(0);
+      expect(screen.queryByRole("combobox", { name: "Status for Fix checkout" })).toBeNull();
+    } finally {
+      mocks.tasks = original;
+    }
+  });
+
   it("keeps status counts in scope and switches or clears a status without resetting other filters", async () => {
     mocks.filters = { ...mocks.filters, query: "checkout", status: "BLOCKED" };
     const view = render(<Tasks />);

@@ -112,6 +112,13 @@ question of the same observer.
 * `links`: the task, operation or batch the evidence points at.
 * `evidence`: `current`, `stale`, `unavailable` or `untracked`.
 * `implementation_completed` / `implementation_total`: direct children.
+* `display_state`: computed container activity (`active`, `waiting`, `blocked`,
+  `collecting`, `delivering`, `completed`). Graph snapshots, layout nodes, task
+  lists, detail and progress expose the same value alongside the stored lifecycle.
+* `display_reason`: a short explanation of the activity or wait.
+* `child_state_counts`: direct children by computed display state;
+  `descendant_state_counts`: executable leaves by stored status, excluding
+  intermediate containers to avoid double counting their lifecycle bookkeeping.
 
 ## Classification order
 
@@ -125,7 +132,18 @@ The first rule that matches wins.
 2. **Paused**: `manual_pause` or a `hold:*` label.
 3. **Awaiting approval**: an open human gate, an operation in `human_required`,
    or a batch in `human_blocked`.
-4. **Implementing**: some direct child is not terminal.
+4. **Implementation activity**: roll up the complete subtree, including hidden
+   grandchildren. `IN_PROGRESS`/`ASSIGNED` leaves and claimed READY work are
+   `active`; container lifecycle statuses never imply activity. All unfinished
+   leaves BLOCKED/FAILED means `blocked`. DEFINED, unclaimed READY, PAUSED and
+   gated work otherwise means `waiting`, with a reason (named prerequisite,
+   paused work, needs a decision, or waiting for a worker). Waiting cards have
+   a distinct quiet treatment and no stripes or pulse. Counts appear on both
+   collapsed cards and expanded headers, and in list/detail views. A live
+   collector/verifier or a building/testing/promoting batch keeps its collection
+   or delivery treatment even when unfinished implementation remains. This
+   projection changes no scheduling, claims, lifecycle transitions or database
+   schema. Its descendant facts are gathered in one batched recursive read.
 5. **Not tracked**: the project's integration mode is neither `hierarchy` nor
    `train`, and git has no canonical answer to replace it. Implementation
    progress still shows. A `PAUSED` epic without an operator hold reads as

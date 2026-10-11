@@ -26,7 +26,8 @@ import { branchesAwaitingChoice, type BranchChoice, type DiscardBranch } from ".
 import { integrationRemovalRefusal } from "../../api/deleteRefusals";
 import BranchDiscardPrompt from "../../components/BranchDiscardPrompt";
 import StatusBadge from "../../components/StatusBadge";
-import { EpicDeliveryPanel, EpicStatus } from "../../components/EpicDelivery";
+import { EpicDeliveryPanel } from "../../components/EpicDelivery";
+import TaskDisplayStatus from "../../components/TaskDisplayStatus";
 import TaskActions from "../../components/TaskActions";
 import RemoveTaskModal from "../../components/RemoveTaskModal";
 import TaskCollaboration from "../../components/TaskCollaboration";
@@ -254,11 +255,7 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, onLeave = 
           {task?.title ?? preview?.title ?? "Loading…"}
         </h2>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-          {task?.delivery_status ? (
-            <EpicStatus delivery={task.delivery_status} status={task.status} />
-          ) : (
-            status && <StatusBadge status={status} />
-          )}
+          {status && <TaskDisplayStatus task={task ?? { status, display_state: preview?.display_state, display_reason: preview?.display_reason }} />}
           {projectId && <span className="text-gray-400">{projectId}</span>}
           {priority != null && (
             <span className="rounded bg-gray-800 px-2 py-0.5 text-gray-300">

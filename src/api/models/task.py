@@ -128,7 +128,16 @@ class EpicDeliveryRef(BaseModel):
     label: str = ""
 
 
-class EpicDeliveryStatus(BaseModel):
+class TaskDisplayFields(BaseModel):
+    """Computed container presentation; never a persisted lifecycle status."""
+
+    display_state: Literal["active", "waiting", "blocked", "collecting", "delivering", "completed"] | None = None
+    display_reason: str | None = None
+    child_state_counts: dict[str, int] | None = None
+    descendant_state_counts: dict[str, int] | None = None
+
+
+class EpicDeliveryStatus(TaskDisplayFields):
     """Implementation progress kept apart from delivery for a task with children.
 
     A read-only display projection (``src/integration/epic_delivery.py``): it
@@ -167,7 +176,7 @@ class EpicDeliveryStatus(BaseModel):
     implementation_total: int = 0
 
 
-class TaskDetail(BaseModel):
+class TaskDetail(TaskDisplayFields):
     id: str
     project_id: str
     title: str
@@ -676,7 +685,7 @@ class TaskChildrenResponse(BaseModel):
     children: list[TaskDict]
 
 
-class TaskProgressResponse(BaseModel):
+class TaskProgressResponse(TaskDisplayFields):
     success: bool
     parent_id: str
     total: int

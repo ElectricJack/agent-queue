@@ -718,6 +718,7 @@ class TaskCommandsMixin:
         cap = max(0, 200 - len(active))
         capped_tasks = active + finished[:cap]
         task_dicts = [self._task_to_dict(t) for t in capped_tasks]
+        await self._enrich_epic_display(task_dicts)
 
         if show_dependencies:
             await self._enrich_with_dependencies(task_dicts, capped_tasks)
@@ -788,10 +789,21 @@ class TaskCommandsMixin:
                 d["project_id"] = t.project_id
             return d
 
+        display_rows = [self._task_to_dict(t) for t in tasks]
+        await self._enrich_epic_display(display_rows)
+        from src.integration.epic_delivery import display_fields
+
+        display_by_id = {
+            row["id"]: {
+                **display_fields(row),
+                **({"delivery_status": row["delivery_status"]} if "delivery_status" in row else {}),
+            } for row in display_rows
+        }
+
         # Group by project_id for readability.
         by_project: dict[str, list[dict]] = {}
         for t in tasks:
-            by_project.setdefault(t.project_id, []).append(_entry(t))
+            by_project.setdefault(t.project_id, []).append({**_entry(t), **display_by_id[t.id]})
 
         # Build a flat list — always include all active tasks; only cap
         # completed/finished so active work is never hidden.
@@ -799,7 +811,8 @@ class TaskCommandsMixin:
         active_tasks = [t for t in tasks if t.status not in _terminal]
         finished_tasks = [t for t in tasks if t.status in _terminal]
         cap = max(0, 200 - len(active_tasks))
-        flat = [_entry(t, include_project=True) for t in active_tasks + finished_tasks[:cap]]
+        flat = [{**_entry(t, include_project=True), **display_by_id[t.id]}
+                for t in active_tasks + finished_tasks[:cap]]
 
         return {
             "by_project": by_project,
@@ -971,6 +984,8 @@ class TaskCommandsMixin:
             # Count root + all its subtasks
             total_tasks += 1 + subtask_total
 
+        await self._enrich_epic_display([entry["root"] for entry in trees])
+
         # Enrich root task dicts with dependency info when requested.
         if show_dependencies:
             root_dicts = [entry["root"] for entry in trees]
@@ -1007,6 +1022,18 @@ class TaskCommandsMixin:
         return result
 
     # -- shared helpers ------------------------------------------------------
+
+    async def _enrich_epic_display(self, rows: list[dict]) -> None:
+        from src.integration.epic_delivery import EpicDeliveryProjection, display_fields, lease_ttl_from
+
+        deliveries = await EpicDeliveryProjection(
+            self.db, lease_ttl=lease_ttl_from(getattr(self.orchestrator, "config", None)),
+            cached_only=True,
+        ).for_tasks(row["id"] for row in rows)
+        for row in rows:
+            if delivery := deliveries.get(row["id"]):
+                row.update(display_fields(delivery))
+                row["delivery_status"] = delivery
 
     async def _emit_task_graph_change(
         self, event_type: str, task: Task, *, project_id: str | None = None
@@ -1314,6 +1341,11 @@ class TaskCommandsMixin:
         if out_of_scope:
             return out_of_scope
         progress = await self.db.get_group_progress(task_id)
+        rows = [{"id": task_id}]
+        await self._enrich_epic_display(rows)
+        from src.integration.epic_delivery import display_fields
+
+        progress.update(display_fields(rows[0]))
         return {"success": True, **progress}
 
     async def _cmd_reparent_task(self, args: dict) -> dict:
@@ -3720,13 +3752,14 @@ class TaskCommandsMixin:
         # projection; it never changes the stored status shown above).
         info["delivery_status"] = None
         if info["children"]:
-            from src.integration.epic_delivery import EpicDeliveryProjection, lease_ttl_from
+            from src.integration.epic_delivery import EpicDeliveryProjection, display_fields, lease_ttl_from
 
             projection = EpicDeliveryProjection(
                 self.db, lease_ttl=lease_ttl_from(getattr(self.orchestrator, "config", None)),
                 cached_only=True,
             )
             info["delivery_status"] = (await projection.for_tasks([task.id])).get(task.id)
+            info.update(display_fields(info["delivery_status"]))
 
         return info
 

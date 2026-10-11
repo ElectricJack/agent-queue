@@ -2100,6 +2100,28 @@ async def test_tiles_list_and_node_carry_epic_delivery_for_nodes_with_children(d
     assert node.json()["node"]["delivery"]["state"] == "implementing"
 
 
+@pytest.mark.parametrize(("leaf_status", "display_state"), [("DEFINED", "waiting"), ("BLOCKED", "blocked"), ("IN_PROGRESS", "active")])
+async def test_layout_rollup_matches_tiles_list_and_detail(db, client_factory, leaf_status, display_state):
+    await seed(db)
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks_table).where(tasks_table.c.id.in_(["e", "pkg"])).values(status="IN_PROGRESS"))
+        await conn.execute(update(tasks_table).where(tasks_table.c.id.in_(["c0", "g0", "g1"])).values(status=leaf_status))
+    async with client_factory() as ac:
+        tiles = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+        listed = await ac.post("/api/projects/p1/graph/list", json=ALL)
+        node = await ac.get("/api/projects/p1/graph/node/e?variant=all")
+    answers = [
+        next(row for row in response.json()["nodes"] if row["id"] == "e")
+        for response in (tiles, listed)
+    ] + [node.json()["node"]]
+    for answer in answers:
+        assert answer["status"] == "IN_PROGRESS"
+        assert answer["display_state"] == display_state
+        assert answer["child_state_counts"] == {"completed": 1, display_state: 2}
+        assert answer["descendant_state_counts"] == {"COMPLETED": 1, leaf_status: 3}
+        assert answer["delivery"]["display_state"] == display_state
+
+
 async def test_tiles_survive_a_failed_epic_delivery_read(db, client_factory, monkeypatch):
     from src.integration.epic_delivery import EpicDeliveryProjection
 

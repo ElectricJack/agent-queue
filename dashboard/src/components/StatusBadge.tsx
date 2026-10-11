@@ -12,6 +12,11 @@ const statusColors: Record<string, string> = {
   waiting_input: "bg-cyan-500/10 text-cyan-400",
   cancelled: "bg-gray-500/10 text-gray-400",
   timed_out: "bg-orange-500/10 text-orange-400",
+  active: "bg-blue-500/15 text-blue-300",
+  waiting: "bg-slate-500/15 text-slate-300",
+  collecting: "bg-indigo-500/15 text-indigo-300",
+  delivering: "bg-indigo-500/15 text-indigo-300",
+  done: "bg-green-500/10 text-green-400",
 };
 
 export default function StatusBadge({ status }: { status?: string | null }) {

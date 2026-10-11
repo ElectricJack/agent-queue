@@ -78,6 +78,16 @@ export const STATUS_TREATMENT = {
     titleClass: "",
     stripe: true,
   },
+  WAITING: {
+    pill: "Waiting",
+    pillClass: "bg-g-pending-soft text-g-muted",
+    borderClass: "border-g-border",
+    fillClass: "bg-g-panel shadow-none",
+    cardClass: "border-dashed",
+    reasonClass: "text-g-muted",
+    titleClass: "",
+    stripe: false,
+  },
   WAITING_INPUT: {
     pill: "Needs your call",
     pillClass: "bg-g-call-soft text-g-call",

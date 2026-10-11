@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { EpicDeliveryBadge, EpicDeliveryPanel, EpicStatus } from "../EpicDelivery";
 import { deliveryCardStatus, describeDelivery, formatAge } from "../epicDeliveryFormat";
 import { EPIC_DELIVERY, NOW } from "../../testUtils/epicDelivery";
+import TaskDisplayStatus from "../TaskDisplayStatus";
 
 afterEach(cleanup);
 
@@ -72,6 +73,18 @@ describe("deliveryCardStatus", () => {
 });
 
 describe("EpicStatus", () => {
+  it("shows the same waiting state and child counts in task detail", () => {
+    const delivery = { ...EPIC_DELIVERY.implementing, display_state: "waiting" as const,
+      display_reason: "Waiting for a worker", display_status: "Waiting", reason: "Waiting for a worker",
+      child_state_counts: { completed: 1, waiting: 2 }, descendant_state_counts: { COMPLETED: 1, READY: 2 } };
+    render(<><TaskDisplayStatus task={{ status: "IN_PROGRESS", delivery_status: delivery }} />
+      <EpicDeliveryPanel delivery={delivery} now={NOW} /></>);
+    expect(screen.getAllByText("Waiting").length).toBeGreaterThan(0);
+    expect(screen.getByText("1 completed · 2 waiting")).toBeInTheDocument();
+    expect(screen.getByText("1 completed · 2 ready")).toBeInTheDocument();
+    expect(screen.queryByText("In progress")).toBeNull();
+  });
+
   it("never says Paused for an integration hold, and says why the stored status is PAUSED", () => {
     render(<EpicStatus delivery={EPIC_DELIVERY.missingReceipt} status="PAUSED" />);
     expect(screen.getByText("Delivery blocked")).toBeInTheDocument();

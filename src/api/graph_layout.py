@@ -182,6 +182,8 @@ def _node(
     deliveries=None,
     review_waits=None,
 ) -> LayoutNode:
+    from src.integration.epic_delivery import display_fields
+
     box = box or _persisted_box(row)
     total, settled = (subtask_counts or {}).get(task["id"], (0, 0))
     phase_order, phase_label = _phase_fields((phase_meta or {}).get(task["id"]))
@@ -207,6 +209,7 @@ def _node(
         phase_label=phase_label,
         phase_hold=(phase_holds or {}).get(task["id"]),
         delivery=(deliveries or {}).get(task["id"]),
+        **display_fields((deliveries or {}).get(task["id"])),
         review_waits=(review_waits or {}).get(task["id"], []),
     )
 

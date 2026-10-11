@@ -388,6 +388,74 @@ def test_lease_ttl_comes_from_numeric_config_only():
     assert lease_ttl_from(config) == 120.0
 
 
+@pytest.mark.parametrize(
+    ("status", "extra", "state", "reason"),
+    [
+        ("DEFINED", {}, "waiting", "Waiting for work to become ready"),
+        ("READY", {}, "waiting", "Waiting for a worker"),
+        ("PAUSED", {}, "waiting", "Paused"),
+        ("READY", {"human_gate": True}, "waiting", "Needs you"),
+        ("DEFINED", {"blocker_id": "prerequisite"}, "waiting", "Waiting on prerequisite"),
+        ("READY", {"gated": True}, "waiting", "Waiting on dependencies or gates"),
+        ("BLOCKED", {}, "blocked", "All unfinished descendants"),
+        ("FAILED", {}, "blocked", "All unfinished descendants"),
+        ("IN_PROGRESS", {}, "active", "1 descendant working"),
+        ("ASSIGNED", {}, "active", "1 descendant working"),
+        ("READY", {"assigned_agent_id": "worker"}, "active", "1 descendant working"),
+    ],
+)
+def test_epic_activity_uses_leaf_state_instead_of_container_lifecycle(status, extra, state, reason):
+    child = {"id": "epic.1", "status": status, **extra}
+    answer = _classify(_facts(status="IN_PROGRESS", mode="disabled", children=(child,)))
+    assert answer["display_state"] == state
+    assert reason in answer["display_reason"]
+    assert answer["child_state_counts"] == {state: 1}
+    assert answer["descendant_state_counts"] == {status: 1}
+
+
+def test_nested_epic_activity_ignores_running_container_and_counts_each_leaf_once():
+    phase = {"id": "phase", "parent_task_id": "epic", "status": "IN_PROGRESS"}
+    leaves = (
+        {"id": "leaf", "parent_task_id": "phase", "status": "DEFINED"},
+        {"id": "failed", "parent_task_id": "phase", "status": "FAILED"},
+        {"id": "done", "parent_task_id": "phase", "status": "COMPLETED"},
+    )
+    facts = _facts(status="IN_PROGRESS", mode="disabled", children=(phase,), descendants=(phase, *leaves))
+    waiting = _classify(facts)
+    assert waiting["display_state"] == "waiting"
+    assert waiting["child_state_counts"] == {"waiting": 1}
+    assert waiting["descendant_state_counts"] == {"COMPLETED": 1, "DEFINED": 1, "FAILED": 1}
+    active = _classify(replace(facts, descendants=(phase, {**leaves[0], "status": "IN_PROGRESS"}, *leaves[1:])))
+    assert active["display_state"] == "active"
+    assert active["child_state_counts"] == {"active": 1}
+    blocked = _classify(replace(facts, descendants=(phase, {**leaves[0], "status": "BLOCKED"}, *leaves[1:])))
+    assert blocked["display_state"] == "blocked"
+
+
+def test_waiting_epic_explains_a_gate_on_its_phase():
+    phase = {"id": "phase", "parent_task_id": "epic", "status": "IN_PROGRESS", "human_gate": True}
+    leaf = {"id": "leaf", "parent_task_id": "phase", "status": "DEFINED"}
+    result = _classify(_facts(children=(phase,), descendants=(phase, leaf)))
+    assert result["display_state"] == "waiting"
+    assert result["display_reason"] == "Needs you: waiting on a decision"
+
+
+def test_testing_batch_and_live_collector_keep_activity_with_unfinished_children():
+    facts = _facts(children=_children(1, "DEFINED"), status="IN_PROGRESS")
+    testing = _classify(replace(facts, batch={"id": "b1", "lifecycle": "testing"}))
+    assert testing["display_state"] == "delivering"
+    writer = WorkerFacts(id="repair", status="IN_PROGRESS", session={"id": "s", "last_activity": NOW})
+    collecting = _classify(replace(facts, writer=writer))
+    assert collecting["display_state"] == "collecting"
+
+
+def test_stale_collector_does_not_hide_an_active_leaf_or_testing_batch():
+    writer = WorkerFacts(id="repair", status="IN_PROGRESS", session={"id": "s", "last_activity": NOW - 1000})
+    facts = _facts(children=_children(1, "IN_PROGRESS"), writer=writer)
+    assert _classify(facts)["display_state"] == "active"
+    assert _classify(replace(facts, batch={"id": "b1", "lifecycle": "testing"}))["display_state"] == "delivering"
+
+
 # ---------------------------------------------------------------------------
 # Canonical request-scoped git delivery truth
 # ---------------------------------------------------------------------------
@@ -766,6 +834,35 @@ async def test_get_task_reports_delivery_for_an_epic_only(db, tmp_path):
 
     leaf = GetTaskResponse.model_validate(await handler._cmd_get_task({"task_id": "parent.1"}))
     assert leaf.delivery_status is None
+
+
+async def test_nested_waiting_rollup_is_shared_by_command_reads_without_lifecycle_changes(db, tmp_path):
+    await db.create_project(Project(id="waiting-project", name="Waiting"))
+    for task_id, parent_id, status in (
+        ("epic", None, TaskStatus.IN_PROGRESS),
+        ("phase", "epic", TaskStatus.IN_PROGRESS),
+        ("leaf", "phase", TaskStatus.DEFINED),
+    ):
+        await db.create_task(Task(id=task_id, project_id="waiting-project", title=task_id, description="", status=status))
+        if parent_id:
+            async with db._engine.begin() as conn:
+                await db.set_parent(task_id, parent_id, conn=conn)
+    await db.create_gate(project_id="waiting-project", gate_type="human", title="Needs review", waiter_task_ids=["phase"])
+    orch = MagicMock(db=db)
+    orch._emit_notify = AsyncMock()
+    handler = CommandHandler(orch, MagicMock(vault_root=str(tmp_path / "vault")))
+    handler._active_project_id = None
+    detail = await handler._cmd_get_task({"task_id": "epic"})
+    listed = await handler._cmd_list_tasks({"project_id": "waiting-project"})
+    progress = await handler._cmd_task_progress({"task_id": "epic"})
+    epic_row = next(row for row in listed["tasks"] if row["id"] == "epic")
+    for answer in (detail, epic_row, progress):
+        assert answer["display_state"] == "waiting"
+        assert answer["child_state_counts"] == {"waiting": 1}
+        assert answer["descendant_state_counts"] == {"DEFINED": 1}
+        assert "Needs you" in answer["display_reason"]
+    assert (await db.get_task("epic")).status == TaskStatus.IN_PROGRESS
+    assert (await db.get_task("phase")).status == TaskStatus.IN_PROGRESS
 
 
 async def test_get_task_cold_delivery_cache_reports_unavailable_without_network(db, tmp_path):

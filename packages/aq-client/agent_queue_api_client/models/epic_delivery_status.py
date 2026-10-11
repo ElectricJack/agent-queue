@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.epic_delivery_status_display_state_type_0 import EpicDeliveryStatusDisplayStateType0
 from ..models.epic_delivery_status_evidence import EpicDeliveryStatusEvidence
 from ..models.epic_delivery_status_hold_type_0 import EpicDeliveryStatusHoldType0
 from ..models.epic_delivery_status_state import EpicDeliveryStatusState
@@ -13,6 +14,10 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.epic_delivery_ref import EpicDeliveryRef
+    from ..models.epic_delivery_status_child_state_counts_type_0 import EpicDeliveryStatusChildStateCountsType0
+    from ..models.epic_delivery_status_descendant_state_counts_type_0 import (
+        EpicDeliveryStatusDescendantStateCountsType0,
+    )
 
 
 T = TypeVar("T", bound="EpicDeliveryStatus")
@@ -35,6 +40,10 @@ class EpicDeliveryStatus:
             state (EpicDeliveryStatusState):
             label (str):
             display_status (str):
+            display_state (EpicDeliveryStatusDisplayStateType0 | None | Unset):
+            display_reason (None | str | Unset):
+            child_state_counts (EpicDeliveryStatusChildStateCountsType0 | None | Unset):
+            descendant_state_counts (EpicDeliveryStatusDescendantStateCountsType0 | None | Unset):
             hold (EpicDeliveryStatusHoldType0 | None | Unset):
             reason (None | str | Unset):
             remedy (None | str | Unset):
@@ -49,6 +58,10 @@ class EpicDeliveryStatus:
     state: EpicDeliveryStatusState
     label: str
     display_status: str
+    display_state: EpicDeliveryStatusDisplayStateType0 | None | Unset = UNSET
+    display_reason: None | str | Unset = UNSET
+    child_state_counts: EpicDeliveryStatusChildStateCountsType0 | None | Unset = UNSET
+    descendant_state_counts: EpicDeliveryStatusDescendantStateCountsType0 | None | Unset = UNSET
     hold: EpicDeliveryStatusHoldType0 | None | Unset = UNSET
     reason: None | str | Unset = UNSET
     remedy: None | str | Unset = UNSET
@@ -62,12 +75,46 @@ class EpicDeliveryStatus:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.epic_delivery_ref import EpicDeliveryRef
+        from ..models.epic_delivery_status_child_state_counts_type_0 import EpicDeliveryStatusChildStateCountsType0
+        from ..models.epic_delivery_status_descendant_state_counts_type_0 import (
+            EpicDeliveryStatusDescendantStateCountsType0,
+        )
 
         state = self.state.value
 
         label = self.label
 
         display_status = self.display_status
+
+        display_state: None | str | Unset
+        if isinstance(self.display_state, Unset):
+            display_state = UNSET
+        elif isinstance(self.display_state, EpicDeliveryStatusDisplayStateType0):
+            display_state = self.display_state.value
+        else:
+            display_state = self.display_state
+
+        display_reason: None | str | Unset
+        if isinstance(self.display_reason, Unset):
+            display_reason = UNSET
+        else:
+            display_reason = self.display_reason
+
+        child_state_counts: dict[str, Any] | None | Unset
+        if isinstance(self.child_state_counts, Unset):
+            child_state_counts = UNSET
+        elif isinstance(self.child_state_counts, EpicDeliveryStatusChildStateCountsType0):
+            child_state_counts = self.child_state_counts.to_dict()
+        else:
+            child_state_counts = self.child_state_counts
+
+        descendant_state_counts: dict[str, Any] | None | Unset
+        if isinstance(self.descendant_state_counts, Unset):
+            descendant_state_counts = UNSET
+        elif isinstance(self.descendant_state_counts, EpicDeliveryStatusDescendantStateCountsType0):
+            descendant_state_counts = self.descendant_state_counts.to_dict()
+        else:
+            descendant_state_counts = self.descendant_state_counts
 
         hold: None | str | Unset
         if isinstance(self.hold, Unset):
@@ -127,6 +174,14 @@ class EpicDeliveryStatus:
                 "display_status": display_status,
             }
         )
+        if display_state is not UNSET:
+            field_dict["display_state"] = display_state
+        if display_reason is not UNSET:
+            field_dict["display_reason"] = display_reason
+        if child_state_counts is not UNSET:
+            field_dict["child_state_counts"] = child_state_counts
+        if descendant_state_counts is not UNSET:
+            field_dict["descendant_state_counts"] = descendant_state_counts
         if hold is not UNSET:
             field_dict["hold"] = hold
         if reason is not UNSET:
@@ -151,6 +206,10 @@ class EpicDeliveryStatus:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.epic_delivery_ref import EpicDeliveryRef
+        from ..models.epic_delivery_status_child_state_counts_type_0 import EpicDeliveryStatusChildStateCountsType0
+        from ..models.epic_delivery_status_descendant_state_counts_type_0 import (
+            EpicDeliveryStatusDescendantStateCountsType0,
+        )
 
         d = dict(src_dict)
         state = EpicDeliveryStatusState(d.pop("state"))
@@ -158,6 +217,66 @@ class EpicDeliveryStatus:
         label = d.pop("label")
 
         display_status = d.pop("display_status")
+
+        def _parse_display_state(data: object) -> EpicDeliveryStatusDisplayStateType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                display_state_type_0 = EpicDeliveryStatusDisplayStateType0(data)
+
+                return display_state_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(EpicDeliveryStatusDisplayStateType0 | None | Unset, data)
+
+        display_state = _parse_display_state(d.pop("display_state", UNSET))
+
+        def _parse_display_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        display_reason = _parse_display_reason(d.pop("display_reason", UNSET))
+
+        def _parse_child_state_counts(data: object) -> EpicDeliveryStatusChildStateCountsType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                child_state_counts_type_0 = EpicDeliveryStatusChildStateCountsType0.from_dict(data)
+
+                return child_state_counts_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(EpicDeliveryStatusChildStateCountsType0 | None | Unset, data)
+
+        child_state_counts = _parse_child_state_counts(d.pop("child_state_counts", UNSET))
+
+        def _parse_descendant_state_counts(data: object) -> EpicDeliveryStatusDescendantStateCountsType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                descendant_state_counts_type_0 = EpicDeliveryStatusDescendantStateCountsType0.from_dict(data)
+
+                return descendant_state_counts_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(EpicDeliveryStatusDescendantStateCountsType0 | None | Unset, data)
+
+        descendant_state_counts = _parse_descendant_state_counts(d.pop("descendant_state_counts", UNSET))
 
         def _parse_hold(data: object) -> EpicDeliveryStatusHoldType0 | None | Unset:
             if data is None:
@@ -244,6 +363,10 @@ class EpicDeliveryStatus:
             state=state,
             label=label,
             display_status=display_status,
+            display_state=display_state,
+            display_reason=display_reason,
+            child_state_counts=child_state_counts,
+            descendant_state_counts=descendant_state_counts,
             hold=hold,
             reason=reason,
             remedy=remedy,

@@ -467,6 +467,7 @@ class TaskQueryMixin:
         "branch_name",
         "pr_url",
         "dedup_key",
+        "parent_task_id",
     )
 
     async def list_graph_task_rows(self, project_id: str) -> list[dict]:

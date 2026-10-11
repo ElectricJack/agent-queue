@@ -5,8 +5,9 @@ import { deliveryCardStatus, deliveryHeadline, describeDelivery, type EpicDelive
 import { reviewStateLabel } from "./reviewWaitFormat";
 import { STATUS_TREATMENT, treatmentFor, type StatusTreatment } from "./taskStatus";
 import type { TaskNodeData } from "./types";
+import { DISPLAY_LABEL, DISPLAY_STATUS, type EpicActivity } from "../../components/epicActivityFormat";
 
-export interface StatusPillInput {
+export interface StatusPillInput extends EpicActivity {
   /** The stored lifecycle status. */
   status: string;
   isBlocked?: boolean;
@@ -33,20 +34,26 @@ export interface StatusPillModel {
  * delivery projection's status word and tone replace the stored lifecycle:
  * an integration hold is PAUSED in storage but is not a pause anyone chose.
  */
-export function statusPillFor({ status, isBlocked, delivery = null, reviewBlock = null, subtasks }: StatusPillInput): StatusPillModel {
-  const cardStatus = deliveryCardStatus(delivery, status);
-  const treatment = treatmentFor(cardStatus, Boolean(isBlocked || reviewBlock));
+export function statusPillFor({ status, isBlocked, delivery = null, reviewBlock = null, subtasks, display_state, display_reason }: StatusPillInput): StatusPillModel {
+  const displayState = display_state ?? delivery?.display_state;
+  const displayReason = display_reason ?? delivery?.display_reason;
+  const cardStatus = displayState ? DISPLAY_STATUS[displayState] : deliveryCardStatus(delivery, status);
+  const treatment = treatmentFor(cardStatus, displayState ? false : Boolean(isBlocked || reviewBlock));
   const subtaskTotal = subtasks?.total ?? 0;
-  const text = delivery ? deliveryHeadline(delivery)
+  const text = displayState && (!delivery || ["implementing", "not_tracked"].includes(delivery.state)) ? DISPLAY_LABEL[displayState]
+    : delivery ? deliveryHeadline(delivery)
     : treatment === STATUS_TREATMENT.IN_PROGRESS && subtasks && subtaskTotal > 0
       ? `${treatment.pill} · ${Math.round((subtasks.settled / subtaskTotal) * 100)}%`
       : treatment.pill;
-  const title = delivery
+  const title = displayState
+    ? `${displayReason ?? DISPLAY_LABEL[displayState]} · task status ${status}${delivery ? ` · ${describeDelivery(delivery)}` : ""}`
+    : delivery
     ? `${describeDelivery(delivery)} · task status ${status}${delivery.hold === "integration" ? " (held by integration, not paused by anyone)" : ""}`
     : reviewBlock ? `${status} · waiting on review ${reviewBlock.review_id} (${reviewStateLabel(reviewBlock.review_state)})`
     : treatment === STATUS_TREATMENT.BLOCKED && status !== "BLOCKED" ? `${status} · blocked by dependencies or gates`
     : status;
-  const working = delivery ? delivery.state === "integrating" || delivery.state === "verifying" : cardStatus === "IN_PROGRESS";
+  const working = displayState ? ["active", "collecting", "delivering"].includes(displayState)
+    : delivery ? delivery.state === "integrating" || delivery.state === "verifying" : cardStatus === "IN_PROGRESS";
   return { cardStatus, treatment, text, title, working };
 }
 
@@ -57,6 +64,7 @@ export function pillForCard(data: Pick<TaskNodeData, "task" | "delivery" | "revi
   const reviewBlock = (data.reviewWaits ?? []).find((wait) => wait.blocking) ?? null;
   return statusPillFor({
     status: data.task.status, isBlocked: data.task.is_blocked, delivery: data.delivery ?? null,
+    display_state: data.task.display_state, display_reason: data.task.display_reason,
     reviewBlock, subtasks: data.subtasks,
   });
 }

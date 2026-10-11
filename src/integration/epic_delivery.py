@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any
@@ -61,12 +62,14 @@ from src.database.tables import (
     task_delivery_receipts,
     task_gates,
     task_integration_checkpoints,
+    task_dependencies,
     task_labels,
     task_metadata,
     tasks,
 )
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
 from src.integration.records import ParentEpisodeRecords
+from src.task_names import MAX_STRUCTURAL_DEPTH
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +165,9 @@ class EpicFacts:
     parent_status: str | None = None
     mode: str = "disabled"
     children: tuple[Mapping[str, Any], ...] = ()
+    # Complete subtree, including hidden/collapsed grandchildren. Container
+    # lifecycles do not establish that implementation work is running.
+    descendants: tuple[Mapping[str, Any], ...] | None = None
     manual_hold: bool = False
     hold_labels: tuple[str, ...] = ()
     approval_gates: tuple[Mapping[str, Any], ...] = ()
@@ -226,16 +232,103 @@ _DISPLAY = {
 }
 
 
-def _display_status(state: str, facts: EpicFacts, hold: str | None) -> str:
+def _display_status(
+    state: str, facts: EpicFacts, hold: str | None, activity: Mapping[str, Any]
+) -> str:
     if state == "paused" and not facts.manual_hold:
         return "Held"
     if state in _DISPLAY:
         return _DISPLAY[state]
+    if state == "implementing":
+        return {"active": "In progress", "blocked": "Blocked"}.get(activity["display_state"], "Waiting")
     # implementing / not_tracked keep the stored lifecycle, except that a
     # PAUSED nobody chose never reads as "Paused".
     if facts.status == "PAUSED" and hold != "operator":
         return "In progress" if state == "implementing" else "Waiting"
     return _humanize(facts.status)
+
+
+DISPLAY_FIELDS = ("display_state", "display_reason", "child_state_counts", "descendant_state_counts")
+
+
+def display_fields(delivery: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The same computed fields on graph, list, progress and detail reads."""
+    return {key: delivery[key] for key in DISPLAY_FIELDS if delivery and key in delivery}
+
+
+def implementation_activity(facts: EpicFacts) -> dict[str, Any]:
+    """Roll up executable leaves; a container's stored status is bookkeeping.
+
+    Direct-child counts use the children's computed states. Leaf status
+    counts retain the distinction between queued, paused, gated and failed
+    work without double counting intermediate containers.
+    """
+    rows = facts.descendants if facts.descendants is not None else facts.children
+    by_parent: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        by_parent.setdefault(row.get("parent_task_id") or facts.task_id, []).append(row)
+
+    def leaf_state(row):
+        status = row.get("status")
+        if status in {"COMPLETED", "CANCELLED", "CANCELED", "SKIPPED"}:
+            return "completed"
+        if status in {"IN_PROGRESS", "ASSIGNED"} or (
+            status == "READY" and row.get("assigned_agent_id")
+        ):
+            return "active"
+        if status in {"BLOCKED", "FAILED"}:
+            return "blocked"
+        return "waiting"
+
+    def rollup(parent_id):
+        states = [rollup(row["id"]) if row["id"] in by_parent else leaf_state(row)
+                  for row in by_parent.get(parent_id, [])]
+        if "active" in states:
+            return "active"
+        unfinished = [state for state in states if state != "completed"]
+        if not unfinished:
+            return "completed"
+        return "blocked" if all(state == "blocked" for state in unfinished) else "waiting"
+
+    leaves = [row for row in rows if row["id"] not in by_parent]
+    counts = Counter(row.get("status", "DEFINED") for row in leaves)
+    state = rollup(facts.task_id)
+    waiting = [row for row in leaves if leaf_state(row) == "waiting"]
+    # A phase's gate or hold can withhold its leaves without copying that
+    # metadata onto each leaf. Include waiting ancestors in the explanation.
+    waiting_context = [
+        row for row in rows
+        if (rollup(row["id"]) if row["id"] in by_parent else leaf_state(row)) == "waiting"
+    ]
+    if state == "active":
+        running = sum(leaf_state(row) == "active" for row in leaves)
+        reason = f"{running} descendant{'s' if running != 1 else ''} working"
+    elif state == "blocked":
+        reason = "All unfinished descendants are blocked or failed"
+    elif waiting:
+        if any(row.get("human_gate") or row.get("status") == "WAITING_INPUT" for row in waiting_context):
+            reason = "Needs you: waiting on a decision"
+        elif any(row.get("status") == "PAUSED" or row.get("held") for row in waiting_context):
+            reason = "Paused" if all(row.get("status") == "PAUSED" or row.get("held") for row in waiting) else "Some work is paused"
+        elif blocker := next((row.get("blocker_id") for row in waiting_context if row.get("blocker_id")), None):
+            reason = f"Waiting on {blocker}"
+        elif any(row.get("gated") or row.get("is_blocked") for row in waiting_context):
+            reason = "Waiting on dependencies or gates"
+        elif any(row.get("status") == "READY" for row in waiting):
+            reason = "Waiting for a worker"
+        else:
+            reason = "Waiting for work to become ready"
+    else:
+        reason = "Implementation complete"
+    child_counts = Counter(
+        rollup(row["id"]) if row["id"] in by_parent else leaf_state(row)
+        for row in by_parent.get(facts.task_id, [])
+    )
+    return {
+        "display_state": state, "display_reason": reason,
+        "child_state_counts": dict(sorted(child_counts.items())),
+        "descendant_state_counts": dict(sorted(counts.items())),
+    }
 
 
 def _ref(kind: str, ref_id: str | None, label: str) -> dict[str, Any]:
@@ -278,6 +371,7 @@ def classify_epic_delivery(
     """Map one epic's facts to its display result (see the design spec's order)."""
     hold = _hold(facts)
     children = facts.children
+    activity = implementation_activity(facts)
     completed = sum(1 for child in children if child.get("status") == "COMPLETED")
     links: list[dict[str, Any]] = []
     operation = facts.operation
@@ -297,10 +391,26 @@ def classify_epic_delivery(
         for link in [*extra, *links]:
             if link not in merged:
                 merged.append(dict(link))
+        computed = dict(activity)
+        if state == "integrating":
+            computed["display_state"] = (
+                "delivering" if label in {"Integrating to main", "Promoting to main", "Integrating - train repair"}
+                else "collecting"
+            )
+        elif state == "verifying":
+            computed["display_state"] = "active"
+        elif state == "blocked":
+            computed["display_state"] = "blocked"
+        elif state == "delivered":
+            computed["display_state"] = "completed"
+        elif state not in {"implementing", "not_tracked"}:
+            computed["display_state"] = "waiting"
+        computed["display_reason"] = reason or activity["display_reason"]
         return {
+            **computed,
             "state": state,
             "label": label,
-            "display_status": _display_status(state, facts, hold),
+            "display_status": _display_status(state, facts, hold, activity),
             "hold": hold,
             "reason": reason,
             "remedy": remedy,
@@ -380,12 +490,23 @@ def classify_epic_delivery(
             extra=[_ref("batch", facts.batch["id"], f"Batch {_short(facts.batch['id'])}")],
         )
 
-    # 4. Implementation still running.
+    # A collector/verifier or testing batch is real activity even while an
+    # unfinished descendant has not been collected yet.
+    active = _active_work(facts, now=now, lease_ttl=lease_ttl, result=result)
+    if active is not None and active["state"] in {"integrating", "verifying"}:
+        return active
+    if facts.batch and facts.batch.get("lifecycle") in _BATCH_RUNNING:
+        return _completed_epic(facts, result=result)
+    if active is not None and activity["display_state"] != "active":
+        return active
+
+    # 4. Unfinished implementation is not necessarily running. Intermediate
+    # containers' IN_PROGRESS lifecycles never supply activity evidence.
     open_children = [child for child in children if child.get("status") not in TERMINAL_CHILD_STATUSES]
-    if open_children:
+    if activity["display_state"] != "completed" and (open_children or facts.mode not in TRACKED_MODES):
         return result(
-            "implementing", "Implementation in progress",
-            reason=f"{len(open_children)} of {len(children)} tasks still open",
+            "implementing", _display_status("implementing", facts, hold, activity),
+            reason=activity["display_reason"],
             since=_max_ts(*(child.get("updated_at") for child in children)),
         )
 
@@ -1172,6 +1293,18 @@ class EpicDeliveryProjection:
         # without train evidence pays a single extra round trip.
         parent = tasks.alias("epic_delivery_parent")
         child = tasks.alias("epic_delivery_child")
+        descendant_rows = self._descendants_query(ids).cte("epic_activity_rows")
+        descendants_json = select(
+            func.json_agg(
+                aggregate_order_by(
+                    func.json_build_object(*(
+                        value for column in descendant_rows.c if column.name != "root_id"
+                        for value in (str(column.name), column)
+                    )),
+                    descendant_rows.c.id,
+                ), type_=JSON,
+            )
+        ).where(descendant_rows.c.root_id == tasks.c.id).scalar_subquery()
         children_json = (
             select(
                 func.json_agg(
@@ -1237,6 +1370,7 @@ class EpicDeliveryProjection:
                         projects.c.hierarchical_integration_mode.label("mode"),
                         projects.c.integration_repository_id,
                         children_json.label("children"),
+                        descendants_json.label("descendants"),
                         manual_hold.label("manual_hold"),
                         hold_labels.label("hold_labels"),
                         approval_gates.label("approval_gates"),
@@ -1272,12 +1406,51 @@ class EpicDeliveryProjection:
                 parent_status=row["parent_status"],
                 mode=row["mode"] or "disabled",
                 children=tuple(children[task_id]),
+                descendants=tuple(row["descendants"] or ()),
                 manual_hold=bool(row["manual_hold"]),
                 hold_labels=tuple(row["hold_labels"] or ()),
                 approval_gates=tuple(row["approval_gates"] or ()),
                 **tracked_data.get(task_id, {}),
             )
         return out
+
+    def _descendants_query(self, ids: list[str]):
+        """Recursive rows joined into the existing batched epic fact read.
+
+        Root identity travels with each row, so nested epics each receive
+        their complete subtree without an N+1 query or a layout-cache guess.
+        """
+        subtree = select(
+            tasks.c.parent_task_id.label("root_id"), tasks.c.id,
+            tasks.c.parent_task_id, literal(1).label("depth"),
+        ).where(tasks.c.parent_task_id.in_(ids)).cte("epic_activity_subtree", recursive=True)
+        subtree = subtree.union_all(select(
+            subtree.c.root_id, tasks.c.id, tasks.c.parent_task_id, subtree.c.depth + 1,
+        ).join(subtree, tasks.c.parent_task_id == subtree.c.id).where(subtree.c.depth < MAX_STRUCTURAL_DEPTH))
+        predecessor = tasks.alias("epic_activity_predecessor")
+        blocker = select(func.min(task_dependencies.c.depends_on_task_id)).select_from(
+            task_dependencies.join(predecessor, predecessor.c.id == task_dependencies.c.depends_on_task_id)
+        ).where(
+            task_dependencies.c.task_id == tasks.c.id,
+            task_dependencies.c.dep_type.in_(("blocks", "conditional-blocks", "waits-for")),
+            predecessor.c.status != "COMPLETED",
+        ).correlate(tasks).scalar_subquery()
+        def gate_exists(*, human=False):
+            query = select(literal(1)).select_from(
+                task_gates.join(gates, gates.c.id == task_gates.c.gate_id)
+            ).where(task_gates.c.task_id == tasks.c.id, gates.c.status == "open")
+            if human:
+                query = query.where(gates.c.gate_type.in_(sorted(APPROVAL_GATE_TYPES)))
+            return exists(query.correlate(tasks))
+        held = exists(select(literal(1)).where(
+            task_labels.c.task_id == tasks.c.id, task_labels.c.label.like("hold:%"),
+        ).correlate(tasks))
+        return select(
+            subtree.c.root_id, tasks.c.id, tasks.c.parent_task_id, tasks.c.status,
+            tasks.c.assigned_agent_id, tasks.c.is_blocked,
+            gate_exists().label("gated"), gate_exists(human=True).label("human_gate"),
+            blocker.label("blocker_id"), held.label("held"),
+        ).join(subtree, tasks.c.id == subtree.c.id)
 
     async def _tracked_facts_on(self, conn, ids, rows, children) -> dict[str, dict[str, Any]]:
         checkpoints = {
