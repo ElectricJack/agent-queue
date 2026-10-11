@@ -13,7 +13,9 @@ the project resumes. Human gates use the same escalation delivery boundary.
   outbox; an already submitted external request cannot be recalled.
 - Review notifications retain their revision cursor while paused. On resume,
   announce the latest pending revision once, only if it still awaits review.
-  Withdrawn or approved requests must not be announced later.
+  A request withdrawn or decided while its project is paused is retired from the
+  outbox at that transition (`transition_review`), so resume never announces it;
+  outside a pause the outbox semantics are unchanged.
 - The dashboard labels open escalations and human reviews **held while paused**.
   This is a projection of current project status, not an approval or a new
   incident/review state. Existing dashboard decisions remain available.

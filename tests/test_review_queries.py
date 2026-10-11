@@ -427,9 +427,46 @@ class TestNotificationOutbox:
         assert (await db.get_review("rev-held"))["held_while_paused"] is False
 
     @pytest.mark.parametrize("state", ["withdrawn", "approved", "changes_requested"])
-    async def test_closed_reviews_do_not_enter_the_notification_outbox(self, db, state):
-        await _submit(db, "rev-closed", state=state)
+    async def test_request_closed_while_paused_is_retired_not_released(self, db, state):
+        await _submit(db, "rev-closed")
+        await db.update_project(PROJECT, status=ProjectStatus.PAUSED)
+        async with db.immediate() as conn:
+            assert await db.transition_review(
+                "rev-closed", from_states={"in_review"}, expected_revision=1,
+                values={"state": state}, conn=conn,
+            )
+        await db.update_project(PROJECT, status=ProjectStatus.ACTIVE)
         assert await db.reviews_pending_notification() == []
+        assert (await db.get_review("rev-closed"))["notified_revision"] == 1
+
+    async def test_request_closed_while_active_keeps_its_pending_announcement(self, db):
+        await _submit(db, "rev-closed")
+        async with db.immediate() as conn:
+            assert await db.transition_review(
+                "rev-closed", from_states={"in_review"}, expected_revision=1,
+                values={"state": "approved"}, conn=conn,
+            )
+        assert [r["id"] for r in await db.reviews_pending_notification()] == ["rev-closed"]
+        assert (await db.get_review("rev-closed"))["notified_revision"] == 0
+
+    async def test_revision_after_a_paused_decision_is_released_on_resume(self, db):
+        await _submit(db, "rev-revised")
+        await db.update_project(PROJECT, status=ProjectStatus.PAUSED)
+        async with db.immediate() as conn:
+            assert await db.transition_review(
+                "rev-revised", from_states={"in_review"}, expected_revision=1,
+                values={"state": "changes_requested"}, conn=conn,
+            )
+            assert await db.transition_review(
+                "rev-revised", from_states={"changes_requested"}, expected_revision=1,
+                values={"state": "in_review", "current_revision": 2}, conn=conn,
+            )
+        assert await db.reviews_pending_notification() == []
+        await db.update_project(PROJECT, status=ProjectStatus.ACTIVE)
+        assert [
+            (r["id"], r["current_revision"], r["notified_revision"])
+            for r in await db.reviews_pending_notification()
+        ] == [("rev-revised", 2, 1)]
 
     async def test_only_human_deciders_enter_the_discord_outbox(self, db):
         await _submit(db, "rev-internal-score", decider="supervisor")

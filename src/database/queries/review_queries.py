@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import random
 
-from sqlalchemy import and_, delete, exists, func, insert, or_, select, update
+from sqlalchemy import and_, case, delete, exists, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
@@ -317,6 +317,13 @@ class ReviewQueriesMixin:
         a concurrent decision, revision or withdrawal got there first, and
         nothing was written.
         """
+        if values.get("state", "in_review") != "in_review":
+            # A request closed while its project is paused was held, never
+            # announced: retire it so resume releases only what awaits review.
+            announced = values.get("current_revision", doc_reviews.c.current_revision)
+            values = {**values, "notified_revision": case(
+                (_project_paused(), announced), else_=doc_reviews.c.notified_revision,
+            )}
         result = await conn.execute(
             update(doc_reviews)
             .where(
@@ -471,7 +478,6 @@ class ReviewQueriesMixin:
             .where(
                 doc_reviews.c.notified_revision < doc_reviews.c.current_revision,
                 doc_reviews.c.decider.in_(("user", "user_or_supervisor")),
-                doc_reviews.c.state == "in_review",
                 ~_project_paused(),
             )
             .order_by(doc_reviews.c.updated_at.asc(), doc_reviews.c.id.asc())

@@ -16,9 +16,9 @@ from src.escalations.transport import (
     TransportRetryable,
     TransportUnavailable,
 )
+from src.models import Project, ProjectStatus
 from src.remote_links import DashboardLinkResolver
 from src.reviews.notifier import ReviewNotifier
-from src.models import Project, ProjectStatus
 
 
 class FakeTransport:
@@ -43,9 +43,6 @@ class FakeDatabase:
 
     async def get_project(self, project_id: str):
         return self.project
-
-    async def get_review(self, review_id: str):
-        return next((r for r in self.reviews if r["id"] == review_id), None)
 
     async def reviews_pending_notification(self) -> list[dict]:
         return [
@@ -73,7 +70,6 @@ def review(**overrides) -> dict:
         "author_task_id": "steady-lantern.5",
         "current_revision": 1,
         "notified_revision": 0,
-        "state": "in_review",
     }
     result.update(overrides)
     return result
@@ -128,19 +124,6 @@ async def test_pause_preserves_cursor_and_restart_announces_latest_revision_once
     assert await restarted.tick() == 1
     assert await restarted.tick() == 0
     assert db.marked == [("rev-bright-harbor", 2)]
-
-
-@pytest.mark.parametrize("state", ["withdrawn", "approved", "changes_requested"])
-async def test_request_closed_during_pause_is_never_announced(state):
-    db = FakeDatabase([review()])
-    db.project.status = ProjectStatus.PAUSED
-    transport = FakeTransport()
-    notifier = ReviewNotifier(db, transport, "123")
-    assert await notifier.tick() == 0
-    db.reviews[0]["state"] = state
-    db.project.status = ProjectStatus.ACTIVE
-    assert await notifier.tick() == 0
-    assert transport.posts == [] and db.marked == []
 
 
 async def test_pause_during_content_preparation_prevents_the_send():

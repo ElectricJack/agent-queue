@@ -484,6 +484,9 @@ class ReviewDb:
     async def reviews_pending_notification(self):
         return [r for r in self.reviews if r["notified_revision"] < r["current_revision"]]
 
+    async def get_project(self, project_id):
+        return None
+
     async def mark_review_notified(self, review_id, revision):
         self.reviews[0]["notified_revision"] = revision
 
