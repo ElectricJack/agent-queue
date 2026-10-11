@@ -5,15 +5,19 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from src.commands.playbook_v2_commands import PlaybookV2CommandsMixin
 from src.database import Database
 from src.playbooks.artifact_store import ArtifactStore
 from src.playbooks.profiles import shipped_profile_lookup
 from src.playbooks.required import (
     DEFAULT_SYSTEM_PLAYBOOK_IDS,
+    INITIAL_SYSTEM_PLAYBOOK_IDS,
     REQUIRED_SYSTEM_PLAYBOOK_IDS,
     RequiredPlaybookReconciler,
     ensure_reviewed_playbook_bundles,
+    install_initial_playbooks,
     retain_required_route_needed_event,
     reviewed_bundle_drift,
     reviewed_bundle_source,
@@ -45,10 +49,128 @@ class _Handler(PlaybookV2CommandsMixin):
 async def _reconciler(tmp_path):
     db = Database(lease_dsn("required-playbooks.db"))
     await db.initialize()
+    install_initial_playbooks(str(tmp_path))
     ensure_reviewed_playbook_bundles(str(tmp_path))
     handler = _Handler(tmp_path, db)
     reconciler = RequiredPlaybookReconciler(config=handler.config, db=db, handler=handler)
     return db, handler, reconciler
+
+
+def test_first_install_has_an_explicit_minimal_inventory(tmp_path):
+    expected = {
+        "default-assignment-routing", "provider-usage-probe", "provider-failover",
+        "default-pipeline", "supervisor-failure-triage", "morning-report",
+    }
+    assert set(INITIAL_SYSTEM_PLAYBOOK_IDS) == expected
+    assert set(install_initial_playbooks(str(tmp_path))) == expected
+    assert {p.stem for p in (tmp_path / "vault/system/playbooks").iterdir()} == expected
+    assert {p.name for p in (tmp_path / "vault/reviewed-playbooks").iterdir()} == expected
+
+
+@pytest.mark.parametrize("remove_entire_vault", [False, True])
+def test_vault_restart_does_not_reseed_deleted_or_retired_policy(tmp_path, remove_entire_vault):
+    import shutil
+
+    from src.vault import ensure_vault_layout
+
+    ensure_vault_layout(str(tmp_path))
+    vault = tmp_path / "vault"
+    if remove_entire_vault:
+        shutil.rmtree(vault)
+    else:
+        source = vault / "system/playbooks/default-pipeline.md"
+        source.rename(source.with_suffix(".md.retired"))
+        shutil.rmtree(vault / "reviewed-playbooks/default-pipeline")
+    ensure_vault_layout(str(tmp_path))
+    assert not (vault / "system/playbooks/default-pipeline.md").exists()
+    assert not (vault / "reviewed-playbooks/default-pipeline").exists()
+    assert not list(vault.glob("agent-types/*/playbooks/*.md"))
+
+
+def test_existing_vault_is_not_migrated(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "operator.md").write_text("existing vault")
+    assert install_initial_playbooks(str(tmp_path)) == []
+    assert list(vault.iterdir()) == [vault / "operator.md"]
+
+
+async def test_no_receipt_never_creates_missing_activations(tmp_path):
+    db = Database(lease_dsn("existing-playbooks.db"))
+    await db.initialize()
+    try:
+        ensure_reviewed_playbook_bundles(str(tmp_path))
+        handler = _Handler(tmp_path, db)
+        reconciler = RequiredPlaybookReconciler(config=handler.config, db=db, handler=handler)
+        assert not (await reconciler.reconcile())["ok"]
+        assert await db.list_playbook_activations() == []
+        assert (await reconciler.reconcile(repair=True))["ok"]
+        assert {r["playbook_id"] for r in await db.list_playbook_activations()} == set(REQUIRED_SYSTEM_PLAYBOOK_IDS)
+    finally:
+        await db.close()
+
+
+async def test_restart_keeps_deleted_required_and_optional_activations_deleted(tmp_path):
+    from sqlalchemy import delete
+
+    from src.database.tables import playbook_activations
+    from src.doctor.models import DoctorContext, Severity
+    from src.doctor.playbook_v2_checks import _check_required
+
+    db, handler, reconciler = await _reconciler(tmp_path)
+    try:
+        assert (await reconciler.reconcile())["ok"]
+        async with db._engine.begin() as conn:
+            await conn.execute(delete(playbook_activations))
+        handler._cmd_playbook_v2_import = AsyncMock(wraps=handler._cmd_playbook_v2_import)
+        restarted = RequiredPlaybookReconciler(config=handler.config, db=db, handler=handler)
+        status = await restarted.reconcile()
+        assert not status["ok"]
+        assert await db.list_playbook_activations() == []
+        handler._cmd_playbook_v2_import.assert_not_awaited()
+        diagnostic = await _check_required(DoctorContext(config=handler.config, db=db, handler=handler))
+        assert diagnostic.severity is Severity.ERROR
+        assert "aq doctor --check playbooks.required --fix" in diagnostic.detail
+    finally:
+        await db.close()
+
+
+async def test_restart_never_repoints_a_stale_activation(tmp_path):
+    db, handler, reconciler = await _reconciler(tmp_path)
+    try:
+        await reconciler.reconcile()
+        stale_sha = await _activate_an_older_release(db, handler)
+        result = await reconciler.reconcile()
+        assert not result["ok"]
+        assert (await _system_row(db, "default-assignment-routing"))["active_artifact_sha256"] == stale_sha
+        assert (await reconciler.reconcile(repair=True))["ok"]
+        assert (await _system_row(db, "default-assignment-routing"))["active_artifact_sha256"] != stale_sha
+    finally:
+        await db.close()
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_doctor_reports_and_explicitly_repairs_required_policy(tmp_path, enabled):
+    from src.doctor.models import DoctorContext, Severity
+    from src.doctor.playbook_v2_checks import _check_required, _fix_required
+
+    db, handler, reconciler = await _reconciler(tmp_path)
+    try:
+        await reconciler.reconcile()
+        older = _shipped_variant("default-assignment-routing", _router_without_task_route_apply)
+        older_sha = await _store_variant(db, handler, older)
+        await _activate(db, "default-assignment-routing", older_sha, enabled=enabled)
+        handler.orchestrator = SimpleNamespace(reconcile_required_playbooks=reconciler.reconcile)
+        ctx = DoctorContext(config=handler.config, db=db, handler=handler)
+
+        assert (await _check_required(ctx)).severity is Severity.ERROR
+        assert (await _system_row(db, "default-assignment-routing"))["active_artifact_sha256"] == older_sha
+        assert (await _fix_required(ctx)).severity is Severity.OK
+        assert (await _check_required(ctx)).severity is Severity.OK
+        row = await _system_row(db, "default-assignment-routing")
+        assert row["enabled"] and row["active_artifact_sha256"] != older_sha
+    finally:
+        await db.close()
 
 
 async def test_fresh_database_bootstraps_required_system_activations(tmp_path):
@@ -236,7 +358,7 @@ async def test_a_default_that_cannot_be_imported_does_not_fail_readiness(tmp_pat
         await db.close()
 
 
-async def test_failure_triage_retires_the_old_blocked_task_subscription(tmp_path):
+async def test_restart_preserves_existing_predecessor_activation(tmp_path):
     db, handler, reconciler = await _reconciler(tmp_path)
     try:
         imported = await handler._cmd_playbook_v2_import(
@@ -249,8 +371,8 @@ async def test_failure_triage_retires_the_old_blocked_task_subscription(tmp_path
 
         old = await _system_row(db, "blocked-task-escalation")
         successor = await _system_row(db, "supervisor-failure-triage")
-        assert old["enabled"] is False
-        assert old["health"] == "disabled"
+        assert old["enabled"] is True
+        assert old["health"] == "ready"
         assert successor["enabled"] is True
     finally:
         await db.close()
@@ -634,7 +756,7 @@ async def test_an_unimportable_bundle_names_the_moved_fingerprint(tmp_path):
         assert (await reconciler.reconcile())["ok"]
         _widen(handler)
 
-        result = await reconciler.reconcile()
+        result = await reconciler.reconcile(repair=True)
 
         diagnostic = result["required"]["default-assignment-routing"]["diagnostic"]
         assert diagnostic.startswith(

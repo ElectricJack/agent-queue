@@ -1364,9 +1364,8 @@ def ensure_vault_layout(data_dir: str) -> None:
     packs) into ``vault/templates/`` if they don't already exist.  See
     :func:`ensure_default_templates` for details.
 
-    Installs default system playbooks (``task-outcome.md``, etc.) into
-    ``vault/system/playbooks/`` if they don't already exist.  See
-    :func:`ensure_default_playbooks` for details.
+    On first installation only, installs the explicit minimal system playbooks.
+    Subsequent startups never restore deleted playbooks or refresh their sources.
 
     The supervisor's own ``profile.md`` (roadmap §4.2.3) is written to
     ``vault/agent-types/supervisor/profile.md`` if it doesn't already exist.
@@ -1375,16 +1374,17 @@ def ensure_vault_layout(data_dir: str) -> None:
     Args:
         data_dir: The root data directory (e.g. ``~/.agent-queue``).
     """
+    from src.playbooks.required import install_initial_playbooks
+
+    install_initial_playbooks(data_dir)
     for subdir in _STATIC_DIRS:
         path = os.path.join(data_dir, subdir)
         os.makedirs(path, exist_ok=True)
 
     ensure_default_templates(data_dir)
     ensure_default_harnesses(data_dir)
-    ensure_default_playbooks(data_dir)
     ensure_default_formulas(data_dir)
     ensure_default_intelligence_classes(data_dir)
-    ensure_default_agent_type_playbooks(data_dir)
     # Ship the supervisor/planner/reviewer profiles into vault before
     # legacy per-profile writers run, so a fresh install boots with the
     # spec §4/§9 profiles the SessionLens and planner flow expect.

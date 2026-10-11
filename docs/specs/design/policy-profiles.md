@@ -1,5 +1,33 @@
 # Portable policy profiles (v1)
 
+## Deliberate installation and project setup
+
+Daemon restart does not install, refresh, retire or reactivate playbooks. Existing
+vault sources, reviewed bundles and activation choices belong to the operator.
+An absent or empty vault is a first installation: install only routing,
+provider failover, the usage probe, the default pipeline, failure triage and the
+morning report. Morning reporting remains opt-in. Project defaults are currently
+implemented by project creation and installer graft, not a separate playbook;
+those mechanisms remain unchanged. Agent-type playbooks are not startup defaults.
+
+A receipt outside the vault records this installation and its one-shot activation
+attempt. It prevents deletion of even the entire vault from being mistaken for a
+new installation. The first activation attempt consumes the receipt before import;
+an interruption or invalid bundle requires explicit repair, never repeated seeding.
+Existing nonempty vaults need no migration and receive no automatic activations.
+Required-playbook reconciliation reads health on ordinary startup. Doctor reports
+missing required system activations with an explicit repair command. Reviewed-bundle
+refresh and activation repair happen only when the operator requests doctor `--fix`.
+
+The built-in `default` policy is an ordinary `aq.policy.v1` bundle assembled from
+shipped reviewed project playbooks and portable settings. CLI creation/onboarding
+offers `default`, an exported profile path, or `none`; interactive omission asks,
+while JSON/noninteractive omission means none. The dashboard asks the same choice
+at review, then opens the existing per-item import dialog. Choosing a profile does
+not skip preview, scope selection (project/global/skip), overwrite checks, review,
+or activation. Cancelling the import retains the newly created project. No policy
+is retroactively applied to existing projects.
+
 Policy profiles copy non-personal project policy once without continuing
 inheritance. The local operator exports a
 project through `policy_export`, previews exact files, and acknowledges the

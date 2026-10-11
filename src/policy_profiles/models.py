@@ -237,6 +237,7 @@ class ExportRequest(Strict):
 
 class ImportRequest(Strict):
     project_id: str
+    builtin: Literal["default"] | None = None
     path: str | None = None
     bundle: Bundle | None = None
     archive: str | None = Field(default=None, max_length=45_000_000)
@@ -248,6 +249,7 @@ class ImportRequest(Strict):
 
     @model_validator(mode="after")
     def one_source(self) -> ImportRequest:
-        if sum(source is not None for source in (self.path, self.bundle, self.archive)) != 1:
-            raise ValueError("provide exactly one of path, bundle or archive")
+        sources = (self.path, self.bundle, self.archive, self.builtin)
+        if sum(source is not None for source in sources) != 1:
+            raise ValueError("provide exactly one of path, bundle, archive or builtin")
         return self

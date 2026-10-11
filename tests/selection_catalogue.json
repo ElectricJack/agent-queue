@@ -12945,7 +12945,7 @@
         "policy-profiles"
       ],
       "default_arm": true,
-      "digest": "sha256:c2fdc3f46f019471cf0bbbfeb7f9a00f2d3f3e2415bbd047b8e36e1ccb63ae62",
+      "digest": "sha256:a0e829f65732590e76cb8ce1005adfb08d2d4f6c69352218333277bf18c960d4",
       "imports": [
         "src.api",
         "src.api.app",
@@ -12961,6 +12961,7 @@
         "src.playbooks.artifact_store",
         "src.playbooks.definition",
         "src.policy_profiles.archive",
+        "src.policy_profiles.builtin",
         "src.policy_profiles.models",
         "src.policy_profiles.service",
         "src.profiles",
@@ -14763,11 +14764,12 @@
         "playbook-authoring"
       ],
       "default_arm": true,
-      "digest": "sha256:7503476691b24c8c414df950a9b4ba2417971ccf8ba0586b3f62bfe77479aa3e",
+      "digest": "sha256:b611cbfde4c1eb916cfdf9cb7f6b0783a0e4bc36351e28c8af0d77b0fd78c17d",
       "imports": [
         "src.commands.playbook_v2_commands",
         "src.config",
         "src.database",
+        "src.database.tables",
         "src.doctor",
         "src.doctor.models",
         "src.doctor.playbook_v2_checks",
@@ -14780,9 +14782,12 @@
         "src.playbooks.required",
         "src.playbooks.runtime",
         "src.playbooks.validation",
-        "src.timer_service"
+        "src.timer_service",
+        "src.vault"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Required V2 playbooks survive daemon restarts and activation gaps."
     },
     "tests/test_reset_for_tests_guard.py": {

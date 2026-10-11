@@ -198,3 +198,64 @@ def test_apply_yes_requires_explicit_system_scope(tmp_path):
         result = CliRunner().invoke(cli, ["policy", "apply", str(path), "--project", "p", "--yes"])
     assert result.exit_code == 0, result.output
     assert calls[-1][1]["selections"]["template:project:spec.base"]["scope"] == "skip"
+
+
+@pytest.mark.parametrize("profile", [None, "none", "default"])
+def test_project_create_profile_choice(profile):
+    from src.cli.app import cli
+
+    calls = []
+    client = client_for(calls)
+    args = ["project", "create", "--name", "New"]
+    if profile:
+        args += ["--from-policy", profile]
+    with (
+        patch("src.cli.policy._get_client", return_value=client),
+        patch("src.cli.app._get_client", return_value=client),
+    ):
+        result = CliRunner().invoke(cli, args, input="skip\ny\n")
+    assert result.exit_code == 0, result.output
+    assert calls[0][0] == "create_project"
+    if profile == "default":
+        assert calls[-1][0] == "policy_apply"
+        assert calls[-1][1]["builtin"] == "default"
+        assert "path" not in calls[-1][1]
+    else:
+        assert len(calls) == 1
+
+
+@pytest.mark.parametrize("choice", ["default", "none"])
+def test_terminal_creation_asks_for_profile_before_creating(choice):
+    from src.cli.app import cli
+
+    calls = []
+    client = client_for(calls)
+    with (
+        patch("src.cli.policy.sys") as terminal,
+        patch("src.cli.policy._get_client", return_value=client),
+        patch("src.cli.app._get_client", return_value=client),
+    ):
+        terminal.stdin.isatty.return_value = True
+        result = CliRunner().invoke(
+            cli, ["project", "create", "--name", "New"], input=f"{choice}\nskip\ny\n"
+        )
+    assert result.exit_code == 0, result.output
+    assert "Policy profile" in result.output
+    assert (calls[-1][0] == "policy_apply") == (choice == "default")
+
+
+def test_onboard_default_opens_the_same_import_flow():
+    from src.cli.app import cli
+
+    client = client_for([])
+    client.execute = AsyncMock(return_value={"success": True, "project_id": "new-project"})
+    with (
+        patch("src.cli.projects._get_client", return_value=client),
+        patch("src.cli.policy.select_and_apply") as selection,
+    ):
+        result = CliRunner().invoke(cli, [
+            "project", "onboard", "--root-id", "dev", "--relative-path", "new-project",
+            "--project-name", "New", "--project-id", "new-project", "--from-policy", "default",
+        ])
+    assert result.exit_code == 0, result.output
+    assert selection.call_args.args[1:] == ("default", "new-project")

@@ -779,6 +779,7 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "project_id": {"type": "string"},
+                "builtin": {"type": "string", "enum": ["default"]},
                 "path": {"type": "string"},
                 "bundle": {"type": "object"},
                 "archive": {"type": "string"},
@@ -798,6 +799,7 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "project_id": {"type": "string"},
+                "builtin": {"type": "string", "enum": ["default"]},
                 "path": {"type": "string"},
                 "bundle": {"type": "object"},
                 "archive": {"type": "string"},

@@ -113,7 +113,7 @@ describe("project onboarding wizard against generated-client HTTP commands", () 
     expect(requests.find((request) => request.path === "/api/project/onboard")?.body).toMatchObject({ source_mode: "link", root_id: "dev", relative_path: "widgets", project_name: "widgets", project_id: "widgets", default_branch: "main" });
   });
 
-  it("opens the shared policy selector after creation and navigates on its dismissal", async () => {
+  it.each(["exported", "default"] as const)("opens the %s policy selector after creation and navigates on dismissal", async (profile) => {
     const user = userEvent.setup();
     const onSuccess = vi.fn();
     render(<Harness onSuccess={onSuccess} />);
@@ -122,10 +122,11 @@ describe("project onboarding wizard against generated-client HTTP commands", () 
     await user.click(await screen.findByText("widgets"));
     await user.click(screen.getByRole("button", { name: "Next" }));
     await completeIdentity(user);
-    await user.click(screen.getByRole("checkbox", { name: "Import a policy profile after creation" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Policy profile" }), profile);
     await user.click(screen.getByRole("button", { name: "Link project" }));
     expect(await screen.findByRole("dialog", { name: "Import policy profile" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Policy archive")).toBeInTheDocument();
+    if (profile === "exported") expect(screen.getByLabelText("Policy archive")).toBeInTheDocument();
+    else expect(screen.getByRole("button", { name: "Preview default policy" })).toBeInTheDocument();
     expect(onSuccess).not.toHaveBeenCalled();
     expect(requests.filter(request => request.path === "/api/project/onboard")).toHaveLength(1);
     await user.keyboard("{Escape}");

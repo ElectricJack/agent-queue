@@ -29,12 +29,13 @@ function archiveFromFile(file: File): Promise<string> {
   });
 }
 
-export function PolicyDialog({ projectId, mode = "import", onClose }: {
-  projectId: string; mode?: "import" | "export"; onClose: () => void;
+export function PolicyDialog({ projectId, mode = "import", initialProfile = "exported", onClose }: {
+  projectId: string; mode?: "import" | "export"; initialProfile?: "default" | "exported"; onClose: () => void;
 }) {
   const exportPolicy = usePolicyExport();
   const diffPolicy = usePolicyDiff();
   const applyPolicy = usePolicyApply();
+  const [profile, setProfile] = useState(initialProfile);
   const [request, setRequest] = useState<ImportRequest | null>(null);
   const [preview, setPreview] = useState<PolicyDiffResponse | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -106,7 +107,19 @@ export function PolicyDialog({ projectId, mode = "import", onClose }: {
           <button className={button} onClick={download}>Download .aqpolicy</button>
         </>}
       </> : <>
-        <label className="block text-sm">Policy archive
+        <label className="block text-sm">Policy profile
+          <select className={`${input} ml-3`} value={profile} disabled={busy} onChange={event => {
+            setProfile(event.target.value as typeof profile);
+            setPreview(null); setRequest(null); setError(null); setDirty(false);
+          }}>
+            <option value="default">Default (recommended project policy)</option>
+            <option value="exported">Another exported profile</option>
+          </select>
+        </label>
+        {profile === "default" ? <button className={button} disabled={busy}
+          onClick={() => void run(() => refresh({ project_id: projectId, builtin: "default" }))}>
+          Preview default policy
+        </button> : <label className="block text-sm">Policy archive
           <input type="file" accept=".aqpolicy,.zip" className="ml-3" disabled={busy} onChange={event => {
             const file = event.target.files?.[0];
             if (file) void run(async () => {
@@ -114,7 +127,7 @@ export function PolicyDialog({ projectId, mode = "import", onClose }: {
               await refresh({ project_id: projectId, archive: await archiveFromFile(file) });
             });
           }} />
-        </label>
+        </label>}
         {preview && request && <>
           <h3 className="font-medium">{preview.name}</h3>
           {preview.placeholders.map(placeholder => <label key={placeholder.name} className="block text-sm">
