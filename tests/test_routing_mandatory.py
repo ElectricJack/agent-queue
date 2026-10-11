@@ -310,6 +310,10 @@ ROUTE_WRITERS: dict[tuple[str, str], str] = {
         "reroute undo (spec §6.8, Task 6)"
     ),
     # -- role creators (spec §4, D3) -----------------------------------------
+    ("src/commands/spec_ingest_commands.py", "SpecIngestCommandsMixin._cmd_ensure_spec_ingest"): (
+        "creates the server-owned spec-ingest role after validating the immutable "
+        "approval application receipt; callers cannot choose a profile"
+    ),
     ("src/commands/task_commands.py", "TaskCommandsMixin._create_task"): (
         "writes route_source/route for every task; a profile only for a role creator's "
         "role profile (_filing_refusal refuses every other)"

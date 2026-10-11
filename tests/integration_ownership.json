@@ -14755,13 +14755,13 @@
       "reason": "task.removed audit records the confirmed operator decision, removed subtree, disposition and cancelled operations/batches; preserves history without asserting ref or delivery truth."
     },
     "src/commands/proposal_commands.py::TaskProposalCommandsMixin._materialize_proposal::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
-      "line": 518,
+      "line": 578,
       "owner": "TaskProposalCommandsMixin._materialize_proposal",
       "call": "insert",
-      "owner_fingerprint": "e8836451c93c803b62334041f2ef9a8a473244470dbcfa284c160e41fb0a1735",
+      "owner_fingerprint": "e20b11d611453dcbcba33987dae811de3da6dd6d3967857a9fb4af64c8d914eb",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Immutable task change-set audit containing actor, source, reviewed diff and receipt in the proposal transaction; no ref replay or authoritative delivery lifecycle state."
+      "reason": "Immutable task change-set audit containing actor, source, approved decision/feedback coverage, reviewed diff and receipt in the proposal transaction; no ref replay or authoritative delivery lifecycle state."
     },
     "src/integration/train_sources.py::DatabaseBatches._admission_times::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 406,
@@ -15088,13 +15088,22 @@
       "reason": "Operator-worker action, result, refusal and preflight audit records on the events table keyed by project, task, session and claim epoch; ordinary audit with no integration state or ref replay authority."
     },
     "src/asks/operations.py::ReviewOperations.run_stage::8eb7f5847f71846e2a5b665e5cfb37fd46ad0e184cbe0da1769b716b1506a40a": {
-      "line": 871,
+      "line": 876,
       "owner": "ReviewOperations.run_stage",
       "call": "log_event",
-      "owner_fingerprint": "67ca8868c9fa7b54e592ab3b7845660a911d5d31382aac45f4a496c011480f76",
+      "owner_fingerprint": "fb6c6eaebbc9494a54cda797ffd3dceb63f4f2cf09f25254f0e704096a4b6226",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Review decision, approval ingestion, gate resolution and task blocked/unblocked event audit. The source-owned ask operation stores the event sequence for idempotent emission; it neither replays Git refs nor duplicates integration lifecycle state."
+      "reason": "Review decision, gate resolution and task blocked/unblocked event audit. The source-owned ask operation stores the event sequence for idempotent emission; it neither replays Git refs nor duplicates integration lifecycle state."
+    },
+    "src/asks/ingestion.py::dispatch::a4bd4fa14cba00a4c04093b1d29646ee56e0b4a57163e7b4979ac91c97e90ab9": {
+      "line": 147,
+      "owner": "dispatch",
+      "call": "log_event",
+      "owner_fingerprint": "0b1686bbf15c56d7d17df49e7f3c3c333bb4dbd0dba0cccf09cefda0c825e027",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Approved-document dispatch audit records the immutable decision identity and event sequence in its source-owned ingestion operation. Retries cannot authorize work without the approved application receipt; no Git ref replay or integration delivery lifecycle state."
     }
   },
   "generic_dependencies": {
