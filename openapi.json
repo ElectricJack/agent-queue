@@ -24026,6 +24026,42 @@
             "type": "integer",
             "title": "Expected Generation",
             "description": ""
+          },
+          "inventory_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inventory Sha256",
+            "description": ""
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence",
+            "description": ""
+          },
+          "legacy_controls_disabled": {
+            "type": "boolean",
+            "title": "Legacy Controls Disabled",
+            "description": "",
+            "default": false
+          },
+          "aliases_redirected": {
+            "type": "boolean",
+            "title": "Aliases Redirected",
+            "description": "",
+            "default": false
           }
         },
         "type": "object",
@@ -24580,6 +24616,18 @@
       },
       "AskReconcileRequest": {
         "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
           "apply": {
             "type": "boolean",
             "title": "Apply",
@@ -24591,6 +24639,42 @@
             "title": "Limit",
             "description": "",
             "default": 100
+          },
+          "case_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case Id",
+            "description": ""
+          },
+          "disposition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disposition",
+            "description": ""
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence",
+            "description": ""
           }
         },
         "type": "object",

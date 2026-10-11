@@ -118,6 +118,24 @@ async def authorize_input_actor(db, config, source, actor, *, conn, application=
     if item["transport"] == "discord":
         if config is None or not public_allowed(ask, config, actor_id=actor.principal_id):
             raise AskError("ask.not_decider", "Input audience or allowlist was revoked")
+        if not application:
+            import time
+
+            from src.asks.delivery import config_fingerprint, destination
+
+            mode = await db.get_ask_mode(
+                source.project_id, destination(config), conn=conn, lock=True
+            )
+            if (
+                not mode
+                or mode["mode"] != "channel"
+                or mode["config_fingerprint"] != config_fingerprint(config)
+            ):
+                raise AskError("ask.channel_disabled", "External decision intake is paused")
+            if item["external_thread_id"] and (
+                not mode["compatibility_deadline"] or time.time() >= mode["compatibility_deadline"]
+            ):
+                raise AskError("ask.channel_disabled", "Legacy thread compatibility expired")
     elif item["transport"] != "local" or item["verified_actor"] != "human:local-operator":
         raise AskError("ask.not_decider", "Input has no supported authenticated human authority")
     principal = current_principal() or TRUSTED_LOCAL

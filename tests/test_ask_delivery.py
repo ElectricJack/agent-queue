@@ -444,7 +444,19 @@ async def test_cutover_refuses_unverified_inventory_or_outstanding_http(delivery
     result = await env.handler._cmd_ask_cutover(
         {"project_id": env.ask["project_id"], "mode": "transferring", "expected_generation": 1}
     )
-    assert result["error_code"] == "ask.delivery_unknown", result
+    assert result["success"] and result["result"]["mode"] == "transferring", result
+    assert (await binding(env))["inflight_id"] is not None
+    blocked = await env.handler._cmd_ask_cutover({
+        "project_id": env.ask["project_id"], "mode": "channel", "expected_generation": 2,
+    })
+    assert blocked["error_code"] == "ask.transfer_unverified", blocked
+    rollback = await env.handler._cmd_ask_cutover({
+        "project_id": env.ask["project_id"], "mode": "delivery_disabled", "expected_generation": 2,
+    })
+    assert rollback["success"] and rollback["result"]["generation"] == 3
+    assert (await binding(env))["inflight_id"] is not None
+    await settle(env)
+    assert env.sink.calls.count("post_root") == 1
 
 
 async def test_render_long_or_document_meaning_never_has_partial_approval_controls(delivery_env):

@@ -762,6 +762,19 @@ _BEFORE = {
 }
 
 
+async def _remove_ask_transport_fixture(conn):
+    # Reconstruct the historical fixture only inside a rolled-back disposable
+    # transaction. Revision 93 deliberately has no production downgrade.
+    for statement in (
+        "ALTER TABLE conversation_inputs DROP COLUMN ask_id",
+        "ALTER TABLE outbound_deliveries DROP COLUMN ask_id CASCADE",
+        "ALTER TABLE outbound_deliveries DROP COLUMN binding_id CASCADE",
+        "DROP TABLE ask_action_tokens",
+        "DROP TABLE ask_external_bindings",
+    ):
+        await conn.execute(text(statement))
+
+
 class TestMigration:
     """Every case runs in one transaction that is rolled back (PostgreSQL DDL is
     transactional), so the leased database leaves the test at head whatever
@@ -772,6 +785,7 @@ class TestMigration:
         async with db._engine.connect() as conn:
             trans = await conn.begin()
             try:
+                await _remove_ask_transport_fixture(conn)
                 await conn.run_sync(_run(_load_migration("a00000000091_human_ask_decisions"), "downgrade"))
                 # Rewind to a00000000013: no review tables, no delegation
                 # column, and a gate-type CHECK without 'review'.
@@ -831,6 +845,7 @@ class TestMigration:
         async with db._engine.connect() as conn:
             trans = await conn.begin()
             try:
+                await _remove_ask_transport_fixture(conn)
                 await conn.run_sync(_run(_load_migration("a00000000091_human_ask_decisions"), "downgrade"))
                 # Alembic downgrades the later attachment revision before
                 # revision 14; its foreign key must be removed in that order.

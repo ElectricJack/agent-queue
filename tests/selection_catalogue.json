@@ -2977,13 +2977,15 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:5570e296503b26a88446a0d07604f651d5dafe07d033a496b2fe0a8e6ed4163a",
+      "digest": "sha256:a3bdbe8ed42ceb97577327282772031dcd74fd4da7ca3dca0742365ad32b5115",
       "imports": [
         "src.asks",
+        "src.asks.delivery",
         "src.asks.intake",
         "src.commands.principal",
         "src.conversations.delivery",
-        "src.database.tables"
+        "src.database.tables",
+        "src.escalations.transport"
       ],
       "markers": [
         "parametrize"
@@ -2995,10 +2997,14 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:4aba84e23784ee46b62158442b630bce60e6fe8923857277303beee1981607fb",
+      "digest": "sha256:4029fa57ea846dcd8b0945bfdb5b163ae903a9ecb98977e732b6cf50251f31d0",
       "imports": [
+        "src.asks.delivery",
         "src.asks.models",
-        "src.database.tables"
+        "src.asks.reconcile",
+        "src.database.tables",
+        "src.doctor.ask_checks",
+        "src.models"
       ],
       "markers": [],
       "summary": "A02: canonical identity/aliases and replayable quarantine without title merging."
@@ -5933,13 +5939,14 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:ce913c8090191060a4d5dad1ef6f40ffc80e456ae29f6b044fbed781b123e0b3",
+      "digest": "sha256:13bf369a07bb271d211c19c3b3d510fd15abd17aa3f1ad6b71bb969774ff33e1",
       "imports": [
         "src.cli.app",
         "src.commands.ops_commands",
         "src.config",
         "src.database",
         "src.doctor",
+        "src.doctor.ask_checks",
         "src.doctor.builtin",
         "src.doctor.capability_checks",
         "src.doctor.dashboard_server_checks",

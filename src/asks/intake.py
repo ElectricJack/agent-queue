@@ -24,6 +24,7 @@ from src.asks.service import new_id, version_of
 from src.commands.principal import PrincipalKind, current_principal
 from src.database.queries.ask_input_queries import text_hash
 from src.database.tables import (
+    ask_external_bindings,
     ask_source_aliases,
     escalation_deliveries,
     escalation_messages,
@@ -165,6 +166,32 @@ async def admit_gateway(handler, envelope, *, source):
 
 async def bound_ask(db, item, *, conn):
     reference = item["reference_message_id"]
+    roots = (
+        (
+            await conn.execute(
+                select(ask_external_bindings.c.ask_id)
+                .where(
+                    ask_external_bindings.c.channel_id == item["channel_id"],
+                    or_(
+                        ask_external_bindings.c.external_root_id == reference
+                        if reference
+                        else False,
+                        ask_external_bindings.c.legacy_thread_id == item["external_thread_id"]
+                        if item["external_thread_id"]
+                        else False,
+                    ),
+                )
+                .distinct()
+                .limit(2)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if len(roots) == 1:
+        return roots[0]
+    if len(roots) > 1:
+        raise AskError("ask.input_ambiguous", "Historical root has conflicting request bindings")
     if reference:
         entry = (
             await conn.execute(
@@ -276,6 +303,33 @@ async def route(handler, item):
                 handler, item, "Open this request in the dashboard to continue.", conn=conn
             )
         if ask:
+            if item["transport"] == "discord":
+                from src.asks.delivery import destination
+
+                mode = await db.get_ask_mode(
+                    ask["project_id"], destination(handler.config), conn=conn
+                )
+                if not mode or mode["mode"] != "channel":
+                    return await clarify(
+                        handler,
+                        item,
+                        "External decisions are paused for this project; use its dashboard.",
+                        conn=conn,
+                    )
+                if item["external_thread_id"]:
+                    binding = await db.active_ask_binding(ask["id"], mode["destination"], conn=conn)
+                    if (
+                        not binding
+                        or binding["legacy_thread_id"] != item["external_thread_id"]
+                        or not mode["compatibility_deadline"]
+                        or time.time() >= mode["compatibility_deadline"]
+                    ):
+                        return await clarify(
+                            handler,
+                            item,
+                            "This legacy thread is read-only. Reply to the main-channel card or use the dashboard.",
+                            conn=conn,
+                        )
             if ask["decision_state"] != "pending":
                 item = await discussion.attach_channel(handler, item, conn=conn)
                 receipt = {
@@ -310,6 +364,33 @@ async def route(handler, item):
                     "Please confirm one action or review a prepared decision summary.",
                     conn=conn,
                 )
+            if item["transport"] == "discord" and item["external_thread_id"]:
+                item = await discussion.attach_channel(handler, item, conn=conn)
+                receipt = dict(binding["receipt"] or {})
+                if not receipt.get("move_notice_delivery_id"):
+                    adapter = getattr(handler, "ask_delivery", None)
+                    text = "Discussion has moved here. Reply to the main-channel card; old links remain readable."
+                    if adapter:
+                        notice = await adapter.reserve(
+                            ask,
+                            binding,
+                            "move_notice",
+                            {
+                                "text": text,
+                                "input_id": item["id"],
+                                "entry_id": f"move:{binding['id']}",
+                            },
+                            key=f"ask-move:{binding['id']}",
+                            conn=conn,
+                        )
+                        notice_id = notice["id"]
+                    else:
+                        notice_id = await discussion.enqueue(
+                            handler, item, ask, text, key=f"ask-move:{binding['id']}", conn=conn
+                        )
+                    if notice_id:
+                        receipt["move_notice_delivery_id"] = notice_id
+                        await db.update_ask_binding(binding["id"], {"receipt": receipt}, conn=conn)
             return await discussion.queue_discussion(
                 handler, ask, item, conn=conn, interpretation=bool(option)
             )
@@ -552,7 +633,7 @@ async def apply_input(handler, args):
     }
 
 
-async def backfill_legacy(handler, *, conn, limit=100):
+async def backfill_legacy(handler, *, conn, limit=100, project_id=None):
     """Bounded resumable import; conflicts remain owned repair cases."""
     rows = (
         (
@@ -566,6 +647,7 @@ async def backfill_legacy(handler, *, conn, limit=100):
                     escalation_messages.c.direction == "inbound",
                     escalation_messages.c.input_id.is_(None),
                     escalation_messages.c.external_message_id.is_not(None),
+                    escalations.c.project_id == project_id if project_id else True,
                 )
                 .order_by(escalation_messages.c.id)
                 .limit(limit)
