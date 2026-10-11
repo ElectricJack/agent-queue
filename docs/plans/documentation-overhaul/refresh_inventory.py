@@ -513,6 +513,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      PRODUCTION, "External integration adapters."),
     ("src/operator_decisions.py", "integration", "docs/concepts/integration.md",
      PRODUCTION, "Durable operator notes, holds and releases on integration objects."),
+    ("src/releases/notes/**", "integration", "docs/guides/releases.md",
+     DOCUMENTATION, "Per-version release notes a promotion release step reads."),
 
     ("src/reviews/**", "tasks", "docs/concepts/tasks.md", PRODUCTION,
      "Document review diffing, notification, persistence and vault copies."),
