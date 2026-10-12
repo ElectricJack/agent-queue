@@ -138,7 +138,6 @@ HANDCRAFTED_COVERAGE = {
     "review_submit",
     "review_dispatch",
     # projects.py — composite/UX-heavy commands only
-    "edit_project",
     "set_default_branch",
     "onboard_project",
     "bind_project_repository",

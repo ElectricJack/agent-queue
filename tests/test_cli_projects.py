@@ -31,6 +31,21 @@ def runner():
     return CliRunner()
 
 
+@pytest.mark.parametrize("flag,enabled", [
+    ("--supervisor-enabled", True), ("--no-supervisor-enabled", False),
+])
+def test_project_edit_supervisor_flag(runner, flag, enabled):
+    from src.cli.app import cli
+
+    client = _client({"edit_project": {"success": True}})
+    with patch("src.cli.app._get_client", return_value=client):
+        result = runner.invoke(cli, ["project", "edit", "--project-id", "p1", flag])
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with(
+        "edit_project", {"project_id": "p1", "supervisor_enabled": enabled},
+    )
+
+
 def test_project_details_and_set_forward_correct_args_and_render_client_errors(runner):
     """Plan 17: exact arg forwarding, not-found exit, key coercion, JSON errors."""
     from src.cli.app import cli
@@ -73,6 +88,10 @@ def test_project_details_and_set_forward_correct_args_and_render_client_errors(r
          ("edit_project", {"project_id": "p1", "budget_limit": None})),
         (["project", "set", "p1", "router", "project-router"],
          ("edit_project", {"project_id": "p1", "assignment_playbook_id": "project-router"})),
+        (["project", "set", "p1", "supervisor-enabled", "on"],
+         ("edit_project", {"project_id": "p1", "supervisor_enabled": True})),
+        (["project", "set", "p1", "supervisor-enabled", "off"],
+         ("edit_project", {"project_id": "p1", "supervisor_enabled": False})),
     ):
         client = _client({expected[0]: {"success": True}})
         with patch("src.cli.projects._get_client", return_value=client):

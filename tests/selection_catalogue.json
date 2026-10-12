@@ -1040,7 +1040,8 @@
         "tests/test_project_onboarding_service.py",
         "tests/test_project_paths.py",
         "tests/test_project_repository_binding.py",
-        "tests/test_project_roots_config.py"
+        "tests/test_project_roots_config.py",
+        "tests/test_project_supervisors.py"
       ]
     },
     "prompts": {
@@ -13795,6 +13796,25 @@
         "parametrize"
       ],
       "summary": "Configuration and diagnostics for project onboarding roots."
+    },
+    "tests/test_project_supervisors.py": {
+      "areas": [
+        "projects"
+      ],
+      "default_arm": true,
+      "digest": "sha256:9268eb1e35c4f73301916409cb56333c36447382e52b9d5589937479d0774611",
+      "imports": [
+        "src.commands.handler",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.messages.delivery",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Project supervisors opt in; messages and event notices retain their context."
     },
     "tests/test_promote_commands.py": {
       "areas": [
