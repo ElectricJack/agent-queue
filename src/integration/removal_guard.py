@@ -147,7 +147,9 @@ async def _cleanup_blockers_on(db, conn, ids: Sequence[str]) -> list[dict]:
     return blockers
 
 
-async def _development_undelivered_on(conn, ids: Sequence[str], delivery=None) -> list[dict]:
+async def _development_undelivered_on(
+    conn, ids: Sequence[str], delivery=None, *, hierarchical=False,
+) -> list[dict]:
     """The COMPLETED tasks in *ids* whose work git has not proven on the target.
 
     *delivery* is the :class:`~src.integration.delivery_observer.DeliveryView`
@@ -158,7 +160,7 @@ async def _development_undelivered_on(conn, ids: Sequence[str], delivery=None) -
     from src.integration.delivery_observer import delivery_sensitive_ids
     from src.integration.delivery_truth import DeliveryState
 
-    sensitive = await delivery_sensitive_ids(conn, ids)
+    sensitive = await delivery_sensitive_ids(conn, ids, hierarchical=hierarchical)
     verified = await delivery.verified_on(conn, sensitive) if delivery is not None else {}
     rows = sorted(
         task_id for task_id in sensitive
@@ -290,7 +292,7 @@ async def _hierarchy_undelivered_on(
 
 async def undelivered_removal_holders(
     conn, *, root_id: str, ids: Sequence[str], project_id: str, mode: str | None,
-    delivery=None,
+    delivery=None, git_first=False,
 ) -> tuple[str, list[dict]]:
     """Return the delivery holders an archive would otherwise refuse.
 
@@ -299,7 +301,7 @@ async def undelivered_removal_holders(
     Development delivery is git's answer (*delivery*, see
     :func:`_development_undelivered_on`).
     """
-    if mode == "development":
+    if mode == "development" or (git_first and mode in HIERARCHY_MODES):
         branch = (
             await conn.execute(
                 select(repos.c.default_branch)
@@ -307,7 +309,9 @@ async def undelivered_removal_holders(
                 .where(projects.c.id == project_id)
             )
         ).scalar_one_or_none() or "default branch"
-        return str(branch), await _development_undelivered_on(conn, ids, delivery)
+        return str(branch), await _development_undelivered_on(
+            conn, ids, delivery, hierarchical=git_first,
+        )
     return await _hierarchy_undelivered_on(conn, root_id, ids, project_id)
 
 
@@ -396,8 +400,11 @@ async def assert_integration_permits_removal(
 
     if abandon_undelivered:
         return
+    from src.integration.delivery_observer import prerequisite_observer
+
     branch, undelivered = await undelivered_removal_holders(
-        conn, root_id=root_id, ids=ids, project_id=project_id, mode=mode, delivery=delivery
+        conn, root_id=root_id, ids=ids, project_id=project_id, mode=mode, delivery=delivery,
+        git_first=prerequisite_observer(db) is not None,
     )
     if undelivered:
         raise _error(

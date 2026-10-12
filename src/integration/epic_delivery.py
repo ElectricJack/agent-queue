@@ -1505,6 +1505,7 @@ class EpicDeliveryProjection:
                 await conn.execute(
                     select(
                         tasks.c.id, tasks.c.status, tasks.c.updated_at, tasks.c.profile_id,
+                        tasks.c.project_id,
                     ).where(tasks.c.id.in_(worker_ids))
                 )
             ).mappings()
@@ -1538,7 +1539,12 @@ class EpicDeliveryProjection:
         ready = [task_id for task_id, row in found.items() if row["status"] == "READY"]
         exclusions: dict[str, tuple[str, ...]] = {}
         if ready:
-            predicates = claim_frontier_predicates()
+            from src.integration.delivery_observer import hierarchy_frontier_modes
+
+            modes = await hierarchy_frontier_modes(
+                self.db, project_ids={found[tid]["project_id"] for tid in ready}, cached_only=True,
+            )
+            predicates = claim_frontier_predicates(modes)
             for row in (
                 await conn.execute(
                     select(

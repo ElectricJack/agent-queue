@@ -1003,6 +1003,7 @@ class HierarchyIntegration:
         new_parent_id = arguments.get("parent_id")
         if not new_parent_id:
             raise HierarchyError("invalid", "reparent requires parent_id")
+        delivery = await self.db.observe_removal_delivery([task_id], for_mutation=True)
         async with self.db.immediate() as conn:
             child = await self._task_row(conn, task_id)
             project, repo = await self._enabled_route(conn, child)
@@ -1014,7 +1015,7 @@ class HierarchyIntegration:
             new_parent = await self._task_row(conn, new_parent_id)
             if new_parent["project_id"] != project["id"]:
                 raise HierarchyError("invalid", "new parent belongs to another project")
-            await self._assert_reparentable(conn, task_id, repo.id)
+            await self._assert_reparentable(conn, task_id, repo.id, delivery=delivery)
             await self._ensure_origin_chain(conn, new_parent_id, repo)
             old_checkpoint = await self._locked_checkpoint(conn, old_parent_id)
             new_checkpoint = await self._locked_checkpoint(conn, new_parent_id)
@@ -1434,7 +1435,9 @@ class HierarchyIntegration:
             **supplied,
         )
 
-    async def _assert_reparentable(self, conn, task_id: str, repository_id: str) -> None:
+    async def _assert_reparentable(
+        self, conn, task_id: str, repository_id: str, *, delivery=None,
+    ) -> None:
         origin = await self._locked_origin(conn, task_id, repository_id)
         if origin["materialized"]:
             raise HierarchyError("delivery_target_fixed", "branch origin is already materialized")
@@ -1454,13 +1457,21 @@ class HierarchyIntegration:
                 .limit(1)
             )
         ).first()
-        delivered = (
-            await conn.execute(
-                select(task_delivery_receipts.c.id)
-                .where(task_delivery_receipts.c.source_task_id == task_id)
-                .limit(1)
+        from src.integration.delivery_observer import prerequisite_observer
+
+        if prerequisite_observer(self.db) is not None:
+            await self.db.guard_integration_mutation(
+                task_id, "reparent", conn=conn, delivery=delivery,
             )
-        ).first()
+            delivered = False
+        else:
+            delivered = (
+                await conn.execute(
+                    select(task_delivery_receipts.c.id)
+                    .where(task_delivery_receipts.c.source_task_id == task_id)
+                    .limit(1)
+                )
+            ).first()
         sealed = (
             await conn.execute(
                 select(integration_batch_members.c.task_id)
