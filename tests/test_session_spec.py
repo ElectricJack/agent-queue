@@ -1077,6 +1077,13 @@ class TestWorkerToolEnv:
         assert spec.env["AQ_SESSION_KIND"] == "pool"
         assert spec.env["AQ_AGENT_ID"] == "agent-1"
 
+    def test_pool_bootstrap_retries_refusals_until_daemon_drains(self, builder):
+        prompt = self._pool(builder).prompt
+        assert "prepare_failed" in prompt
+        assert "three identical preparation refusals" in prompt
+        assert "aq session drain-ack" in prompt
+        assert "daemon_unreachable" in prompt
+
     def test_a_named_session_does_not(self, builder):
         spec = builder.build_named_spec(
             profile=_Profile(id="supervisor"),

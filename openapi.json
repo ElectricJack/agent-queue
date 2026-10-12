@@ -67324,6 +67324,17 @@
             ],
             "title": "State"
           },
+          "desired_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Desired State"
+          },
           "work_dir": {
             "anyOf": [
               {
@@ -67361,6 +67372,49 @@
             "type": "integer",
             "title": "Restarts",
             "default": 0
+          },
+          "claims": {
+            "type": "integer",
+            "title": "Claims",
+            "default": 0
+          },
+          "claim_phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Phase"
+          },
+          "claim_failure_count": {
+            "type": "integer",
+            "title": "Claim Failure Count",
+            "default": 0
+          },
+          "claim_failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Failure Reason"
+          },
+          "claim_failure_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Failure At"
           },
           "quarantined_at": {
             "anyOf": [

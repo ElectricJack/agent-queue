@@ -876,12 +876,9 @@ class ClaimQueryMixin:
             )
             .values(state=AgentState.BUSY.value, current_task_id=task_id)
         )
-        if supports_returning(conn):
-            reserved = (
-                await conn.execute(reserve.returning(agents.c.id))
-            ).scalar_one_or_none() is not None
-        else:
-            reserved = (await conn.execute(reserve)).rowcount == 1
+        reserved = (
+            await conn.execute(reserve.returning(agents.c.id))
+        ).scalar_one_or_none() is not None
         if not reserved:
             return None
         out = await self._apply_transition(
@@ -994,28 +991,8 @@ class ClaimQueryMixin:
                     locked_at=now,
                 )
             )
-            if supports_returning(conn):
-                row = (await conn.execute(stmt.returning(*workspaces.c))).mappings().fetchone()
-                slot = self._row_to_workspace(row) if row is not None else None
-            else:
-                await conn.execute(stmt)
-                row = (
-                    (
-                        await conn.execute(
-                            select(workspaces).where(
-                                workspaces.c.project_id
-                                == select(sessions.c.project_id)
-                                .where(sessions.c.id == session_id)
-                                .scalar_subquery(),
-                                workspaces.c.workspace_path == work_dir,
-                                workspaces.c.locked_by_agent_id == agent_id,
-                            )
-                        )
-                    )
-                    .mappings()
-                    .fetchone()
-                )
-                slot = self._row_to_workspace(row) if row is not None else None
+            row = (await conn.execute(stmt.returning(*workspaces.c))).mappings().fetchone()
+            slot = self._row_to_workspace(row) if row is not None else None
         await self._upsert_meta_many(
             task_id, {CLAIMED_BY_SESSION_KEY: session_id, "work_dir": work_dir}, conn=conn
         )
@@ -1061,33 +1038,18 @@ class ClaimQueryMixin:
     ) -> SessionRecord | None:
         """Flip ``preparing`` -> ``active``; the updated row, or ``None``.
 
-        Returning the row (via ``RETURNING`` where the dialect has it) saves
-        the caller a re-read to build the response's session block.  Falsy
-        on failure, so the old ``if not await activate_claim(...)`` callers
-        read unchanged.
+        PostgreSQL's ``RETURNING`` supplies the response row without a re-read.
+        All writes follow the session/task locks and admission guards; a
+        rejected activation changes neither the branch nor diagnostics.
 
-        *branch_name* is the branch the claim's slot reset just put the
-        worktree on.  It is persisted to ``tasks.branch_name`` under the same
-        row lock and in the same transaction as the activation, so a claim
-        either publishes both or neither: a prepare that fails after the
-        reset leaves no half-written branch for a later close to trust.  The
-        push-assignment path writes the same field from
-        ``WorkspaceMixin._assign_worktree_slot``; the pool-claim path used to
-        discard it, which left ``branch_name`` NULL on every development-mode
-        pool task and made its close refuse forever in
-        ``resolve_workspace_checkpoint``.
+        *branch_name* records the slot reset's branch in ``tasks.branch_name``
+        in the activation transaction. A failed preparation leaves no branch
+        that a later close could mistake for a usable checkout.
 
-        *clear_preparation_metadata* folds the successful-preparation
-        cleanup — the pause checkpoint and prepare-backoff keys in
-        ``CLAIM_PREPARATION_METADATA_KEYS``, which all go stale at exactly
-        this boundary — into the ``needs_attention`` delete below.  It used
-        to be a separate ``clear_claim_preparation_metadata`` call after this
-        transaction committed, which cost a whole extra pooled checkout (~6
-        statements' worth of wire) *and* a second delete on the same table
-        for the same task.  Riding along here also makes the two atomic:
-        there is no longer a window in which a claim is active while its
-        backoff ladder still says the last preparation failed.  It is inside
-        every activation guard, so an activation that bails clears nothing.
+        Successful activation resets the refusal streak and clears stale
+        ``needs_attention`` metadata. With *clear_preparation_metadata*, it
+        also deletes the pause/checkpoint and backoff keys in
+        ``CLAIM_PREPARATION_METADATA_KEYS`` in that same transaction.
         """
 
         async def _run(c):
@@ -1122,18 +1084,12 @@ class ClaimQueryMixin:
                     claims=sessions.c.claims + 1,
                     last_claim_epoch=epoch,
                     last_claim_result="claimed",
+                    claim_failure_count=0,
+                    claim_failure_reason=None,
+                    claim_failure_at=None,
                 )
             )
-            if supports_returning(c):
-                row = (await c.execute(stmt.returning(*sessions.c))).mappings().fetchone()
-            else:
-                if (await c.execute(stmt)).rowcount != 1:
-                    return None
-                row = (
-                    (await c.execute(select(sessions).where(sessions.c.id == session_id)))
-                    .mappings()
-                    .fetchone()
-                )
+            row = (await c.execute(stmt.returning(*sessions.c))).mappings().fetchone()
             if row is None:
                 return None
             # A claim only becomes usable after preparation has succeeded and

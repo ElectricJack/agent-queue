@@ -459,6 +459,23 @@ if session_rows is not None:
                 "and recovery; retain its branch and checkout"
             )
 for s in sessions:
+    failures = s.get("claim_failure_count") or 0
+    phase = s.get("claim_phase")
+    matching_ready = sum(
+        t["status"] == "READY" and t.get("profile_id") == s.get("profile_id")
+        for t in tasks_by_project.get(s.get("project_id"), [])
+    )
+    if (s.get("state") in ("running", "starting") and s.get("lifecycle") == "pool"
+            and s.get("claims") == 0 and phase not in ("active", "claiming")
+            and (phase != "preparing" or failures) and s.get("started_at")
+            and NOW - float(s["started_at"]) >= SESSION_IDLE_S
+            and (matching_ready or failures)):
+        findings.append(
+            f"POOL-NO-CLAIM {s['name']} activated no claim in {age(s['started_at'])}; "
+            f"{matching_ready} READY on {s.get('profile_id')}; "
+            f"{failures} identical preparation refusals"
+            + (f": {str(s.get('claim_failure_reason') or '')[:200]}" if failures else "")
+        )
     if s.get("state") not in ("running", "starting") or not s.get("stalled"):
         continue
     if (s.get("idle_seconds") or 0) < SESSION_IDLE_S:

@@ -206,6 +206,28 @@ async def _session_findings(ctx: DoctorContext, active: set[str], tasks: list, n
     sessions = await ctx.db.list_sessions()
     ready = Counter(t.profile_id for t in tasks if t.status is TaskStatus.READY)
     findings: list[dict] = []
+    for session in sessions:
+        failures = getattr(session, "claim_failure_count", 0)
+        phase = getattr(session, "claim_phase", None)
+        matching_ready = sum(
+            t.status is TaskStatus.READY and t.project_id == session.project_id
+            and t.profile_id == session.profile_id for t in tasks
+        )
+        if (session.project_id in active and session.lifecycle == "pool"
+                and session.state in {"running", "starting"}
+                and getattr(session, "claims", None) == 0
+                and phase not in {"active", "claiming"}
+                and (phase != "preparing" or failures)
+                and now - session.started_at >= _SESSION_IDLE
+                and (matching_ready or failures)):
+            findings.append(_finding(
+                "pool_without_claim", session.project_id,
+                f"{session.name} has activated no claim in "
+                f"{int((now-session.started_at)/60)}m; {matching_ready} READY on "
+                f"{session.profile_id}; {failures} identical preparation refusals"
+                + (f": {(session.claim_failure_reason or '')[:200]}" if failures else ""),
+                session_name=session.name, ready=matching_ready, claim_failure_count=failures,
+            ))
     idle_sessions = [
         session for session in sessions
         if session.project_id in active

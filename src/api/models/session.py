@@ -29,10 +29,16 @@ class SessionSummary(BaseModel):
     provider: str | None = None
     lifecycle: str | None = None
     state: str | None = None
+    desired_state: str | None = None
     work_dir: str | None = None
     started_at: float | None = None
     last_activity: float | None = None
     restarts: int = 0
+    claims: int = 0
+    claim_phase: str | None = None
+    claim_failure_count: int = 0
+    claim_failure_reason: str | None = None
+    claim_failure_at: float | None = None
     quarantined_at: float | None = None
     sleep_reason: str | None = None
     # ``sessions.epoch`` is a Text column (AQ_DAEMON_EPOCH — a hex string

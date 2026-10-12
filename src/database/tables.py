@@ -1462,6 +1462,9 @@ sessions = Table(
     Column("claim_phase_at", Float, nullable=True),
     Column("last_claim_epoch", Integer, nullable=True),
     Column("last_claim_result", Text, nullable=True),
+    Column("claim_failure_count", Integer, nullable=False, server_default="0"),
+    Column("claim_failure_reason", Text, nullable=True),
+    Column("claim_failure_at", Float, nullable=True),
     Column("session_key", Text, nullable=True),  # harness resume key
     Column("work_dir", Text, nullable=False),
     Column("epoch", Text, nullable=False),  # AQ_DAEMON_EPOCH at launch

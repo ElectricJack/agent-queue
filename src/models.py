@@ -1473,6 +1473,10 @@ class SessionRecord:
     claim_phase_at: float | None = None
     last_claim_epoch: int | None = None
     last_claim_result: str | None = None  # claimed | prepare_failed | released
+    #: Consecutive identical preparation refusals; activation clears the streak.
+    claim_failure_count: int = 0
+    claim_failure_reason: str | None = None
+    claim_failure_at: float | None = None
 
     llm_provider: str | None = None
     model: str | None = None

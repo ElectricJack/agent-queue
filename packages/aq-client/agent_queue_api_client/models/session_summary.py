@@ -34,10 +34,16 @@ class SessionSummary:
             provider (None | str | Unset):
             lifecycle (None | str | Unset):
             state (None | str | Unset):
+            desired_state (None | str | Unset):
             work_dir (None | str | Unset):
             started_at (float | None | Unset):
             last_activity (float | None | Unset):
             restarts (int | Unset):  Default: 0.
+            claims (int | Unset):  Default: 0.
+            claim_phase (None | str | Unset):
+            claim_failure_count (int | Unset):  Default: 0.
+            claim_failure_reason (None | str | Unset):
+            claim_failure_at (float | None | Unset):
             quarantined_at (float | None | Unset):
             sleep_reason (None | str | Unset):
             epoch (None | str | Unset):
@@ -59,10 +65,16 @@ class SessionSummary:
     provider: None | str | Unset = UNSET
     lifecycle: None | str | Unset = UNSET
     state: None | str | Unset = UNSET
+    desired_state: None | str | Unset = UNSET
     work_dir: None | str | Unset = UNSET
     started_at: float | None | Unset = UNSET
     last_activity: float | None | Unset = UNSET
     restarts: int | Unset = 0
+    claims: int | Unset = 0
+    claim_phase: None | str | Unset = UNSET
+    claim_failure_count: int | Unset = 0
+    claim_failure_reason: None | str | Unset = UNSET
+    claim_failure_at: float | None | Unset = UNSET
     quarantined_at: float | None | Unset = UNSET
     sleep_reason: None | str | Unset = UNSET
     epoch: None | str | Unset = UNSET
@@ -147,6 +159,12 @@ class SessionSummary:
         else:
             state = self.state
 
+        desired_state: None | str | Unset
+        if isinstance(self.desired_state, Unset):
+            desired_state = UNSET
+        else:
+            desired_state = self.desired_state
+
         work_dir: None | str | Unset
         if isinstance(self.work_dir, Unset):
             work_dir = UNSET
@@ -166,6 +184,28 @@ class SessionSummary:
             last_activity = self.last_activity
 
         restarts = self.restarts
+
+        claims = self.claims
+
+        claim_phase: None | str | Unset
+        if isinstance(self.claim_phase, Unset):
+            claim_phase = UNSET
+        else:
+            claim_phase = self.claim_phase
+
+        claim_failure_count = self.claim_failure_count
+
+        claim_failure_reason: None | str | Unset
+        if isinstance(self.claim_failure_reason, Unset):
+            claim_failure_reason = UNSET
+        else:
+            claim_failure_reason = self.claim_failure_reason
+
+        claim_failure_at: float | None | Unset
+        if isinstance(self.claim_failure_at, Unset):
+            claim_failure_at = UNSET
+        else:
+            claim_failure_at = self.claim_failure_at
 
         quarantined_at: float | None | Unset
         if isinstance(self.quarantined_at, Unset):
@@ -221,6 +261,8 @@ class SessionSummary:
             field_dict["lifecycle"] = lifecycle
         if state is not UNSET:
             field_dict["state"] = state
+        if desired_state is not UNSET:
+            field_dict["desired_state"] = desired_state
         if work_dir is not UNSET:
             field_dict["work_dir"] = work_dir
         if started_at is not UNSET:
@@ -229,6 +271,16 @@ class SessionSummary:
             field_dict["last_activity"] = last_activity
         if restarts is not UNSET:
             field_dict["restarts"] = restarts
+        if claims is not UNSET:
+            field_dict["claims"] = claims
+        if claim_phase is not UNSET:
+            field_dict["claim_phase"] = claim_phase
+        if claim_failure_count is not UNSET:
+            field_dict["claim_failure_count"] = claim_failure_count
+        if claim_failure_reason is not UNSET:
+            field_dict["claim_failure_reason"] = claim_failure_reason
+        if claim_failure_at is not UNSET:
+            field_dict["claim_failure_at"] = claim_failure_at
         if quarantined_at is not UNSET:
             field_dict["quarantined_at"] = quarantined_at
         if sleep_reason is not UNSET:
@@ -357,6 +409,15 @@ class SessionSummary:
 
         state = _parse_state(d.pop("state", UNSET))
 
+        def _parse_desired_state(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        desired_state = _parse_desired_state(d.pop("desired_state", UNSET))
+
         def _parse_work_dir(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -385,6 +446,37 @@ class SessionSummary:
         last_activity = _parse_last_activity(d.pop("last_activity", UNSET))
 
         restarts = d.pop("restarts", UNSET)
+
+        claims = d.pop("claims", UNSET)
+
+        def _parse_claim_phase(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        claim_phase = _parse_claim_phase(d.pop("claim_phase", UNSET))
+
+        claim_failure_count = d.pop("claim_failure_count", UNSET)
+
+        def _parse_claim_failure_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        claim_failure_reason = _parse_claim_failure_reason(d.pop("claim_failure_reason", UNSET))
+
+        def _parse_claim_failure_at(data: object) -> float | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(float | None | Unset, data)
+
+        claim_failure_at = _parse_claim_failure_at(d.pop("claim_failure_at", UNSET))
 
         def _parse_quarantined_at(data: object) -> float | None | Unset:
             if data is None:
@@ -432,10 +524,16 @@ class SessionSummary:
             provider=provider,
             lifecycle=lifecycle,
             state=state,
+            desired_state=desired_state,
             work_dir=work_dir,
             started_at=started_at,
             last_activity=last_activity,
             restarts=restarts,
+            claims=claims,
+            claim_phase=claim_phase,
+            claim_failure_count=claim_failure_count,
+            claim_failure_reason=claim_failure_reason,
+            claim_failure_at=claim_failure_at,
             quarantined_at=quarantined_at,
             sleep_reason=sleep_reason,
             epoch=epoch,

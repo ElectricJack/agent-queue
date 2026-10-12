@@ -5151,6 +5151,9 @@
         47
       ]
     },
+    "src/database/queries/session_queries.py::import from src.database.tables import agent_profiles, agents, gates, integration_batches, playbook_v2_runs, projects, sessions, task_session_attempts, tasks, workspaces": {
+      "reason": "Existing integration table import remains charged. The added workspaces table supports instance- and claim-epoch-fenced quarantine after repeated preparation refusals; no ref publication or ownership handoff is added."
+    },
     "src/database/queries/task_queries.py::INTEGRATION_REWORK_AT_KEY": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
