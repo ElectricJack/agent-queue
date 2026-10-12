@@ -4591,7 +4591,7 @@ async def development_train(world, tmp_path, monkeypatch, validation: str, *, mo
     async def binding(repo_row):
         return None
 
-    monkeypatch.setattr("src.integration.development_runtime.development_repository",
+    monkeypatch.setattr("src.integration.repository_git.development_repository",
                         development_repository)
     orchestrator = SimpleNamespace(
         db=db, git=LocalGit(Path(origin.url)), _command_handler=jobs_handler(db, tmp_path),

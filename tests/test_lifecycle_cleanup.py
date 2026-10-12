@@ -773,11 +773,8 @@ class TestObsoleteClose:
         assert await db.get_task("dup") is not None
 
     async def test_obsolete_work_is_never_published(self, db):
-        from types import SimpleNamespace
-
         from src.database import tables as t
-        from src.integration.development_adapter import ordered_development_members
-        from src.integration.development_runtime import DevelopmentFrontierReader
+        from src.integration.delivery_observer import development_delivery_scope
 
         await dev_project(db)
         await mktask(
@@ -794,18 +791,17 @@ class TestObsoleteClose:
                 base_sha="a" * 40, creation_generation=1, reserved=True, materialized=True,
                 created_at=time.time()
             ))
-        git_manager = SimpleNamespace(remote_head=AsyncMock(return_value=SimpleNamespace(
-            state="present", sha=SHA
-        )))
-        reader = DevelopmentFrontierReader(db, git=git_manager)
-        subject = SimpleNamespace(project_id=DEV_PROJECT, repository_id="dev-repo")
-        assert [m.task_id for m in ordered_development_members(await reader(subject), 10)] == ["dup"]
+        async def delivery_required():
+            async with db._engine.connect() as conn:
+                return list((await conn.execute(
+                    select(t.tasks.c.id).where(development_delivery_scope(t.tasks))
+                )).scalars())
+
+        assert await delivery_required() == ["dup"]
 
         await service(db).close("dup", reason="duplicate", principal="human:local-operator")
 
-        frontier = await reader(subject)
-        assert ordered_development_members(frontier, 10) == ()
-        assert "dup" in frontier.satisfied
+        assert await delivery_required() == []
         assert await db.obsolete_task_ids(["dup", "missing"]) == {"dup"}
 
     @pytest.mark.parametrize("batch_state", ["parked", "prepared", "publishing"])

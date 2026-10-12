@@ -5331,20 +5331,12 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:0650b8d86d9e4fea73f0fc6bed32c1c2cdd99d494f955e464ceee0db1170c603",
+      "digest": "sha256:989420ec78f6ff56f5f606a27eee0e29765b817613f70f9b610bf9ed33b57268",
       "imports": [
-        "src.commands.contracts.integration",
-        "src.commands.contracts.registry",
-        "src.commands.integration_commands",
-        "src.commands.principal",
-        "src.database",
         "src.database.tables",
-        "src.git.github_contracts",
         "src.integration.ci_producers",
         "src.integration.development",
-        "src.integration.development_adapter",
         "src.integration.development_policy",
-        "src.integration.development_runtime",
         "src.integration.models",
         "src.integration.runtime_contracts",
         "src.playbooks.artifact_store",
@@ -5354,7 +5346,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Development policy equivalence, engine ownership and its audited transfer."
+      "summary": "Retained reviewed Development policy and exact-head validation contracts."
     },
     "tests/test_digest.py": {
       "areas": [
@@ -7993,7 +7985,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:2e52a8ab8687f673d898f4c884d83e39fd5042136d78ebc5dd3b78a4bfb97648",
+      "digest": "sha256:05aac5cd38237bdaa8f94b0e523928257939d27907ad510f51989c108781c0e4",
       "imports": [
         "src.commands.job_commands",
         "src.config",
@@ -8004,7 +7996,6 @@
         "src.integration.ci",
         "src.integration.ci_adapters",
         "src.integration.ci_producers",
-        "src.integration.development_runtime",
         "src.integration.promotion_contracts",
         "src.integration.runtime_contracts",
         "src.jobs.adapters",
@@ -10124,7 +10115,7 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:66a953645214386352209685c1c5ba05f6039f7d0808aeec957435cb257a793f",
+      "digest": "sha256:1d2baabf32cb98ed375ffb5b2a8c238597d421447f0a5a094a4917582c18e5b5",
       "imports": [
         "src.commands.principal",
         "src.commands.session_commands",
@@ -10136,10 +10127,9 @@
         "src.doctor.models",
         "src.doctor.task_checks",
         "src.git.manager",
+        "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.development",
-        "src.integration.development_adapter",
-        "src.integration.development_runtime",
         "src.integration.owner_recovery",
         "src.integration.provenance",
         "src.integration.runtime_contracts",

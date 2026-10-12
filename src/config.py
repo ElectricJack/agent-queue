@@ -2610,9 +2610,6 @@ class IntegrationConfig:
     reconciler_shadow: bool = False
     #: Run the subject reconciler. New subjects belong to it by default;
     #: disabling visits preserves ownership and pauses delivery.
-    #: A Development subject transfer to the reconciler is refused while this
-    #: is off, so the reconciler can never be handed a project it may only
-    #: mirror (``aq integration development-engine-transfer``).
     reconciler_active: bool = True
     #: Integration protocol selector. Shadow keeps the subject runtimes
     #: authoritative and logs Git-first comparisons. Active replaces the root,

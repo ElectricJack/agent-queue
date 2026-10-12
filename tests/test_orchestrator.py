@@ -369,7 +369,7 @@ async def test_git_first_active_runs_the_train_instead_of_subject_runtimes(tmp_p
     import sys
     for name in ("scheduler", "promotion", "main_promotion", "root_runtime", "parent_runtime",
                  "reconciler", "root_adapters", "candidates", "subjects", "parent_engine",
-                 "settling", "stale_schedule"):
+                 "settling", "stale_schedule", "development_runtime", "development_adapter"):
         monkeypatch.setitem(sys.modules, f"src.integration.{name}", None)
     orch = Orchestrator(config, runtimes=MockAdapterFactory())
     from src.commands.handler import CommandHandler

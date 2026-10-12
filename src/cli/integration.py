@@ -294,37 +294,6 @@ def integration_engine_transfer(
     })
 
 
-@integration.command("development-engine-transfer")
-@click.argument("project_id")
-@click.option("--engine", type=click.Choice(["reconciler"]), required=True)
-@click.option("--expected-subject", "expected_subjects", multiple=True,
-              help="Exact SUBJECT_ID:VERSION from the preview; repeat for every Development subject.")
-@click.option("--reason", default="", help="Required explanation when applying the transfer.")
-@click.option("--evidence", multiple=True,
-              help="Shadow, scenario and operator approval references.")
-@click.option("--apply", is_flag=True,
-              help="Apply the exact previewed versions; default is preview.")
-@click.pass_context
-@_handle_errors
-def integration_development_engine_transfer(
-    ctx, project_id, engine, expected_subjects, reason, evidence, apply,
-):
-    """Preview or transfer Development ownership for every subject of PROJECT_ID.
-
-    The apply activates reconciler ownership of the whole project: it runs inside
-    the repository engine fence a publisher shares, needs the exact versions
-    the preview printed, and refuses while a publish write is unconfirmed in
-    either direction.
-    """
-    versions = _expected_versions(expected_subjects)
-    if apply:
-        _require_transfer_apply_fences(engine, versions, reason, evidence)
-    _execute(ctx, "integration_development_engine_transfer", {
-        "project_id": project_id, "engine": engine, "expected_versions": versions,
-        "reason": reason, "evidence": list(evidence), "dry_run": not apply,
-    })
-
-
 @integration.command("status")
 @click.argument("project_id")
 @click.option("--control-only", is_flag=True, help="Read durable control state without readiness observations.")

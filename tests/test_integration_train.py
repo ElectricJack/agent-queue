@@ -1753,6 +1753,7 @@ RETIRED_TRUTH = {
     "src.integration.subjects", "src.integration.parent_engine", "src.integration.main_promotion",
     "src.integration.promotion", "src.integration.candidates", "src.integration.root_adapters",
     "src.integration.scheduler", "src.integration.stale_schedule",
+    "src.integration.development_runtime", "src.integration.development_adapter",
 }
 RETIRED_TABLES = {
     "integration_subject_journal", "integration_subjects", "task_delivery_receipts",
@@ -1761,9 +1762,10 @@ RETIRED_TABLES = {
 # Pure helpers and data types the train may share with modules it outlives: pin and
 # retained-repository construction, and the identity types gitops and checks accept.
 SHARED_NAMES = {
-    "src.integration.development_runtime": {
-        "development_repository", "project_development_pin", "load_pinned_development_policy",
+    "src.integration.development_policy": {
+        "project_development_pin", "load_pinned_development_policy",
     },
+    "src.integration.repository_git": {"development_repository"},
 }
 
 
@@ -1774,7 +1776,7 @@ def test_active_train_and_promotion_modules_import_retained_contracts():
 
     for module in ("parent_runtime", "parent_engine", "promotion", "scheduler", "settling",
                    "stale_schedule", "candidates", "main_promotion", "root_runtime",
-                   "root_adapters", "subjects", "reconciler"):
+                   "root_adapters", "subjects", "reconciler", "development_runtime", "development_adapter"):
         assert not Path(f"src/integration/{module}.py").exists(), module
 
     modules = (
@@ -1864,7 +1866,7 @@ import sys
 legacy = {
     "candidates", "main_promotion", "parent_engine", "parent_runtime", "promotion",
     "reconciler", "root_adapters", "root_runtime", "scheduler", "settling",
-    "stale_schedule", "subjects", "source_delivery",
+    "stale_schedule", "subjects", "source_delivery", "development_adapter", "development_runtime",
 }
 class RefuseLegacy(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
@@ -1873,7 +1875,7 @@ class RefuseLegacy(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, RefuseLegacy())
 for module in (
     "train", "train_sources", "gates", "parent_subjects", "hierarchy",
-    "development_adapter", "development_runtime",
+    "development_policy", "repository_git",
 ):
     importlib.import_module("src.integration." + module)
 '''

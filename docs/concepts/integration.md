@@ -133,11 +133,10 @@ its next claim. See [Git commit identity](../specs/git-identity.md).
 
 ## Code and further reading
 
-* [Subject model](../../src/integration/subjects.py) and
-  [reconciler](../../src/integration/reconciler.py).
-* [Root runtime](../../src/integration/root_runtime.py),
-  [parent runtime](../../src/integration/parent_runtime.py) and
-  [development runtime](../../src/integration/development_runtime.py).
+* [Retained subject/CI contracts](../../src/integration/runtime_contracts.py) and
+  [historical ownership fences](../../src/integration/engine.py).
+* [Development policy pins](../../src/integration/development_policy.py) and
+  [retained repository reads](../../src/integration/repository_git.py).
 * [Git-first train](../../src/integration/train.py), its
   [database sources](../../src/integration/train_sources.py) and
   [batches](../../src/integration/batches.py).

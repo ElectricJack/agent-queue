@@ -11506,57 +11506,6 @@
         "type": "object"
       }
     },
-    "integration_development_engine_transfer": {
-      "name": "integration_development_engine_transfer",
-      "description": "Preview or transfer every Development subject of one project to the reconciler, at the exact previewed versions; the same command rolls it back.",
-      "input_schema": {
-        "additionalProperties": false,
-        "description": "The audited per-project forward Development engine transfer.\n\n``expected_versions`` is the exact subject-version set the preview named, so\nan apply is a CAS over the whole Development subject set rather than a\npartial move. ``reason`` is required for an apply and ``evidence`` for a\nreconciler activation; disabling visits preserves ownership, because\nit never adopts a write the old publisher left ambiguous.",
-        "properties": {
-          "project_id": {
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "engine": {
-            "const": "reconciler",
-            "title": "Engine",
-            "type": "string"
-          },
-          "expected_versions": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Expected Versions",
-            "type": "object"
-          },
-          "reason": {
-            "default": "",
-            "title": "Reason",
-            "type": "string"
-          },
-          "evidence": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "title": "Evidence",
-            "type": "array"
-          },
-          "dry_run": {
-            "default": true,
-            "title": "Dry Run",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "project_id",
-          "engine"
-        ],
-        "title": "IntegrationDevelopmentEngineTransferArgs",
-        "type": "object"
-      }
-    },
     "integration_eject": {
       "name": "integration_eject",
       "description": "Authenticated hierarchical integration operational control.",
