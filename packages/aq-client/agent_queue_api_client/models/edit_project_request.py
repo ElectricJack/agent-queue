@@ -24,6 +24,8 @@ class EditProjectRequest:
     Attributes:
         project_id (str): Project ID
         name (None | str | Unset): New project name (optional)
+        supervisor_enabled (bool | None | Unset): Enable a project supervisor on the next message. Default false: the
+            global supervisor handles this project. Disabling drains the running project supervisor after its current turn.
         credit_weight (float | None | Unset): New scheduling weight (optional)
         max_concurrent_agents (int | None | Unset): New max concurrent agents (optional)
         budget_limit (int | None | Unset): Token budget limit (optional, null to clear)
@@ -47,6 +49,7 @@ class EditProjectRequest:
 
     project_id: str
     name: None | str | Unset = UNSET
+    supervisor_enabled: bool | None | Unset = UNSET
     credit_weight: float | None | Unset = UNSET
     max_concurrent_agents: int | None | Unset = UNSET
     budget_limit: int | None | Unset = UNSET
@@ -76,6 +79,12 @@ class EditProjectRequest:
             name = UNSET
         else:
             name = self.name
+
+        supervisor_enabled: bool | None | Unset
+        if isinstance(self.supervisor_enabled, Unset):
+            supervisor_enabled = UNSET
+        else:
+            supervisor_enabled = self.supervisor_enabled
 
         credit_weight: float | None | Unset
         if isinstance(self.credit_weight, Unset):
@@ -177,6 +186,8 @@ class EditProjectRequest:
         )
         if name is not UNSET:
             field_dict["name"] = name
+        if supervisor_enabled is not UNSET:
+            field_dict["supervisor_enabled"] = supervisor_enabled
         if credit_weight is not UNSET:
             field_dict["credit_weight"] = credit_weight
         if max_concurrent_agents is not UNSET:
@@ -226,6 +237,15 @@ class EditProjectRequest:
             return cast(None | str | Unset, data)
 
         name = _parse_name(d.pop("name", UNSET))
+
+        def _parse_supervisor_enabled(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        supervisor_enabled = _parse_supervisor_enabled(d.pop("supervisor_enabled", UNSET))
 
         def _parse_credit_weight(data: object) -> float | None | Unset:
             if data is None:
@@ -390,6 +410,7 @@ class EditProjectRequest:
         edit_project_request = cls(
             project_id=project_id,
             name=name,
+            supervisor_enabled=supervisor_enabled,
             credit_weight=credit_weight,
             max_concurrent_agents=max_concurrent_agents,
             budget_limit=budget_limit,

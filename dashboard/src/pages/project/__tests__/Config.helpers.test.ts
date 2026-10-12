@@ -25,6 +25,7 @@ describe("Config.tsx form helpers", () => {
       max_concurrent_agents: "",
       credit_weight: "",
       budget_limit: "",
+      supervisor_enabled: false,
       git_identity_override: false,
       git_identity_name: "",
       git_identity_email: "",

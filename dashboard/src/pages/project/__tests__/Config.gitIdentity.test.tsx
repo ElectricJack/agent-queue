@@ -95,6 +95,33 @@ function setup(project: object) {
 describe("Project Settings › Git commit identity", () => {
   beforeEach(() => vi.restoreAllMocks());
 
+  it("defaults the project supervisor off and saves an enabled toggle", async () => {
+    const mutateAsync = setup(inheriting);
+    const toggle = screen.getByRole("switch", { name: "Project supervisor" });
+    expect(toggle).not.toBeChecked();
+    expect(screen.getByText("When off, the global supervisor handles this project.")).toBeInTheDocument();
+    await userEvent.click(toggle);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ project_id: "demo", supervisor_enabled: true }),
+    ));
+  });
+
+  it("stages disabling a project supervisor and Cancel restores its server value", async () => {
+    const mutateAsync = setup({ ...inheriting, supervisor_enabled: true });
+    const toggle = screen.getByRole("switch", { name: "Project supervisor" });
+    expect(toggle).toBeChecked();
+    await userEvent.click(toggle);
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(toggle).toBeChecked();
+    expect(mutateAsync).not.toHaveBeenCalled();
+    await userEvent.click(toggle);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ supervisor_enabled: false }),
+    ));
+  });
+
   it("shows the inherited installation default", () => {
     setup(inheriting);
     expect(screen.getByRole("heading", { name: "Git commit identity" })).toBeInTheDocument();

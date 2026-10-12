@@ -82,7 +82,7 @@ class _Bus:
 async def db(tmp_path):
     database = Database(lease_dsn("t.db"))
     await database.initialize()
-    await database.create_project(Project(id="p1", name="P1"))
+    await database.create_project(Project(id="p1", name="P1", supervisor_enabled=True))
     yield database
     await database.close()
 
@@ -277,6 +277,54 @@ async def _session(
     )
     await db.create_session(row)
     return row
+
+
+async def test_disabled_project_supervisor_finishes_its_turn_before_stopping(
+    db, provider, reconciler, config, monkeypatch, tmp_path,
+):
+    row = await _session(
+        db, provider, task_id=None, name="n-supervisor--p1", lifecycle="named",
+        profile_id="supervisor", started_at=NOW - 100,
+    )
+    await db.update_project("p1", supervisor_enabled=False)
+    config.sessions.idle_stop_grace_seconds = 1
+    entry = SimpleNamespace(type="tool_use", text="working", ts=NOW, turn_complete=False)
+    reader = SimpleNamespace(
+        resolve_session=lambda _: tmp_path / "transcript",
+        read_new=AsyncMock(side_effect=lambda *_: ([entry], 1)),
+    )
+    monkeypatch.setattr("src.sessions.transcripts.resolve_reader", lambda _, **kwargs: reader)
+    handle = reconciler._handle(row)
+    await reconciler.tick(now=NOW)
+    await reconciler.tick(now=NOW + 100)
+    assert await provider.is_running(handle)
+    assert (await db.get_session(row.id)).desired_state == "stopped"
+    # The generic stop grace and named up/sleep paths cannot interrupt this turn.
+    entry = SimpleNamespace(type="assistant", text="done", ts=NOW + 101, turn_complete=True)
+    await reconciler.tick(now=NOW + 102)
+    assert not await provider.is_running(handle)
+    stopped = await db.get_session(row.id)
+    assert stopped.state == "stopped"
+    assert stopped.end_reason == "project_supervisor_disabled"
+
+
+async def test_disabled_project_supervisor_does_not_restart_or_stop_without_turn_proof(
+    db, provider, reconciler, monkeypatch,
+):
+    row = await _session(
+        db, provider, task_id=None, name="n-supervisor--p1", lifecycle="named",
+        profile_id="supervisor", started_at=NOW - 100,
+    )
+    await db.update_project("p1", supervisor_enabled=False)
+    monkeypatch.setattr("src.sessions.transcripts.resolve_reader", lambda _, **kwargs: None)
+    await reconciler.tick(now=NOW)
+    assert await provider.is_running(reconciler._handle(row))
+    await provider.stop(reconciler._handle(row))
+    await db.update_session(row.id, state="stopped", desired_state="running")
+    reconciler.starter = SimpleNamespace(ensure_started=AsyncMock())
+    await reconciler._converge_named_up(NOW + 1000)
+    reconciler.starter.ensure_started.assert_not_awaited()
+    assert (await db.get_session(row.id)).desired_state == "stopped"
 
 
 async def _claimed_pool_session(

@@ -345,6 +345,7 @@ class SessionReconciler:
             self._step_exits,
             self._step_abandoned_pool_claim_loop,
             self._step_orphans,
+            self._step_disabled_project_supervisors,
             self._step_idle_stop_intent,
             self._step_stall_ladder,
             self._step_named,
@@ -2612,6 +2613,69 @@ class SessionReconciler:
 
     # -- idle stop intent --------------------------------------------------
 
+    async def _disabled_project_supervisor(self, row: SessionRecord) -> bool:
+        if (row.lifecycle != "named" or row.project_id is None
+                or row.name != "n-supervisor--" + row.project_id):
+            return False
+        project = await self.db.get_project(row.project_id)
+        return project is not None and not project.supervisor_enabled
+
+    async def _step_disabled_project_supervisors(self, live, now: float) -> None:
+        """Drain opt-out supervisors only after their current transcript turn."""
+        from src.sessions.transcripts import resolve_reader
+
+        for row in live:
+            if self._is_deferred(row.name):
+                continue
+            if not await self._disabled_project_supervisor(row):
+                continue
+            fresh = await self._still_live(row)
+            if fresh is None:
+                continue
+            row = fresh
+            await self.db.update_session_instance(
+                row.id, row.instance_token, desired_state="stopped",
+            )
+            # The generic stop grace must never interrupt this turn. Read the
+            # transcript directly: the delivery lens deliberately refuses to
+            # resolve a disabled supervisor as a message target.
+            reader = resolve_reader(row.harness, base_dir=self.transcript_base_dir)
+            if reader is None:
+                continue
+            try:
+                path = await asyncio.to_thread(reader.resolve_session, row)
+                if path is None:
+                    continue
+                entries, _offset = await reader.read_new(path, 0)
+                meaningful = [entry for entry in entries if entry.type in {
+                    "user", "assistant", "tool_use", "tool_result",
+                } and (entry.type != "assistant" or entry.text or entry.turn_complete)]
+                if not meaningful:
+                    continue
+                last = meaningful[-1]
+                if not last.turn_complete or last.ts < (row.started_at or 0) - 5:
+                    continue
+            except Exception:
+                logger.debug("disabled supervisor turn unavailable: %s", row.name, exc_info=True)
+                continue
+            fresh = await self._still_live(row)
+            if fresh is None or not await self._disabled_project_supervisor(fresh):
+                continue
+            provider = self._provider_for(fresh)
+            if provider is not None:
+                try:
+                    await provider.stop(self._handle(fresh), grace=2.0)
+                    if not await provider.confirm_instance_stopped(self._handle(fresh)):
+                        continue
+                except Exception:
+                    logger.warning("disabled supervisor stop failed: %s", fresh.name, exc_info=True)
+                    continue
+                await self.db.update_session_instance(
+                    fresh.id, fresh.instance_token, require_desired_state="stopped",
+                    state="stopped", desired_state="stopped",
+                    end_reason="project_supervisor_disabled", ended_at=now,
+                )
+
     def _idle_stop_grace(self) -> float:
         """Seconds a finished session may keep its process before it is stopped."""
         return max(0.0, float(getattr(self.sessions_config, "idle_stop_grace_seconds", 0) or 0))
@@ -2702,6 +2766,8 @@ class SessionReconciler:
         a *running* worker cannot avoid (``get_profile``, for the claim
         budget) is only reached by a worker that holds no open task.
         """
+        if await self._disabled_project_supervisor(row):
+            return False
         if row.claim_phase in ("claiming", "preparing"):
             return False
         if self._is_deferred(row.name):
@@ -2816,6 +2882,8 @@ class SessionReconciler:
         if not idle_rows:
             return
         for row in idle_rows:
+            if await self._disabled_project_supervisor(row):
+                continue
             # Named supervisors have no task stall ladder. Recover an owned
             # notification even if its message was consumed through the inbox
             # and therefore no longer produces another delivery attempt.
@@ -2886,6 +2954,9 @@ class SessionReconciler:
             logger.debug("listing wanted named sessions failed", exc_info=True)
             return
         for row in wanted:
+            if await self._disabled_project_supervisor(row):
+                await self.db.update_session(row.id, desired_state="stopped")
+                continue
             # Generic agent terminals are explicitly started by the operator.
             # They have no supervisor address and must not spend its retry
             # budget (or be quarantined without any launch being attempted).

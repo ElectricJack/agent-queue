@@ -294,6 +294,12 @@ def api_checked(command: str, args: dict) -> dict | list:
     return result
 
 
+def supervisor_recipient() -> str:
+    """Read the fixture project's opted-in supervisor destination."""
+    project = api_checked("get_project", {"project_id": PROJECT})
+    return f"supervisor-{PROJECT}" if project["supervisor_enabled"] else "supervisor-global"
+
+
 def wait_for(
     predicate, *, what: str, timeout: float = CONVERGE_TIMEOUT, interval: float = POLL_INTERVAL,
     extend_if=None, diagnostic=None,
@@ -2162,18 +2168,20 @@ def _s16_outage(state: dict) -> dict:
         m for m in global_notes if m.get("subject") == f"Provider {PROVA}: unauthenticated"
     ]
     check(len(prova_notes) == 1, f"expected one prova outage notice to the human: {prova_notes}")
+    supervisor = supervisor_recipient()
     project_notes = [
         m for m in collection_rows(
             aq(
-                "message", "list", "--to-kind", "session", "--to-id", f"supervisor-{PROJECT}",
+                "message", "list", "--to-kind", "session", "--to-id", supervisor,
                 "--since", str(t0),
             ),
             "messages",
         )
-        if batch in (m.get("body") or "")
+        if m.get("thread_id") == f"reroute:{batch}:{PROJECT}"
     ]
     check(len(project_notes) == 1, f"expected one batch notice for {PROJECT}: {project_notes}")
-    note(f"notices: 1 to user:dashboard ({prova_notes[0]['subject']!r}), 1 to supervisor-{PROJECT} for {batch}")
+    check(project_notes[0].get("project_id") == PROJECT, "batch notice lost its project context")
+    note(f"notices: 1 to user:dashboard ({prova_notes[0]['subject']!r}), 1 to {supervisor} for {batch}")
     incidents = [e for e in provider_escalations() if e.get("source_identity", "").startswith(f"{PROVA}:")]
     open_incidents = [e for e in incidents if e.get("terminal_at") is None]
     check(len(open_incidents) == 1, f"expected one open prova escalation: {incidents}")
@@ -2879,17 +2887,19 @@ def s18_supervisor_failure_triage(state: dict) -> str:
 
     run = wait_for(triage_run, what="the supervisor-failure-triage playbook run")
     check(run["lifecycle"] == "completed", f"S18 triage run: {run}")
+    supervisor = supervisor_recipient()
 
     def supervisor_notice() -> dict | None:
         rows = collection_rows(
             api_checked("message_list", {
-                "to_kind": "session", "to_id": f"supervisor-{PROJECT}", "since": started_at,
+                "to_kind": "session", "to_id": supervisor, "since": started_at,
             }),
             "messages",
         )
         return next((row for row in rows if task_id in (row.get("body") or "")), None)
 
     notice = wait_for(supervisor_notice, what="the S18 durable supervisor notice")
+    check(notice.get("project_id") == PROJECT, "triage notice lost its project context")
     aq("task", "delete", task_id, "--recursive", "--branches", "delete", "--yes")
     return (
         f"task.failed completed triage run {run['run_id']} and queued one durable supervisor "

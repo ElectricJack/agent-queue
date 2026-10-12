@@ -31,6 +31,7 @@ class GetProjectResponse:
         tokens_used_recent (int | Unset):  Default: 0.
         budget_limit (int | None | Unset):
         assignment_playbook_id (None | str | Unset):
+        supervisor_enabled (bool | Unset):  Default: False.
         git_identity_name (None | str | Unset):
         git_identity_email (None | str | Unset):
         git_identity (EffectiveGitIdentity | None | Unset):
@@ -48,6 +49,7 @@ class GetProjectResponse:
     tokens_used_recent: int | Unset = 0
     budget_limit: int | None | Unset = UNSET
     assignment_playbook_id: None | str | Unset = UNSET
+    supervisor_enabled: bool | Unset = False
     git_identity_name: None | str | Unset = UNSET
     git_identity_email: None | str | Unset = UNSET
     git_identity: EffectiveGitIdentity | None | Unset = UNSET
@@ -91,6 +93,8 @@ class GetProjectResponse:
             assignment_playbook_id = UNSET
         else:
             assignment_playbook_id = self.assignment_playbook_id
+
+        supervisor_enabled = self.supervisor_enabled
 
         git_identity_name: None | str | Unset
         if isinstance(self.git_identity_name, Unset):
@@ -140,6 +144,8 @@ class GetProjectResponse:
             field_dict["budget_limit"] = budget_limit
         if assignment_playbook_id is not UNSET:
             field_dict["assignment_playbook_id"] = assignment_playbook_id
+        if supervisor_enabled is not UNSET:
+            field_dict["supervisor_enabled"] = supervisor_enabled
         if git_identity_name is not UNSET:
             field_dict["git_identity_name"] = git_identity_name
         if git_identity_email is not UNSET:
@@ -199,6 +205,8 @@ class GetProjectResponse:
 
         assignment_playbook_id = _parse_assignment_playbook_id(d.pop("assignment_playbook_id", UNSET))
 
+        supervisor_enabled = d.pop("supervisor_enabled", UNSET)
+
         def _parse_git_identity_name(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -247,6 +255,7 @@ class GetProjectResponse:
             tokens_used_recent=tokens_used_recent,
             budget_limit=budget_limit,
             assignment_playbook_id=assignment_playbook_id,
+            supervisor_enabled=supervisor_enabled,
             git_identity_name=git_identity_name,
             git_identity_email=git_identity_email,
             git_identity=git_identity,

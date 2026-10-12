@@ -430,20 +430,17 @@ class TaskRerouteQueryMixin:
             rows = (await conn.execute(stmt)).mappings().all()
         return [dict(row) for row in rows]
 
-    async def reroute_notice_sent(self, thread_id: str, to_kind: str, to_id: str) -> bool:
-        """Has a batch notice with *thread_id* already gone to ``to_kind:to_id``?
+    async def reroute_notice_sent(self, thread_id: str) -> bool:
+        """Has the batch's project notice already been sent?
 
         The per-project supervisor notice is keyed by its ``thread_id``
         (``reroute:<batch>:<project>``), so one batch messages each project
-        once whatever the number of sweeps (D19).
+        once whatever the number of sweeps (D19). Its recipient can change
+        when a project supervisor is enabled or disabled; the thread cannot.
         """
         stmt = (
             select(messages.c.id)
-            .where(
-                messages.c.thread_id == thread_id,
-                messages.c.to_kind == to_kind,
-                messages.c.to_id == to_id,
-            )
+            .where(messages.c.thread_id == thread_id)
             .limit(1)
         )
         async with self._engine.connect() as conn:
