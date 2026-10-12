@@ -2758,7 +2758,7 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:ee99e860e5d60b6afac14296a345d6d2fc20b20508c33f39aa977111001ab700",
+      "digest": "sha256:92f2d8e32f0363500a898e388c6678ad233e00b058cce85037fc719653fc30da",
       "imports": [
         "src.api",
         "src.api.auth",
@@ -2771,7 +2771,9 @@
         "src.database.tables",
         "src.git.github_contracts"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "The Reviews inbox reads a durable snapshot and pins human approvals."
     },
     "tests/test_api_scope.py": {

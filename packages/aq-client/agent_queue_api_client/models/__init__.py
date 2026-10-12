@@ -1330,6 +1330,8 @@ from .provider_usage_response_series import ProviderUsageResponseSeries
 from .provider_usage_snapshot import ProviderUsageSnapshot
 from .pull_request_approve_response import PullRequestApproveResponse
 from .pull_request_approve_response_integration_flush_type_0 import PullRequestApproveResponseIntegrationFlushType0
+from .pull_request_project_summaries_response import PullRequestProjectSummariesResponse
+from .pull_request_project_summary import PullRequestProjectSummary
 from .push_branch_request import PushBranchRequest
 from .push_branch_response import PushBranchResponse
 from .push_branch_response_422 import PushBranchResponse422
@@ -3228,6 +3230,8 @@ __all__ = (
     "ProviderUsageSnapshot",
     "PullRequestApproveResponse",
     "PullRequestApproveResponseIntegrationFlushType0",
+    "PullRequestProjectSummariesResponse",
+    "PullRequestProjectSummary",
     "PushBranchRequest",
     "PushBranchResponse",
     "PushBranchResponse422",
