@@ -66,6 +66,7 @@ from src.playbooks.validation import (  # noqa: E402
 
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 SHIPPED = {
+    "stuck-task-watch": "src/prompts/default_playbooks/stuck-task-watch.md",
     "object-loop": "src/prompts/project_playbooks/matter-engine-cpp/object-loop.md",
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
@@ -325,6 +326,8 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _default_pipeline_body(source)
     if playbook_id == "default-assignment-routing":
         return _default_assignment_routing_body(source)
+    if playbook_id == "stuck-task-watch":
+        return _stuck_task_watch_body(source)
     if playbook_id == "ci-main-sentinel":
         return _ci_main_sentinel_body(source)
     if playbook_id in ("agent-queue-root-train", "root-train"):
@@ -1413,6 +1416,49 @@ def _morning_report_body(source: PlaybookSource) -> dict[str, Any]:
             retry: command("retry", 5, "retried", recheck, failed),
             recheck: settled("recheck", 6, "retried"),
             done: _terminal(rule, "completed", index.step_ref(rule, 2)),
+            failed: _terminal(rule, "failed", index.step_ref(rule, None)),
+        },
+    }
+
+
+def _stuck_task_watch_body(source: PlaybookSource) -> dict[str, Any]:
+    """Read each tick and send a summary only when the result is nonempty."""
+    index = ProseIndex(source, source.vault_path)
+    rule = "watch-stalled-work"
+    observe, choose, notify, done, failed = (
+        f"{rule}--{suffix}" for suffix in ("observe", "choose", "notify", "done", "failed")
+    )
+    def lit(value):
+        return {"type": "literal", "value": value}
+    return {
+        "rules": [{
+            "id": rule, "name": rule, "trigger": {"event_type": "timer.10m"},
+            "entry_step": observe, "source": index.rule_ref(rule),
+        }],
+        "steps": {
+            observe: {
+                "type": "command", "rule": rule, "title": "observe",
+                "source": index.step_ref(rule, 1), "command": "get_stuck_tasks",
+                "inputs": {}, "save_result_as": "watch",
+                "transitions": {"read": choose, "rejected": failed, "runtime_error": failed},
+            },
+            choose: {
+                "type": "decision", "rule": rule, "title": "has stuck tasks",
+                "source": index.step_ref(rule, 2),
+                "cases": [{"when": {"type": "exists", "mode": "truthy",
+                           "value": {"type": "binding_ref", "binding": "watch", "path": "stuck"}},
+                           "goto": notify}], "default": done,
+            },
+            notify: {
+                "type": "command", "rule": rule, "title": "notify global supervisor",
+                "source": index.step_ref(rule, 3), "command": "message_send",
+                "inputs": {"to_kind": lit("session"), "to_id": lit("supervisor-global"),
+                           "from_kind": lit("system"), "from_id": lit("stuck-task-watch"),
+                           "subject": lit("Stuck tasks"),
+                           "body": {"type": "binding_ref", "binding": "watch", "path": "summary"}},
+                "transitions": {"queued": done, "rejected": failed, "runtime_error": failed},
+            },
+            done: _terminal(rule, "completed", index.step_ref(rule, None)),
             failed: _terminal(rule, "failed", index.step_ref(rule, None)),
         },
     }

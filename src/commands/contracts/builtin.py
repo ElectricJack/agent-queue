@@ -625,6 +625,20 @@ class TaskFailureTriageNotifyValue(TaskRecoveryNotifyValue):
     """The durable incident receipt returned to the triage playbook."""
 
 
+class GetStuckTasksArgs(CommandArgs):
+    assigned_threshold_seconds: int = Field(default=1800, ge=0)
+    in_progress_threshold_seconds: int = Field(default=7200, ge=0)
+    now: float | None = None
+    project_id: str | None = None
+
+
+class GetStuckTasksValue(CommandValue):
+    stuck: list[dict[str, Any]] = Field(default_factory=list)
+    summary: str = ""
+    now_used: float | None = None
+    thresholds: dict[str, int] = Field(default_factory=dict)
+
+
 class ProviderAvailabilityNotifyArgs(CommandArgs):
     """``provider_availability_notify`` as a playbook step (provider-failover D19).
 
@@ -871,6 +885,7 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         "get_downstream_tasks": "listed",
         "stop_task": "stopped",
         "message_send": "queued",
+        "get_stuck_tasks": "read",
         "provider_allocation_status": "read",
         "provider_allocation_preview": "previewed",
     }[name]
@@ -988,6 +1003,16 @@ def _outcomes(*successes: str) -> tuple[OutcomeSpec, ...]:
 # effect clauses use; ``test_presentation_labels_name_real_fields`` pins that.
 
 PRESENTATIONS: dict[str, CommandPresentation] = {
+    "get_stuck_tasks": CommandPresentation(
+        title="Read stuck tasks",
+        summary="Read aged active tasks, orphaned workers and failed routes in active projects.",
+        arg_labels={"project_id": "Project", "now": "Reference time",
+                    "assigned_threshold_seconds": "Assigned threshold",
+                    "in_progress_threshold_seconds": "In-progress threshold"},
+        outcome_labels={"read": "Read", "rejected": "Rejected"},
+        result_labels={"stuck": "Stuck tasks", "summary": "Supervisor summary",
+                       "now_used": "Reference time", "thresholds": "Thresholds"},
+    ),
     "list_projects": CommandPresentation(
         title="List projects",
         summary="Read the configured projects without changing them.",
@@ -1913,6 +1938,10 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             (CreateClause(subject=EffectSubject.MESSAGE),),
             IdempotencySpec(mode="natural"),
             True,
+        ),
+        (
+            "get_stuck_tasks", GetStuckTasksArgs, GetStuckTasksValue, _outcomes("read"),
+            SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
         ),
         (
             "provider_reroute",

@@ -962,9 +962,10 @@ def test_bundled_default_playbooks_are_required_or_active():
 def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     """A clean install creates the minimal default playbook set.
 
-    Retired playbooks must stay absent so bootstrap cannot recreate a catalog
-    entry that an operator deleted. Their reviewed recordings remain available
-    separately for audit and explicit import.
+    The default pipeline, assignment, provider and supervisor policies include
+    the ten-minute stuck-task watch. Retired playbooks stay absent so bootstrap
+    cannot recreate a catalog entry that an operator deleted. Their reviewed
+    recordings remain available separately for audit and explicit import.
     """
     result = ensure_default_playbooks(str(tmp_path))
 
@@ -975,6 +976,7 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
         "morning-report.md",
         "provider-failover.md",
         "provider-usage-probe.md",
+        "stuck-task-watch.md",
         "supervisor-failure-triage.md",
     ]
 

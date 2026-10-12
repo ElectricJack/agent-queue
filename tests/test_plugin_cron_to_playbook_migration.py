@@ -308,6 +308,7 @@ class TestVaultInstallation:
             "morning-report.md",
             "provider-failover.md",
             "provider-usage-probe.md",
+            "stuck-task-watch.md",
             "supervisor-failure-triage.md",
         }
         installed = set(result["created"])

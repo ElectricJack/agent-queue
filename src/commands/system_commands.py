@@ -212,69 +212,40 @@ class SystemCommandsMixin:
             return {"error": "Intelligence class could not be retired"}
 
     async def _cmd_get_stuck_tasks(self, args: dict) -> dict:
-        """Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their
-        per-status threshold.
+        """Read aged active tasks, orphaned workers and unroutable READY tasks.
 
-        This replaces the previous multi-step "list_tasks + time arithmetic"
-        procedure in the ``system-health-check`` playbook with a single,
-        deterministic lookup.  Detection runs entirely in the database —
-        the caller does no time math.
-
-        Args
-        ----
-        assigned_threshold_seconds: int
-            Max seconds a task may stay ASSIGNED before being flagged
-            stuck.  Default 1800 (30 minutes).
-        in_progress_threshold_seconds: int
-            Max seconds a task may stay IN_PROGRESS before being flagged
-            stuck.  Default 7200 (2 hours).
-        now: float
-            Reference timestamp (seconds since epoch).  Defaults to
-            ``time.time()``; playbooks typically pass the trigger event's
-            ``tick_time`` so repeated invocations are deterministic.
-        project_id: str, optional
-            Filter — when provided, only stuck tasks in the given project
-            are returned.  When omitted, all projects are scanned.
-
-        Returns
-        -------
-        dict with keys:
-            ``stuck``: list of ``{id, project_id, status, assigned_agent,
-            updated_at, seconds_in_state}`` dicts, ordered by
-            ``updated_at`` ascending (oldest first).
-            ``now_used``: the reference timestamp actually applied.
-            ``thresholds``: ``{assigned, in_progress}`` showing which
-            thresholds were applied.
+        Paused projects, containers and approved human holds are excluded.
+        The existing 30m/2h time-in-state thresholds remain configurable;
+        orphan (20m) and failed-route (30m) detection are additional signals.
+        No task state, notification receipt or message is written here.
         """
-        assigned_threshold = int(args.get("assigned_threshold_seconds", 1800))
-        in_progress_threshold = int(args.get("in_progress_threshold_seconds", 7200))
-        now = float(args.get("now", time.time()))
+        from src.commands.principal import current_principal
+        from src.database.queries.stall_watch_queries import read_snapshot
+        from src.stall_watch import READY_AFTER, detect, format_summary
+
+        assigned = int(args.get("assigned_threshold_seconds", 1800))
+        in_progress = int(args.get("in_progress_threshold_seconds", 7200))
+        now = float(args["now"]) if args.get("now") is not None else time.time()
         project_id = args.get("project_id") or None
-
-        stuck = await self.db.get_stuck_active_tasks(
-            assigned_threshold_seconds=assigned_threshold,
-            in_progress_threshold_seconds=in_progress_threshold,
-            now=now,
-            project_id=project_id,
-        )
-
+        principal = current_principal()
+        if principal and principal.project_id:
+            if project_id and project_id != principal.project_id:
+                return {"success": False, "error": "out of scope: project_id"}
+            project_id = principal.project_id
+        snapshot = await read_snapshot(self.db, project_id)
+        # Only old READY leaves need canonical route/frontier explanations.
+        # A failed read fails this tick instead of sending an incomplete list.
+        for task in snapshot.tasks.values():
+            if (task["status"] == "READY" and now - task["updated_at"] > READY_AFTER
+                    and task["id"] not in snapshot.held | snapshot.containers):
+                result = await self._cmd_explain_task({"task_id": task["id"]})
+                if result.get("error") or result.get("success") is False:
+                    return {"success": False, "error": f"Stall watch explain failed: {result}"}
+                snapshot.reasons[task["id"]] = result["reasons"]
+        stuck = detect(snapshot, now, assigned=assigned, in_progress=in_progress)
         return {
-            "stuck": [
-                {
-                    "id": task.id,
-                    "project_id": task.project_id,
-                    "status": task.status.value,
-                    "assigned_agent": task.assigned_agent_id,
-                    "updated_at": task.updated_at,
-                    "seconds_in_state": now - task.updated_at,
-                }
-                for task in stuck
-            ],
-            "now_used": now,
-            "thresholds": {
-                "assigned": assigned_threshold,
-                "in_progress": in_progress_threshold,
-            },
+            "success": True, "stuck": stuck, "summary": format_summary(stuck),
+            "now_used": now, "thresholds": {"assigned": assigned, "in_progress": in_progress},
         }
 
     async def _cmd_get_config(self, args: dict) -> dict:

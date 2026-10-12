@@ -3041,17 +3041,11 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "get_stuck_tasks",
         "description": (
-            "Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their "
-            "per-status threshold.  Detection and time arithmetic run in "
-            "the database — the caller passes thresholds and a reference "
-            "``now`` timestamp and receives a structured list back.  "
-            "Defaults match the system-health-check playbook's stuck "
-            "definition: ASSIGNED > 30 minutes, IN_PROGRESS > 2 hours.  "
-            "Each entry carries ``id``, ``project_id``, ``status``, "
-            "``assigned_agent``, ``updated_at``, and ``seconds_in_state`` "
-            "so remediation (``restart_task`` vs "
-            '``set_task_status(..., status="READY")``) can branch on '
-            "the agent state."
+            "Read stuck tasks in active projects, excluding containers and human holds. "
+            "Includes ASSIGNED >30m and IN_PROGRESS >2h (configurable), orphaned "
+            "workers >20m, and READY tasks with no claimable route >30m. "
+            "Returns stuck rows with state, age, reason and suggested diagnostic command, "
+            "plus a one-line-per-task summary. Does not mutate tasks or send messages."
         ),
         "input_schema": {
             "type": "object",

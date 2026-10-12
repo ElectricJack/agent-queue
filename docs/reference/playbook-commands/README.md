@@ -163,6 +163,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`decision_list`](decision_list.md) | Decision List | Record or read durable operator instructions on a task or integration. |
 | [`decision_record`](decision_record.md) | Decision Record | Record or read durable operator instructions on a task or integration. |
 | [`digest_request`](digest_request.md) | Digest Request | Queue one supervisor author turn per reserved digest window, releasing held windows when supervisor authoring is off. |
+| [`get_stuck_tasks`](get_stuck_tasks.md) | Read stuck tasks | Read aged active tasks, orphaned workers and failed routes in active projects. |
 | [`git_diff`](git_diff.md) | Read a Git diff | Read a project's working-tree or branch diff. |
 | [`github_issue_fix_approved`](github_issue_fix_approved.md) | File an approved issue fix | Create or reuse the fix task for an approved investigation. |
 | [`github_issue_rejection`](github_issue_rejection.md) | Apply an explicit issue closure request | Close an issue only when Jack explicitly asks in a rejected review. |
