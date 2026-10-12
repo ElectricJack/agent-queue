@@ -3413,6 +3413,7 @@
       "default": {
         "conditional_autoclose": true,
         "container_sweep_interval_seconds": 60,
+        "frontier_rejected_after_seconds": 600,
         "gate_sweep_interval_seconds": 30,
         "lifecycle_sweep_interval_seconds": 300,
         "stale_open_after_seconds": 21600
@@ -3424,6 +3425,10 @@
         },
         "container_sweep_interval_seconds": {
           "default": 60,
+          "type": "integer"
+        },
+        "frontier_rejected_after_seconds": {
+          "default": 600,
           "type": "integer"
         },
         "gate_sweep_interval_seconds": {

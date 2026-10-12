@@ -1784,6 +1784,37 @@ class ExecutionMixin:
                     "verification_retry": True, "escalated": ctx.verification_escalated,
                     "issues": list(ctx.verification_issues), "feedback": ctx.verification_feedback,
                 }
+        if (
+            session_live and outcome == "pass" and completed_ok and not git_completion
+            and not (managed_parent_suspended or managed_parent_completed or repair_writer_closed)
+            and verifier_operation is None and await self._task_uses_git(ctx)
+            and not await self._vault_only_delivery(ctx)
+            and not (await self._task_produces_no_code(ctx) and ctx.no_work_proven)
+        ):
+            # Train closes already bind their published head through provenance.
+            # Other live code sessions owe the same publication before release.
+            from src.git.manager import GitError, RemoteRefState
+
+            try:
+                branch = task.branch_name
+                if not branch:
+                    raise GitError("The task has no recorded branch to verify on origin")
+                local_head = await self.git.arev_parse(workspace_path, branch)
+                remote = await self.git.als_remote_ref(workspace_path, branch)
+                if (not local_head or remote.state is not RemoteRefState.PRESENT
+                    or remote.oid != local_head):
+                    raise GitError(
+                        f"Publish the exact task branch with `aq git push`: origin/{branch} "
+                        f"must equal {local_head or 'the local task head'} "
+                        f"(observed {remote.oid or remote.state.value})"
+                    )
+            except (GitError, OSError) as exc:
+                feedback = str(exc)
+                return {
+                    "status": task.status.value, "pr_url": None, "pipeline_ok": False,
+                    "verification_retry": True, "issues": [feedback], "feedback": feedback,
+                }
+
         if managed_parent_suspended:
             new_status = TaskStatus.PAUSED
             context = "integration_parent_suspended"

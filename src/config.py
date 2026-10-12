@@ -2274,12 +2274,15 @@ class WorkGraphConfig:
         container whose children are all delivered; ``0`` disables.
     ``lifecycle_sweep_interval_seconds``
         Cadence of the lifecycle sweep: the stale-open re-evaluation and the
-        retry of obsolete-close cleanup left pending behind a publishing batch
-        or a refused owner release; ``0`` disables both.
+        READY frontier rejection check and retry of obsolete-close cleanup left
+        pending behind a publishing batch or a refused owner release; ``0`` disables all.
     ``stale_open_after_seconds``
         A BLOCKED or PAUSED task unchanged this long is re-evaluated: unblocked
         when its recorded blocker is gone, else flagged
         ``needs_attention=stale_open`` for the supervisor; ``0`` disables.
+    ``frontier_rejected_after_seconds``
+        Continuous READY frontier rejection this long raises an advisory
+        supervisor notice naming the rules; ``0`` disables.
     """
 
     gate_sweep_interval_seconds: int = 30
@@ -2287,6 +2290,7 @@ class WorkGraphConfig:
     container_sweep_interval_seconds: int = 60
     lifecycle_sweep_interval_seconds: int = 300
     stale_open_after_seconds: int = 6 * 3600
+    frontier_rejected_after_seconds: int = 600
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -2295,6 +2299,7 @@ class WorkGraphConfig:
             "container_sweep_interval_seconds",
             "lifecycle_sweep_interval_seconds",
             "stale_open_after_seconds",
+            "frontier_rejected_after_seconds",
         ):
             if getattr(self, key) < 0:
                 errors.append(ConfigError("work_graph", key, "must be >= 0"))
@@ -5391,6 +5396,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 wg.get("lifecycle_sweep_interval_seconds", 300)
             ),
             stale_open_after_seconds=int(wg.get("stale_open_after_seconds", 6 * 3600)),
+            frontier_rejected_after_seconds=int(wg.get("frontier_rejected_after_seconds", 600)),
         )
 
     if "integration" in raw and isinstance(raw["integration"], dict):

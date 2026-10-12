@@ -36,6 +36,74 @@ from tests.db_fixtures import lease_dsn
 PROJECT_ID = "proj"
 
 
+@pytest.mark.parametrize("rejected", [False, True])
+async def test_pool_demand_and_claim_use_the_exact_frontier_builder(
+    orch, db, monkeypatch, rejected,
+):
+    from src.database.queries import claim_queries
+    from src.database.tables import tasks
+    from src.scheduler import PoolKey
+
+    await ready(db, "candidate")
+    original = claim_queries.claim_frontier_predicates
+
+    def frontier(*args, **kwargs):
+        predicates = original(*args, **kwargs)
+        if rejected:
+            predicates["regression_fence"] = tasks.c.id != "candidate"
+        return predicates
+
+    monkeypatch.setattr(claim_queries, "claim_frontier_predicates", frontier)
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == int(not rejected)
+    async with db.immediate() as conn:
+        selected = await db.select_ready_for_profile(
+            conn, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+        )
+    assert selected == (None if rejected else "candidate")
+
+
+async def test_preparation_backoff_withholds_pool_demand_and_recovers(orch, db):
+    from src.scheduler import PoolKey
+
+    await ready(db, "candidate")
+    await db.set_task_meta("candidate", "claim_prepare_backoff_until", time.time() + 300)
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == 0
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    assert await db.list_sessions(lifecycle="pool") == []
+    async with db.immediate() as conn:
+        assert await db.select_ready_for_profile(
+            conn, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+        ) is None
+    await db.set_task_meta("candidate", "claim_prepare_backoff_until", 0)
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == 1
+
+
+async def test_contained_sibling_releases_mid_epic_without_delivery_receipt(
+    orch, db, git_first_frontier,
+):
+    from sqlalchemy import select
+
+    from src.database.tables import task_delivery_receipts
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+    from src.scheduler import PoolKey
+
+    env = git_first_frontier
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == 0
+    env.git(env.origin.clone, "push", "origin", "aq/first:aq/epic")
+    env.observer._recent.clear()
+    assert (await db.get_task("epic")).status == TaskStatus.IN_PROGRESS
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == 1
+    assert await db.claim_frontier_exclusions("second") == []
+    modes = await hierarchy_frontier_modes(db, project_ids={PROJECT_ID})
+    async with db.immediate() as conn:
+        assert not (await conn.execute(select(task_delivery_receipts))).first()
+        assert await db.select_ready_for_profile(
+            conn, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+            hierarchy_mode=modes[PROJECT_ID],
+        ) == "second"
+
+
 @pytest.fixture
 async def git_first_frontier(orch, db, tmp_path):
     """A completed sibling with retained provenance, but no delivery receipts."""
